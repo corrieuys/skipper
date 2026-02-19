@@ -12,6 +12,12 @@ import type { AgentExitEvent } from "../events/bus";
 
 const DAEMON_INTERVAL_MS = 30_000;
 const EXIT_GRACE_PERIOD_MS = 1_000;
+const MAX_REGRESSIONS = 3;
+
+interface PendingRegression {
+  targetPhase: number;
+  reason: string;
+}
 
 export class ManagerDaemon {
   private db: Database;
@@ -21,6 +27,8 @@ export class ManagerDaemon {
   private teamManager: TeamManager;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private exitHandlerRegistered = false;
+  private phaseCompleteHandled: Set<string> = new Set(); // "taskId:phase" dedup
+  private pendingRegressions: Map<string, PendingRegression> = new Map(); // agentId -> regression
 
   constructor(db?: Database) {
     this.db = db ?? getDb();
@@ -204,7 +212,7 @@ export class ManagerDaemon {
 
       if (event.code === 0) {
         // Exec-mode exit code 0: advance phase or complete task
-        this.handleSuccessfulExit(task);
+        this.handleSuccessfulExit(task, event.agentId);
       } else {
         // Non-zero exit: fail the task
         try {
@@ -223,7 +231,27 @@ export class ManagerDaemon {
     }
   }
 
-  private handleSuccessfulExit(task: Task): void {
+  private handleSuccessfulExit(task: Task, agentId: string): void {
+    // Check for pending regression (exec-mode agents)
+    const pendingRegression = this.pendingRegressions.get(agentId);
+    if (pendingRegression) {
+      this.pendingRegressions.delete(agentId);
+      const teamExec = task.team_id
+        ? this.teamManager.getTeamForExecution(task.team_id)
+        : null;
+      if (teamExec) {
+        const phases = (teamExec.team.phases as { name: string; prompt: string }[]) ?? [];
+        this.respawnForRegression(
+          task,
+          teamExec.entrypoint_agent_id,
+          phases,
+          pendingRegression.targetPhase,
+          pendingRegression.reason,
+        );
+      }
+      return;
+    }
+
     // Check if there are more phases
     const teamExec = task.team_id
       ? this.teamManager.getTeamForExecution(task.team_id)
@@ -299,6 +327,265 @@ export class ManagerDaemon {
 
     const closeStdin = !isStreaming;
     this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+  }
+
+  // --- Phase Management ---
+
+  handlePhaseComplete(agentId: string): void {
+    // Find the task this agent is working on
+    const agentRow = this.db
+      .prepare("SELECT current_task_id FROM agents WHERE id = ?")
+      .get(agentId) as { current_task_id: string | null } | null;
+
+    if (!agentRow?.current_task_id) return;
+
+    const taskId = agentRow.current_task_id;
+    const task = this.taskScheduler.getTask(taskId);
+    if (!task || task.status !== "running") return;
+
+    // Dedup guard
+    const dedupKey = `${taskId}:${task.current_phase}`;
+    if (this.phaseCompleteHandled.has(dedupKey)) return;
+    this.phaseCompleteHandled.add(dedupKey);
+
+    const teamExec = task.team_id
+      ? this.teamManager.getTeamForExecution(task.team_id)
+      : null;
+    const phases = (teamExec?.team.phases as { name: string; prompt: string }[]) ?? [];
+
+    if (phases.length === 0 || task.current_phase >= phases.length - 1) {
+      // Last phase or no phases — complete the task
+      try {
+        this.taskScheduler.completeTask(task.id);
+      } catch {
+        // Task may already be complete
+      }
+    } else {
+      // More phases — advance and send next prompt
+      const advanced = this.taskScheduler.advancePhase(task.id);
+      const nextPhase = advanced.current_phase;
+      const entrypointAgentId = teamExec!.entrypoint_agent_id;
+
+      const agent = this.agentManager.getAgent(entrypointAgentId);
+      if (!agent) return;
+
+      const agentInfo: AgentInfo = {
+        id: agent.id,
+        name: agent.name,
+        type: agent.type,
+        goal: agent.config.goal,
+      };
+
+      const phaseInfo: PhaseInfo = {
+        name: phases[nextPhase].name,
+        prompt: phases[nextPhase].prompt,
+        index: nextPhase,
+        total: phases.length,
+      };
+
+      const typeDef = getAgentTypeDefinition(agent.type, this.db);
+      const isStreaming = typeDef?.supports_stdin ?? false;
+
+      const prompt = this.promptBuilder.buildInitialPrompt({
+        agent: agentInfo,
+        task: { id: task.id, title: task.title, description: task.description ?? undefined },
+        phase: phaseInfo,
+        isStreaming,
+      });
+
+      // For streaming agents, send directly to existing stdin
+      this.agentManager.sendInput(entrypointAgentId, prompt);
+    }
+  }
+
+  handlePhaseRegression(agentId: string, targetPhaseOneIndexed: number, reason: string): void {
+    // Find the task this agent is working on
+    const agentRow = this.db
+      .prepare("SELECT current_task_id FROM agents WHERE id = ?")
+      .get(agentId) as { current_task_id: string | null } | null;
+
+    if (!agentRow?.current_task_id) return;
+
+    const taskId = agentRow.current_task_id;
+    const task = this.taskScheduler.getTask(taskId);
+    if (!task || task.status !== "running") return;
+
+    // Convert 1-indexed to 0-indexed
+    const targetPhase = targetPhaseOneIndexed - 1;
+
+    // Validate target phase
+    if (targetPhase < 0 || targetPhase >= task.current_phase) return;
+
+    // Record regression in audit table
+    this.recordPhaseRegression(taskId, agentId, task.current_phase, targetPhase, reason);
+
+    // Store reason as task note for future agents
+    try {
+      const noteId = crypto.randomUUID();
+      this.db
+        .prepare(
+          "INSERT INTO task_notes (id, task_id, agent_id, content) VALUES (?, ?, ?, ?)",
+        )
+        .run(noteId, taskId, agentId, `[PHASE REGRESSION to phase ${targetPhaseOneIndexed}] ${reason}`);
+    } catch {
+      // Ignore note creation errors
+    }
+
+    // Check regression limit
+    if (task.regression_count >= MAX_REGRESSIONS) {
+      this.autoEscalateRegression(task, agentId, reason);
+      return;
+    }
+
+    // Perform the regression
+    this.taskScheduler.regressPhase(taskId, targetPhase);
+
+    // Clear phase dedup guards for target phase and all later phases
+    for (let i = targetPhase; i <= task.current_phase; i++) {
+      this.phaseCompleteHandled.delete(`${taskId}:${i}`);
+    }
+
+    // Get team and phases
+    const teamExec = task.team_id
+      ? this.teamManager.getTeamForExecution(task.team_id)
+      : null;
+    if (!teamExec) return;
+    const phases = (teamExec.team.phases as { name: string; prompt: string }[]) ?? [];
+
+    // Check if agent is streaming or exec-mode
+    const agent = this.agentManager.getAgent(agentId);
+    if (!agent) return;
+    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    const isStreaming = typeDef?.supports_stdin ?? false;
+
+    if (isStreaming) {
+      // Streaming agent: respawn immediately
+      this.respawnForRegression(task, teamExec.entrypoint_agent_id, phases, targetPhase, reason);
+    } else {
+      // Exec-mode agent: store pending regression for exit handler
+      this.pendingRegressions.set(agentId, { targetPhase, reason });
+    }
+  }
+
+  private async respawnForRegression(
+    task: Task,
+    entrypointAgentId: string,
+    phases: { name: string; prompt: string }[],
+    targetPhase: number,
+    reason: string,
+  ): Promise<void> {
+    const agent = this.agentManager.getAgent(entrypointAgentId);
+    if (!agent) return;
+
+    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    const isStreaming = typeDef?.supports_stdin ?? false;
+
+    // Get session ID for resume before killing
+    const sessionId = this.agentManager.getSessionId(entrypointAgentId) ?? undefined;
+
+    // Kill current process if running
+    if (this.agentManager.getRunningAgent(entrypointAgentId)) {
+      this.agentManager.killAgent(entrypointAgentId);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    // Spawn fresh (with resume if supported)
+    try {
+      const workingDir = process.cwd();
+      await this.agentManager.spawnAgent(entrypointAgentId, { workingDir, sessionId });
+    } catch {
+      try {
+        this.taskScheduler.failTask(task.id, "Failed to respawn agent for regression");
+      } catch {
+        // DB may be closed during shutdown
+      }
+      return;
+    }
+
+    // Assign task
+    this.db
+      .prepare("UPDATE agents SET current_task_id = ? WHERE id = ?")
+      .run(task.id, entrypointAgentId);
+
+    // Build phase prompt with regression context
+    const agentInfo: AgentInfo = {
+      id: agent.id,
+      name: agent.name,
+      type: agent.type,
+      goal: agent.config.goal,
+    };
+
+    const phaseInfo: PhaseInfo = {
+      name: phases[targetPhase].name,
+      prompt: phases[targetPhase].prompt,
+      index: targetPhase,
+      total: phases.length,
+    };
+
+    const prompt = this.promptBuilder.buildInitialPrompt({
+      agent: agentInfo,
+      task: { id: task.id, title: task.title, description: task.description ?? undefined },
+      phase: phaseInfo,
+      isStreaming,
+      regressionReason: reason,
+    });
+
+    const closeStdin = !isStreaming;
+    this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+  }
+
+  private autoEscalateRegression(task: Task, agentId: string, reason: string): void {
+    try {
+      const escalationId = crypto.randomUUID();
+      this.db
+        .prepare(
+          `INSERT INTO escalations (id, agent_id, task_id, type, question, severity)
+           VALUES (?, ?, ?, 'max_regressions', ?, 'high')`,
+        )
+        .run(
+          escalationId,
+          agentId,
+          task.id,
+          `Phase regression denied: maximum regressions (${MAX_REGRESSIONS}) reached for task "${task.title}". Last reason: ${reason}`,
+        );
+
+      eventBus.emit("escalation:created", {
+        escalationId,
+        agentId,
+        taskId: task.id,
+        type: "max_regressions",
+        question: `Maximum regressions reached. Last reason: ${reason}`,
+      });
+    } catch {
+      // Ignore escalation creation errors
+    }
+  }
+
+  private recordPhaseRegression(
+    taskId: string,
+    agentId: string,
+    fromPhase: number,
+    toPhase: number,
+    reason: string,
+  ): void {
+    try {
+      this.db
+        .prepare(
+          "INSERT INTO phase_regressions (task_id, agent_id, from_phase, to_phase, reason) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(taskId, agentId, fromPhase, toPhase, reason);
+    } catch {
+      // Ignore audit logging errors
+    }
+  }
+
+  // Expose for testing
+  getPendingRegression(agentId: string): PendingRegression | undefined {
+    return this.pendingRegressions.get(agentId);
+  }
+
+  getPhaseCompleteHandled(): Set<string> {
+    return this.phaseCompleteHandled;
   }
 
   private getRunningTask(): Task | null {
