@@ -131,6 +131,7 @@ const SIGNAL_PATTERNS = {
 export class AgentManager {
   private db: Database;
   private agents: Map<string, RunningAgent> = new Map();
+  private respawningAgents: Set<string> = new Set();
   private decoder = new TextDecoder();
 
   constructor(db?: Database) {
@@ -310,6 +311,15 @@ export class AgentManager {
   }
 
   private handleProcessExit(agentId: string, code: number): void {
+    // Persist session ID before removing from memory
+    this.persistSessionId(agentId);
+
+    // Check if this is a respawn exit
+    const isRespawn = this.respawningAgents.has(agentId);
+    if (isRespawn) {
+      this.respawningAgents.delete(agentId);
+    }
+
     // Clean up in-memory tracking
     this.agents.delete(agentId);
 
@@ -327,9 +337,81 @@ export class AgentManager {
     eventBus.emit("agent:exit", {
       agentId,
       code,
-      isRespawn: false,
+      isRespawn,
       hasDelegation: false,
     });
+  }
+
+  private persistSessionId(agentId: string): void {
+    const runningAgent = this.agents.get(agentId);
+    if (!runningAgent?.sessionId) return;
+
+    try {
+      // Upsert into agent_states with session_id in state_metadata
+      this.db
+        .prepare(
+          `INSERT INTO agent_states (agent_id, state, state_metadata)
+           VALUES (?, 'stopped', json_object('session_id', ?))
+           ON CONFLICT(agent_id) DO UPDATE SET
+             state_metadata = json_set(state_metadata, '$.session_id', ?),
+             updated_at = datetime('now')`,
+        )
+        .run(agentId, runningAgent.sessionId, runningAgent.sessionId);
+    } catch {
+      // DB may be closed during test teardown
+    }
+  }
+
+  getSessionId(agentId: string): string | null {
+    // Memory-first: check running agent
+    const runningAgent = this.agents.get(agentId);
+    if (runningAgent?.sessionId) {
+      return runningAgent.sessionId;
+    }
+
+    // DB-fallback: check agent_states
+    try {
+      const row = this.db
+        .prepare(
+          "SELECT json_extract(state_metadata, '$.session_id') as session_id FROM agent_states WHERE agent_id = ?",
+        )
+        .get(agentId) as { session_id: string | null } | null;
+      return row?.session_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async sendResumeMessage(agentId: string, message: string, closeStdin = false): Promise<void> {
+    const agent = this.getAgent(agentId);
+    if (!agent) {
+      throw new Error(`Agent not found: ${agentId}`);
+    }
+
+    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    if (!typeDef || !typeDef.supports_resume) {
+      throw new Error(`Agent type ${agent.type} does not support resume`);
+    }
+
+    const sessionId = this.getSessionId(agentId);
+    if (!sessionId) {
+      throw new Error(`No session ID available for agent: ${agentId}`);
+    }
+
+    // Kill current process if running (with respawn guard)
+    if (this.agents.has(agentId)) {
+      this.respawningAgents.add(agentId);
+      this.killAgent(agentId);
+      // Wait for process to exit
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    // Spawn new process with --resume
+    const workingDir = process.cwd();
+    await this.spawnAgent(agentId, { workingDir, sessionId });
+
+    // Send message
+    this.sendInput(agentId, message, closeStdin);
   }
 
   // --- Output parsing and signal detection ---

@@ -732,6 +732,193 @@ describe("extractTextFromJsonEvent", () => {
   });
 });
 
+// --- Session Resume Tests ---
+
+describe("persistSessionId", () => {
+  it("persists session ID to agent_states on process exit", async () => {
+    const { agentId } = createTestEchoAgent('echo "done"');
+    const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+
+    // Manually set session ID (simulating JSON event capture)
+    running.sessionId = "sess-abc-123";
+
+    await running.process.exited;
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Check agent_states table
+    const row = db
+      .prepare(
+        "SELECT json_extract(state_metadata, '$.session_id') as session_id FROM agent_states WHERE agent_id = ?",
+      )
+      .get(agentId) as { session_id: string | null } | null;
+    expect(row).not.toBeNull();
+    expect(row!.session_id).toBe("sess-abc-123");
+  });
+
+  it("does not persist when no session ID exists", async () => {
+    const { agentId } = createTestEchoAgent('echo "done"');
+    const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+
+    // sessionId is null by default
+    expect(running.sessionId).toBeNull();
+
+    await running.process.exited;
+    await new Promise((r) => setTimeout(r, 100));
+
+    const row = db
+      .prepare("SELECT * FROM agent_states WHERE agent_id = ?")
+      .get(agentId);
+    expect(row).toBeNull();
+  });
+
+  it("updates existing agent_states record", async () => {
+    const { agentId } = createTestEchoAgent('echo "done"');
+
+    // Pre-insert an agent_states row
+    db.prepare(
+      "INSERT INTO agent_states (agent_id, state, state_metadata) VALUES (?, 'working', '{}')",
+    ).run(agentId);
+
+    const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+    running.sessionId = "sess-updated";
+
+    await running.process.exited;
+    await new Promise((r) => setTimeout(r, 100));
+
+    const row = db
+      .prepare(
+        "SELECT state, json_extract(state_metadata, '$.session_id') as session_id FROM agent_states WHERE agent_id = ?",
+      )
+      .get(agentId) as { state: string; session_id: string | null } | null;
+    expect(row).not.toBeNull();
+    // State should remain as-is from the ON CONFLICT DO UPDATE (only metadata updated)
+    expect(row!.session_id).toBe("sess-updated");
+  });
+});
+
+describe("getSessionId", () => {
+  it("returns session ID from running agent (memory-first)", async () => {
+    const { agentId } = createTestEchoAgent("sleep 30");
+    const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+    running.sessionId = "sess-in-memory";
+
+    const result = manager.getSessionId(agentId);
+    expect(result).toBe("sess-in-memory");
+
+    manager.killAgent(agentId);
+  });
+
+  it("falls back to DB when agent not running", () => {
+    const agent = manager.createAgent({ name: "Offline Agent", type: "claude-code" });
+    db.prepare(
+      "INSERT INTO agent_states (agent_id, state, state_metadata) VALUES (?, 'stopped', ?)",
+    ).run(agent.id, JSON.stringify({ session_id: "sess-from-db" }));
+
+    const result = manager.getSessionId(agent.id);
+    expect(result).toBe("sess-from-db");
+  });
+
+  it("returns null when no session ID anywhere", () => {
+    const agent = manager.createAgent({ name: "No Session Agent", type: "claude-code" });
+    const result = manager.getSessionId(agent.id);
+    expect(result).toBeNull();
+  });
+
+  it("returns null for nonexistent agent", () => {
+    const result = manager.getSessionId("nonexistent");
+    expect(result).toBeNull();
+  });
+});
+
+describe("sendResumeMessage", () => {
+  function registerResumableType() {
+    db.prepare(
+      `INSERT OR REPLACE INTO agent_types (name, command, args, model_flag, available_models, env_vars, supports_stdin, supports_resume, resume_flag)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "resumable-agent",
+      "bash",
+      JSON.stringify(["-c", "sleep 30"]),
+      null,
+      JSON.stringify([]),
+      JSON.stringify({}),
+      1,
+      1,
+      "--resume",
+    );
+  }
+
+  it("throws when agent not found", async () => {
+    await expect(
+      manager.sendResumeMessage("nonexistent", "hello"),
+    ).rejects.toThrow("Agent not found: nonexistent");
+  });
+
+  it("throws when agent type does not support resume", async () => {
+    registerTestAgentType(db);
+    const agent = manager.createAgent({ name: "No Resume", type: "test-echo" });
+
+    await expect(
+      manager.sendResumeMessage(agent.id, "hello"),
+    ).rejects.toThrow("does not support resume");
+  });
+
+  it("throws when no session ID available", async () => {
+    registerResumableType();
+    const agent = manager.createAgent({ name: "No Session", type: "resumable-agent" });
+
+    await expect(
+      manager.sendResumeMessage(agent.id, "hello"),
+    ).rejects.toThrow("No session ID available");
+  });
+
+  it("respawns agent with session ID from DB", async () => {
+    registerResumableType();
+    const agent = manager.createAgent({ name: "Resumable", type: "resumable-agent" });
+
+    // Store session ID in DB
+    db.prepare(
+      "INSERT INTO agent_states (agent_id, state, state_metadata) VALUES (?, 'stopped', ?)",
+    ).run(agent.id, JSON.stringify({ session_id: "sess-resume-123" }));
+
+    await manager.sendResumeMessage(agent.id, "Continue working");
+
+    // Agent should be running
+    const running = manager.getRunningAgent(agent.id);
+    expect(running).toBeDefined();
+    expect(running!.sessionId).toBe("sess-resume-123");
+  });
+
+  it("kills existing process with respawn guard before resume", async () => {
+    registerResumableType();
+    const agent = manager.createAgent({ name: "Running Agent", type: "resumable-agent" });
+
+    // Spawn agent initially
+    const initial = await manager.spawnAgent(agent.id, { workingDir: "/tmp" });
+    initial.sessionId = "sess-initial";
+
+    const exitEvents: AgentExitEvent[] = [];
+    const handler = (e: AgentExitEvent) => {
+      if (e.agentId === agent.id) exitEvents.push(e);
+    };
+    eventBus.on("agent:exit", handler);
+
+    await manager.sendResumeMessage(agent.id, "Resume work");
+
+    // Wait for events to settle
+    await new Promise((r) => setTimeout(r, 300));
+    eventBus.off("agent:exit", handler);
+
+    // The kill exit should have isRespawn=true
+    const respawnExit = exitEvents.find((e) => e.isRespawn);
+    expect(respawnExit).toBeDefined();
+
+    // Agent should still be running (respawned)
+    const running = manager.getRunningAgent(agent.id);
+    expect(running).toBeDefined();
+  });
+});
+
 describe("detectSignalsInText", () => {
   const agentId = "test-agent";
 
