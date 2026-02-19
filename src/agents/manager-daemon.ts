@@ -6,6 +6,7 @@ import type { AgentInfo, PhaseInfo } from "./prompt-builder";
 import { TaskScheduler } from "../tasks/scheduler";
 import type { Task } from "../tasks/scheduler";
 import { TeamManager } from "../teams/manager";
+import { StateTracker } from "./state-tracker";
 import { getAgentTypeDefinition } from "./types";
 import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
@@ -39,6 +40,7 @@ export class ManagerDaemon {
   private promptBuilder: PromptBuilder;
   private taskScheduler: TaskScheduler;
   private teamManager: TeamManager;
+  private stateTracker: StateTracker;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private exitHandlerRegistered = false;
   private phaseCompleteHandled: Set<string> = new Set(); // "taskId:phase" dedup
@@ -50,6 +52,7 @@ export class ManagerDaemon {
     this.promptBuilder = new PromptBuilder(this.db);
     this.taskScheduler = new TaskScheduler(this.db);
     this.teamManager = new TeamManager(this.db);
+    this.stateTracker = new StateTracker(this.db, this.agentManager);
     this.registerExitHandler();
   }
 
@@ -60,6 +63,10 @@ export class ManagerDaemon {
 
   getTaskScheduler(): TaskScheduler {
     return this.taskScheduler;
+  }
+
+  getStateTracker(): StateTracker {
+    return this.stateTracker;
   }
 
   start(): void {
@@ -97,6 +104,18 @@ export class ManagerDaemon {
 
     try {
       this.checkStaleDelegations();
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+      this.checkProcessHealth();
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+      this.runStuckDetection();
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err));
     }
@@ -197,6 +216,99 @@ export class ManagerDaemon {
     this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
 
     return { processed: 1 };
+  }
+
+  // --- Health checks ---
+
+  /**
+   * For every agent that has a recorded PID:
+   * - Skip agents currently being respawned.
+   * - Check both in-memory tracking AND OS liveness (process.kill(pid, 0)).
+   * - Kill OS-level orphan processes (have a PID but are not tracked in memory).
+   * - Clean up DB state for dead agents.
+   * - Fail any running task owned by a dead agent, unless it has an active
+   *   child delegation (in which case the child result will arrive later).
+   */
+  checkProcessHealth(): void {
+    const agentRows = this.db
+      .prepare("SELECT id, process_pid, current_task_id FROM agents WHERE process_pid IS NOT NULL")
+      .all() as { id: string; process_pid: number; current_task_id: string | null }[];
+
+    for (const agent of agentRows) {
+      // Skip agents that are mid-respawn — they will be healthy once the new
+      // process has been spawned.
+      if (this.agentManager.isRespawning(agent.id)) continue;
+
+      const memTracked = !!this.agentManager.getRunningAgent(agent.id);
+
+      let osAlive = false;
+      try {
+        process.kill(agent.process_pid, 0);
+        osAlive = true;
+      } catch {
+        osAlive = false;
+      }
+
+      if (memTracked && osAlive) {
+        // Healthy — nothing to do
+        continue;
+      }
+
+      // Orphan or dead process — clean up
+
+      // If the OS process exists but is not tracked in memory, it is an
+      // orphan left over from a previous daemon run. Kill it.
+      if (osAlive && !memTracked) {
+        try {
+          process.kill(agent.process_pid, 9);
+        } catch {
+          // Already exited between the liveness check and the kill attempt
+        }
+      }
+
+      // Clear PID / status in DB
+      this.db
+        .prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?")
+        .run(agent.id);
+
+      // Fail the running task if the agent had one, unless a child delegation
+      // is still active (the child may still deliver a result).
+      if (agent.current_task_id) {
+        const task = this.taskScheduler.getTask(agent.current_task_id);
+        if (task && task.status === "running") {
+          const activeDelegation = this.getActiveDelegationForChild(agent.id);
+          if (!activeDelegation) {
+            try {
+              this.taskScheduler.failTask(
+                agent.current_task_id,
+                "Agent process died unexpectedly",
+              );
+            } catch {
+              // Task may already be in a terminal state
+            }
+            this.db
+              .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
+              .run(agent.id);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Update terminal-output fingerprints / heartbeats for all active agents,
+   * then detect and handle any that appear stuck.
+   */
+  private runStuckDetection(): void {
+    this.stateTracker.updateHeartbeats();
+
+    const candidates = this.stateTracker.getStuckCandidates();
+    for (const agentId of candidates) {
+      const isStuck = this.stateTracker.analyzeStuckAgent(agentId);
+      if (isStuck) {
+        this.stateTracker.handleStuckAgent(agentId);
+      }
+    }
   }
 
   private registerExitHandler(): void {
