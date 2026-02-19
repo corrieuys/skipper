@@ -1103,6 +1103,8 @@ describe("delegation helpers", () => {
   });
 });
 
+// --- STORY-015: Health Checks & Stuck Detection Tests ---
+
 describe("checkProcessHealth", () => {
   it("does nothing when no agents have PIDs", () => {
     createAgent("Idle Agent");
@@ -1112,12 +1114,6 @@ describe("checkProcessHealth", () => {
 
   it("cleans up DB entry for agent whose OS process has died", () => {
     const agentId = createAgent("Dead Agent");
-    // Use a PID that definitely does not exist (PID 1 is always init/systemd,
-    // and we will use an obviously invalid PID by trying a number and catching).
-    // We set a PID that is not in the running agent map, and process.kill will
-    // throw ESRCH (no such process) for a non-existent PID.
-    // Use PID 2 as a proxy — we cannot guarantee it's dead, so we mock instead.
-    // Better: set a very large PID that won't exist.
     const fakePid = 99999999;
     db.prepare("UPDATE agents SET process_pid = ?, status = 'busy' WHERE id = ?").run(
       fakePid,
@@ -1217,5 +1213,399 @@ describe("runStuckDetection (via tick)", () => {
   it("getStateTracker returns StateTracker instance", () => {
     const { StateTracker } = require("./state-tracker");
     expect(daemon.getStateTracker()).toBeInstanceOf(StateTracker);
+  });
+});
+
+// --- STORY-018: Recovery & Resilience Tests ---
+
+describe("orchestration state persistence", () => {
+  it("persists orchestration state when task starts", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+
+    await daemon.processTaskQueue();
+
+    const state = daemon.getOrchestrationState(taskId);
+    expect(state).not.toBeNull();
+    expect(state!.step).toBe("AGENT_RUNNING");
+    expect(state!.last_checkpoint_ts).toBeTruthy();
+    expect(state!.active_delegation_id).toBeNull();
+  });
+
+  it("writes PHASE_START checkpoint when task starts", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+
+    await daemon.processTaskQueue();
+
+    const checkpoint = daemon.getLatestCheckpoint(taskId);
+    expect(checkpoint).not.toBeNull();
+    expect(checkpoint!.checkpoint_type).toBe("PHASE_START");
+    expect(checkpoint!.sequence).toBe(1);
+    expect((checkpoint!.context_snapshot as Record<string, unknown>).phase).toBe(0);
+  });
+
+  it("updates orchestration state on delegation", async () => {
+    const parentId = createAgent("Parent", "test-echo", "Lead dev");
+    const childId = createAgent("Child", "test-echo", "Reviewer");
+    const teamId = createTeamWithEntrypoint(parentId);
+    addAgentToTeam(teamId, childId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    await daemon.handleDelegation(parentId, childId, "Review the code");
+
+    const state = daemon.getOrchestrationState(taskId);
+    expect(state).not.toBeNull();
+    expect(state!.step).toBe("WAITING_DELEGATION");
+    expect(state!.active_delegation_id).toBeTruthy();
+  });
+
+  it("writes DELEGATION_COMPLETE checkpoint on delegation completion", async () => {
+    const parentId = createAgent("Parent", "test-echo", "Lead");
+    const childId = createAgent("Child", "test-echo", "Worker");
+    const teamId = createTeamWithEntrypoint(parentId);
+    addAgentToTeam(teamId, childId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    await daemon.handleDelegation(parentId, childId, "Do work");
+    daemon.handleDelegateComplete(childId, "Done");
+
+    // Find DELEGATION_COMPLETE checkpoint
+    const checkpoints = db
+      .prepare("SELECT * FROM task_checkpoints WHERE task_id = ? ORDER BY sequence")
+      .all(taskId) as { checkpoint_type: string; context_snapshot: string }[];
+
+    const delCheckpoint = checkpoints.find((c) => c.checkpoint_type === "DELEGATION_COMPLETE");
+    expect(delCheckpoint).toBeDefined();
+
+    const state = daemon.getOrchestrationState(taskId);
+    expect(state!.step).toBe("AGENT_RUNNING");
+    expect(state!.active_delegation_id).toBeNull();
+  });
+
+  it("writes REGRESSION checkpoint on phase regression", async () => {
+    const phases = [
+      { name: "Planning", prompt: "Plan" },
+      { name: "Implementation", prompt: "Implement" },
+    ];
+    const { agentId, taskId } = await setupRunningTask(phases);
+    db.prepare("UPDATE tasks SET current_phase = 1 WHERE id = ?").run(taskId);
+
+    daemon.handlePhaseRegression(agentId, 1, "Bugs found");
+
+    const checkpoints = db
+      .prepare("SELECT * FROM task_checkpoints WHERE task_id = ? AND checkpoint_type = 'REGRESSION'")
+      .all(taskId) as { context_snapshot: string }[];
+    expect(checkpoints.length).toBe(1);
+
+    const snapshot = JSON.parse(checkpoints[0].context_snapshot);
+    expect(snapshot.from_phase).toBe(1);
+    expect(snapshot.to_phase).toBe(0);
+    expect(snapshot.reason).toBe("Bugs found");
+  });
+});
+
+describe("persistCheckpoints (tick)", () => {
+  it("persists orchestration state on each tick for running task", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+
+    await daemon.processTaskQueue();
+
+    // Tick to trigger persistCheckpoints
+    await daemon.tick();
+
+    const state = daemon.getOrchestrationState(taskId);
+    expect(state).not.toBeNull();
+    expect(state!.step).toBe("AGENT_RUNNING");
+    expect(state!.last_checkpoint_ts).toBeTruthy();
+  });
+});
+
+describe("cleanupStaleState", () => {
+  it("clears PIDs for agents not tracked in memory", () => {
+    const agentId = createAgent("Stale Agent", "test-echo");
+    // Simulate stale PID in DB (no actual process)
+    db.prepare("UPDATE agents SET process_pid = 999999, status = 'busy' WHERE id = ?").run(agentId);
+
+    daemon.cleanupStaleState();
+
+    const row = db.prepare("SELECT process_pid, status FROM agents WHERE id = ?").get(agentId) as {
+      process_pid: number | null;
+      status: string;
+    };
+    expect(row.process_pid).toBeNull();
+    expect(row.status).toBe("idle");
+  });
+
+  it("clears task assignments for agents without live processes", () => {
+    const agentId = createAgent("Dead Agent", "test-echo");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createRunningTask(teamId);
+
+    // Simulate agent assigned to task but no process
+    db.prepare("UPDATE agents SET current_task_id = ?, process_pid = NULL WHERE id = ?").run(
+      taskId,
+      agentId,
+    );
+
+    daemon.cleanupStaleState();
+
+    const row = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as {
+      current_task_id: string | null;
+    };
+    expect(row.current_task_id).toBeNull();
+  });
+
+  it("is called on daemon start", () => {
+    const agentId = createAgent("Stale Agent", "test-echo");
+    db.prepare("UPDATE agents SET process_pid = 999999, status = 'busy' WHERE id = ?").run(agentId);
+
+    daemon.start();
+
+    const row = db.prepare("SELECT process_pid FROM agents WHERE id = ?").get(agentId) as {
+      process_pid: number | null;
+    };
+    expect(row.process_pid).toBeNull();
+  });
+});
+
+describe("recoverTask", () => {
+  it("recovers a running task with no live agent", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+
+    // Start the task normally
+    await daemon.processTaskQueue();
+
+    // Kill the agent to simulate crash
+    daemon.getAgentManager().killAgent(agentId);
+    daemon.getAgentManager().getRunningAgents().delete(agentId);
+    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?").run(agentId);
+
+    // Recover the task
+    const recovered = await daemon.recoverTask(taskId);
+    expect(recovered).toBe(true);
+
+    // Agent should be running again with task assigned
+    const agentRow = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as {
+      current_task_id: string | null;
+    };
+    expect(agentRow.current_task_id).toBe(taskId);
+
+    // Task should still be running
+    const task = scheduler.getTask(taskId);
+    expect(task?.status).toBe("running");
+  });
+
+  it("restores in-memory phase guards from orchestration state", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const phases = [
+      { name: "P1", prompt: "Phase 1" },
+      { name: "P2", prompt: "Phase 2" },
+      { name: "P3", prompt: "Phase 3" },
+    ];
+    const teamId = createTeamWithEntrypoint(agentId, phases);
+    const taskId = createApprovedTask(teamId);
+
+    await daemon.processTaskQueue();
+
+    // Simulate phase 0 completed
+    daemon.getPhaseCompleteHandled().add(`${taskId}:0`);
+    db.prepare("UPDATE tasks SET current_phase = 1 WHERE id = ?").run(taskId);
+
+    // Persist state via tick
+    await daemon.tick();
+
+    // Clear in-memory state to simulate restart
+    daemon.getPhaseCompleteHandled().clear();
+
+    // Kill agent
+    daemon.getAgentManager().killAgent(agentId);
+    daemon.getAgentManager().getRunningAgents().delete(agentId);
+    db.prepare("UPDATE agents SET process_pid = NULL WHERE id = ?").run(agentId);
+
+    await daemon.recoverTask(taskId);
+
+    // Phase guard should be restored
+    expect(daemon.getPhaseCompleteHandled().has(`${taskId}:0`)).toBe(true);
+  });
+
+  it("returns false for non-running task", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+
+    const recovered = await daemon.recoverTask(taskId);
+    expect(recovered).toBe(false);
+  });
+
+  it("returns false for task with no team", async () => {
+    const taskId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Orphan', 'running', datetime('now'))",
+    ).run(taskId);
+
+    const recovered = await daemon.recoverTask(taskId);
+    expect(recovered).toBe(false);
+  });
+
+  it("skips respawn if active delegation exists", async () => {
+    const parentId = createAgent("Parent", "test-echo", "Lead");
+    const childId = createAgent("Child", "test-echo", "Worker");
+    const teamId = createTeamWithEntrypoint(parentId);
+    addAgentToTeam(teamId, childId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    const delegation = await daemon.handleDelegation(parentId, childId, "Do work");
+    expect(delegation).not.toBeNull();
+
+    // Simulate parent crash but child still alive
+    db.prepare("UPDATE agents SET process_pid = NULL WHERE id = ?").run(parentId);
+
+    // Set orchestration state with active delegation
+    daemon.updateOrchestrationState(taskId, {
+      step: "WAITING_DELEGATION",
+      last_checkpoint_ts: new Date().toISOString(),
+      session_id: null,
+      active_delegation_id: delegation!.id,
+      phase_guards: [],
+      pending_regression: null,
+      checkpoint_prompt_hash: null,
+    });
+
+    const recovered = await daemon.recoverTask(taskId);
+    expect(recovered).toBe(true);
+
+    // Parent should be in waiting_delegation state, not respawned with task prompt
+    const parentState = db
+      .prepare("SELECT state FROM agent_states WHERE agent_id = ?")
+      .get(parentId) as { state: string } | null;
+    expect(parentState?.state).toBe("waiting_delegation");
+  });
+});
+
+describe("recoverAllStaleTasks", () => {
+  it("recovers tasks with dead agents", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+
+    await daemon.processTaskQueue();
+
+    // Kill agent without proper cleanup
+    daemon.getAgentManager().killAgent(agentId);
+    daemon.getAgentManager().getRunningAgents().delete(agentId);
+    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?").run(agentId);
+
+    const recovered = await daemon.recoverAllStaleTasks();
+    expect(recovered).toBe(1);
+  });
+
+  it("skips tasks with live agents", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+
+    await daemon.processTaskQueue();
+
+    // Agent is still running — should not recover
+    const recovered = await daemon.recoverAllStaleTasks();
+    expect(recovered).toBe(0);
+  });
+
+  it("returns 0 when no running tasks exist", async () => {
+    const recovered = await daemon.recoverAllStaleTasks();
+    expect(recovered).toBe(0);
+  });
+});
+
+describe("writeCheckpoint and getLatestCheckpoint", () => {
+  it("writes and retrieves checkpoints", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    // Write additional checkpoint
+    daemon.writeCheckpoint(taskId, "NOTE_ADDED", { note: "test note" });
+
+    const checkpoint = daemon.getLatestCheckpoint(taskId);
+    expect(checkpoint).not.toBeNull();
+    expect(checkpoint!.checkpoint_type).toBe("NOTE_ADDED");
+    expect(checkpoint!.sequence).toBe(2); // 1 from PHASE_START, 2 from this
+    expect((checkpoint!.context_snapshot as Record<string, unknown>).note).toBe("test note");
+  });
+
+  it("returns null for task with no checkpoints", () => {
+    const checkpoint = daemon.getLatestCheckpoint("nonexistent");
+    expect(checkpoint).toBeNull();
+  });
+
+  it("increments sequence numbers", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    daemon.writeCheckpoint(taskId, "NOTE_ADDED", { n: 1 });
+    daemon.writeCheckpoint(taskId, "NOTE_ADDED", { n: 2 });
+
+    const checkpoints = db
+      .prepare("SELECT sequence FROM task_checkpoints WHERE task_id = ? ORDER BY sequence")
+      .all(taskId) as { sequence: number }[];
+    expect(checkpoints.length).toBe(3); // PHASE_START + 2 notes
+    expect(checkpoints[0].sequence).toBe(1);
+    expect(checkpoints[1].sequence).toBe(2);
+    expect(checkpoints[2].sequence).toBe(3);
+  });
+});
+
+describe("tick with recovery loop", () => {
+  it("runs full tick cycle: recover → process → delegations → checkpoints", async () => {
+    // Just verify the full tick runs without error and records run
+    await daemon.tick();
+
+    const runs = db
+      .prepare("SELECT * FROM manager_runs")
+      .all() as { completed_at: string; errors: string }[];
+    expect(runs.length).toBe(1);
+    expect(runs[0].completed_at).toBeTruthy();
+    const errors = JSON.parse(runs[0].errors);
+    expect(errors.length).toBe(0);
+  });
+
+  it("recovers stale task during tick", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+
+    // Start task
+    await daemon.processTaskQueue();
+
+    // Kill agent to create stale state
+    daemon.getAgentManager().killAgent(agentId);
+    daemon.getAgentManager().getRunningAgents().delete(agentId);
+    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?").run(agentId);
+
+    // Tick should recover
+    await daemon.tick();
+
+    // Task should still be running (recovered, not failed)
+    const task = scheduler.getTask(taskId);
+    expect(task?.status).toBe("running");
+
+    // Agent should have been respawned
+    const agentRow = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as {
+      current_task_id: string | null;
+    };
+    expect(agentRow.current_task_id).toBe(taskId);
   });
 });
