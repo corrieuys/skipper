@@ -78,6 +78,56 @@ export interface SpawnAgentOptions {
   sessionId?: string;
 }
 
+// --- Signal types for output parsing ---
+
+export type SignalType =
+  | "message"
+  | "delegate"
+  | "delegate_complete"
+  | "escalate"
+  | "note"
+  | "task_complete"
+  | "phase_complete"
+  | "phase_regression"
+  | "json"
+  | "text";
+
+export interface ParsedSignal {
+  type: SignalType;
+  agentId: string;
+  raw: string;
+  // Signal-specific fields
+  messageType?: string;
+  targetAgent?: string;
+  content?: string;
+  taskId?: string;
+  targetPhase?: number;
+  reason?: string;
+  jsonEvent?: JsonEvent;
+}
+
+export interface JsonEvent {
+  type?: string;
+  session_id?: string;
+  message?: { content?: Array<{ type: string; text?: string }> };
+  item?: { type?: string; text?: string; content?: Array<{ type: string; text?: string }> };
+  result?: string;
+  error?: { message?: string };
+  [key: string]: unknown;
+}
+
+// Signal regex patterns
+const SIGNAL_PATTERNS = {
+  message: /^\[MSG:(\S+)\s+to:(\S+)\]\s*(.*)/,
+  delegate: /^\[DELEGATE\s+to:(\S+)\]\s*(.*)/,
+  delegateComplete: /^\[DELEGATE_COMPLETE\]\s*(.*)/,
+  escalate: /^\[ESCALATE\]\s*(.*)/,
+  note: /^\[NOTE\]\s*(.*)/,
+  taskComplete: /^\[TASK_COMPLETE\s+task:(\S+)\]\s*(.*)/,
+  phaseComplete: /^\[PHASE_COMPLETE\]/,
+  phaseRegression: /^\[PHASE_REGRESSION\s+(\d+)\]\s*(.*)/,
+} as const;
+
 export class AgentManager {
   private db: Database;
   private agents: Map<string, RunningAgent> = new Map();
@@ -282,6 +332,127 @@ export class AgentManager {
     });
   }
 
+  // --- Output parsing and signal detection ---
+
+  parseAgentOutput(agentId: string, line: string): ParsedSignal {
+    const base = { agentId, raw: line };
+
+    // 1. JSON detection
+    if (line.startsWith("{")) {
+      try {
+        const json = JSON.parse(line) as JsonEvent;
+        return this.handleJsonOutput(agentId, json, line);
+      } catch {
+        // Not valid JSON, fall through
+      }
+    }
+
+    // 2. Agent message: [MSG:type to:AgentName] content
+    const msgMatch = line.match(SIGNAL_PATTERNS.message);
+    if (msgMatch) {
+      return { ...base, type: "message", messageType: msgMatch[1], targetAgent: msgMatch[2], content: msgMatch[3] };
+    }
+
+    // 3. Delegation: [DELEGATE to:<agent-id>] prompt
+    const delMatch = line.match(SIGNAL_PATTERNS.delegate);
+    if (delMatch) {
+      return { ...base, type: "delegate", targetAgent: delMatch[1], content: delMatch[2] };
+    }
+
+    // 4. Delegation complete: [DELEGATE_COMPLETE] result
+    const delCompleteMatch = line.match(SIGNAL_PATTERNS.delegateComplete);
+    if (delCompleteMatch) {
+      return { ...base, type: "delegate_complete", content: delCompleteMatch[1] };
+    }
+
+    // 5. Escalation: [ESCALATE] question
+    const escMatch = line.match(SIGNAL_PATTERNS.escalate);
+    if (escMatch) {
+      return { ...base, type: "escalate", content: escMatch[1] };
+    }
+
+    // 6. Task note: [NOTE] content
+    const noteMatch = line.match(SIGNAL_PATTERNS.note);
+    if (noteMatch) {
+      return { ...base, type: "note", content: noteMatch[1] };
+    }
+
+    // 7. Task complete: [TASK_COMPLETE task:<id>] result
+    const taskMatch = line.match(SIGNAL_PATTERNS.taskComplete);
+    if (taskMatch) {
+      return { ...base, type: "task_complete", taskId: taskMatch[1], content: taskMatch[2] };
+    }
+
+    // 8. Phase complete: [PHASE_COMPLETE]
+    if (SIGNAL_PATTERNS.phaseComplete.test(line)) {
+      return { ...base, type: "phase_complete" };
+    }
+
+    // 8b. Phase regression: [PHASE_REGRESSION N] reason
+    const regMatch = line.match(SIGNAL_PATTERNS.phaseRegression);
+    if (regMatch) {
+      return { ...base, type: "phase_regression", targetPhase: parseInt(regMatch[1], 10), reason: regMatch[2] };
+    }
+
+    // 9. Default: plain text
+    return { ...base, type: "text" };
+  }
+
+  handleJsonOutput(agentId: string, json: JsonEvent, raw: string): ParsedSignal {
+    const runningAgent = this.agents.get(agentId);
+
+    // Capture session_id for --resume support
+    if (json.session_id && runningAgent && !runningAgent.sessionId) {
+      runningAgent.sessionId = json.session_id;
+    }
+
+    // Extract text and check for embedded signals
+    const text = extractTextFromJsonEvent(json);
+    if (text) {
+      const embeddedSignal = detectSignalsInText(agentId, text);
+      if (embeddedSignal) {
+        return { ...embeddedSignal, raw, jsonEvent: json };
+      }
+    }
+
+    const base = { agentId, raw, type: "json" as const, jsonEvent: json };
+
+    // Handle by event type
+    switch (json.type) {
+      case "item.completed":
+        // Codex agent messages, reasoning, tool calls
+        return { ...base, content: text ?? undefined };
+
+      case "turn.completed":
+        // Codex turn completion with usage stats
+        return { ...base, content: text ?? undefined };
+
+      case "message":
+        // Older codex format
+        return { ...base, content: text ?? undefined };
+
+      case "assistant":
+        // Claude Code assistant responses
+        return { ...base, content: text ?? undefined };
+
+      case "result":
+        // Claude Code final result
+        return { ...base, content: json.result ?? text ?? undefined };
+
+      case "system":
+      case "rate_limit_event":
+        // Silently ignored
+        return base;
+
+      case "error":
+        return { ...base, content: json.error?.message ?? "Unknown error" };
+
+      default:
+        // Background events, config dumps
+        return { ...base, content: text ?? undefined };
+    }
+  }
+
   // --- CRUD methods (existing) ---
 
   createAgent(input: CreateAgentInput): Agent {
@@ -349,4 +520,82 @@ export class AgentManager {
     this.db.prepare("DELETE FROM agents WHERE id = ?").run(id);
     return true;
   }
+}
+
+// --- Standalone utility functions ---
+
+export function extractTextFromJsonEvent(json: JsonEvent): string | null {
+  // Claude Code: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+  if (json.message?.content && Array.isArray(json.message.content)) {
+    const texts = json.message.content
+      .filter((c) => c.type === "text" && c.text)
+      .map((c) => c.text!);
+    if (texts.length > 0) return texts.join("\n");
+  }
+
+  // Codex CLI: {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+  if (json.item?.text) {
+    return json.item.text;
+  }
+
+  // Codex item with content array
+  if (json.item?.content && Array.isArray(json.item.content)) {
+    const texts = json.item.content
+      .filter((c) => c.type === "text" && c.text)
+      .map((c) => c.text!);
+    if (texts.length > 0) return texts.join("\n");
+  }
+
+  // Result events: {"type":"result","result":"..."}
+  if (typeof json.result === "string") {
+    return json.result;
+  }
+
+  return null;
+}
+
+export function detectSignalsInText(agentId: string, text: string): ParsedSignal | null {
+  // Scan each line of the extracted text for orchestrator signals
+  const lines = text.split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // Check for delegation
+    const delMatch = trimmed.match(SIGNAL_PATTERNS.delegate);
+    if (delMatch) {
+      return { type: "delegate", agentId, raw: trimmed, targetAgent: delMatch[1], content: delMatch[2] };
+    }
+
+    // Check for delegation complete
+    const delCompleteMatch = trimmed.match(SIGNAL_PATTERNS.delegateComplete);
+    if (delCompleteMatch) {
+      return { type: "delegate_complete", agentId, raw: trimmed, content: delCompleteMatch[1] };
+    }
+
+    // Check for escalation
+    const escMatch = trimmed.match(SIGNAL_PATTERNS.escalate);
+    if (escMatch) {
+      return { type: "escalate", agentId, raw: trimmed, content: escMatch[1] };
+    }
+
+    // Check for note
+    const noteMatch = trimmed.match(SIGNAL_PATTERNS.note);
+    if (noteMatch) {
+      return { type: "note", agentId, raw: trimmed, content: noteMatch[1] };
+    }
+
+    // Check for phase complete
+    if (SIGNAL_PATTERNS.phaseComplete.test(trimmed)) {
+      return { type: "phase_complete", agentId, raw: trimmed };
+    }
+
+    // Check for phase regression
+    const regMatch = trimmed.match(SIGNAL_PATTERNS.phaseRegression);
+    if (regMatch) {
+      return { type: "phase_regression", agentId, raw: trimmed, targetPhase: parseInt(regMatch[1], 10), reason: regMatch[2] };
+    }
+  }
+
+  return null;
 }
