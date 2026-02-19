@@ -13,10 +13,24 @@ import type { AgentExitEvent } from "../events/bus";
 const DAEMON_INTERVAL_MS = 30_000;
 const EXIT_GRACE_PERIOD_MS = 1_000;
 const MAX_REGRESSIONS = 3;
+const MAX_DELEGATION_DEPTH = 3;
+const DELEGATION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 interface PendingRegression {
   targetPhase: number;
   reason: string;
+}
+
+export interface Delegation {
+  id: string;
+  parent_agent_id: string;
+  child_agent_id: string;
+  task_id: string;
+  prompt: string;
+  result: string | null;
+  status: "pending" | "running" | "completed" | "failed";
+  created_at: string;
+  completed_at: string | null;
 }
 
 export class ManagerDaemon {
@@ -77,6 +91,12 @@ export class ManagerDaemon {
 
     try {
       agentsChecked = this.agentManager.getRunningAgents().size;
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+      this.checkStaleDelegations();
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err));
     }
@@ -199,6 +219,13 @@ export class ManagerDaemon {
     if (event.hasDelegation) return;
 
     try {
+      // Check if this agent is a child in an active delegation
+      const activeDelegation = this.getActiveDelegationForChild(event.agentId);
+      if (activeDelegation) {
+        this.handleChildExit(activeDelegation, event);
+        return;
+      }
+
       // Find the task this agent was working on
       const agentRow = this.db
         .prepare("SELECT current_task_id FROM agents WHERE id = ?")
@@ -327,6 +354,381 @@ export class ManagerDaemon {
 
     const closeStdin = !isStreaming;
     this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+  }
+
+  // --- Delegation Management ---
+
+  async handleDelegation(
+    parentAgentId: string,
+    childAgentId: string,
+    delegationPrompt: string,
+  ): Promise<Delegation | null> {
+    // 1. Validate parent has an active task
+    const parentRow = this.db
+      .prepare("SELECT current_task_id FROM agents WHERE id = ?")
+      .get(parentAgentId) as { current_task_id: string | null } | null;
+
+    if (!parentRow?.current_task_id) return null;
+
+    const taskId = parentRow.current_task_id;
+    const task = this.taskScheduler.getTask(taskId);
+    if (!task || task.status !== "running") return null;
+
+    // 2. Check parent supports receiving results (stdin or resume)
+    const parentAgent = this.agentManager.getAgent(parentAgentId);
+    if (!parentAgent) return null;
+    const parentTypeDef = getAgentTypeDefinition(parentAgent.type, this.db);
+    if (!parentTypeDef || (!parentTypeDef.supports_stdin && !parentTypeDef.supports_resume)) {
+      return null;
+    }
+
+    // 3. Validate child exists
+    const childAgent = this.agentManager.getAgent(childAgentId);
+    if (!childAgent) return null;
+
+    // 4. Validate both in same team
+    if (!this.agentsInSameTeam(parentAgentId, childAgentId)) return null;
+
+    // 5. Check delegation depth (max 3)
+    const depth = this.getDelegationDepth(parentAgentId, taskId);
+    if (depth >= MAX_DELEGATION_DEPTH) return null;
+
+    // 6. Check no active delegation for this parent
+    const existingDelegation = this.getActiveDelegationForParent(parentAgentId);
+    if (existingDelegation) return null;
+
+    // 7. Create delegation record
+    const delegationId = crypto.randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO delegations (id, parent_agent_id, child_agent_id, task_id, prompt, status)
+         VALUES (?, ?, ?, ?, ?, 'pending')`,
+      )
+      .run(delegationId, parentAgentId, childAgentId, taskId, delegationPrompt);
+
+    // 8. Kill child if running, spawn fresh
+    if (this.agentManager.getRunningAgent(childAgentId)) {
+      this.agentManager.killAgent(childAgentId);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    try {
+      const workingDir = process.cwd();
+      await this.agentManager.spawnAgent(childAgentId, { workingDir });
+    } catch {
+      this.db
+        .prepare("UPDATE delegations SET status = 'failed', completed_at = datetime('now') WHERE id = ?")
+        .run(delegationId);
+      return null;
+    }
+
+    // 9. Assign same task to child
+    this.db
+      .prepare("UPDATE agents SET current_task_id = ? WHERE id = ?")
+      .run(taskId, childAgentId);
+
+    // 10. Build delegation prompt
+    const childTypeDef = getAgentTypeDefinition(childAgent.type, this.db);
+    const isStreaming = childTypeDef?.supports_stdin ?? false;
+
+    const childInfo: AgentInfo = {
+      id: childAgent.id,
+      name: childAgent.name,
+      type: childAgent.type,
+      goal: childAgent.config.goal,
+    };
+
+    const prompt = this.promptBuilder.buildDelegationPrompt({
+      childAgent: childInfo,
+      task: { id: task.id, title: task.title, description: task.description ?? undefined },
+      delegationPrompt,
+    });
+
+    // 11. Send prompt to child
+    const closeStdin = !isStreaming;
+    this.agentManager.sendInput(childAgentId, prompt, closeStdin);
+
+    // 12. Update delegation to running
+    this.db
+      .prepare("UPDATE delegations SET status = 'running' WHERE id = ?")
+      .run(delegationId);
+
+    // 13. Notify parent
+    try {
+      this.agentManager.sendInput(
+        parentAgentId,
+        `[SYSTEM] Delegated to agent ${childAgentId}. Waiting for results...`,
+      );
+    } catch {
+      // Parent may not have open stdin
+    }
+
+    // 14. Set parent state to waiting_delegation
+    this.setAgentState(parentAgentId, "waiting_delegation", { delegation_id: delegationId });
+
+    return this.getDelegation(delegationId);
+  }
+
+  handleDelegateComplete(childAgentId: string, result: string): void {
+    try {
+      const delegation = this.getActiveDelegationForChild(childAgentId);
+      if (!delegation) return;
+
+      // Update delegation record
+      this.db
+        .prepare(
+          "UPDATE delegations SET status = 'completed', result = ?, completed_at = datetime('now') WHERE id = ?",
+        )
+        .run(result, delegation.id);
+
+      // Kill child agent
+      this.agentManager.killAgent(childAgentId);
+
+      // Clear child task assignment
+      this.db
+        .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
+        .run(childAgentId);
+
+      // Route result to parent
+      this.routeResultToParent(delegation.parent_agent_id, childAgentId, result);
+
+      // Reset parent state to working
+      this.setAgentState(delegation.parent_agent_id, "working");
+    } catch {
+      // DB may be closed during shutdown
+    }
+  }
+
+  private handleChildExit(delegation: Delegation, event: AgentExitEvent): void {
+    try {
+      if (event.code === 0) {
+        // Gather terminal output as result
+        const result = this.gatherTerminalOutput(event.agentId);
+
+        // Update delegation
+        this.db
+          .prepare(
+            "UPDATE delegations SET status = 'completed', result = ?, completed_at = datetime('now') WHERE id = ?",
+          )
+          .run(result, delegation.id);
+
+        // Clear child task assignment
+        this.db
+          .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
+          .run(event.agentId);
+
+        // Route result to parent
+        this.routeResultToParent(delegation.parent_agent_id, event.agentId, result);
+
+        // Reset parent state
+        this.setAgentState(delegation.parent_agent_id, "working");
+      } else {
+        // Child failed
+        this.db
+          .prepare(
+            "UPDATE delegations SET status = 'failed', result = ?, completed_at = datetime('now') WHERE id = ?",
+          )
+          .run(`Child agent exited with code ${event.code}`, delegation.id);
+
+        // Clear child task assignment
+        this.db
+          .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
+          .run(event.agentId);
+
+        // Notify parent of failure
+        this.routeResultToParent(
+          delegation.parent_agent_id,
+          event.agentId,
+          `[DELEGATION_FAILED] Agent exited with code ${event.code}`,
+        );
+
+        // Reset parent state
+        this.setAgentState(delegation.parent_agent_id, "working");
+      }
+    } catch {
+      // DB may be closed during shutdown
+    }
+  }
+
+  checkStaleDelegations(): number {
+    const cutoff = new Date(Date.now() - DELEGATION_TIMEOUT_MS).toISOString();
+    const stale = this.db
+      .prepare(
+        "SELECT * FROM delegations WHERE status = 'running' AND created_at < ?",
+      )
+      .all(cutoff) as Delegation[];
+
+    for (const delegation of stale) {
+      try {
+        // Fail the delegation
+        this.db
+          .prepare(
+            "UPDATE delegations SET status = 'failed', result = 'Delegation timed out', completed_at = datetime('now') WHERE id = ?",
+          )
+          .run(delegation.id);
+
+        // Kill child agent
+        this.agentManager.killAgent(delegation.child_agent_id);
+
+        // Clear child task assignment
+        this.db
+          .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
+          .run(delegation.child_agent_id);
+
+        // Notify parent
+        this.routeResultToParent(
+          delegation.parent_agent_id,
+          delegation.child_agent_id,
+          `[DELEGATION_FAILED] Delegation timed out after 10 minutes`,
+        );
+
+        // Reset parent state
+        this.setAgentState(delegation.parent_agent_id, "working");
+      } catch {
+        // Ignore individual delegation timeout errors
+      }
+    }
+
+    return stale.length;
+  }
+
+  private routeResultToParent(
+    parentAgentId: string,
+    childAgentId: string,
+    result: string,
+  ): void {
+    const message = `[DELEGATION_RESULT from:${childAgentId}]\n${result}\n[END_DELEGATION_RESULT]`;
+
+    // Try stdin first (parent still running with open stdin)
+    const runningParent = this.agentManager.getRunningAgent(parentAgentId);
+    if (runningParent) {
+      try {
+        this.agentManager.sendInput(parentAgentId, message);
+        return;
+      } catch {
+        // Stdin may be closed
+      }
+    }
+
+    // Try resume (parent supports --resume)
+    const parentAgent = this.agentManager.getAgent(parentAgentId);
+    if (!parentAgent) return;
+
+    const typeDef = getAgentTypeDefinition(parentAgent.type, this.db);
+    if (typeDef?.supports_resume) {
+      this.agentManager.sendResumeMessage(parentAgentId, message).catch(() => {
+        // Resume failed — result lost
+      });
+    }
+  }
+
+  private gatherTerminalOutput(agentId: string): string {
+    try {
+      const rows = this.db
+        .prepare(
+          "SELECT data FROM terminal_outputs WHERE agent_id = ? AND stream = 'stdout' ORDER BY sequence",
+        )
+        .all(agentId) as { data: string }[];
+      return rows.map((r) => r.data).join("");
+    } catch {
+      return "";
+    }
+  }
+
+  getDelegation(id: string): Delegation | null {
+    try {
+      const row = this.db
+        .prepare("SELECT * FROM delegations WHERE id = ?")
+        .get(id) as Delegation | null;
+      return row ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  getActiveDelegationForParent(parentAgentId: string): Delegation | null {
+    try {
+      const row = this.db
+        .prepare(
+          "SELECT * FROM delegations WHERE parent_agent_id = ? AND status IN ('pending', 'running') LIMIT 1",
+        )
+        .get(parentAgentId) as Delegation | null;
+      return row ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  getActiveDelegationForChild(childAgentId: string): Delegation | null {
+    try {
+      const row = this.db
+        .prepare(
+          "SELECT * FROM delegations WHERE child_agent_id = ? AND status IN ('pending', 'running') LIMIT 1",
+        )
+        .get(childAgentId) as Delegation | null;
+      return row ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private agentsInSameTeam(agentA: string, agentB: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM team_agents ta1
+         JOIN team_agents ta2 ON ta1.team_id = ta2.team_id
+         WHERE ta1.agent_id = ? AND ta2.agent_id = ?
+         LIMIT 1`,
+      )
+      .get(agentA, agentB);
+    return !!row;
+  }
+
+  private getDelegationDepth(agentId: string, taskId: string): number {
+    // Use recursive CTE to find delegation chain depth
+    const rows = this.db
+      .prepare(
+        `WITH RECURSIVE chain(agent_id, depth) AS (
+           SELECT parent_agent_id, 1
+           FROM delegations
+           WHERE child_agent_id = ? AND task_id = ? AND status IN ('pending', 'running')
+           UNION ALL
+           SELECT d.parent_agent_id, c.depth + 1
+           FROM chain c
+           JOIN delegations d ON d.child_agent_id = c.agent_id AND d.task_id = ? AND d.status IN ('pending', 'running')
+         )
+         SELECT MAX(depth) as max_depth FROM chain`,
+      )
+      .get(agentId, taskId, taskId) as { max_depth: number | null } | null;
+    return rows?.max_depth ?? 0;
+  }
+
+  private setAgentState(
+    agentId: string,
+    state: string,
+    metadata?: Record<string, unknown>,
+  ): void {
+    try {
+      const metadataJson = metadata ? JSON.stringify(metadata) : "{}";
+      this.db
+        .prepare(
+          `INSERT INTO agent_states (agent_id, state, state_metadata)
+           VALUES (?, ?, ?)
+           ON CONFLICT(agent_id) DO UPDATE SET
+             state = ?,
+             state_metadata = ?,
+             updated_at = datetime('now')`,
+        )
+        .run(agentId, state, metadataJson, state, metadataJson);
+
+      eventBus.emit("agent:state_changed", {
+        agentId,
+        previousState: "",
+        newState: state,
+      });
+    } catch {
+      // Ignore state update errors
+    }
   }
 
   // --- Phase Management ---
