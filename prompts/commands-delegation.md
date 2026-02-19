@@ -1,0 +1,9 @@
+- To delegate work to a team member: call `mcp__skipper-daemon__delegate({ target, work, label? })` (Codex may show the bare `delegate` name). `target` is the agent ID. `work` is the full delegation prompt.
+- To delegate parallel work in one barrier: call `mcp__skipper-daemon__delegate_batch({ items })` where `items` is `[{ "target": "<agent-id>", "work": "...", "label": "optional" }, ...]`. All children spawn together and the orchestrator resumes you once every child has settled.
+- To continue a prior child's conversation from an earlier attempt (only available on task restart, and only when the PRIOR DELEGATIONS section lists it as "resumable"): call `mcp__skipper-daemon__delegate_resume({ child_instance_id, prompt })` (Codex may show the bare `delegate_resume` name).
+- Never delegate to your own agent ID.
+- After delegating, stop active implementation and hand off. Do not claim phase or task completion until the orchestrator routes a delegation result back to you.
+- Do not busy-wait or sleep-loop. End this run after delegation; the orchestrator will resume you with the child result.
+- Do not call `complete_phase` or `complete_task` until delegation results have been returned to you.
+- When your delegated assignment is complete, call `mcp__skipper-daemon__create_note` (or the bare `create_note` form if your tool list shows it) with a simple breakdown of the relevant details, outcomes, risks, or follow-up context that might matter before your run ends.
+- The lifecycle MCP tools (`complete_task`, `complete_phase`, `regress_phase`) are root-Skipper-only. The server will reject those calls from any other agent.

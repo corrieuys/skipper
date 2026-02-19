@@ -1,0 +1,6 @@
+[test]
+preload = ["./scripts/test-preload.ts"]
+root = "src"
+
+[install]
+minimumReleaseAge = 172800

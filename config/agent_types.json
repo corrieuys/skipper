@@ -1,0 +1,160 @@
+{
+  "agent_types": [
+    {
+      "name": "claude-code",
+      "command": "claude",
+      "args": [
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--dangerously-skip-permissions"
+      ],
+      "resume_args": null,
+      "model_flag": "--model",
+      "available_models": [
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5"
+      ],
+      "env_vars": {},
+      "supports_stdin": false,
+      "supports_resume": true,
+      "resume_flag": "--resume"
+    },
+    {
+      "name": "codex",
+      "command": "codex",
+      "args": [
+        "exec",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-"
+      ],
+      "resume_args": [
+        "exec",
+        "resume",
+        "{{session_id}}",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-"
+      ],
+      "model_flag": null,
+      "available_models": [
+        "gpt-5.3-codex",
+        "gpt-5.4",
+        "gpt-5.4-mini"
+      ],
+      "env_vars": {},
+      "supports_stdin": false,
+      "supports_resume": true,
+      "resume_flag": null
+    },
+    {
+      "name": "conversation-skipper",
+      "command": "claude",
+      "args": [
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--dangerously-skip-permissions"
+      ],
+      "resume_args": null,
+      "model_flag": "--model",
+      "available_models": [
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6"
+      ],
+      "env_vars": {},
+      "supports_stdin": false,
+      "supports_resume": true,
+      "resume_flag": "--resume"
+    },
+    {
+      "name": "opencode",
+      "command": "opencode",
+      "args": [
+        "run",
+        "{{prompt}}",
+        "--format",
+        "json"
+      ],
+      "resume_args": [
+        "run",
+        "{{prompt}}",
+        "--format",
+        "json",
+        "--session",
+        "{{session_id}}"
+      ],
+      "model_flag": "-m",
+      "available_models": [
+        "opencode/big-pickle",
+        "opencode/gpt-5-nano",
+        "opencode/minimax-m2.5-free",
+        "opencode/nemotron-3-super-free"
+      ],
+      "env_vars": {},
+      "supports_stdin": false,
+      "supports_resume": true,
+      "resume_flag": null
+    },
+    {
+      "name": "oz",
+      "command": "oz",
+      "args": [
+        "agent",
+        "run",
+        "--output-format",
+        "json",
+        "--prompt",
+        "{{prompt}}"
+      ],
+      "resume_args": null,
+      "model_flag": "--model",
+      "available_models": [
+        "auto",
+        "auto-efficient",
+        "auto-genius",
+        "claude-4-5-haiku",
+        "claude-4-5-opus",
+        "claude-4-5-opus-thinking",
+        "claude-4-5-sonnet",
+        "claude-4-5-sonnet-thinking",
+        "claude-4-6-opus-high",
+        "claude-4-6-opus-max",
+        "claude-4-6-sonnet-high",
+        "claude-4-6-sonnet-max",
+        "gemini-3.1-pro",
+        "glm-5-fireworks",
+        "gpt-5-2-codex-high",
+        "gpt-5-2-codex-low",
+        "gpt-5-2-codex-medium",
+        "gpt-5-2-codex-xhigh",
+        "gpt-5-2-high",
+        "gpt-5-2-low",
+        "gpt-5-2-medium",
+        "gpt-5-2-xhigh",
+        "gpt-5-3-codex-high",
+        "gpt-5-3-codex-low",
+        "gpt-5-3-codex-medium",
+        "gpt-5-3-codex-xhigh",
+        "gpt-5-4-high",
+        "gpt-5-4-low",
+        "gpt-5-4-medium",
+        "gpt-5-4-xhigh",
+        "kimi-k25-fireworks",
+        "kimi-k26-fireworks"
+      ],
+      "env_vars": {},
+      "supports_stdin": false,
+      "supports_resume": false,
+      "resume_flag": null
+    }
+  ]
+}

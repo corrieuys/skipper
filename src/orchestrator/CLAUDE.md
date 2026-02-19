@@ -1,0 +1,23 @@
+# src/orchestrator
+
+Modules called by `agents/manager-daemon.ts` facade in response to bus events.
+
+| file | use |
+|---|---|
+| `tick-loop.ts` | 30s reconciliation. Health check, stale recovery, queue process, delegation/escalation cleanup, checkpoint persist, log retention |
+| `task-runner.ts` | Pull next approved task. Start it. Launch entrypoint agent with prompt + phase context |
+| `phase-manager.ts` | `[PHASE_COMPLETE]` + `[PHASE_REGRESSION]` handling. Regression respawn + dedup guards |
+| `delegation-manager.ts` | Delegation signals. Spawn child instance/batch. Track groups. Resume parent on complete. Limits: depth 3, per-parent 20, batch 8. Timeout 60min |
+| `recovery-manager.ts` | Startup cleanup, stale-task recovery, checkpoint R/W, orchestration state persist, one-shot recovery safeguard |
+| `health-monitor.ts` | Liveness, orphan detect, stuck diag (30min, 3 nudges), clustered-exit escalate |
+| `artifact-manager.ts` | Versioned immutable artifacts. CRUD called from MCP tools (`create_artifact`/`get_artifact`/`list_artifacts`) |
+| `realtime-session.ts` | Realtime tasks — cadence audio/text ingest, transcribe, summarize, timeline entries, dispatch agents |
+| `consensus-manager.ts` | QA-style consensus check across multi-agent phase. Agreement, not best-pick |
+| `idle-poke-manager.ts` | Nudge stuck agents that go silent |
+| `worktree-manager.ts` | Git worktree create/destroy per delegation |
+| `state.ts` | `TaskOrchStep` state machine. Transition validate + log |
+| `types.ts` | `OrchestrationState`, `TaskCheckpoint`, regression metadata |
+
+## Phase advancement
+
+Non-streaming agents advance on exit code 0 via `handleSuccessfulExit`. Active delegation blocks completion — check `getActiveDelegationForParent` first.

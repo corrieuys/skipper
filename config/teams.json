@@ -1,0 +1,240 @@
+{
+  "teams": [
+    {
+      "id": "51e05fc4-382f-434f-b541-8590675fe4f3",
+      "name": "Lean Software Team",
+      "goal": "Implement a feature in a github repo on this machine. Strictly adhere to phases advances. Phase 1: implementation, and phase 2 QA and validation",
+      "entrypoint_agent_id": "skipper",
+      "phases": [
+        {
+          "name": "Implementation",
+          "prompt": "The Developer should implement the task. In this phase, delegate to developer agent. Developers should not delegate to any other agent other than back to Skipper. Once skipper is happy with the results, advance to the next phase, and then delegate to the QA agent."
+        },
+        {
+          "name": "QA",
+          "prompt": "A QA agent should review the entire set of changes as a single feature delivered. If all is well and QA approves, deliver the artifact/results as defined by the task."
+        }
+      ],
+      "members": [
+        {
+          "agent_id": "b052a0c7-2a2a-4dde-be39-95d88184fded",
+          "role": "developer",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "ff96ca77-3209-47c4-8660-0308d10a1363",
+          "role": "qa, testing, validation",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "skipper",
+          "role": "lead",
+          "level": 0,
+          "parent_agent_id": null
+        }
+      ]
+    },
+    {
+      "id": "5241ecdb-2ae3-4aa9-826b-9fb898174cdc",
+      "name": "Feature Doc Team",
+      "goal": "Create a feature doc artifact based on the requirements. The team should investigate and consider all touch points. The software analyst must do the initial investigation and add its findings as a note. When completed, the skipper should verify everything and then output the final artifact. DO NOT make any code changes for this task. This is purely an analysis and documentation task.",
+      "entrypoint_agent_id": "skipper",
+      "phases": [
+        {
+          "name": "Planning",
+          "prompt": "Find and provide a starting point for the analyst agent, then do the analysis and create an artifact in this task. When the analyst is finished, move to the next phase. If the task is finding a problem, and the investigation phase cannot determine the problem, escalate to the user."
+        },
+        {
+          "name": "Verification",
+          "prompt": "Now that the analyst is finished do a sanity check on the findings in the artifact, and verify all details. Spawn a fresh analyst agent for the review."
+        }
+      ],
+      "members": [
+        {
+          "agent_id": "056fe104-ac53-46bb-b1b6-2a2a08122b8e",
+          "role": "code and business rule analyst",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "skipper",
+          "role": "lead",
+          "level": 1,
+          "parent_agent_id": null
+        }
+      ]
+    },
+    {
+      "id": "952a24b2-e227-400b-935f-5a74d60998a4",
+      "name": "Software Team",
+      "goal": "Implement a feature in a github repo on this machine.",
+      "entrypoint_agent_id": "skipper",
+      "phases": [
+        {
+          "name": "Planning",
+          "prompt": "Before any investigation, the analyst must check that every target repository involved in this task is currently on its main or master branch (run `git rev-parse --abbrev-ref HEAD` in each repo root). If any repo is on a different branch, escalate to the user and ask what the course of action should be (switch to main, work on the current branch, create a new branch from main, etc.) \u2014 UNLESS the task description itself explicitly instructs to work on the current branch, in which case proceed without escalating. Once the branch check is resolved, investigate the implementation. Produce notes and an artifact with the plan. Use the analysis agent/agents.\n\nIf you need a SECOND (or third, etc.) turn with the Implementation Analyst on this task \u2014 e.g. to clarify the plan, follow up on findings, expand scope, or fix issues a reviewer raised \u2014 DO NOT call `delegate` again. That would spawn a fresh analyst with zero memory of its earlier work. Instead: (1) call `list_delegations({ template_agent_id: \"<analyst id>\" })` to find the most recent resumable delegation, (2) call `delegate_resume({ child_instance_id, prompt })` with the prior child_instance_id and your follow-up instructions. The analyst then continues its same claude/codex conversation with full context. Only fall back to a fresh `delegate` if `list_delegations` reports no resumable prior child.",
+          "review": true
+        },
+        {
+          "name": "Implementation",
+          "prompt": "You (Skipper) drive delegation in this phase. Read the `implementation-plan` artifact first, then decide whether to ship in ONE PASS or in PARTS based on the plan's scope. Use your judgment \u2014 you have flexibility here.\n\nDEFAULT FLOW (tightly-scoped task, e.g. single file or single behaviour change): delegate to Coder with the full plan and acceptance criteria. When Coder reports success, delegate to Tester. If Tester PASSes, advance to the Validator step. If Tester FAILs, delegate back to Coder (resume the existing Coder via `delegate_resume`) with Tester's feedback, then re-run Tester. Loop Coder \u2194 Tester until PASS.\n\nLARGE-TASK PART-BY-PART EXECUTION (use when the plan touches many files, covers multiple distinct sub-features, mixes a refactor with new behaviour, or is otherwise too much to ask one Coder run to land cleanly): split the plan yourself into logical, sequenceable parts BEFORE delegating. For each part:\n  (a) Delegate to Coder with TWO clearly delimited sections in the prompt: (1) BIG PICTURE \u2014 reproduce or summarise the full implementation-plan and acceptance criteria so Coder knows the end-state and how this part fits; (2) THIS PART \u2014 name exactly the subset of the plan to tackle in this run (specific files / specific acceptance-criteria items / the slice of behaviour). Be explicit about what is OUT OF SCOPE for this part so Coder does not drift.\n  (b) After Coder reports done, delegate to Tester with the same BIG PICTURE + THIS PART framing. Tell Tester to verify the in-scope items work and that nothing already-shipped regressed; Tester must NOT fail on items belonging to a future part.\n  (c) On Tester PASS, move to the next part: delegate to Coder for the next slice, then Tester. RESUME-OVER-FRESH applies \u2014 each role's 2nd+ turn uses `delegate_resume` against the prior instance so Coder and Tester carry their context across parts.\n  (d) Only after the FINAL part passes Tester do you proceed to the Validator step.\n\nTester operational rules (apply on every Tester delegation, split into parts or not): Tester runs the project's tests, build, typecheck, lint, and exercises the app end-to-end (spin up the app, drive Playwright for frontend changes, run CLI commands \u2014 whatever fits the stack). Tester must delete any screenshots taken during testing before finishing. Tester must stop any app instances it started. Tester must NOT implement fixes.\n\nVALIDATOR STEP (final gate, runs once after the last part): delegate to Validator with the full implementation-plan artifact. Validator compares the CUMULATIVE diff (all parts combined) against the full plan and acceptance criteria. If Validator FAILs, identify which part owns the gap, delegate back to Coder for that scope, re-run Tester, then re-run Validator. Loop until Validator PASSes. If the Validator needs operator input (out-of-scope changes, ambiguous acceptance criteria, anything that requires a human decision), the Validator MUST call `mcp__skipper-daemon__create_escalation({ question })` directly from its own run \u2014 do NOT funnel the question through Skipper. The orchestrator pauses the task while the operator answers and resumes the Validator with `[USER_RESPONSE] ...`. Only advance this phase once the Validator has signed off.\n\nRESUME vs FRESH — YOUR CALL: Coder, Tester, and Validator may each be re-delegated several times. When you re-engage one of these roles, decide based on the relationship between the new work and the prior run:\n  - RESUME (`delegate_resume({ child_instance_id, prompt })` against the prior child) when the new work is a CONTINUATION of what that agent just did — fixing the Tester findings from the same part, picking up the next adjacent piece of the same module/feature, anything where the prior conversation context is an asset. Resuming preserves the agent's mental model and avoids re-explaining what was already established.\n  - FRESH (`delegate(...)` for a new instance) when the new work is a CLEAN SHIFT — a part in a different module, a different feature area, or any case where the prior context would be irrelevant noise or actively misleading (e.g. the prior part was about the auth layer; the next is about an unrelated billing change). A fresh agent has no baggage from the prior part.\n  Use `list_delegations({ template_agent_id: \"<that-role-id>\" })` to see resumable prior children. If a resumable one exists AND the new work belongs to its context, resume; otherwise delegate fresh. The first turn for any role is always a fresh `delegate`."
+        },
+        {
+          "name": "Cleanup",
+          "prompt": "This phase is for Skipper only \u2014 do not delegate. FIRST, before committing or pushing anything, audit the worktree of every repository that received changes for stray files left behind during planning or testing: run `git status --porcelain` and `git ls-files --others --exclude-standard` in each repo, and inspect untracked/modified files for things like ad-hoc planning documents, scratch notes, screenshots, debug logs, temp scripts, test output dumps, .DS_Store files, or any artifact that isn't part of the intended change. Delete anything that doesn't belong before proceeding. If anything is ambiguous (could be intentional, could be cruft), escalate to the user with the file list and ask. Only once every target repo's worktree contains nothing but the intended change, escalate to the user and ask whether a pull request should be created on GitHub for this feature/change. If the user says yes, create the PR using `gh pr create` from the target repository. Use a branch-prefix convention based on the nature of the work: `feat/<slug>` for new features, `fix/<slug>` for bug fixes, `chore/<slug>` for maintenance/refactors/tooling. If the work is already on a non-main branch, push it and open the PR from that branch; otherwise create the appropriately-prefixed branch first. The PR title and description must clearly indicate the feature or change delivered \u2014 summarise what was done, why, and any follow-up notes. After the PR is created (or if the user declines), record the outcome in a final note and complete the task."
+        }
+      ],
+      "members": [
+        {
+          "agent_id": "056fe104-ac53-46bb-b1b6-2a2a08122b8e",
+          "role": null,
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "b052a0c7-2a2a-4dde-be39-95d88184fded",
+          "role": "developer",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "7c0d3a92-1f4e-4b8a-9d11-2e6f8b3c5a90",
+          "role": "tester",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "consensus-reviewer",
+          "role": "consensus reviewer",
+          "level": 0,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "ff96ca77-3209-47c4-8660-0308d10a1363",
+          "role": "qa and testing",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "skipper",
+          "role": "lead",
+          "level": 1,
+          "parent_agent_id": null
+        }
+      ]
+    },
+    {
+      "id": "b4a6b06b-ff1c-4d10-8ff2-4ced31d018e9",
+      "name": "Real Time",
+      "goal": "Rapid exploration and synthesis anchored by librarian analysis.",
+      "entrypoint_agent_id": "skipper",
+      "phases": [],
+      "members": [
+        {
+          "agent_id": "123fe123-ac53-46bb-b1b6-2a2a08122b8e",
+          "role": "librarian",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "skipper",
+          "role": "lead",
+          "level": 0,
+          "parent_agent_id": null
+        }
+      ]
+    },
+    {
+      "id": "code-dataset-team",
+      "name": "Code Dataset Team",
+      "goal": "Generate instructional training pairs from repository source code. Every pair must be an instruction-to-code prompt: line 1 is a developer requesting code to be written, implemented, refactored, or structured; line 2 is the code that fulfills that request. The team produces three categories of pairs: (A) code-generation \u2014 write, implement, complete, or fix a specific function, class, module, or test; (B) architectural-pattern \u2014 implement a design pattern, structure a module boundary, wire a dependency graph, set up layered architecture; (C) code-pattern \u2014 apply an idiom, refactor toward a pattern, convert between equivalent representations, extract or inline abstractions. Every output must be an imperative coding instruction answered by working code. Never produce Q&A, explanations, descriptions, or conceptual answers.",
+      "entrypoint_agent_id": "skipper",
+      "phases": [
+        {
+          "name": "Detect & Plan",
+          "prompt": "Delegate to dataset-manager to inspect the repository slice and produce dataset-plan, dataset-file-tree, and dataset-runtime-setup. The plan must record: the selected file set, the task-scoped output directory (defaulting to a dataset folder inside the analyzed repo, never inside Skipper/skipper unless that repo is the explicit target), the task slug, and a high-level codebase context paragraph covering the repo's architecture, key patterns used, module boundaries, and dependency relationships. The manager must also identify architectural patterns present in the codebase (e.g., repository pattern, middleware chain, pub/sub, factory, strategy, observer, dependency injection, layered architecture) and record them in dataset-plan as pattern-catalog so dispatchers can reference real patterns when generating architectural and code-pattern pairs. After reviewing planning artifacts, detect languages and file types, build the helper map from helpers/scripts/, smoke-test helpers on representative files, and record results in dataset-runtime-setup. Keep HTML and template files in scope as manual-fallback. If scope is too large, escalate. Do not advance until dataset-plan, dataset-file-tree, and dataset-runtime-setup all exist."
+        },
+        {
+          "name": "Generate",
+          "prompt": "Read dataset-plan (including pattern-catalog) and dataset-runtime-setup before delegating. Delegate one file at a time to dataset-dispatcher, max 10 concurrent. For each file pass: file path or index, helper path if available, output directory, task brief, high-level codebase context, and the pattern-catalog. If the task did not specify an output directory, use the default from dataset-plan. Workers write only to that directory. Reinforce the three pair categories to every dispatcher: (A) code-generation \u2014 the instruction asks to write, implement, complete, add, or fix code and the response IS that code; (B) architectural-pattern \u2014 the instruction asks to implement or set up a structural pattern and the response is the code that realizes it; (C) code-pattern \u2014 the instruction asks to apply an idiom, refactor, convert, extract, or restructure and the response is the transformed code. Every line 1 must be an imperative instruction starting with a verb: Write, Implement, Create, Add, Refactor, Extract, Convert, Fix, Complete, Build, Set up, Wire, Structure. Never: What, How, Why, Explain, Describe, List, Compare. Line 2 must be syntactically complete code. For files over 30 lines, produce both coarse (whole-type) and fine-grained (method, constructor, field-group) pairs. Treat empty file sets as no-op; treat non-empty files producing no output as failure unless explicitly skipped as unusable."
+        },
+        {
+          "name": "Finalize",
+          "prompt": "Collect dispatcher summaries and verify dataset files on disk. For each output file check: (1) two-line plain-text format; (2) line 1 begins with an imperative verb and is a coding instruction, not a question, title, label, or explanation request; (3) line 2 is syntactically complete code with all structures properly closed; (4) the pair falls into one of the three categories (code-generation, architectural-pattern, code-pattern). Hard-reject any pair where line 1 starts with What/How/Why/Explain/Describe or asks for an explanation rather than code. Hard-reject any pair where line 2 is prose, a description, or a conceptual answer rather than code. Verify per-file coverage, decomposition quality, and that the pattern-catalog was leveraged for architectural pairs. Write dataset-summary with category distribution counts. If a non-empty file set produced no valid outputs, escalate or regress."
+        },
+        {
+          "name": "Cleanup",
+          "prompt": "This phase is for Skipper only. Do not delegate it. Run helpers/scripts/build-text-dataset.ts against the task-scoped dataset output folder chosen for this task. If the task did not explicitly specify an output directory, use the default output folder recorded in dataset-plan inside the repository being analyzed. Do not run cleanup against the Skipper/skipper repository unless this repository itself is the scoped target. Record the command used, the output dataset path, how many files were successfully packed, and any failed files in a final cleanup note or artifact. The build-text-dataset script moves successfully handled input files into a processed/ subfolder after packing them, so only failed or unhandled files should remain in the original output folder."
+        }
+      ],
+      "members": [
+        {
+          "agent_id": "dataset-dispatcher",
+          "role": "single-file dispatcher",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "dataset-manager",
+          "role": "analyst",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "skipper",
+          "role": "lead",
+          "level": 0,
+          "parent_agent_id": null
+        }
+      ]
+    },
+    {
+      "id": "c8d4f2a1-7b3e-4c89-9a2f-1e5d3b8c6a47",
+      "name": "Bug Hunters",
+      "goal": "Investigate a reported bug. The Analyst reproduces and diagnoses; the Skipper coordinates and reports back to the user. The investigation may be inconclusive — that is an acceptable outcome.",
+      "entrypoint_agent_id": "skipper",
+      "phases": [
+        {
+          "name": "Investigation",
+          "prompt": "Delegate to the Analyst with the bug description and any reproduction context from the task. The Analyst's job is to reproduce, diagnose, and report findings — NOT to implement fixes. Make the bug-investigation mode explicit in your delegation: tell the Analyst that this is a bug investigation, that a fruitless outcome is acceptable, and that no implementation-plan / acceptance criteria are required. The Analyst should produce a `bug-investigation` summary artifact and a short note with the verdict. If the Analyst finds the root cause AND a straightforward fix, the artifact may include a small \"Suggested fix\" section — but do not require it. If the Analyst returns inconclusive, do not loop back to them hoping for a different answer; instead read their notes on what they tried and what was missing, and escalate to the user with that context and a clear question (e.g. need reproduction steps, need access to logs, need to know which environment exhibits the bug). Once you have a clear verdict (cause found / cause not found) and the artifact is written, complete the task. Do not attempt to implement any fix in this team."
+        }
+      ],
+      "members": [
+        {
+          "agent_id": "a3f9c721-5e8d-4b6a-9c1f-2d8e4b7c5a36",
+          "role": "bug investigator",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "skipper",
+          "role": "lead",
+          "level": 0,
+          "parent_agent_id": null
+        }
+      ]
+    },
+    {
+      "id": "f7c2a8e1-9b3d-4f5a-8c2e-1d4b6a9f3e7c",
+      "name": "PR Review",
+      "goal": "Perform an in-depth review of a GitHub pull request. Skipper inspects the PR diff for noticeable bugs, locates the target repository on this machine, and verifies that the changes do not break the repository's existing code conventions or patterns. No tests are run.",
+      "entrypoint_agent_id": "skipper",
+      "phases": [
+        {
+          "name": "Review",
+          "prompt": "This phase is for Skipper only — do not delegate. The task description provides a GitHub PR (URL or owner/repo#number). Steps: (1) Fetch the PR details and diff using `gh pr view <pr> --json title,body,baseRefName,headRefName,files,additions,deletions` and `gh pr diff <pr>`. (2) Locate the target repository on the local machine — search common locations (`~/Repositories`, `~/repos`, `~/src`, or wherever this user keeps repos) for a clone whose `git remote -v` matches the PR's repo. If you cannot find it, escalate to the user asking for the local path. (3) Read the PR diff in depth. Look for noticeable bugs: null/undefined handling, off-by-one errors, missing error handling, race conditions, incorrect API contracts, leaked resources, security issues (SQLi, XSS, secrets in code), broken logic in conditionals/loops, mis-typed identifiers, regressions in touched call sites. (4) Compare the changes against the local repository's existing code conventions and patterns. Read neighbouring files in the same module to understand the style — naming, error-handling idioms, module boundaries, dependency injection style, file/folder layout, test patterns if applicable, common abstractions, comment style. Flag any change that deviates from how the rest of the repo does it. Do NOT run tests, builds, or linters — review is static. (5) Produce a `pr-review` artifact (kind: `summary`) containing: PR identifier, base/head refs, file-by-file findings grouped as 'Bugs' and 'Convention/Pattern issues', severity per finding (blocker / major / minor / nit), and an overall verdict (approve / request-changes / comment). Write the artifact body as simple HTML. (6) Emit a short note summarizing the verdict and the count of findings per severity. (7) Escalate to the user with the verdict + finding counts and ask whether to leave a comment on the PR with the findings. If the user says yes, post the review using `gh pr comment <pr> --body \"...\"` (or `gh pr review` if they want approve/request-changes), drawing the comment body from the `pr-review` artifact. If the user says no, do nothing further. Then complete the task."
+        }
+      ],
+      "members": [
+        {
+          "agent_id": "skipper",
+          "role": "lead",
+          "level": 0,
+          "parent_agent_id": null
+        }
+      ]
+    }
+  ]
+}

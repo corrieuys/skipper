@@ -1,0 +1,10 @@
+{
+  "realtime_config": [
+    { "key": "transcription_endpoint", "value": "" },
+    { "key": "summarization_model", "value": "claude-sonnet-4-6" },
+    { "key": "summary_max_tokens", "value": "500" },
+    { "key": "cadence_seconds", "value": "60" },
+    { "key": "transcription_provider", "value": "local" },
+    { "key": "openai_transcription_model", "value": "gpt-4o-transcribe" }
+  ]
+}

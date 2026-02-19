@@ -1,0 +1,1 @@
+-- Migrations placeholder. Add numbered files like 0001_<name>.sql for future schema changes.

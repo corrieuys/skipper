@@ -1,0 +1,1 @@
+ALTER TABLE task_templates ADD COLUMN hooks TEXT NOT NULL DEFAULT '[]';

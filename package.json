@@ -1,0 +1,40 @@
+{
+  "name": "skipper",
+  "version": "0.1.0",
+  "description": "Multi-agent orchestrator (Bun + SQLite + HTMX).",
+  "module": "index.ts",
+  "type": "module",
+  "bin": {
+    "skipper": "./bin/skipper.js"
+  },
+  "files": [
+    "src/",
+    "prompts/",
+    "config/",
+    "bin/",
+    "index.ts",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "scripts": {
+    "start": "bun run index.ts",
+    "test": "bun run scripts/test-with-cleanup.ts src",
+    "test:full": "bun run scripts/test-with-cleanup.ts",
+    "test:harness": "bun run scripts/test-with-cleanup.ts src/orchestrator/ src/agents/manager-daemon.test.ts src/tasks/scheduler.test.ts",
+    "typecheck:cleanup": "bunx tsc --project tsconfig.cleanup.json --noEmit --noUnusedLocals --noUnusedParameters --pretty false"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "gray-matter": "^4.0.3",
+    "smol-toml": "^1.6.1"
+  }
+}
