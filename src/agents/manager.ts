@@ -146,6 +146,10 @@ export class AgentManager {
     return this.agents;
   }
 
+  isRespawning(agentId: string): boolean {
+    return this.respawningAgents.has(agentId);
+  }
+
   async spawnAgent(agentId: string, options: SpawnAgentOptions): Promise<RunningAgent> {
     const agent = this.getAgent(agentId);
     if (!agent) {

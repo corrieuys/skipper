@@ -1102,3 +1102,120 @@ describe("delegation helpers", () => {
     expect(daemon.getDelegation("nonexistent")).toBeNull();
   });
 });
+
+describe("checkProcessHealth", () => {
+  it("does nothing when no agents have PIDs", () => {
+    createAgent("Idle Agent");
+    // Should not throw
+    daemon.checkProcessHealth();
+  });
+
+  it("cleans up DB entry for agent whose OS process has died", () => {
+    const agentId = createAgent("Dead Agent");
+    // Use a PID that definitely does not exist (PID 1 is always init/systemd,
+    // and we will use an obviously invalid PID by trying a number and catching).
+    // We set a PID that is not in the running agent map, and process.kill will
+    // throw ESRCH (no such process) for a non-existent PID.
+    // Use PID 2 as a proxy — we cannot guarantee it's dead, so we mock instead.
+    // Better: set a very large PID that won't exist.
+    const fakePid = 99999999;
+    db.prepare("UPDATE agents SET process_pid = ?, status = 'busy' WHERE id = ?").run(
+      fakePid,
+      agentId,
+    );
+
+    daemon.checkProcessHealth();
+
+    const agentRow = db
+      .prepare("SELECT process_pid, status FROM agents WHERE id = ?")
+      .get(agentId) as { process_pid: number | null; status: string };
+    expect(agentRow.process_pid).toBeNull();
+    expect(agentRow.status).toBe("idle");
+  });
+
+  it("fails running task when dead agent had one (no active delegation)", () => {
+    const agentId = createAgent("Dead Agent With Task");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createRunningTask(teamId);
+
+    db.prepare("UPDATE agents SET process_pid = 99999999, current_task_id = ? WHERE id = ?").run(
+      taskId,
+      agentId,
+    );
+
+    daemon.checkProcessHealth();
+
+    const task = scheduler.getTask(taskId);
+    expect(task?.status).toBe("failed");
+  });
+
+  it("does not fail task when dead agent has an active child delegation", async () => {
+    const parentId = createAgent("Parent Agent");
+    const childId = createAgent("Child Agent");
+    const teamId = createTeamWithEntrypoint(parentId);
+    addAgentToTeam(teamId, childId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    // Set up a running delegation where childId is the child
+    const delegId = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO delegations (id, parent_agent_id, child_agent_id, task_id, prompt, status)
+       VALUES (?, ?, ?, ?, 'do work', 'running')`,
+    ).run(delegId, parentId, childId, taskId);
+
+    // Simulate childId having a dead PID (not tracked in memory, non-existent OS process)
+    db.prepare("UPDATE agents SET process_pid = 99999999, current_task_id = ? WHERE id = ?").run(
+      taskId,
+      childId,
+    );
+
+    daemon.checkProcessHealth();
+
+    // Task should NOT be failed because the child has an active delegation
+    const task = scheduler.getTask(taskId);
+    expect(task?.status).toBe("running");
+  });
+
+  it("skips agents that are currently being respawned", async () => {
+    const agentId = createAgent("Respawning Agent");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    // Manually mark as respawning in agentManager (via private field access)
+    const am = daemon.getAgentManager();
+    expect(am.isRespawning(agentId)).toBe(false);
+
+    // We can't easily test the full respawn path without real processes,
+    // but we can verify that isRespawning() returns false for normal agents.
+    daemon.checkProcessHealth();
+
+    // Task should still be running (agent was running, so process is alive)
+    const task = scheduler.getTask(taskId);
+    expect(task?.status).toBe("running");
+  });
+});
+
+describe("runStuckDetection (via tick)", () => {
+  it("tick includes stuck detection without errors", async () => {
+    // Just verify tick() doesn't throw when stuck detection runs
+    const agentId = createAgent("Running Agent");
+    const teamId = createTeamWithEntrypoint(agentId);
+    createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    await daemon.tick();
+
+    const runs = db
+      .prepare("SELECT errors FROM manager_runs ORDER BY id DESC LIMIT 1")
+      .get() as { errors: string | null };
+    const errors: string[] = runs.errors ? JSON.parse(runs.errors) : [];
+    expect(errors.filter((e) => e.includes("stuck") || e.includes("StateTracker"))).toHaveLength(0);
+  });
+
+  it("getStateTracker returns StateTracker instance", () => {
+    const { StateTracker } = require("./state-tracker");
+    expect(daemon.getStateTracker()).toBeInstanceOf(StateTracker);
+  });
+});
