@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
-import { AgentManager } from "./manager";
-import type { RunningAgent } from "./manager";
+import { AgentManager, extractTextFromJsonEvent, detectSignalsInText } from "./manager";
+import type { RunningAgent, JsonEvent } from "./manager";
 import { clearAgentTypeCache } from "./types";
 import { eventBus } from "../events/bus";
 import type { AgentOutputEvent, AgentExitEvent } from "../events/bus";
@@ -22,10 +22,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // Kill any running agents
-  for (const [id] of manager.getRunningAgents()) {
-    manager.killAgent(id);
+  // Kill any running agents (only those with real processes)
+  for (const [id, agent] of manager.getRunningAgents()) {
+    if (agent.process) {
+      try { manager.killAgent(id); } catch {}
+    }
   }
+  // Clear the map to prevent stale entries from test mocks
+  manager.getRunningAgents().clear();
   db.close();
   try {
     unlinkSync(TEST_DB);
@@ -492,5 +496,306 @@ describe("getRunningAgents", () => {
     expect(manager.getRunningAgents().has(agentId)).toBe(true);
 
     manager.killAgent(agentId);
+  });
+});
+
+// --- Output Parsing Tests ---
+
+describe("parseAgentOutput", () => {
+  const agentId = "test-agent-id";
+
+  it("detects JSON lines", () => {
+    const result = manager.parseAgentOutput(agentId, '{"type":"system","data":"init"}');
+    expect(result.type).toBe("json");
+    expect(result.jsonEvent).toBeDefined();
+    expect(result.jsonEvent!.type).toBe("system");
+  });
+
+  it("detects agent messages", () => {
+    const result = manager.parseAgentOutput(agentId, "[MSG:status to:LeadDev] Build complete");
+    expect(result.type).toBe("message");
+    expect(result.messageType).toBe("status");
+    expect(result.targetAgent).toBe("LeadDev");
+    expect(result.content).toBe("Build complete");
+  });
+
+  it("detects delegation signals", () => {
+    const result = manager.parseAgentOutput(agentId, "[DELEGATE to:qa-agent-123] Review the changes");
+    expect(result.type).toBe("delegate");
+    expect(result.targetAgent).toBe("qa-agent-123");
+    expect(result.content).toBe("Review the changes");
+  });
+
+  it("detects delegation complete signals", () => {
+    const result = manager.parseAgentOutput(agentId, "[DELEGATE_COMPLETE] All tests pass");
+    expect(result.type).toBe("delegate_complete");
+    expect(result.content).toBe("All tests pass");
+  });
+
+  it("detects escalation signals", () => {
+    const result = manager.parseAgentOutput(agentId, "[ESCALATE] Need permission to deploy");
+    expect(result.type).toBe("escalate");
+    expect(result.content).toBe("Need permission to deploy");
+  });
+
+  it("detects note signals", () => {
+    const result = manager.parseAgentOutput(agentId, "[NOTE] Auth config is in /etc/app.conf");
+    expect(result.type).toBe("note");
+    expect(result.content).toBe("Auth config is in /etc/app.conf");
+  });
+
+  it("detects task complete signals", () => {
+    const result = manager.parseAgentOutput(agentId, "[TASK_COMPLETE task:task-123] Done successfully");
+    expect(result.type).toBe("task_complete");
+    expect(result.taskId).toBe("task-123");
+    expect(result.content).toBe("Done successfully");
+  });
+
+  it("detects phase complete signals", () => {
+    const result = manager.parseAgentOutput(agentId, "[PHASE_COMPLETE]");
+    expect(result.type).toBe("phase_complete");
+  });
+
+  it("detects phase regression signals", () => {
+    const result = manager.parseAgentOutput(agentId, "[PHASE_REGRESSION 1] QA found bugs");
+    expect(result.type).toBe("phase_regression");
+    expect(result.targetPhase).toBe(1);
+    expect(result.reason).toBe("QA found bugs");
+  });
+
+  it("returns text type for plain lines", () => {
+    const result = manager.parseAgentOutput(agentId, "Just some regular output");
+    expect(result.type).toBe("text");
+    expect(result.raw).toBe("Just some regular output");
+  });
+
+  it("handles invalid JSON gracefully", () => {
+    const result = manager.parseAgentOutput(agentId, "{not valid json}");
+    expect(result.type).toBe("text");
+  });
+
+  it("follows correct parse order - JSON before signals", () => {
+    // A JSON line that happens to contain signal-like text
+    const json = JSON.stringify({ type: "system", data: "[ESCALATE] embedded" });
+    const result = manager.parseAgentOutput(agentId, json);
+    expect(result.type).toBe("json");
+  });
+
+  it("follows correct parse order - message before delegate", () => {
+    // MSG pattern takes priority (checked before DELEGATE)
+    const result = manager.parseAgentOutput(agentId, "[MSG:request to:Agent1] [DELEGATE to:x] test");
+    expect(result.type).toBe("message");
+  });
+});
+
+describe("handleJsonOutput", () => {
+  it("captures session_id from JSON events", () => {
+    const agent = manager.createAgent({ name: "Test", type: "claude-code" });
+    // Manually add to running agents map for the test
+    const runningAgent: RunningAgent = {
+      id: agent.id,
+      process: null as any,
+      stdin: null as any,
+      stdoutBuffer: "",
+      stderrBuffer: "",
+      outputSequence: 0,
+      sessionId: null,
+    };
+    manager.getRunningAgents().set(agent.id, runningAgent);
+
+    manager.handleJsonOutput(agent.id, { type: "system", session_id: "sess-123" }, "{}");
+
+    expect(runningAgent.sessionId).toBe("sess-123");
+  });
+
+  it("does not overwrite existing session_id", () => {
+    const agent = manager.createAgent({ name: "Test", type: "claude-code" });
+    const runningAgent: RunningAgent = {
+      id: agent.id,
+      process: null as any,
+      stdin: null as any,
+      stdoutBuffer: "",
+      stderrBuffer: "",
+      outputSequence: 0,
+      sessionId: "existing-session",
+    };
+    manager.getRunningAgents().set(agent.id, runningAgent);
+
+    manager.handleJsonOutput(agent.id, { type: "system", session_id: "new-session" }, "{}");
+
+    expect(runningAgent.sessionId).toBe("existing-session");
+  });
+
+  it("detects embedded signals in Claude Code assistant output", () => {
+    const json: JsonEvent = {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "Done with work.\n[PHASE_COMPLETE]" }],
+      },
+    };
+    const result = manager.handleJsonOutput("agent-1", json, "{}");
+    expect(result.type).toBe("phase_complete");
+  });
+
+  it("detects embedded delegate signal in Codex output", () => {
+    const json: JsonEvent = {
+      type: "item.completed",
+      item: { type: "agent_message", text: "[DELEGATE to:qa-1] Review code" },
+    };
+    const result = manager.handleJsonOutput("agent-1", json, "{}");
+    expect(result.type).toBe("delegate");
+    expect(result.targetAgent).toBe("qa-1");
+  });
+
+  it("returns json type for system events", () => {
+    const result = manager.handleJsonOutput("agent-1", { type: "system" }, "{}");
+    expect(result.type).toBe("json");
+  });
+
+  it("returns json type for rate_limit_event", () => {
+    const result = manager.handleJsonOutput("agent-1", { type: "rate_limit_event" }, "{}");
+    expect(result.type).toBe("json");
+  });
+
+  it("extracts content from result events", () => {
+    const result = manager.handleJsonOutput("agent-1", { type: "result", result: "Final answer" }, "{}");
+    expect(result.type).toBe("json");
+    expect(result.content).toBe("Final answer");
+  });
+
+  it("extracts error messages", () => {
+    const result = manager.handleJsonOutput("agent-1", { type: "error", error: { message: "Rate limited" } }, "{}");
+    expect(result.type).toBe("json");
+    expect(result.content).toBe("Rate limited");
+  });
+});
+
+describe("extractTextFromJsonEvent", () => {
+  it("extracts text from Claude Code assistant format", () => {
+    const json: JsonEvent = {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "Hello world" },
+          { type: "tool_use" },
+          { type: "text", text: "More text" },
+        ],
+      },
+    };
+    expect(extractTextFromJsonEvent(json)).toBe("Hello world\nMore text");
+  });
+
+  it("extracts text from Codex item format", () => {
+    const json: JsonEvent = {
+      type: "item.completed",
+      item: { type: "agent_message", text: "Codex says hello" },
+    };
+    expect(extractTextFromJsonEvent(json)).toBe("Codex says hello");
+  });
+
+  it("extracts text from Codex item content array", () => {
+    const json: JsonEvent = {
+      type: "item.completed",
+      item: {
+        content: [{ type: "text", text: "Item content text" }],
+      },
+    };
+    expect(extractTextFromJsonEvent(json)).toBe("Item content text");
+  });
+
+  it("extracts text from result events", () => {
+    const json: JsonEvent = { type: "result", result: "The final result" };
+    expect(extractTextFromJsonEvent(json)).toBe("The final result");
+  });
+
+  it("returns null for events without text", () => {
+    const json: JsonEvent = { type: "system" };
+    expect(extractTextFromJsonEvent(json)).toBeNull();
+  });
+
+  it("returns null for empty content arrays", () => {
+    const json: JsonEvent = {
+      type: "assistant",
+      message: { content: [] },
+    };
+    expect(extractTextFromJsonEvent(json)).toBeNull();
+  });
+
+  it("skips non-text content items", () => {
+    const json: JsonEvent = {
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use" }, { type: "image" }],
+      },
+    };
+    expect(extractTextFromJsonEvent(json)).toBeNull();
+  });
+});
+
+describe("detectSignalsInText", () => {
+  const agentId = "test-agent";
+
+  it("detects DELEGATE signal in text", () => {
+    const result = detectSignalsInText(agentId, "Some preamble\n[DELEGATE to:child-1] Do the work");
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("delegate");
+    expect(result!.targetAgent).toBe("child-1");
+    expect(result!.content).toBe("Do the work");
+  });
+
+  it("detects DELEGATE_COMPLETE signal", () => {
+    const result = detectSignalsInText(agentId, "[DELEGATE_COMPLETE] All done");
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("delegate_complete");
+    expect(result!.content).toBe("All done");
+  });
+
+  it("detects ESCALATE signal", () => {
+    const result = detectSignalsInText(agentId, "[ESCALATE] Need human help");
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("escalate");
+    expect(result!.content).toBe("Need human help");
+  });
+
+  it("detects NOTE signal", () => {
+    const result = detectSignalsInText(agentId, "[NOTE] Important finding");
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("note");
+  });
+
+  it("detects PHASE_COMPLETE signal", () => {
+    const result = detectSignalsInText(agentId, "Work done\n[PHASE_COMPLETE]\nMore text");
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("phase_complete");
+  });
+
+  it("detects PHASE_REGRESSION signal", () => {
+    const result = detectSignalsInText(agentId, "[PHASE_REGRESSION 2] Found critical bugs");
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("phase_regression");
+    expect(result!.targetPhase).toBe(2);
+    expect(result!.reason).toBe("Found critical bugs");
+  });
+
+  it("returns null when no signals found", () => {
+    const result = detectSignalsInText(agentId, "Just regular text\nNothing special here");
+    expect(result).toBeNull();
+  });
+
+  it("returns null for empty text", () => {
+    expect(detectSignalsInText(agentId, "")).toBeNull();
+  });
+
+  it("returns first signal found when multiple present", () => {
+    const result = detectSignalsInText(agentId, "[NOTE] A note\n[ESCALATE] Help me");
+    expect(result).not.toBeNull();
+    // NOTE comes before ESCALATE in scan order (by line)
+    expect(result!.type).toBe("note");
+  });
+
+  it("trims whitespace from lines before matching", () => {
+    const result = detectSignalsInText(agentId, "  [PHASE_COMPLETE]  ");
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("phase_complete");
   });
 });
