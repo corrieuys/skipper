@@ -817,3 +817,288 @@ describe("pending regression in exit handler", () => {
     expect(daemon.getPendingRegression(agentId)).toBeUndefined();
   });
 });
+
+// Helper: create a second agent in the same team
+function addAgentToTeam(teamId: string, agentId: string): void {
+  const taId = crypto.randomUUID();
+  db.prepare(
+    "INSERT INTO team_agents (id, team_id, agent_id, role) VALUES (?, ?, ?, 'worker')",
+  ).run(taId, teamId, agentId);
+}
+
+describe("handleDelegation", () => {
+  it("creates delegation and spawns child agent", async () => {
+    const parentId = createAgent("Parent", "test-echo", "Lead dev");
+    const childId = createAgent("Child", "test-echo", "Reviewer");
+    const teamId = createTeamWithEntrypoint(parentId);
+    addAgentToTeam(teamId, childId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    const delegation = await daemon.handleDelegation(parentId, childId, "Review the code");
+
+    expect(delegation).not.toBeNull();
+    expect(delegation!.parent_agent_id).toBe(parentId);
+    expect(delegation!.child_agent_id).toBe(childId);
+    expect(delegation!.task_id).toBe(taskId);
+    expect(delegation!.prompt).toBe("Review the code");
+    expect(delegation!.status).toBe("running");
+
+    // Child should have task assigned
+    const childRow = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(childId) as { current_task_id: string | null };
+    expect(childRow.current_task_id).toBe(taskId);
+
+    // Parent state should be waiting_delegation
+    const parentState = db.prepare("SELECT state, state_metadata FROM agent_states WHERE agent_id = ?").get(parentId) as { state: string; state_metadata: string } | null;
+    expect(parentState?.state).toBe("waiting_delegation");
+  });
+
+  it("returns null when parent has no task", async () => {
+    const parentId = createAgent("Parent", "test-echo");
+    const childId = createAgent("Child", "test-echo");
+    const teamId = createTeamWithEntrypoint(parentId);
+    addAgentToTeam(teamId, childId);
+
+    const result = await daemon.handleDelegation(parentId, childId, "Do work");
+    expect(result).toBeNull();
+  });
+
+  it("returns null when child does not exist", async () => {
+    const parentId = createAgent("Parent", "test-echo");
+    const teamId = createTeamWithEntrypoint(parentId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    const result = await daemon.handleDelegation(parentId, "nonexistent", "Do work");
+    expect(result).toBeNull();
+  });
+
+  it("returns null when agents are not in same team", async () => {
+    const parentId = createAgent("Parent", "test-echo");
+    const childId = createAgent("Child", "test-echo");
+    const teamId = createTeamWithEntrypoint(parentId);
+    // Child is NOT added to team
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    const result = await daemon.handleDelegation(parentId, childId, "Do work");
+    expect(result).toBeNull();
+  });
+
+  it("returns null when parent already has active delegation", async () => {
+    const parentId = createAgent("Parent", "test-echo");
+    const child1Id = createAgent("Child 1", "test-echo");
+    const child2Id = createAgent("Child 2", "test-echo");
+    const teamId = createTeamWithEntrypoint(parentId);
+    addAgentToTeam(teamId, child1Id);
+    addAgentToTeam(teamId, child2Id);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    // First delegation succeeds
+    const d1 = await daemon.handleDelegation(parentId, child1Id, "First task");
+    expect(d1).not.toBeNull();
+
+    // Second delegation should fail (concurrent limit 1)
+    const d2 = await daemon.handleDelegation(parentId, child2Id, "Second task");
+    expect(d2).toBeNull();
+  });
+
+  it("returns null when parent type does not support result receipt", async () => {
+    // custom type with no stdin and no resume
+    setupAgentType("no-io", false, false);
+    const parentId = createAgent("Parent", "no-io");
+    const childId = createAgent("Child", "test-echo");
+    const teamId = createTeamWithEntrypoint(parentId);
+    addAgentToTeam(teamId, childId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    const result = await daemon.handleDelegation(parentId, childId, "Do work");
+    expect(result).toBeNull();
+  });
+
+  it("enforces max delegation depth of 3", async () => {
+    const a1 = createAgent("Agent 1", "test-echo", "Top");
+    const a2 = createAgent("Agent 2", "test-echo", "Mid 1");
+    const a3 = createAgent("Agent 3", "test-echo", "Mid 2");
+    const a4 = createAgent("Agent 4", "test-echo", "Bottom");
+    const teamId = createTeamWithEntrypoint(a1);
+    addAgentToTeam(teamId, a2);
+    addAgentToTeam(teamId, a3);
+    addAgentToTeam(teamId, a4);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    // Create chain: a1 -> a2 -> a3 (depth 3 from a4's perspective)
+    const d1 = await daemon.handleDelegation(a1, a2, "Level 1");
+    expect(d1).not.toBeNull();
+    const d2 = await daemon.handleDelegation(a2, a3, "Level 2");
+    expect(d2).not.toBeNull();
+    const d3 = await daemon.handleDelegation(a3, a4, "Level 3");
+    expect(d3).not.toBeNull();
+
+    // a4 should not be able to delegate further (already at depth 3)
+    const a5 = createAgent("Agent 5", "test-echo", "Too Deep");
+    addAgentToTeam(teamId, a5);
+    const d4 = await daemon.handleDelegation(a4, a5, "Level 4");
+    expect(d4).toBeNull();
+  });
+});
+
+describe("handleDelegateComplete", () => {
+  it("completes delegation and routes result to parent", async () => {
+    const parentId = createAgent("Parent", "test-echo", "Lead");
+    const childId = createAgent("Child", "test-echo", "Worker");
+    const teamId = createTeamWithEntrypoint(parentId);
+    addAgentToTeam(teamId, childId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    await daemon.handleDelegation(parentId, childId, "Review code");
+
+    // Spy on sendInput to verify result routing
+    const agentManager = daemon.getAgentManager();
+    let capturedInput = "";
+    const origSendInput = agentManager.sendInput.bind(agentManager);
+    spyOn(agentManager, "sendInput").mockImplementation(
+      (id: string, input: string, close?: boolean) => {
+        if (id === parentId) capturedInput = input;
+        origSendInput(id, input, close);
+      },
+    );
+
+    daemon.handleDelegateComplete(childId, "Code looks good, approved");
+
+    // Delegation should be completed
+    const delegation = daemon.getActiveDelegationForChild(childId);
+    expect(delegation).toBeNull();
+
+    // Result should have been routed to parent
+    expect(capturedInput).toContain("[DELEGATION_RESULT from:");
+    expect(capturedInput).toContain("Code looks good, approved");
+    expect(capturedInput).toContain("[END_DELEGATION_RESULT]");
+
+    // Parent state should be working
+    const parentState = db.prepare("SELECT state FROM agent_states WHERE agent_id = ?").get(parentId) as { state: string } | null;
+    expect(parentState?.state).toBe("working");
+
+    // Child task assignment cleared
+    const childRow = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(childId) as { current_task_id: string | null };
+    expect(childRow.current_task_id).toBeNull();
+  });
+
+  it("ignores delegate complete for agent with no active delegation", () => {
+    const agentId = createAgent("Lone Agent", "test-echo");
+    // Should not throw
+    daemon.handleDelegateComplete(agentId, "Some result");
+  });
+});
+
+describe("child exit handling for delegations", () => {
+  it("completes delegation on child exit code 0", async () => {
+    const parentId = createAgent("Parent", "test-echo", "Lead");
+    const childId = createAgent("Child", "test-echo", "Worker");
+    const teamId = createTeamWithEntrypoint(parentId);
+    addAgentToTeam(teamId, childId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    await daemon.handleDelegation(parentId, childId, "Do task");
+
+    // Simulate child exit with code 0
+    const exitEvent: AgentExitEvent = {
+      agentId: childId,
+      code: 0,
+      isRespawn: false,
+      hasDelegation: false,
+    };
+
+    eventBus.emit("agent:exit", exitEvent);
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // Delegation should be completed
+    const delegation = daemon.getActiveDelegationForChild(childId);
+    expect(delegation).toBeNull();
+
+    // Parent state should be working
+    const parentState = db.prepare("SELECT state FROM agent_states WHERE agent_id = ?").get(parentId) as { state: string } | null;
+    expect(parentState?.state).toBe("working");
+  });
+
+  it("fails delegation on child non-zero exit", async () => {
+    const parentId = createAgent("Parent", "test-echo", "Lead");
+    const childId = createAgent("Child", "test-echo", "Worker");
+    const teamId = createTeamWithEntrypoint(parentId);
+    addAgentToTeam(teamId, childId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    await daemon.handleDelegation(parentId, childId, "Do task");
+
+    const exitEvent: AgentExitEvent = {
+      agentId: childId,
+      code: 1,
+      isRespawn: false,
+      hasDelegation: false,
+    };
+
+    eventBus.emit("agent:exit", exitEvent);
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // Delegation should be failed
+    const allDelegations = db.prepare("SELECT * FROM delegations WHERE child_agent_id = ?").all(childId) as { status: string; result: string }[];
+    expect(allDelegations.length).toBe(1);
+    expect(allDelegations[0].status).toBe("failed");
+    expect(allDelegations[0].result).toContain("exited with code 1");
+  });
+});
+
+describe("checkStaleDelegations", () => {
+  it("times out delegations older than 10 minutes", async () => {
+    const parentId = createAgent("Parent", "test-echo", "Lead");
+    const childId = createAgent("Child", "test-echo", "Worker");
+    const teamId = createTeamWithEntrypoint(parentId);
+    addAgentToTeam(teamId, childId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    await daemon.handleDelegation(parentId, childId, "Long task");
+
+    // Backdate the delegation to 15 minutes ago
+    db.prepare(
+      "UPDATE delegations SET created_at = datetime('now', '-15 minutes') WHERE child_agent_id = ?",
+    ).run(childId);
+
+    const timedOut = daemon.checkStaleDelegations();
+    expect(timedOut).toBe(1);
+
+    // Delegation should be failed
+    const delegations = db.prepare("SELECT * FROM delegations WHERE child_agent_id = ?").all(childId) as { status: string; result: string }[];
+    expect(delegations[0].status).toBe("failed");
+    expect(delegations[0].result).toContain("timed out");
+
+    // Parent state reset
+    const parentState = db.prepare("SELECT state FROM agent_states WHERE agent_id = ?").get(parentId) as { state: string } | null;
+    expect(parentState?.state).toBe("working");
+  });
+
+  it("returns 0 when no stale delegations exist", () => {
+    const count = daemon.checkStaleDelegations();
+    expect(count).toBe(0);
+  });
+});
+
+describe("delegation helpers", () => {
+  it("getActiveDelegationForParent returns null when none exist", () => {
+    expect(daemon.getActiveDelegationForParent("nonexistent")).toBeNull();
+  });
+
+  it("getActiveDelegationForChild returns null when none exist", () => {
+    expect(daemon.getActiveDelegationForChild("nonexistent")).toBeNull();
+  });
+
+  it("getDelegation returns null for nonexistent id", () => {
+    expect(daemon.getDelegation("nonexistent")).toBeNull();
+  });
+});
