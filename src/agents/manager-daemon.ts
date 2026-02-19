@@ -16,10 +16,32 @@ const EXIT_GRACE_PERIOD_MS = 1_000;
 const MAX_REGRESSIONS = 3;
 const MAX_DELEGATION_DEPTH = 3;
 const DELEGATION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const STUCK_HEARTBEAT_MS = 5 * 60 * 1000; // 5 minutes
 
 interface PendingRegression {
   targetPhase: number;
   reason: string;
+}
+
+export interface OrchestrationState {
+  step: "AGENT_RUNNING" | "WAITING_DELEGATION" | "ADVANCING_PHASE" | "REGRESSION" | "IDLE";
+  last_checkpoint_ts: string | null;
+  session_id: string | null;
+  active_delegation_id: string | null;
+  phase_guards: string[];
+  pending_regression: PendingRegression | null;
+  checkpoint_prompt_hash: string | null;
+}
+
+export interface TaskCheckpoint {
+  id: number;
+  task_id: string;
+  sequence: number;
+  checkpoint_type: string;
+  session_id: string | null;
+  context_snapshot: Record<string, unknown>;
+  terminal_seq: number | null;
+  created_at: string;
 }
 
 export interface Delegation {
@@ -72,6 +94,7 @@ export class ManagerDaemon {
   start(): void {
     if (this.intervalId) return;
 
+    this.cleanupStaleState();
     this.tick();
     this.intervalId = setInterval(() => this.tick(), DAEMON_INTERVAL_MS);
   }
@@ -89,6 +112,14 @@ export class ManagerDaemon {
     let agentsChecked = 0;
     const errors: string[] = [];
 
+    // 1. Recover stale tasks (running tasks with no live agent)
+    try {
+      await this.recoverAllStaleTasks();
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+
+    // 2. Process task queue (pick up new approved tasks)
     try {
       const result = await this.processTaskQueue();
       tasksProcessed = result.processed;
@@ -96,14 +127,23 @@ export class ManagerDaemon {
       errors.push(err instanceof Error ? err.message : String(err));
     }
 
+    // 3. Check stale delegations
+    try {
+      this.checkStaleDelegations();
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+
+    // 4. Check agent count
     try {
       agentsChecked = this.agentManager.getRunningAgents().size;
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err));
     }
 
+    // 5. Persist checkpoints for running tasks
     try {
-      this.checkStaleDelegations();
+      this.persistCheckpoints();
     } catch (err) {
       errors.push(err instanceof Error ? err.message : String(err));
     }
@@ -214,6 +254,18 @@ export class ManagerDaemon {
     // Send prompt to stdin
     const closeStdin = !isStreaming;
     this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+
+    // Persist orchestration state and checkpoint
+    this.updateOrchestrationState(task.id, {
+      step: "AGENT_RUNNING",
+      last_checkpoint_ts: new Date().toISOString(),
+      session_id: null,
+      active_delegation_id: null,
+      phase_guards: [],
+      pending_regression: null,
+      checkpoint_prompt_hash: null,
+    });
+    this.writeCheckpoint(task.id, "PHASE_START", { phase: 0 });
 
     return { processed: 1 };
   }
@@ -466,6 +518,23 @@ export class ManagerDaemon {
 
     const closeStdin = !isStreaming;
     this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+
+    // Update orchestration state and checkpoint
+    const phaseGuards = Array.from(this.phaseCompleteHandled)
+      .filter((k) => k.startsWith(`${task.id}:`));
+    this.updateOrchestrationState(task.id, {
+      step: "AGENT_RUNNING",
+      last_checkpoint_ts: new Date().toISOString(),
+      session_id: sessionId ?? null,
+      active_delegation_id: null,
+      phase_guards: phaseGuards,
+      pending_regression: null,
+      checkpoint_prompt_hash: null,
+    });
+    this.writeCheckpoint(task.id, "PHASE_START", {
+      phase: nextPhase,
+      session_id: sessionId ?? null,
+    });
   }
 
   // --- Delegation Management ---
@@ -578,6 +647,17 @@ export class ManagerDaemon {
     // 14. Set parent state to waiting_delegation
     this.setAgentState(parentAgentId, "waiting_delegation", { delegation_id: delegationId });
 
+    // 15. Update orchestration state
+    this.updateOrchestrationState(taskId, {
+      step: "WAITING_DELEGATION",
+      last_checkpoint_ts: new Date().toISOString(),
+      session_id: this.agentManager.getSessionId(parentAgentId),
+      active_delegation_id: delegationId,
+      phase_guards: Array.from(this.phaseCompleteHandled).filter((k) => k.startsWith(`${taskId}:`)),
+      pending_regression: null,
+      checkpoint_prompt_hash: null,
+    });
+
     return this.getDelegation(delegationId);
   }
 
@@ -606,6 +686,21 @@ export class ManagerDaemon {
 
       // Reset parent state to working
       this.setAgentState(delegation.parent_agent_id, "working");
+
+      // Update orchestration state and write checkpoint
+      this.updateOrchestrationState(delegation.task_id, {
+        step: "AGENT_RUNNING",
+        last_checkpoint_ts: new Date().toISOString(),
+        session_id: this.agentManager.getSessionId(delegation.parent_agent_id),
+        active_delegation_id: null,
+        phase_guards: Array.from(this.phaseCompleteHandled).filter((k) => k.startsWith(`${delegation.task_id}:`)),
+        pending_regression: null,
+        checkpoint_prompt_hash: null,
+      });
+      this.writeCheckpoint(delegation.task_id, "DELEGATION_COMPLETE", {
+        delegation_id: delegation.id,
+        child_agent_id: childAgentId,
+      });
     } catch {
       // DB may be closed during shutdown
     }
@@ -909,6 +1004,9 @@ export class ManagerDaemon {
 
       // For streaming agents, send directly to existing stdin
       this.agentManager.sendInput(entrypointAgentId, prompt);
+
+      // Persist phase advance checkpoint
+      this.writeCheckpoint(task.id, "PHASE_START", { phase: nextPhase });
     }
   }
 
@@ -958,6 +1056,13 @@ export class ManagerDaemon {
     for (let i = targetPhase; i <= task.current_phase; i++) {
       this.phaseCompleteHandled.delete(`${taskId}:${i}`);
     }
+
+    // Write regression checkpoint
+    this.writeCheckpoint(taskId, "REGRESSION", {
+      from_phase: task.current_phase,
+      to_phase: targetPhase,
+      reason,
+    });
 
     // Get team and phases
     const teamExec = task.team_id
@@ -1100,6 +1205,380 @@ export class ManagerDaemon {
 
   getPhaseCompleteHandled(): Set<string> {
     return this.phaseCompleteHandled;
+  }
+
+  // --- Recovery & Resilience ---
+
+  cleanupStaleState(): void {
+    try {
+      // 1. Kill stale OS processes for agents that have PIDs but aren't tracked in memory
+      const agentsWithPids = this.db
+        .prepare("SELECT id, process_pid FROM agents WHERE process_pid IS NOT NULL")
+        .all() as { id: string; process_pid: number }[];
+
+      for (const row of agentsWithPids) {
+        const inMemory = this.agentManager.getRunningAgent(row.id);
+        if (!inMemory) {
+          // Agent has PID in DB but not tracked in memory — kill orphan
+          try {
+            process.kill(row.process_pid, 0); // Check if alive
+            process.kill(row.process_pid, 9); // Kill it
+          } catch {
+            // Process already dead — that's fine
+          }
+
+          // Clear PID and reset status
+          this.db
+            .prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?")
+            .run(row.id);
+        }
+      }
+
+      // 2. Clean up dead agents (tracked in memory but process no longer alive)
+      for (const [agentId, running] of this.agentManager.getRunningAgents()) {
+        try {
+          process.kill(running.process.pid, 0); // Check alive
+        } catch {
+          // Process is dead — clean up
+          this.agentManager.getRunningAgents().delete(agentId);
+          this.db
+            .prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?")
+            .run(agentId);
+        }
+      }
+
+      // 3. Clear task assignments for agents with no live process
+      this.db
+        .prepare(
+          `UPDATE agents SET current_task_id = NULL
+           WHERE current_task_id IS NOT NULL
+           AND process_pid IS NULL
+           AND id NOT IN (SELECT id FROM agents WHERE process_pid IS NOT NULL)`,
+        )
+        .run();
+    } catch {
+      // Ignore cleanup errors on startup
+    }
+  }
+
+  async recoverAllStaleTasks(): Promise<number> {
+    let recovered = 0;
+
+    try {
+      // Find running tasks
+      const runningTasks = this.db
+        .prepare("SELECT * FROM tasks WHERE status = 'running'")
+        .all() as Array<Record<string, unknown>>;
+
+      for (const row of runningTasks) {
+        const taskId = row.id as string;
+        const task = this.taskScheduler.getTask(taskId);
+        if (!task) continue;
+
+        // Check if there's a live agent working on this task
+        const assignedAgent = this.db
+          .prepare("SELECT id, process_pid FROM agents WHERE current_task_id = ?")
+          .get(taskId) as { id: string; process_pid: number | null } | null;
+
+        if (!assignedAgent) {
+          // No agent assigned — need to recover
+          const didRecover = await this.recoverTask(taskId);
+          if (didRecover) recovered++;
+          continue;
+        }
+
+        // Agent is assigned — check if it's actually alive
+        const inMemory = this.agentManager.getRunningAgent(assignedAgent.id);
+        if (inMemory) continue; // Agent is alive and tracked
+
+        if (assignedAgent.process_pid) {
+          try {
+            process.kill(assignedAgent.process_pid, 0); // Check alive
+            continue; // Still alive, skip
+          } catch {
+            // Process is dead
+          }
+        }
+
+        // Agent is dead — check for active child delegations before recovering
+        const activeDelegation = this.getActiveDelegationForParent(assignedAgent.id);
+        if (activeDelegation) {
+          // Parent is waiting for delegation — check if child is alive
+          const childRunning = this.agentManager.getRunningAgent(activeDelegation.child_agent_id);
+          if (childRunning) continue; // Child still working, skip recovery
+        }
+
+        // Agent is dead with no active child — recover the task
+        const didRecover = await this.recoverTask(taskId);
+        if (didRecover) recovered++;
+      }
+    } catch {
+      // Ignore recovery errors
+    }
+
+    return recovered;
+  }
+
+  async recoverTask(taskId: string): Promise<boolean> {
+    const task = this.taskScheduler.getTask(taskId);
+    if (!task || task.status !== "running") return false;
+    if (!task.team_id) return false;
+
+    const teamExec = this.teamManager.getTeamForExecution(task.team_id);
+    if (!teamExec) return false;
+
+    const entrypointAgentId = teamExec.entrypoint_agent_id;
+    const agent = this.agentManager.getAgent(entrypointAgentId);
+    if (!agent) return false;
+
+    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    if (!typeDef) return false;
+
+    // Load orchestration state
+    const orchState = task.orchestration_state as Partial<OrchestrationState>;
+
+    // Load latest checkpoint
+    const checkpoint = this.getLatestCheckpoint(taskId);
+
+    // Restore in-memory structures from orchestration state
+    if (orchState.phase_guards) {
+      for (const guard of orchState.phase_guards) {
+        this.phaseCompleteHandled.add(guard);
+      }
+    }
+    if (orchState.pending_regression) {
+      this.pendingRegressions.set(entrypointAgentId, orchState.pending_regression);
+    }
+
+    // Restore active delegation state
+    if (orchState.active_delegation_id) {
+      const delegation = this.getDelegation(orchState.active_delegation_id);
+      if (delegation && (delegation.status === "pending" || delegation.status === "running")) {
+        // Delegation still active — set parent state and skip respawn
+        this.setAgentState(entrypointAgentId, "waiting_delegation", {
+          delegation_id: orchState.active_delegation_id,
+        });
+        return true;
+      }
+    }
+
+    // Determine resume vs full respawn
+    const sessionId =
+      orchState.session_id ??
+      (checkpoint?.session_id || null) ??
+      this.agentManager.getSessionId(entrypointAgentId);
+
+    const canResume = typeDef.supports_resume && !!sessionId;
+
+    // Kill existing process if any
+    if (this.agentManager.getRunningAgent(entrypointAgentId)) {
+      this.agentManager.killAgent(entrypointAgentId);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    // Spawn agent
+    try {
+      const workingDir = process.cwd();
+      const spawnOpts = canResume
+        ? { workingDir, sessionId: sessionId! }
+        : { workingDir };
+      await this.agentManager.spawnAgent(entrypointAgentId, spawnOpts);
+    } catch {
+      return false;
+    }
+
+    // Assign task
+    this.db
+      .prepare("UPDATE agents SET current_task_id = ? WHERE id = ?")
+      .run(taskId, entrypointAgentId);
+
+    // Build recovery prompt
+    const isStreaming = typeDef.supports_stdin ?? false;
+    const phases = (teamExec.team.phases as { name: string; prompt: string }[]) ?? [];
+    const currentPhase = task.current_phase;
+
+    const agentInfo: AgentInfo = {
+      id: agent.id,
+      name: agent.name,
+      type: agent.type,
+      goal: agent.config.goal,
+    };
+
+    let phaseInfo: PhaseInfo | undefined;
+    if (phases.length > 0 && currentPhase < phases.length) {
+      phaseInfo = {
+        name: phases[currentPhase].name,
+        prompt: phases[currentPhase].prompt,
+        index: currentPhase,
+        total: phases.length,
+      };
+    }
+
+    // Check for pending regression context
+    const pendingReg = this.pendingRegressions.get(entrypointAgentId);
+
+    const prompt = this.promptBuilder.buildInitialPrompt({
+      agent: agentInfo,
+      task: { id: taskId, title: task.title, description: task.description ?? undefined },
+      phase: phaseInfo,
+      isStreaming,
+      regressionReason: pendingReg?.reason,
+    });
+
+    const recoveryPrefix = canResume
+      ? "[SYSTEM] Session recovered. Continuing from last checkpoint.\n\n"
+      : "[SYSTEM] Task recovered after agent restart. Resuming from current phase.\n\n";
+
+    const closeStdin = !isStreaming;
+    this.agentManager.sendInput(entrypointAgentId, recoveryPrefix + prompt, closeStdin);
+
+    // Update orchestration state
+    this.updateOrchestrationState(taskId, {
+      step: "AGENT_RUNNING",
+      last_checkpoint_ts: new Date().toISOString(),
+      session_id: canResume ? sessionId : null,
+      active_delegation_id: null,
+      phase_guards: Array.from(this.phaseCompleteHandled).filter((k) => k.startsWith(`${taskId}:`)),
+      pending_regression: pendingReg ?? null,
+      checkpoint_prompt_hash: null,
+    });
+
+    return true;
+  }
+
+  // --- Orchestration State & Checkpoints ---
+
+  updateOrchestrationState(taskId: string, state: OrchestrationState): void {
+    try {
+      this.db
+        .prepare(
+          "UPDATE tasks SET orchestration_state = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .run(JSON.stringify(state), taskId);
+    } catch {
+      // Ignore state update errors
+    }
+  }
+
+  getOrchestrationState(taskId: string): OrchestrationState | null {
+    try {
+      const row = this.db
+        .prepare("SELECT orchestration_state FROM tasks WHERE id = ?")
+        .get(taskId) as { orchestration_state: string } | null;
+      if (!row) return null;
+      const parsed = JSON.parse(row.orchestration_state);
+      // Return null for empty/default state
+      if (!parsed.step) return null;
+      return parsed as OrchestrationState;
+    } catch {
+      return null;
+    }
+  }
+
+  writeCheckpoint(
+    taskId: string,
+    checkpointType: string,
+    contextSnapshot: Record<string, unknown> = {},
+  ): void {
+    try {
+      // Get next sequence number
+      const seqRow = this.db
+        .prepare(
+          "SELECT COALESCE(MAX(sequence), 0) + 1 as next_seq FROM task_checkpoints WHERE task_id = ?",
+        )
+        .get(taskId) as { next_seq: number };
+
+      // Get current session ID from agent if available
+      const agentRow = this.db
+        .prepare("SELECT id FROM agents WHERE current_task_id = ?")
+        .get(taskId) as { id: string } | null;
+      const sessionId = agentRow
+        ? this.agentManager.getSessionId(agentRow.id)
+        : null;
+
+      // Get latest terminal sequence
+      const termSeqRow = agentRow
+        ? (this.db
+            .prepare(
+              "SELECT MAX(sequence) as max_seq FROM terminal_outputs WHERE agent_id = ?",
+            )
+            .get(agentRow.id) as { max_seq: number | null } | null)
+        : null;
+
+      this.db
+        .prepare(
+          `INSERT INTO task_checkpoints (task_id, sequence, checkpoint_type, session_id, context_snapshot, terminal_seq)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          taskId,
+          seqRow.next_seq,
+          checkpointType,
+          sessionId,
+          JSON.stringify(contextSnapshot),
+          termSeqRow?.max_seq ?? null,
+        );
+    } catch {
+      // Ignore checkpoint errors
+    }
+  }
+
+  getLatestCheckpoint(taskId: string): TaskCheckpoint | null {
+    try {
+      const row = this.db
+        .prepare(
+          "SELECT * FROM task_checkpoints WHERE task_id = ? ORDER BY sequence DESC LIMIT 1",
+        )
+        .get(taskId) as {
+        id: number;
+        task_id: string;
+        sequence: number;
+        checkpoint_type: string;
+        session_id: string | null;
+        context_snapshot: string;
+        terminal_seq: number | null;
+        created_at: string;
+      } | null;
+
+      if (!row) return null;
+      return {
+        ...row,
+        context_snapshot: JSON.parse(row.context_snapshot),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private persistCheckpoints(): void {
+    // Persist periodic checkpoints for any running task
+    const runningTask = this.getRunningTask();
+    if (!runningTask) return;
+
+    // Update orchestration state with current in-memory structures
+    const agentRow = this.db
+      .prepare("SELECT id FROM agents WHERE current_task_id = ?")
+      .get(runningTask.id) as { id: string } | null;
+
+    if (!agentRow) return;
+
+    const sessionId = this.agentManager.getSessionId(agentRow.id);
+    const activeDelegation = this.getActiveDelegationForParent(agentRow.id);
+    const pendingReg = this.pendingRegressions.get(agentRow.id);
+
+    const state: OrchestrationState = {
+      step: activeDelegation ? "WAITING_DELEGATION" : "AGENT_RUNNING",
+      last_checkpoint_ts: new Date().toISOString(),
+      session_id: sessionId,
+      active_delegation_id: activeDelegation?.id ?? null,
+      phase_guards: Array.from(this.phaseCompleteHandled).filter((k) =>
+        k.startsWith(`${runningTask.id}:`),
+      ),
+      pending_regression: pendingReg ?? null,
+      checkpoint_prompt_hash: null,
+    };
+
+    this.updateOrchestrationState(runningTask.id, state);
   }
 
   private getRunningTask(): Task | null {
