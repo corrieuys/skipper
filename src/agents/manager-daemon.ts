@@ -10,6 +10,8 @@ import { StateTracker } from "./state-tracker";
 import { getAgentTypeDefinition } from "./types";
 import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
+import { TaskStateMachine } from "../orchestrator/state";
+import type { TaskOrchStep } from "../orchestrator/state";
 
 const DAEMON_INTERVAL_MS = 30_000;
 const EXIT_GRACE_PERIOD_MS = 1_000;
@@ -24,7 +26,7 @@ interface PendingRegression {
 }
 
 export interface OrchestrationState {
-  step: "AGENT_RUNNING" | "WAITING_DELEGATION" | "ADVANCING_PHASE" | "REGRESSION" | "IDLE";
+  step: TaskOrchStep;
   last_checkpoint_ts: string | null;
   session_id: string | null;
   active_delegation_id: string | null;
@@ -1465,13 +1467,16 @@ export class ManagerDaemon {
 
   updateOrchestrationState(taskId: string, state: OrchestrationState): void {
     try {
+      const sm = new TaskStateMachine(taskId, this.db);
+      sm.transitionTo(state.step);
+
       this.db
         .prepare(
           "UPDATE tasks SET orchestration_state = ?, updated_at = datetime('now') WHERE id = ?",
         )
         .run(JSON.stringify(state), taskId);
     } catch {
-      // Ignore state update errors
+      // Ignore state update errors — invalid transitions are logged but not fatal
     }
   }
 
