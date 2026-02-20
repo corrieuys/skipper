@@ -108,10 +108,10 @@ afterEach(() => {
 });
 
 describe("ManagerDaemon lifecycle", () => {
-  it("starts and stops the daemon interval", () => {
-    daemon.start();
+  it("starts and stops the daemon interval", async () => {
+    await daemon.start();
     // Starting again should be a no-op
-    daemon.start();
+    await daemon.start();
     daemon.stop();
     // Stopping again should be a no-op
     daemon.stop();
@@ -123,7 +123,7 @@ describe("ManagerDaemon lifecycle", () => {
   });
 
   it("pause stops processing and persists state", async () => {
-    daemon.start();
+    await daemon.start();
     expect(daemon.getStatus().state).toBe("running");
 
     await daemon.pause();
@@ -137,7 +137,7 @@ describe("ManagerDaemon lifecycle", () => {
   });
 
   it("resume restarts the daemon after pause", async () => {
-    daemon.start();
+    await daemon.start();
     await daemon.pause();
     expect(daemon.getStatus().state).toBe("paused");
 
@@ -153,9 +153,9 @@ describe("ManagerDaemon lifecycle", () => {
     daemon.stop();
   });
 
-  it("stays paused on start if daemon_state has paused=true", () => {
+  it("stays paused on start if daemon_state has paused=true", async () => {
     db.prepare("INSERT OR REPLACE INTO daemon_state (key, value) VALUES ('paused', 'true')").run();
-    daemon.start();
+    await daemon.start();
     expect(daemon.getStatus().state).toBe("paused");
 
     // Clean up
@@ -1408,7 +1408,7 @@ describe("cleanupStaleState", () => {
     expect(row.status).toBe("idle");
   });
 
-  it("clears task assignments for agents without live processes", () => {
+  it("preserves task assignments for recovery (does not clear them)", () => {
     const agentId = createAgent("Dead Agent", "test-echo");
     const teamId = createTeamWithEntrypoint(agentId);
     const taskId = createRunningTask(teamId);
@@ -1421,22 +1421,54 @@ describe("cleanupStaleState", () => {
 
     daemon.cleanupStaleState();
 
+    // Task assignment should be preserved so recoverAllStaleTasks can find and recover it
     const row = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as {
       current_task_id: string | null;
     };
-    expect(row.current_task_id).toBeNull();
+    expect(row.current_task_id).toBe(taskId);
   });
 
-  it("is called on daemon start", () => {
+  it("is called on daemon start", async () => {
     const agentId = createAgent("Stale Agent", "test-echo");
     db.prepare("UPDATE agents SET process_pid = 999999, status = 'busy' WHERE id = ?").run(agentId);
 
-    daemon.start();
+    await daemon.start();
 
     const row = db.prepare("SELECT process_pid FROM agents WHERE id = ?").get(agentId) as {
       process_pid: number | null;
     };
     expect(row.process_pid).toBeNull();
+  });
+  it("recovers running tasks during start instead of destroying them", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+
+    // Start task normally, then simulate crash
+    await daemon.processTaskQueue();
+    daemon.getAgentManager().killAgent(agentId);
+    daemon.getAgentManager().getRunningAgents().delete(agentId);
+    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?").run(agentId);
+    daemon.stop();
+
+    // Create a fresh daemon (simulates restart)
+    const daemon2 = new ManagerDaemon(db);
+    await daemon2.start();
+
+    // Task should still be running (recovered, not failed)
+    const task = scheduler.getTask(taskId);
+    expect(task?.status).toBe("running");
+
+    // Agent should have task assigned
+    const agentRow = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as {
+      current_task_id: string | null;
+    };
+    expect(agentRow.current_task_id).toBe(taskId);
+
+    daemon2.stop();
+    // Kill recovered agent
+    try { daemon2.getAgentManager().killAgent(agentId); } catch {}
+    daemon2.getAgentManager().getRunningAgents().clear();
   });
 });
 
