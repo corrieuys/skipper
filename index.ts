@@ -5,7 +5,10 @@ import { registerTeamRoutes } from "./src/routes/teams";
 import { registerPageRoutes } from "./src/routes/pages";
 import { registerDaemonRoutes } from "./src/routes/daemon";
 import { ManagerDaemon } from "./src/agents/manager-daemon";
-import { closeDb } from "./src/db/connection";
+import { getDb, initializeDatabase, closeDb } from "./src/db/connection";
+
+const db = getDb();
+initializeDatabase(db);
 
 const daemon = new ManagerDaemon();
 

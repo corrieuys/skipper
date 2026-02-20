@@ -99,8 +99,9 @@ afterEach(() => {
     }
   }
   agentManager.getRunningAgents().clear();
-  // Remove all agent:exit listeners to avoid cross-test leaks
+  // Remove all event listeners to avoid cross-test leaks
   eventBus.removeAllListeners("agent:exit");
+  eventBus.removeAllListeners("agent:signal");
   db.close();
   try {
     unlinkSync(TEST_DB);
