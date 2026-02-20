@@ -116,6 +116,7 @@ export interface TaskData {
   priority: number;
   current_phase: number;
   team_id?: string;
+  phases?: { name: string; prompt: string }[];
   created_at: string;
   result?: unknown;
 }
@@ -180,14 +181,36 @@ export function taskDetailPage(task: TaskData): string {
       <div class="detail-grid">
         <div><strong>Status:</strong> <span class="badge badge-${task.status}">${task.status}</span></div>
         <div><strong>Priority:</strong> P${task.priority}</div>
-        <div><strong>Phase:</strong> ${task.current_phase}</div>
         <div><strong>Team:</strong> ${task.team_id ? escapeHtml(task.team_id) : "None"}</div>
         <div><strong>Created:</strong> ${escapeHtml(task.created_at)}</div>
       </div>
       ${task.description ? `<div class="detail-desc"><strong>Description:</strong><p>${escapeHtml(task.description)}</p></div>` : ""}
       ${task.result ? `<div class="detail-desc"><strong>Result:</strong><pre>${escapeHtml(JSON.stringify(task.result, null, 2))}</pre></div>` : ""}
-    </div>`,
+    </div>
+    ${phaseStepper(task.current_phase, task.phases)}`,
   );
+}
+
+function phaseStepper(currentPhase: number, phases?: { name: string; prompt: string }[]): string {
+  if (!phases || phases.length === 0) {
+    return `<div class="card"><strong>Phase:</strong> ${currentPhase}</div>`;
+  }
+
+  const steps = phases.map((phase, index) => {
+    const isDone = index < currentPhase;
+    const isActive = index === currentPhase;
+    const stateClass = isDone ? "phase-step-done" : isActive ? "phase-step-active" : "phase-step-pending";
+    const connector = index < phases.length - 1 ? `<div class="phase-connector${isDone ? " phase-connector-done" : ""}"></div>` : "";
+    return `<div class="phase-step ${stateClass}">
+      <div class="phase-circle">${isDone ? "&#10003;" : index + 1}</div>
+      <div class="phase-name">${escapeHtml(phase.name)}</div>
+    </div>${connector}`;
+  }).join("");
+
+  return `<h2>Phase Progress</h2>
+  <div class="card">
+    <div class="phase-stepper">${steps}</div>
+  </div>`;
 }
 
 // --- Agents ---
@@ -500,5 +523,15 @@ function baseStyles(): string {
     .escalation-question { margin-bottom: 0.5rem; }
     .escalation-response { margin-top: 0.5rem; padding: 0.5rem; background: #1a3a2a; border-radius: 4px; }
     .escalation-form textarea { margin-bottom: 0.5rem; }
+    .phase-stepper { display: flex; align-items: center; flex-wrap: wrap; gap: 0; padding: 0.5rem 0; }
+    .phase-step { display: flex; flex-direction: column; align-items: center; gap: 0.35rem; min-width: 80px; }
+    .phase-circle { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; border: 2px solid #30363d; background: #0d1117; color: #8b949e; }
+    .phase-name { font-size: 0.75rem; color: #8b949e; text-align: center; max-width: 90px; word-break: break-word; }
+    .phase-step-done .phase-circle { background: #1a3a2a; border-color: #3fb950; color: #3fb950; }
+    .phase-step-done .phase-name { color: #3fb950; }
+    .phase-step-active .phase-circle { background: #0d419d; border-color: #58a6ff; color: #58a6ff; box-shadow: 0 0 0 3px rgba(88,166,255,0.2); }
+    .phase-step-active .phase-name { color: #58a6ff; font-weight: bold; }
+    .phase-connector { flex: 1; height: 2px; background: #30363d; min-width: 20px; margin-bottom: 1.2rem; }
+    .phase-connector-done { background: #3fb950; }
   `;
 }

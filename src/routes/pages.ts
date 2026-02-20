@@ -67,6 +67,16 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(params.id) as Record<string, unknown> | null;
     if (!row) return html("<p>Task not found</p>");
     const task = parseRow(row, ["result", "orchestration_state"]) as unknown as TaskData;
+    if (task.team_id) {
+      const teamRow = db.prepare("SELECT phases FROM teams WHERE id = ?").get(task.team_id) as Record<string, unknown> | null;
+      if (teamRow && typeof teamRow.phases === "string") {
+        try {
+          task.phases = JSON.parse(teamRow.phases) as { name: string; prompt: string }[];
+        } catch {
+          task.phases = [];
+        }
+      }
+    }
     return html(taskDetailPage(task));
   });
 

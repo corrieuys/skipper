@@ -133,6 +133,85 @@ describe("taskDetailPage", () => {
     expect(html).toContain("P3");
     expect(html).toContain("Back to Tasks");
   });
+
+  it("shows plain phase number when no phases provided", () => {
+    const html = taskDetailPage({
+      id: "t1",
+      title: "Test Task",
+      status: "draft",
+      priority: 5,
+      current_phase: 0,
+      created_at: "2024-01-01",
+    });
+    expect(html).toContain("Phase:");
+    expect(html).toContain("0");
+    expect(html).not.toContain('class="phase-stepper"');
+  });
+
+  it("renders phase stepper when phases are provided", () => {
+    const html = taskDetailPage({
+      id: "t1",
+      title: "Test Task",
+      status: "running",
+      priority: 3,
+      current_phase: 1,
+      team_id: "team1",
+      phases: [
+        { name: "Planning", prompt: "Plan the work" },
+        { name: "Execution", prompt: "Do the work" },
+        { name: "Review", prompt: "Review the work" },
+      ],
+      created_at: "2024-01-01",
+    });
+    expect(html).toContain("Phase Progress");
+    expect(html).toContain("phase-stepper");
+    expect(html).toContain("Planning");
+    expect(html).toContain("Execution");
+    expect(html).toContain("Review");
+    expect(html).toContain("phase-step-done");
+    expect(html).toContain("phase-step-active");
+    expect(html).toContain("phase-step-pending");
+  });
+
+  it("marks completed phases as done and active phase correctly", () => {
+    const html = taskDetailPage({
+      id: "t1",
+      title: "Test Task",
+      status: "running",
+      priority: 5,
+      current_phase: 2,
+      phases: [
+        { name: "Alpha", prompt: "p1" },
+        { name: "Beta", prompt: "p2" },
+        { name: "Gamma", prompt: "p3" },
+        { name: "Delta", prompt: "p4" },
+      ],
+      created_at: "2024-01-01",
+    });
+    expect(html).toContain("Gamma");
+    // phases 0 and 1 are done, 2 is active, 3 is pending
+    // Match the step div elements specifically (not CSS rules)
+    const doneCount = (html.match(/class="phase-step phase-step-done"/g) || []).length;
+    const activeCount = (html.match(/class="phase-step phase-step-active"/g) || []).length;
+    const pendingCount = (html.match(/class="phase-step phase-step-pending"/g) || []).length;
+    expect(doneCount).toBe(2);
+    expect(activeCount).toBe(1);
+    expect(pendingCount).toBe(1);
+  });
+
+  it("escapes HTML in phase names", () => {
+    const html = taskDetailPage({
+      id: "t1",
+      title: "Test Task",
+      status: "draft",
+      priority: 5,
+      current_phase: 0,
+      phases: [{ name: '<script>alert(1)</script>', prompt: "xss" }],
+      created_at: "2024-01-01",
+    });
+    expect(html).not.toContain("<script>alert");
+    expect(html).toContain("&lt;script&gt;");
+  });
 });
 
 describe("agentsPage", () => {
