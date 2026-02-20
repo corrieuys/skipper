@@ -17,6 +17,7 @@ import {
 import type {
   DashboardData,
   TaskData,
+  TaskNoteData,
   AgentData,
   TeamData,
   TeamAgentData,
@@ -77,7 +78,8 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
         }
       }
     }
-    return html(taskDetailPage(task));
+    const notes = db.prepare("SELECT * FROM task_notes WHERE task_id = ? ORDER BY created_at").all(params.id) as TaskNoteData[];
+    return html(taskDetailPage(task, notes));
   });
 
   // Agents list

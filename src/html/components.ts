@@ -121,6 +121,14 @@ export interface TaskData {
   result?: unknown;
 }
 
+export interface TaskNoteData {
+  id: string;
+  task_id: string;
+  agent_id: string;
+  content: string;
+  created_at: string;
+}
+
 export function tasksPage(tasks: TaskData[]): string {
   return layout(
     "Tasks",
@@ -172,7 +180,7 @@ function taskTableRow(task: TaskData): string {
   </tr>`;
 }
 
-export function taskDetailPage(task: TaskData): string {
+export function taskDetailPage(task: TaskData, notes: TaskNoteData[] = []): string {
   return layout(
     task.title,
     `<a href="/tasks" hx-get="/tasks" hx-target="body" hx-push-url="true">&larr; Back to Tasks</a>
@@ -187,7 +195,18 @@ export function taskDetailPage(task: TaskData): string {
       ${task.description ? `<div class="detail-desc"><strong>Description:</strong><p>${escapeHtml(task.description)}</p></div>` : ""}
       ${task.result ? `<div class="detail-desc"><strong>Result:</strong><pre>${escapeHtml(JSON.stringify(task.result, null, 2))}</pre></div>` : ""}
     </div>
-    ${phaseStepper(task.current_phase, task.phases)}`,
+    ${phaseStepper(task.current_phase, task.phases)}
+
+    <h2>Notes</h2>
+    ${notes.length === 0
+      ? "<p class='muted'>No notes yet</p>"
+      : notes.map((note) => `<div class="card">
+      <div class="detail-grid">
+        <div><strong>Agent:</strong> <span class="muted">${escapeHtml(note.agent_id.slice(0, 8))}</span></div>
+        <div><strong>Time:</strong> <span class="muted">${escapeHtml(note.created_at)}</span></div>
+      </div>
+      <div class="detail-desc">${escapeHtml(note.content)}</div>
+    </div>`).join("")}`,
   );
 }
 

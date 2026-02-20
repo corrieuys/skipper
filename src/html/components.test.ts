@@ -212,6 +212,40 @@ describe("taskDetailPage", () => {
     expect(html).not.toContain("<script>alert");
     expect(html).toContain("&lt;script&gt;");
   });
+
+  it("shows empty state when no notes", () => {
+    const html = taskDetailPage(
+      { id: "t1", title: "Task", status: "running", priority: 5, current_phase: 0, created_at: "2024-01-01" },
+      [],
+    );
+    expect(html).toContain("Notes");
+    expect(html).toContain("No notes yet");
+  });
+
+  it("renders notes with agent, content, and timestamp", () => {
+    const html = taskDetailPage(
+      { id: "t1", title: "Task", status: "running", priority: 5, current_phase: 0, created_at: "2024-01-01" },
+      [
+        { id: "n1", task_id: "t1", agent_id: "agent-abc-12345678", content: "First note content", created_at: "2024-01-02T10:00:00" },
+        { id: "n2", task_id: "t1", agent_id: "agent-xyz-87654321", content: "Second note content", created_at: "2024-01-02T11:00:00" },
+      ],
+    );
+    expect(html).toContain("Notes");
+    expect(html).not.toContain("No notes yet");
+    expect(html).toContain("agent-ab"); // 8 chars of agent_id
+    expect(html).toContain("First note content");
+    expect(html).toContain("2024-01-02T10:00:00");
+    expect(html).toContain("Second note content");
+  });
+
+  it("escapes HTML in note content", () => {
+    const html = taskDetailPage(
+      { id: "t1", title: "Task", status: "running", priority: 5, current_phase: 0, created_at: "2024-01-01" },
+      [{ id: "n1", task_id: "t1", agent_id: "agent-id-12345678", content: '<script>alert("xss")</script>', created_at: "2024-01-01" }],
+    );
+    expect(html).not.toContain("<script>alert");
+    expect(html).toContain("&lt;script&gt;");
+  });
 });
 
 describe("agentsPage", () => {
