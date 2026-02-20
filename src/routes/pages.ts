@@ -14,6 +14,7 @@ import {
   escalationsPage,
   terminalOutputFragment,
   auditEventsPage,
+  logsPage,
   helpPage,
 } from "../html/components";
 import type {
@@ -28,6 +29,8 @@ import type {
   ArtifactData,
   AuditEventData,
   AuditEventFilters,
+  LogEntryData,
+  LogFilters,
 } from "../html/components";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 
@@ -199,6 +202,33 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     // Redirect back to escalations page
     const rows = db.prepare("SELECT * FROM escalations ORDER BY created_at DESC").all() as EscalationData[];
     return html(escalationsPage(rows));
+  });
+
+  // Agent Logs page
+  addRoute("GET", "/logs", (req) => {
+    const url = new URL(req.url);
+    const filters: LogFilters = {};
+    const conditions: string[] = [];
+    const values: unknown[] = [];
+
+    const agentId = url.searchParams.get("agent_id");
+    if (agentId) { filters.agent_id = agentId; conditions.push("t.agent_id = ?"); values.push(agentId); }
+
+    const stream = url.searchParams.get("stream");
+    if (stream) { filters.stream = stream; conditions.push("t.stream = ?"); values.push(stream); }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const entries = db.prepare(
+      `SELECT t.id, t.agent_id, a.name as agent_name, t.session_id, t.stream, t.data, t.sequence, t.created_at
+       FROM terminal_outputs t
+       JOIN agents a ON t.agent_id = a.id
+       ${where}
+       ORDER BY t.id DESC LIMIT 200`,
+    ).all(...values) as LogEntryData[];
+
+    const agents = db.prepare("SELECT id, name FROM agents ORDER BY name").all() as { id: string; name: string }[];
+
+    return html(logsPage(entries, filters, agents));
   });
 
   // Help page

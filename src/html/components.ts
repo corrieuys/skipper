@@ -27,6 +27,7 @@ const navItems: { href: string; label: string }[] = [
   { href: "/agents", label: "Agents" },
   { href: "/teams", label: "Teams" },
   { href: "/escalations", label: "Escalations" },
+  { href: "/logs", label: "Logs" },
   { href: "/audit-events", label: "Events" },
   { href: "/help", label: "Help" },
 ];
@@ -701,6 +702,76 @@ function auditEventRow(e: AuditEventData): string {
     <td>${e.source_agent_id ? escapeHtml(e.source_agent_id.slice(0, 8)) : "-"}</td>
     <td>${e.task_id ? escapeHtml(e.task_id.slice(0, 8)) : "-"}</td>
     <td class="muted"><code>${escapeHtml(payload)}</code></td>
+    <td>${formatTimestamp(e.created_at)}</td>
+  </tr>`;
+}
+
+// --- Logs ---
+
+export interface LogEntryData {
+  id: number;
+  agent_id: string;
+  agent_name: string;
+  session_id: string | null;
+  stream: string;
+  data: string;
+  sequence: number;
+  created_at: string;
+}
+
+export interface LogFilters {
+  agent_id?: string;
+  stream?: string;
+}
+
+export function logsPage(entries: LogEntryData[], filters: LogFilters = {}, agents: { id: string; name: string }[] = []): string {
+  return layout(
+    "Agent Logs",
+    `<h1>Agent Logs</h1>
+
+    <div class="card">
+      <form hx-get="/logs" hx-target="body" hx-push-url="true" class="inline-form" style="flex-wrap:wrap">
+        <label>Agent
+          <select name="agent_id">
+            <option value="">All agents</option>
+            ${agents.map((a) => `<option value="${escapeHtml(a.id)}"${filters.agent_id === a.id ? " selected" : ""}>${escapeHtml(a.name)}</option>`).join("")}
+          </select>
+        </label>
+        <label>Stream
+          <select name="stream">
+            <option value="">All streams</option>
+            <option value="stdout"${filters.stream === "stdout" ? " selected" : ""}>stdout</option>
+            <option value="stderr"${filters.stream === "stderr" ? " selected" : ""}>stderr</option>
+          </select>
+        </label>
+        <button type="submit">Filter</button>
+        <a href="/logs" hx-get="/logs" hx-target="body" hx-push-url="true" style="margin-left:0.5rem">Clear</a>
+      </form>
+    </div>
+
+    <div id="log-entries">
+      ${logsTableFragment(entries)}
+    </div>`,
+    "/logs",
+  );
+}
+
+export function logsTableFragment(entries: LogEntryData[]): string {
+  if (entries.length === 0) {
+    return `<div class="empty-state"><div class="empty-state-icon">&#128196;</div><p>No log entries found</p><p class="muted">Logs appear here when agents produce output</p></div>`;
+  }
+  return `<table class="data-table">
+    <thead><tr><th>Agent</th><th>Stream</th><th>Output</th><th>Timestamp</th></tr></thead>
+    <tbody>${entries.map(logEntryRow).join("")}</tbody>
+  </table>`;
+}
+
+function logEntryRow(e: LogEntryData): string {
+  const truncated = e.data.length > 200 ? e.data.slice(0, 200) + "…" : e.data;
+  return `<tr>
+    <td><a href="/agents/${escapeHtml(e.agent_id)}" hx-get="/agents/${escapeHtml(e.agent_id)}" hx-target="body" hx-push-url="true">${escapeHtml(e.agent_name)}</a></td>
+    <td><span class="badge badge-${e.stream === "stderr" ? "error" : "running"}">${escapeHtml(e.stream)}</span></td>
+    <td><code class="terminal-${escapeHtml(e.stream)}">${escapeHtml(truncated)}</code></td>
     <td>${formatTimestamp(e.created_at)}</td>
   </tr>`;
 }
