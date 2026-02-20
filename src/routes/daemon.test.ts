@@ -41,11 +41,11 @@ describe("GET /api/daemon/status", () => {
 });
 
 describe("POST /api/daemon/pause", () => {
-  it("returns pausing status", async () => {
+  it("returns paused status", async () => {
     const res = await fetch(`${baseUrl}/api/daemon/pause`, { method: "POST" });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.status).toBe("pausing");
+    expect(body.status).toBe("paused");
   });
 });
 

@@ -69,6 +69,9 @@ export class ManagerDaemon {
   private exitHandlerRegistered = false;
   private phaseCompleteHandled: Set<string> = new Set(); // "taskId:phase" dedup
   private pendingRegressions: Map<string, PendingRegression> = new Map(); // agentId -> regression
+  private _paused = false;
+  private _pauseRequested = false;
+  private _tickRunning = false;
 
   constructor(db?: Database) {
     this.db = db ?? getDb();
@@ -96,6 +99,13 @@ export class ManagerDaemon {
   start(): void {
     if (this.intervalId) return;
 
+    // Check if we were paused before restart
+    if (this.loadPausedState()) {
+      this._paused = true;
+      this._pauseRequested = false;
+      return;
+    }
+
     this.cleanupStaleState();
     this.tick();
     this.intervalId = setInterval(() => this.tick(), DAEMON_INTERVAL_MS);
@@ -108,76 +118,167 @@ export class ManagerDaemon {
     }
   }
 
-  getStatus(): { state: "running" | "paused" | "stopped"; uptime: number } {
-    const state = this.intervalId ? "running" : "stopped";
+  getStatus(): { state: "running" | "pausing" | "paused" | "stopped"; uptime: number } {
+    let state: "running" | "pausing" | "paused" | "stopped";
+    if (this._paused) {
+      state = "paused";
+    } else if (this._pauseRequested) {
+      state = "pausing";
+    } else if (this.intervalId) {
+      state = "running";
+    } else {
+      state = "stopped";
+    }
     return { state, uptime: process.uptime() };
   }
 
-  pause(): void {
-    // Stub: full cooperative pause will be implemented in STORY-R03
-    this.stop();
+  pause(): Promise<void> {
+    if (this._paused) return Promise.resolve();
+    this._pauseRequested = true;
+
+    // If no tick is running, enter paused state immediately
+    if (!this._tickRunning) {
+      this.enterPausedState();
+      return Promise.resolve();
+    }
+
+    // Wait for the current tick to finish
+    return new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (!this._tickRunning) {
+          clearInterval(check);
+          resolve();
+        }
+      }, 50);
+    });
   }
 
   resume(): void {
-    // Stub: full cooperative resume will be implemented in STORY-R03
-    this.start();
+    if (!this._paused && !this._pauseRequested) return;
+
+    this._paused = false;
+    this._pauseRequested = false;
+    this.deletePausedState();
+
+    // Restart the interval
+    if (!this.intervalId) {
+      this.tick();
+      this.intervalId = setInterval(() => this.tick(), DAEMON_INTERVAL_MS);
+    }
+  }
+
+  private enterPausedState(): void {
+    this._paused = true;
+    this._pauseRequested = false;
+    this.stop();
+    this.persistPausedState();
+  }
+
+  private persistPausedState(): void {
+    try {
+      this.db
+        .prepare("INSERT OR REPLACE INTO daemon_state (key, value) VALUES ('paused', 'true')")
+        .run();
+    } catch {
+      // Best-effort persistence
+    }
+  }
+
+  private deletePausedState(): void {
+    try {
+      this.db
+        .prepare("DELETE FROM daemon_state WHERE key = 'paused'")
+        .run();
+    } catch {
+      // Best-effort
+    }
+  }
+
+  private loadPausedState(): boolean {
+    try {
+      const row = this.db
+        .prepare("SELECT value FROM daemon_state WHERE key = 'paused'")
+        .get() as { value: string } | null;
+      return row?.value === "true";
+    } catch {
+      return false;
+    }
   }
 
   async tick(): Promise<void> {
+    this._tickRunning = true;
     const runId = this.recordDaemonRun();
     let tasksProcessed = 0;
     let agentsChecked = 0;
     const errors: string[] = [];
 
-    // 1. Recover stale tasks (running tasks with no live agent)
     try {
-      await this.recoverAllStaleTasks();
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
-    }
+      // Health checks and stuck detection always run, even when paused
+      try {
+        this.checkProcessHealth();
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
 
-    // 2. Process task queue (pick up new approved tasks)
-    try {
-      const result = await this.processTaskQueue();
-      tasksProcessed = result.processed;
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
-    }
+      try {
+        this.runStuckDetection();
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
 
-    // 3. Check stale delegations
-    try {
-      this.checkStaleDelegations();
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
-    }
+      // If paused or pause requested, skip task processing
+      if (this._paused || this._pauseRequested) {
+        if (this._pauseRequested) {
+          this.enterPausedState();
+        }
+        return;
+      }
 
-    // 4. Check agent count
-    try {
-      agentsChecked = this.agentManager.getRunningAgents().size;
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
-    }
+      // 1. Recover stale tasks (running tasks with no live agent)
+      try {
+        await this.recoverAllStaleTasks();
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
 
-    // 5. Persist checkpoints for running tasks
-    try {
-      this.persistCheckpoints();
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
-    }
+      if (this._pauseRequested) { this.enterPausedState(); return; }
 
-    try {
-      this.checkProcessHealth();
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
-    }
+      // 2. Process task queue (pick up new approved tasks)
+      try {
+        const result = await this.processTaskQueue();
+        tasksProcessed = result.processed;
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
 
-    try {
-      this.runStuckDetection();
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
-    }
+      if (this._pauseRequested) { this.enterPausedState(); return; }
 
-    this.completeDaemonRun(runId, tasksProcessed, agentsChecked, errors);
+      // 3. Check stale delegations
+      try {
+        this.checkStaleDelegations();
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
+
+      if (this._pauseRequested) { this.enterPausedState(); return; }
+
+      // 4. Check agent count
+      try {
+        agentsChecked = this.agentManager.getRunningAgents().size;
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
+
+      // 5. Persist checkpoints for running tasks
+      try {
+        this.persistCheckpoints();
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      this.completeDaemonRun(runId, tasksProcessed, agentsChecked, errors);
+      this._tickRunning = false;
+    }
   }
 
   async processTaskQueue(): Promise<{ processed: number }> {

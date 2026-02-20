@@ -121,6 +121,61 @@ describe("ManagerDaemon lifecycle", () => {
     expect(daemon.getAgentManager()).toBeInstanceOf(AgentManager);
     expect(daemon.getTaskScheduler()).toBeInstanceOf(TaskScheduler);
   });
+
+  it("pause stops processing and persists state", async () => {
+    daemon.start();
+    expect(daemon.getStatus().state).toBe("running");
+
+    await daemon.pause();
+    expect(daemon.getStatus().state).toBe("paused");
+
+    // Check paused state persisted to daemon_state table
+    const row = db
+      .prepare("SELECT value FROM daemon_state WHERE key = 'paused'")
+      .get() as { value: string } | null;
+    expect(row?.value).toBe("true");
+  });
+
+  it("resume restarts the daemon after pause", async () => {
+    daemon.start();
+    await daemon.pause();
+    expect(daemon.getStatus().state).toBe("paused");
+
+    daemon.resume();
+    expect(daemon.getStatus().state).toBe("running");
+
+    // Paused state should be cleared
+    const row = db
+      .prepare("SELECT value FROM daemon_state WHERE key = 'paused'")
+      .get() as { value: string } | null;
+    expect(row).toBeNull();
+
+    daemon.stop();
+  });
+
+  it("stays paused on start if daemon_state has paused=true", () => {
+    db.prepare("INSERT OR REPLACE INTO daemon_state (key, value) VALUES ('paused', 'true')").run();
+    daemon.start();
+    expect(daemon.getStatus().state).toBe("paused");
+
+    // Clean up
+    daemon.resume();
+    daemon.stop();
+  });
+
+  it("tick only runs health checks when paused", async () => {
+    await daemon.pause();
+
+    // Tick should still work but skip task processing
+    await daemon.tick();
+
+    // Should still record a daemon run
+    const runs = db
+      .prepare("SELECT * FROM manager_runs")
+      .all() as { tasks_processed: number }[];
+    expect(runs.length).toBeGreaterThan(0);
+    expect(runs[runs.length - 1].tasks_processed).toBe(0);
+  });
 });
 
 describe("tick", () => {
