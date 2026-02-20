@@ -3,6 +3,7 @@ import type { Subprocess, FileSink } from "bun";
 import { getDb } from "../db/connection";
 import { getAgentTypeDefinition } from "./types";
 import { eventBus } from "../events/bus";
+import type { AgentExitEvent } from "../events/bus";
 
 export interface Agent {
   id: string;
@@ -33,6 +34,7 @@ export interface RunningAgent {
   stderrBuffer: string;
   outputSequence: number;
   sessionId: string | null;
+  drainedStreams: number;
 }
 
 interface AgentRow {
@@ -150,6 +152,51 @@ export class AgentManager {
     return this.respawningAgents.has(agentId);
   }
 
+  waitForExit(agentId: string, timeoutMs: number = 5000): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        eventBus.off("agent:exit", handler);
+        resolve();
+      }, timeoutMs);
+
+      const handler = (event: AgentExitEvent) => {
+        if (event.agentId === agentId) {
+          clearTimeout(timer);
+          eventBus.off("agent:exit", handler);
+          resolve();
+        }
+      };
+
+      eventBus.on("agent:exit", handler);
+
+      // If agent already exited, resolve immediately
+      if (!this.agents.has(agentId)) {
+        clearTimeout(timer);
+        eventBus.off("agent:exit", handler);
+        resolve();
+      }
+    });
+  }
+
+  waitForStreamsDrained(agentId: string, timeoutMs: number = 5000): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        eventBus.off("agent:streams_drained", handler);
+        resolve();
+      }, timeoutMs);
+
+      const handler = (event: { agentId: string }) => {
+        if (event.agentId === agentId) {
+          clearTimeout(timer);
+          eventBus.off("agent:streams_drained", handler);
+          resolve();
+        }
+      };
+
+      eventBus.on("agent:streams_drained", handler);
+    });
+  }
+
   async spawnAgent(agentId: string, options: SpawnAgentOptions): Promise<RunningAgent> {
     const agent = this.getAgent(agentId);
     if (!agent) {
@@ -203,6 +250,7 @@ export class AgentManager {
       stderrBuffer: "",
       outputSequence: 0,
       sessionId: options.sessionId ?? null,
+      drainedStreams: 0,
     };
 
     // Track in memory
@@ -276,6 +324,10 @@ export class AgentManager {
       // Stream closed or errored - expected on process exit
     } finally {
       reader.releaseLock();
+      runningAgent.drainedStreams++;
+      if (runningAgent.drainedStreams >= 2) {
+        eventBus.emit("agent:streams_drained", { agentId: runningAgent.id });
+      }
     }
   }
 
@@ -406,8 +458,7 @@ export class AgentManager {
     if (this.agents.has(agentId)) {
       this.respawningAgents.add(agentId);
       this.killAgent(agentId);
-      // Wait for process to exit
-      await new Promise((r) => setTimeout(r, 200));
+      await this.waitForExit(agentId);
     }
 
     // Spawn new process with --resume

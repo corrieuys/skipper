@@ -351,7 +351,8 @@ describe("handleAgentExit", () => {
 
     // Wait for grace period
     eventBus.emit("agent:exit", exitEvent);
-    await new Promise((r) => setTimeout(r, 1500));
+    eventBus.emit("agent:streams_drained", { agentId: exitEvent.agentId });
+    await new Promise((r) => setTimeout(r, 100));
 
     const task = scheduler.getTask(taskId);
     expect(task?.status).toBe("completed");
@@ -378,7 +379,8 @@ describe("handleAgentExit", () => {
     };
 
     eventBus.emit("agent:exit", exitEvent);
-    await new Promise((r) => setTimeout(r, 1500));
+    eventBus.emit("agent:streams_drained", { agentId: exitEvent.agentId });
+    await new Promise((r) => setTimeout(r, 100));
 
     const task = scheduler.getTask(taskId);
     expect(task?.status).toBe("failed");
@@ -399,7 +401,8 @@ describe("handleAgentExit", () => {
     };
 
     eventBus.emit("agent:exit", exitEvent);
-    await new Promise((r) => setTimeout(r, 1500));
+    eventBus.emit("agent:streams_drained", { agentId: exitEvent.agentId });
+    await new Promise((r) => setTimeout(r, 100));
 
     // Task should still be running (not completed)
     const task = scheduler.getTask(taskId);
@@ -421,7 +424,8 @@ describe("handleAgentExit", () => {
     };
 
     eventBus.emit("agent:exit", exitEvent);
-    await new Promise((r) => setTimeout(r, 1500));
+    eventBus.emit("agent:streams_drained", { agentId: exitEvent.agentId });
+    await new Promise((r) => setTimeout(r, 100));
 
     // Task should still be running
     const task = scheduler.getTask(taskId);
@@ -440,7 +444,8 @@ describe("handleAgentExit", () => {
 
     // Should not throw
     eventBus.emit("agent:exit", exitEvent);
-    await new Promise((r) => setTimeout(r, 1500));
+    eventBus.emit("agent:streams_drained", { agentId: exitEvent.agentId });
+    await new Promise((r) => setTimeout(r, 100));
   });
 
   it("advances phase on successful exit when more phases remain", async () => {
@@ -467,7 +472,8 @@ describe("handleAgentExit", () => {
     };
 
     eventBus.emit("agent:exit", exitEvent);
-    await new Promise((r) => setTimeout(r, 1500));
+    eventBus.emit("agent:streams_drained", { agentId: exitEvent.agentId });
+    await new Promise((r) => setTimeout(r, 100));
 
     // Task should have advanced to phase 1 (not completed)
     task = scheduler.getTask(taskId);
@@ -496,7 +502,8 @@ describe("handleAgentExit", () => {
     };
 
     eventBus.emit("agent:exit", exitEvent);
-    await new Promise((r) => setTimeout(r, 1500));
+    eventBus.emit("agent:streams_drained", { agentId: exitEvent.agentId });
+    await new Promise((r) => setTimeout(r, 100));
 
     const task = scheduler.getTask(taskId);
     expect(task?.status).toBe("completed");
@@ -811,7 +818,8 @@ describe("pending regression in exit handler", () => {
     };
 
     eventBus.emit("agent:exit", exitEvent);
-    await new Promise((r) => setTimeout(r, 1500));
+    eventBus.emit("agent:streams_drained", { agentId: exitEvent.agentId });
+    await new Promise((r) => setTimeout(r, 100));
 
     // Pending regression should be consumed
     expect(daemon.getPendingRegression(agentId)).toBeUndefined();
@@ -1015,7 +1023,8 @@ describe("child exit handling for delegations", () => {
     };
 
     eventBus.emit("agent:exit", exitEvent);
-    await new Promise((r) => setTimeout(r, 1500));
+    eventBus.emit("agent:streams_drained", { agentId: exitEvent.agentId });
+    await new Promise((r) => setTimeout(r, 100));
 
     // Delegation should be completed
     const delegation = daemon.getActiveDelegationForChild(childId);
@@ -1044,7 +1053,8 @@ describe("child exit handling for delegations", () => {
     };
 
     eventBus.emit("agent:exit", exitEvent);
-    await new Promise((r) => setTimeout(r, 1500));
+    eventBus.emit("agent:streams_drained", { agentId: exitEvent.agentId });
+    await new Promise((r) => setTimeout(r, 100));
 
     // Delegation should be failed
     const allDelegations = db.prepare("SELECT * FROM delegations WHERE child_agent_id = ?").all(childId) as { status: string; result: string }[];
