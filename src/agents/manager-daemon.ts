@@ -5,8 +5,9 @@ import { PromptBuilder } from "./prompt-builder";
 import { TaskScheduler } from "../tasks/scheduler";
 import { TeamManager } from "../teams/manager";
 import { StateTracker } from "./state-tracker";
+import { EscalationManager } from "../escalations/manager";
 import { eventBus } from "../events/bus";
-import type { AgentExitEvent } from "../events/bus";
+import type { AgentExitEvent, AgentSignalEvent } from "../events/bus";
 import { logError } from "../logging";
 
 import { DaemonLoop } from "../orchestrator/tick-loop";
@@ -32,7 +33,9 @@ export class ManagerDaemon {
   private agentManager: AgentManager;
   private taskScheduler: TaskScheduler;
   private stateTracker: StateTracker;
+  private escalationManager: EscalationManager;
   private exitHandlerRegistered = false;
+  private signalHandlerRegistered = false;
 
   // Orchestrator modules
   private daemonLoop: DaemonLoop;
@@ -139,6 +142,9 @@ export class ManagerDaemon {
       (childAgentId: string) => this.delegationManager.getActiveDelegationForChild(childAgentId),
     );
 
+    // Create EscalationManager
+    this.escalationManager = new EscalationManager(this.db, this.agentManager);
+
     // Create DaemonLoop (orchestrates all modules)
     this.daemonLoop = new DaemonLoop(
       this.db,
@@ -150,6 +156,7 @@ export class ManagerDaemon {
     );
 
     this.registerExitHandler();
+    this.registerSignalHandler();
   }
 
   // --- Expose for testing ---
@@ -184,6 +191,10 @@ export class ManagerDaemon {
 
   getHealthMonitor(): HealthMonitor {
     return this.healthMonitor;
+  }
+
+  getEscalationManager(): EscalationManager {
+    return this.escalationManager;
   }
 
   getDaemonLoop(): DaemonLoop {
@@ -324,6 +335,122 @@ export class ManagerDaemon {
     });
   }
 
+  private registerSignalHandler(): void {
+    if (this.signalHandlerRegistered) return;
+    this.signalHandlerRegistered = true;
+
+    eventBus.on("agent:signal", (event: AgentSignalEvent) => {
+      try {
+        this.handleAgentSignal(event);
+      } catch (err) {
+        logError(this.db, "agent_signal_handler", { agentId: event.agentId, signalType: event.signalType }, err);
+      }
+    });
+  }
+
+  private handleAgentSignal(event: AgentSignalEvent): void {
+    switch (event.signalType) {
+      case "delegate":
+        if (event.targetAgent && event.content) {
+          this.delegationManager.handleDelegation(event.agentId, event.targetAgent, event.content)
+            .catch((err) => logError(this.db, "delegation_signal", { agentId: event.agentId, targetAgent: event.targetAgent }, err));
+        }
+        break;
+
+      case "delegate_complete":
+        if (event.content) {
+          this.delegationManager.handleDelegateComplete(event.agentId, event.content);
+        }
+        break;
+
+      case "escalate":
+        if (event.content) {
+          this.escalationManager.handleEscalation(event.agentId, event.content);
+        }
+        break;
+
+      case "note":
+        if (event.content) {
+          this.handleNote(event.agentId, event.content);
+        }
+        break;
+
+      case "phase_complete":
+        this.phaseManager.handlePhaseComplete(event.agentId);
+        break;
+
+      case "phase_regression":
+        if (event.targetPhase !== undefined && event.reason) {
+          this.phaseManager.handlePhaseRegression(event.agentId, event.targetPhase, event.reason);
+        }
+        break;
+
+      case "message":
+        // Agent-to-agent messages: log to messages table for audit trail
+        if (event.targetAgent && event.content) {
+          try {
+            // targetAgent may be an agent name — resolve to ID
+            const targetRow = this.db
+              .prepare("SELECT id FROM agents WHERE id = ? OR name = ? LIMIT 1")
+              .get(event.targetAgent, event.targetAgent) as { id: string } | null;
+            if (!targetRow) break;
+            const agentRow = this.db
+              .prepare("SELECT current_task_id FROM agents WHERE id = ?")
+              .get(event.agentId) as { current_task_id: string | null } | null;
+            this.db
+              .prepare(
+                "INSERT INTO messages (id, from_agent_id, to_agent_id, task_id, type, content) VALUES (?, ?, ?, ?, 'agent', ?)",
+              )
+              .run(crypto.randomUUID(), event.agentId, targetRow.id, agentRow?.current_task_id ?? null, event.content);
+          } catch (err) {
+            logError(this.db, "message_store", { agentId: event.agentId, targetAgent: event.targetAgent }, err);
+          }
+        }
+        break;
+
+      case "task_complete":
+        // Explicit task completion signal — complete the task immediately
+        if (event.taskId) {
+          try {
+            this.taskScheduler.completeTask(event.taskId);
+          } catch (err) {
+            logError(this.db, "task_complete_signal", { agentId: event.agentId, taskId: event.taskId }, err);
+          }
+        }
+        break;
+
+      default:
+        // Unknown signal type — ignore
+        break;
+    }
+  }
+
+  private handleNote(agentId: string, content: string): void {
+    const agentRow = this.db
+      .prepare("SELECT current_task_id FROM agents WHERE id = ?")
+      .get(agentId) as { current_task_id: string | null } | null;
+
+    if (!agentRow?.current_task_id) return;
+
+    try {
+      const noteId = crypto.randomUUID();
+      this.db
+        .prepare(
+          "INSERT INTO task_notes (id, task_id, agent_id, content) VALUES (?, ?, ?, ?)",
+        )
+        .run(noteId, agentRow.current_task_id, agentId, content);
+
+      eventBus.emit("task:note_added", {
+        noteId,
+        taskId: agentRow.current_task_id,
+        agentId,
+        content,
+      });
+    } catch (err) {
+      logError(this.db, "note_create", { agentId, method: "handleNote" }, err);
+    }
+  }
+
   private handleAgentExit(event: AgentExitEvent): void {
     if (event.isRespawn) return;
     if (event.hasDelegation) return;
@@ -344,6 +471,13 @@ export class ManagerDaemon {
       const taskId = agentRow.current_task_id;
       const task = this.taskScheduler.getTask(taskId);
       if (!task || task.status !== "running") return;
+
+      // Don't complete/advance if this agent has an active delegation as parent
+      const parentDelegation = this.delegationManager.getActiveDelegationForParent(event.agentId);
+      if (parentDelegation) {
+        // Parent exited while delegation is in progress — wait for child to finish
+        return;
+      }
 
       if (event.code === 0) {
         this.phaseManager.handleSuccessfulExit(task, event.agentId);

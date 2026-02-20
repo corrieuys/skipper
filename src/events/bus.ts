@@ -52,10 +52,21 @@ export interface AgentStreamsDrainedEvent {
   agentId: string;
 }
 
+export interface AgentSignalEvent {
+  agentId: string;
+  signalType: string;
+  content?: string;
+  targetAgent?: string;
+  taskId?: string;
+  targetPhase?: number;
+  reason?: string;
+}
+
 export interface EventMap {
   "agent:output": [AgentOutputEvent];
   "agent:exit": [AgentExitEvent];
   "agent:streams_drained": [AgentStreamsDrainedEvent];
+  "agent:signal": [AgentSignalEvent];
   "agent:state_changed": [AgentStateChangedEvent];
   "escalation:created": [EscalationCreatedEvent];
   "escalation:resolved": [EscalationResolvedEvent];

@@ -44,7 +44,7 @@ function parseRow(row: Record<string, unknown>, jsonFields: string[]): Record<st
   return result;
 }
 
-export function registerPageRoutes(daemon?: ManagerDaemon): void {
+export function registerPageRoutes(daemon: ManagerDaemon): void {
   const db = getDb();
 
   // Dashboard
@@ -128,9 +128,13 @@ export function registerPageRoutes(daemon?: ManagerDaemon): void {
     if (!body.response) {
       return Response.json({ error: "response is required" }, { status: 400 });
     }
-    db.prepare(
-      "UPDATE escalations SET response = ?, status = 'resolved', resolved_at = datetime('now') WHERE id = ?",
-    ).run(body.response, params.id);
+
+    try {
+      await daemon.getEscalationManager().resolveEscalation(params.id, body.response);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      return Response.json({ error: message }, { status: 400 });
+    }
 
     // Redirect back to escalations page
     const rows = db.prepare("SELECT * FROM escalations ORDER BY created_at DESC").all() as EscalationData[];

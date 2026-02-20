@@ -7,6 +7,7 @@ import { eventBus } from "../events/bus";
 import { logError } from "../logging";
 
 const MAX_DELEGATION_DEPTH = 3;
+const MAX_DELEGATIONS_PER_PARENT = 3;
 const DELEGATION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 export interface Delegation {
@@ -55,6 +56,9 @@ export class DelegationManager {
       return null;
     }
 
+    // Guard: no self-delegation
+    if (parentAgentId === childAgentId) return null;
+
     const childAgent = this.agentManager.getAgent(childAgentId);
     if (!childAgent) return null;
 
@@ -65,6 +69,17 @@ export class DelegationManager {
 
     const existingDelegation = this.getActiveDelegationForParent(parentAgentId);
     if (existingDelegation) return null;
+
+    // Guard: limit total delegations per parent per task to prevent infinite loops
+    const totalDelegations = this.getDelegationCountForParent(parentAgentId, taskId);
+    if (totalDelegations >= MAX_DELEGATIONS_PER_PARENT) {
+      this.taskScheduler.failTask(
+        taskId,
+        `Agent "${parentAgent.name}" exceeded maximum delegations (${MAX_DELEGATIONS_PER_PARENT}) for this task`,
+      );
+      this.agentManager.killAgent(parentAgentId);
+      return null;
+    }
 
     const delegationId = crypto.randomUUID();
     this.db
@@ -343,6 +358,18 @@ export class DelegationManager {
       )
       .get(agentId, taskId, taskId) as { max_depth: number | null } | null;
     return rows?.max_depth ?? 0;
+  }
+
+  // Counts ALL delegations (any status) to prevent infinite loops where
+  // a parent is resumed and re-delegates repeatedly. Active-only counting
+  // would not work because each delegation completes before the parent resumes.
+  private getDelegationCountForParent(parentAgentId: string, taskId: string): number {
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) as count FROM delegations WHERE parent_agent_id = ? AND task_id = ?",
+      )
+      .get(parentAgentId, taskId) as { count: number };
+    return row.count;
   }
 
   private agentsInSameTeam(agentA: string, agentB: string): boolean {

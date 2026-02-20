@@ -313,10 +313,24 @@ export class AgentManager {
           sequence: seq,
         });
 
-        // Buffer stdout for line-based parsing
+        // Buffer stdout for line-based parsing and signal detection
         if (streamType === "stdout") {
           runningAgent.stdoutBuffer += text;
-          this.processStdoutBuffer(runningAgent);
+          const lines = this.processStdoutBuffer(runningAgent);
+          for (const line of lines) {
+            const signal = this.parseAgentOutput(runningAgent.id, line);
+            if (signal.type !== "text" && signal.type !== "json") {
+              eventBus.emit("agent:signal", {
+                agentId: runningAgent.id,
+                signalType: signal.type,
+                content: signal.content,
+                targetAgent: signal.targetAgent,
+                taskId: signal.taskId,
+                targetPhase: signal.targetPhase,
+                reason: signal.reason,
+              });
+            }
+          }
         } else {
           runningAgent.stderrBuffer += text;
         }
