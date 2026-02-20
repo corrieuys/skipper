@@ -116,6 +116,16 @@ describe("tasksPage", () => {
     expect(html).toContain('name="title"');
     expect(html).toContain('name="priority"');
   });
+
+  it("renders team dropdown options", () => {
+    const html = tasksPage([], [
+      { id: "team-1", name: "Platform Team" },
+      { id: "team-2", name: "UX Team" },
+    ]);
+    expect(html).toContain('name="teamId"');
+    expect(html).toContain("Platform Team");
+    expect(html).toContain("UX Team");
+  });
 });
 
 describe("taskDetailPage", () => {
@@ -480,6 +490,16 @@ describe("teamDetailPage", () => {
     expect(html).toContain("Edit Team");
     expect(html).toContain('hx-post="/api/teams/t1"');
     expect(html).toContain("Save Changes");
+  });
+
+  it("renders add-agent dropdown options", () => {
+    const html = teamDetailPage(
+      { id: "t1", name: "Alpha", entrypoint_agent_id: null, phases: [] },
+      [],
+      [{ id: "a2", name: "QA Agent" }],
+    );
+    expect(html).toContain("Select an agent");
+    expect(html).toContain("QA Agent");
   });
 
   it("renders phases list when phases exist", () => {

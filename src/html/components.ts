@@ -184,6 +184,7 @@ export interface TaskData {
   priority: number;
   current_phase: number;
   team_id?: string;
+  team_name?: string;
   created_at: string;
   result?: unknown;
   phases?: { name: string; prompt: string }[];
@@ -193,6 +194,7 @@ export interface TaskNoteData {
   id: string;
   task_id: string;
   agent_id: string;
+  agent_name?: string;
   content: string;
   created_at: string;
 }
@@ -201,6 +203,8 @@ export interface DelegationData {
   id: string;
   parent_agent_id: string;
   child_agent_id: string;
+  parent_agent_name?: string;
+  child_agent_name?: string;
   task_id: string;
   prompt: string;
   result: string | null;
@@ -213,11 +217,17 @@ export interface ArtifactData {
   id: string;
   task_id: string;
   agent_id: string;
+  agent_name?: string;
   name: string;
   type: string;
   content: string | null;
   path: string | null;
   created_at: string;
+}
+
+export interface TeamOptionData {
+  id: string;
+  name: string;
 }
 
 export interface AuditEventData {
@@ -239,12 +249,12 @@ export function taskListFragment(tasks: TaskData[]): string {
   return tasks.length === 0
     ? `<div class="empty-state"><div class="empty-state-icon">&#128203;</div><p>No tasks yet</p><p class="muted">Create your first task to get started</p></div>`
     : `<table class="data-table">
-        <thead><tr><th>Status</th><th>Title</th><th>Priority</th><th>Phase</th><th>Created</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Status</th><th>Title</th><th>Team</th><th>Priority</th><th>Phase</th><th>Created</th><th>Actions</th></tr></thead>
         <tbody>${tasks.map(taskTableRow).join("")}</tbody>
       </table>`;
 }
 
-export function tasksPage(tasks: TaskData[]): string {
+export function tasksPage(tasks: TaskData[], teams: TeamOptionData[] = []): string {
   return layout(
     "Tasks",
     `<div class="page-header">
@@ -258,7 +268,12 @@ export function tasksPage(tasks: TaskData[]): string {
         <label>Title <input type="text" name="title" required></label>
         <label>Description <textarea name="description" rows="3"></textarea></label>
         <label>Priority <input type="number" name="priority" min="1" max="10" value="5"></label>
-        <label>Team ID <input type="text" name="teamId"></label>
+        <label>Team
+          <select name="teamId">
+            <option value="">Unassigned</option>
+            ${teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join("")}
+          </select>
+        </label>
         <button type="submit">Create</button>
       </form>
     </div>
@@ -286,6 +301,7 @@ function taskTableRow(task: TaskData): string {
   return `<tr>
     <td><span class="badge badge-${task.status}">${task.status}</span></td>
     <td><a href="/tasks/${escapeHtml(task.id)}" hx-get="/tasks/${escapeHtml(task.id)}" hx-target="body" hx-push-url="true">${escapeHtml(task.title)}</a></td>
+    <td>${task.team_name ? escapeHtml(task.team_name) : "<span class='muted'>Unassigned</span>"}</td>
     <td>P${task.priority}</td>
     <td>${task.current_phase}</td>
     <td>${formatTimestamp(task.created_at)}</td>
@@ -298,6 +314,7 @@ export function taskDetailPage(
   notes: TaskNoteData[] = [],
   delegations: DelegationData[] = [],
   artifacts: ArtifactData[] = [],
+  teams: TeamOptionData[] = [],
 ): string {
   return layout(
     task.title,
@@ -307,7 +324,7 @@ export function taskDetailPage(
       <div class="detail-grid">
         <div><strong>Status:</strong> <span class="badge badge-${task.status}">${task.status}</span></div>
         <div><strong>Priority:</strong> P${task.priority}</div>
-        <div><strong>Team:</strong> ${task.team_id ? escapeHtml(task.team_id) : "None"}</div>
+        <div><strong>Team:</strong> ${task.team_name ? escapeHtml(task.team_name) : "None"}</div>
         <div><strong>Created:</strong> ${formatTimestamp(task.created_at)}</div>
       </div>
       ${task.description ? `<div class="detail-desc"><strong>Description:</strong><p>${escapeHtml(task.description)}</p></div>` : ""}
@@ -320,7 +337,12 @@ export function taskDetailPage(
         <label>Title <input type="text" name="title" value="${escapeHtml(task.title)}" required></label>
         <label>Description <textarea name="description" rows="3">${task.description ? escapeHtml(task.description) : ""}</textarea></label>
         <label>Priority <input type="number" name="priority" min="1" max="10" value="${task.priority}"></label>
-        <label>Team ID <input type="text" name="teamId" value="${task.team_id ? escapeHtml(task.team_id) : ""}"></label>
+        <label>Team
+          <select name="teamId">
+            <option value="">Unassigned</option>
+            ${teams.map((team) => `<option value="${escapeHtml(team.id)}"${task.team_id === team.id ? " selected" : ""}>${escapeHtml(team.name)}</option>`).join("")}
+          </select>
+        </label>
         <button type="submit">Save Changes</button>
       </form>` : `<p class="muted">Only draft tasks can be edited.</p>`}
     </div>
@@ -329,7 +351,7 @@ export function taskDetailPage(
 
     <h2>Notes</h2>
     ${notes.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#128221;</div><p>No notes yet</p></div>` : notes.map((n) => `<div class="card">
-      <div class="muted">Agent: ${escapeHtml(n.agent_id.slice(0, 8))} | ${formatTimestamp(n.created_at)}</div>
+      <div class="muted">Agent: ${n.agent_name ? escapeHtml(n.agent_name) : escapeHtml(n.agent_id.slice(0, 8))} | ${formatTimestamp(n.created_at)}</div>
       <p>${escapeHtml(n.content)}</p>
     </div>`).join("")}
 
@@ -364,8 +386,8 @@ function phaseStepper(currentPhase: number, phases?: { name: string; prompt: str
 function delegationTableRow(d: DelegationData): string {
   return `<tr>
     <td><span class="badge badge-${d.status}">${d.status}</span></td>
-    <td>${escapeHtml(d.parent_agent_id.slice(0, 8))}</td>
-    <td>${escapeHtml(d.child_agent_id.slice(0, 8))}</td>
+    <td>${d.parent_agent_name ? escapeHtml(d.parent_agent_name) : escapeHtml(d.parent_agent_id.slice(0, 8))}</td>
+    <td>${d.child_agent_name ? escapeHtml(d.child_agent_name) : escapeHtml(d.child_agent_id.slice(0, 8))}</td>
     <td class="muted">${escapeHtml(d.prompt.length > 80 ? d.prompt.slice(0, 80) + "…" : d.prompt)}</td>
     <td>${formatTimestamp(d.created_at)}</td>
     <td>${d.completed_at ? formatTimestamp(d.completed_at) : "-"}</td>
@@ -377,7 +399,7 @@ function artifactCard(a: ArtifactData): string {
     <div class="artifact-header">
       <span class="badge badge-artifact-${a.type}">${escapeHtml(a.type)}</span>
       <strong>${escapeHtml(a.name)}</strong>
-      <span class="muted">Agent: ${escapeHtml(a.agent_id.slice(0, 8))} | ${formatTimestamp(a.created_at)}</span>
+      <span class="muted">Agent: ${a.agent_name ? escapeHtml(a.agent_name) : escapeHtml(a.agent_id.slice(0, 8))} | ${formatTimestamp(a.created_at)}</span>
     </div>
     ${a.path ? `<div class="artifact-path"><code>${escapeHtml(a.path)}</code></div>` : ""}
     ${a.content ? `<details class="artifact-content"><summary>View content</summary><pre>${escapeHtml(a.content)}</pre></details>` : ""}
@@ -541,6 +563,7 @@ export interface TeamData {
   id: string;
   name: string;
   entrypoint_agent_id: string | null;
+  entrypoint_agent_name?: string;
   goal?: string;
   phases: { name: string; prompt: string }[];
 }
@@ -551,6 +574,11 @@ export interface TeamAgentData {
   role: string | null;
   level: number;
   skills: string[];
+}
+
+export interface AgentOptionData {
+  id: string;
+  name: string;
 }
 
 export function teamListFragment(teams: TeamData[]): string {
@@ -590,12 +618,16 @@ function teamTableRow(team: TeamData): string {
   return `<tr>
     <td><a href="/teams/${escapeHtml(team.id)}" hx-get="/teams/${escapeHtml(team.id)}" hx-target="body" hx-push-url="true">${escapeHtml(team.name)}</a></td>
     <td>${team.goal ? escapeHtml(team.goal) : "-"}</td>
-    <td>${team.entrypoint_agent_id ? escapeHtml(team.entrypoint_agent_id.slice(0, 8)) : "None"}</td>
+    <td>${team.entrypoint_agent_name ? escapeHtml(team.entrypoint_agent_name) : "None"}</td>
     <td>${team.phases.length}</td>
   </tr>`;
 }
 
-export function teamDetailPage(team: TeamData, agents: TeamAgentData[]): string {
+export function teamDetailPage(
+  team: TeamData,
+  agents: TeamAgentData[],
+  availableAgents: AgentOptionData[] = [],
+): string {
   return layout(
     team.name,
     `<a href="/teams" hx-get="/teams" hx-target="body" hx-push-url="true">&larr; Back to Teams</a>
@@ -603,7 +635,7 @@ export function teamDetailPage(team: TeamData, agents: TeamAgentData[]): string 
     <div class="card">
       <div class="detail-grid">
         <div><strong>Goal:</strong> ${team.goal ? escapeHtml(team.goal) : "None"}</div>
-        <div><strong>Entrypoint:</strong> ${team.entrypoint_agent_id ? escapeHtml(team.entrypoint_agent_id.slice(0, 8)) : "None"}</div>
+        <div><strong>Entrypoint:</strong> ${team.entrypoint_agent_name ? escapeHtml(team.entrypoint_agent_name) : "None"}</div>
       </div>
     </div>
 
@@ -647,9 +679,21 @@ export function teamDetailPage(team: TeamData, agents: TeamAgentData[]): string 
 
     <h3>Add Agent</h3>
     <form hx-post="/api/teams/${escapeHtml(team.id)}/agents" hx-target="body" hx-swap="innerHTML" class="inline-form">
-      <input type="text" name="agent_id" placeholder="Agent ID" required>
+      <select name="agent_id" required>
+        <option value="">Select an agent</option>
+        ${availableAgents.map((agent) => `<option value="${escapeHtml(agent.id)}">${escapeHtml(agent.name)}</option>`).join("")}
+      </select>
       <input type="text" name="role" placeholder="Role">
       <button type="submit">Add</button>
+    </form>
+
+    <h3>Set Entrypoint</h3>
+    <form hx-post="/api/teams/${escapeHtml(team.id)}/entrypoint" hx-target="body" hx-swap="innerHTML" class="inline-form">
+      <select name="agent_id" required>
+        <option value="">Select team member</option>
+        ${agents.map((agent) => `<option value="${escapeHtml(agent.agent_id)}"${team.entrypoint_agent_id === agent.agent_id ? " selected" : ""}>${escapeHtml(agent.agent_name)}</option>`).join("")}
+      </select>
+      <button type="submit">Save Entrypoint</button>
     </form>`,
     "/teams",
   );
@@ -1093,7 +1137,7 @@ function baseStyles(): string {
     form input, form textarea, form select { display: block; width: 100%; margin-top: 0.25rem; padding: 0.5rem; background: #0d1117; border: 1px solid #30363d; border-radius: 4px; color: #e1e4e8; font-size: 0.875rem; transition: border-color 0.2s, box-shadow 0.2s; outline: none; }
     form input:focus, form textarea:focus, form select:focus { border-color: #58a6ff; box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.3); }
     .inline-form { display: flex; gap: 0.5rem; align-items: flex-end; }
-    .inline-form input { width: auto; }
+    .inline-form input, .inline-form select { width: auto; min-width: 220px; }
     .terminal { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 0.75rem; max-height: 500px; overflow-y: auto; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8rem; white-space: pre-wrap; word-break: break-all; }
     .terminal-line { padding: 1px 0; }
     .terminal-stdout { color: #e1e4e8; }

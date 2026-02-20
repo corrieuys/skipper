@@ -2,7 +2,13 @@ import { addRoute } from "../server";
 import { TaskScheduler } from "../tasks/scheduler";
 import { getDb } from "../db/connection";
 import { taskDetailPage, tasksPage, taskListFragment } from "../html/components";
-import type { ArtifactData, DelegationData, TaskData, TaskNoteData } from "../html/components";
+import type {
+  ArtifactData,
+  DelegationData,
+  TaskData,
+  TaskNoteData,
+  TeamOptionData,
+} from "../html/components";
 
 function html(content: string): Response {
   return new Response(content, {
@@ -24,6 +30,22 @@ function parseTaskRow(row: Record<string, unknown>): TaskData {
   return result as unknown as TaskData;
 }
 
+function listTaskRowsForUi(): TaskData[] {
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT t.*, tm.name AS team_name
+     FROM tasks t
+     LEFT JOIN teams tm ON tm.id = t.team_id
+     ORDER BY t.priority, t.created_at DESC`,
+  ).all() as Record<string, unknown>[];
+  return rows.map(parseTaskRow);
+}
+
+function listTeamsForUi(): TeamOptionData[] {
+  const db = getDb();
+  return db.prepare("SELECT id, name FROM teams ORDER BY name").all() as TeamOptionData[];
+}
+
 async function parseBody(req: Request): Promise<Record<string, string>> {
   const contentType = req.headers.get("content-type") ?? "";
   if (contentType.includes("application/x-www-form-urlencoded")) {
@@ -38,15 +60,17 @@ async function parseBody(req: Request): Promise<Record<string, string>> {
 }
 
 function tasksPageResponse(): Response {
-  const db = getDb();
-  const rows = db.prepare("SELECT * FROM tasks ORDER BY priority, created_at DESC").all() as Record<string, unknown>[];
-  const tasks = rows.map(parseTaskRow);
-  return html(tasksPage(tasks));
+  return html(tasksPage(listTaskRowsForUi(), listTeamsForUi()));
 }
 
 function taskDetailResponse(id: string): Response {
   const db = getDb();
-  const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as Record<string, unknown> | null;
+  const row = db.prepare(
+    `SELECT t.*, tm.name AS team_name
+     FROM tasks t
+     LEFT JOIN teams tm ON tm.id = t.team_id
+     WHERE t.id = ?`,
+  ).get(id) as Record<string, unknown> | null;
   if (!row) return html("<p>Task not found</p>");
   const task = parseTaskRow(row);
 
@@ -57,11 +81,32 @@ function taskDetailResponse(id: string): Response {
     }
   }
 
-  const notes = db.prepare("SELECT * FROM task_notes WHERE task_id = ? ORDER BY created_at").all(id) as TaskNoteData[];
-  const delegations = db.prepare("SELECT * FROM delegations WHERE task_id = ? ORDER BY created_at").all(id) as DelegationData[];
-  const artifacts = db.prepare("SELECT * FROM artifacts WHERE task_id = ? ORDER BY created_at").all(id) as ArtifactData[];
+  const notes = db.prepare(
+    `SELECT n.*, a.name AS agent_name
+     FROM task_notes n
+     LEFT JOIN agents a ON a.id = n.agent_id
+     WHERE n.task_id = ?
+     ORDER BY n.created_at`,
+  ).all(id) as TaskNoteData[];
+  const delegations = db.prepare(
+    `SELECT d.*,
+            pa.name AS parent_agent_name,
+            ca.name AS child_agent_name
+     FROM delegations d
+     LEFT JOIN agents pa ON pa.id = d.parent_agent_id
+     LEFT JOIN agents ca ON ca.id = d.child_agent_id
+     WHERE d.task_id = ?
+     ORDER BY d.created_at`,
+  ).all(id) as DelegationData[];
+  const artifacts = db.prepare(
+    `SELECT ar.*, a.name AS agent_name
+     FROM artifacts ar
+     LEFT JOIN agents a ON a.id = ar.agent_id
+     WHERE ar.task_id = ?
+     ORDER BY ar.created_at`,
+  ).all(id) as ArtifactData[];
 
-  return html(taskDetailPage(task, notes, delegations, artifacts));
+  return html(taskDetailPage(task, notes, delegations, artifacts, listTeamsForUi()));
 }
 
 export function registerTaskRoutes(): void {
@@ -85,8 +130,7 @@ export function registerTaskRoutes(): void {
         teamId: typeof teamId === "string" && teamId.trim() ? teamId.trim() : undefined,
         priority: priorityRaw ? Number(priorityRaw) : undefined,
       });
-      const tasks = scheduler.listTasks() as unknown as TaskData[];
-      return html(taskListFragment(tasks));
+      return html(taskListFragment(listTaskRowsForUi()));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Internal error";
       return html(`<p class='error'>${message}</p>`);

@@ -38,6 +38,53 @@ function getTeamAgentsWithNames(db: Database, teamId: string): TeamAgentData[] {
   }));
 }
 
+function getAvailableAgentsForTeam(db: Database, teamId: string): { id: string; name: string }[] {
+  return db.prepare(
+    `SELECT a.id, a.name
+     FROM agents a
+     WHERE a.id NOT IN (SELECT ta.agent_id FROM team_agents ta WHERE ta.team_id = ?)
+     ORDER BY a.name`,
+  ).all(teamId) as { id: string; name: string }[];
+}
+
+function getTeamWithEntrypointName(db: Database, teamId: string): TeamData | null {
+  const row = db.prepare(
+    `SELECT t.*, a.name AS entrypoint_agent_name
+     FROM teams t
+     LEFT JOIN agents a ON a.id = t.entrypoint_agent_id
+     WHERE t.id = ?`,
+  ).get(teamId) as (TeamData & { phases: string | TeamData["phases"] }) | null;
+
+  if (!row) return null;
+
+  return {
+    ...row,
+    phases: typeof row.phases === "string" ? JSON.parse(row.phases) : row.phases,
+  };
+}
+
+function getTeamsWithEntrypointName(db: Database): TeamData[] {
+  const rows = db.prepare(
+    `SELECT t.*, a.name AS entrypoint_agent_name
+     FROM teams t
+     LEFT JOIN agents a ON a.id = t.entrypoint_agent_id
+     ORDER BY t.created_at`,
+  ).all() as (TeamData & { phases: string | TeamData["phases"] })[];
+
+  return rows.map((row) => ({
+    ...row,
+    phases: typeof row.phases === "string" ? JSON.parse(row.phases) : row.phases,
+  }));
+}
+
+function renderTeamDetailPage(db: Database, teamId: string): Response {
+  const team = getTeamWithEntrypointName(db, teamId);
+  if (!team) return html("<p>Team not found</p>");
+  const agents = getTeamAgentsWithNames(db, teamId);
+  const availableAgents = getAvailableAgentsForTeam(db, teamId);
+  return html(teamDetailPage(team, agents, availableAgents));
+}
+
 export function registerTeamRoutes(database?: Database): void {
   const db = database ?? getDb();
   const manager = new TeamManager(db);
@@ -59,7 +106,7 @@ export function registerTeamRoutes(database?: Database): void {
     });
 
     if (req.headers.get("HX-Request")) {
-      const teams = manager.listTeams() as unknown as TeamData[];
+      const teams = getTeamsWithEntrypointName(db);
       return html(teamListFragment(teams));
     }
 
@@ -96,8 +143,7 @@ export function registerTeamRoutes(database?: Database): void {
       }) as unknown as TeamData;
 
       if (req.headers.get("HX-Request")) {
-        const agents = getTeamAgentsWithNames(db, params.id);
-        return html(teamDetailPage(team, agents));
+        return renderTeamDetailPage(db, params.id);
       }
 
       return Response.json(team);
@@ -128,9 +174,7 @@ export function registerTeamRoutes(database?: Database): void {
       });
 
       if (req.headers.get("HX-Request")) {
-        const team = manager.getTeam(params.id) as unknown as TeamData;
-        const agents = getTeamAgentsWithNames(db, params.id);
-        return html(teamDetailPage(team, agents));
+        return renderTeamDetailPage(db, params.id);
       }
 
       return Response.json(teamAgent, { status: 201 });
@@ -161,8 +205,7 @@ export function registerTeamRoutes(database?: Database): void {
     ]) as unknown as TeamData;
 
     if (req.headers.get("HX-Request")) {
-      const agents = getTeamAgentsWithNames(db, params.id);
-      return html(teamDetailPage(updatedTeam, agents));
+      return renderTeamDetailPage(db, params.id);
     }
 
     return Response.json(updatedTeam, { status: 201 });
@@ -183,8 +226,7 @@ export function registerTeamRoutes(database?: Database): void {
     const updatedTeam = manager.updatePhases(params.id, newPhases) as unknown as TeamData;
 
     if (req.headers.get("HX-Request")) {
-      const agents = getTeamAgentsWithNames(db, params.id);
-      return html(teamDetailPage(updatedTeam, agents));
+      return renderTeamDetailPage(db, params.id);
     }
 
     return Response.json(updatedTeam);
@@ -202,6 +244,9 @@ export function registerTeamRoutes(database?: Database): void {
 
     try {
       manager.setEntrypoint(params.id, body.agent_id);
+      if (req.headers.get("HX-Request")) {
+        return renderTeamDetailPage(db, params.id);
+      }
       const team = manager.getTeam(params.id);
       return Response.json(team);
     } catch (err: unknown) {

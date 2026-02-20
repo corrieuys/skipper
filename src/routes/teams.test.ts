@@ -291,6 +291,47 @@ describe("POST /api/teams/:id", () => {
   });
 });
 
+describe("POST /api/teams/:id/entrypoint", () => {
+  it("returns full HTML team detail for HTMX requests", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Entrypoint Team" }),
+    });
+    const team = await teamRes.json();
+
+    db.prepare(
+      `INSERT INTO agents (id, name, type, model, status, config, capabilities)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run("entry-agent-01", "Entrypoint Agent", "codex", "default", "idle", "{}", "[]");
+
+    await fetch(`${baseUrl}/api/teams/${team.id}/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_id: "entry-agent-01" }),
+    });
+
+    const formData = new URLSearchParams();
+    formData.set("agent_id", "entry-agent-01");
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/entrypoint`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "HX-Request": "true",
+      },
+      body: formData.toString(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("<!DOCTYPE html");
+    expect(body).toContain("Entrypoint Team");
+    expect(body).toContain("Entrypoint Agent");
+  });
+});
+
 describe("DELETE /api/teams/:id/phases/:index", () => {
   it("removes a phase by index and returns JSON", async () => {
     const teamRes = await fetch(`${baseUrl}/api/teams`, {

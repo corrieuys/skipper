@@ -86,14 +86,25 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
 
   // Tasks list
   addRoute("GET", "/tasks", () => {
-    const rows = db.prepare("SELECT * FROM tasks ORDER BY priority, created_at DESC").all() as Record<string, unknown>[];
+    const rows = db.prepare(
+      `SELECT t.*, tm.name AS team_name
+       FROM tasks t
+       LEFT JOIN teams tm ON tm.id = t.team_id
+       ORDER BY t.priority, t.created_at DESC`,
+    ).all() as Record<string, unknown>[];
     const tasks = rows.map((r) => parseRow(r, ["result", "orchestration_state"])) as unknown as TaskData[];
-    return html(tasksPage(tasks));
+    const teams = db.prepare("SELECT id, name FROM teams ORDER BY name").all() as { id: string; name: string }[];
+    return html(tasksPage(tasks, teams));
   });
 
   // Task detail
   addRoute("GET", "/tasks/:id", (_req, params) => {
-    const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(params.id) as Record<string, unknown> | null;
+    const row = db.prepare(
+      `SELECT t.*, tm.name AS team_name
+       FROM tasks t
+       LEFT JOIN teams tm ON tm.id = t.team_id
+       WHERE t.id = ?`,
+    ).get(params.id) as Record<string, unknown> | null;
     if (!row) return html("<p>Task not found</p>");
     const task = parseRow(row, ["result", "orchestration_state"]) as unknown as TaskData;
 
@@ -105,11 +116,33 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
       }
     }
 
-    const notes = db.prepare("SELECT * FROM task_notes WHERE task_id = ? ORDER BY created_at").all(params.id) as TaskNoteData[];
-    const delegations = db.prepare("SELECT * FROM delegations WHERE task_id = ? ORDER BY created_at").all(params.id) as DelegationData[];
-    const artifacts = db.prepare("SELECT * FROM artifacts WHERE task_id = ? ORDER BY created_at").all(params.id) as ArtifactData[];
+    const notes = db.prepare(
+      `SELECT n.*, a.name AS agent_name
+       FROM task_notes n
+       LEFT JOIN agents a ON a.id = n.agent_id
+       WHERE n.task_id = ?
+       ORDER BY n.created_at`,
+    ).all(params.id) as TaskNoteData[];
+    const delegations = db.prepare(
+      `SELECT d.*,
+              pa.name AS parent_agent_name,
+              ca.name AS child_agent_name
+       FROM delegations d
+       LEFT JOIN agents pa ON pa.id = d.parent_agent_id
+       LEFT JOIN agents ca ON ca.id = d.child_agent_id
+       WHERE d.task_id = ?
+       ORDER BY d.created_at`,
+    ).all(params.id) as DelegationData[];
+    const artifacts = db.prepare(
+      `SELECT ar.*, a.name AS agent_name
+       FROM artifacts ar
+       LEFT JOIN agents a ON a.id = ar.agent_id
+       WHERE ar.task_id = ?
+       ORDER BY ar.created_at`,
+    ).all(params.id) as ArtifactData[];
+    const teams = db.prepare("SELECT id, name FROM teams ORDER BY name").all() as { id: string; name: string }[];
 
-    return html(taskDetailPage(task, notes, delegations, artifacts));
+    return html(taskDetailPage(task, notes, delegations, artifacts, teams));
   });
 
   // Agents list
@@ -181,14 +214,24 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
 
   // Teams list
   addRoute("GET", "/teams", () => {
-    const rows = db.prepare("SELECT * FROM teams ORDER BY created_at").all() as Record<string, unknown>[];
+    const rows = db.prepare(
+      `SELECT t.*, a.name AS entrypoint_agent_name
+       FROM teams t
+       LEFT JOIN agents a ON a.id = t.entrypoint_agent_id
+       ORDER BY t.created_at`,
+    ).all() as Record<string, unknown>[];
     const teams = rows.map((r) => parseRow(r, ["phases"])) as unknown as TeamData[];
     return html(teamsPage(teams));
   });
 
   // Team detail
   addRoute("GET", "/teams/:id", (_req, params) => {
-    const row = db.prepare("SELECT * FROM teams WHERE id = ?").get(params.id) as Record<string, unknown> | null;
+    const row = db.prepare(
+      `SELECT t.*, a.name AS entrypoint_agent_name
+       FROM teams t
+       LEFT JOIN agents a ON a.id = t.entrypoint_agent_id
+       WHERE t.id = ?`,
+    ).get(params.id) as Record<string, unknown> | null;
     if (!row) return html("<p>Team not found</p>");
     const team = parseRow(row, ["phases"]) as unknown as TeamData;
 
@@ -198,8 +241,14 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
        WHERE ta.team_id = ? ORDER BY ta.level`,
     ).all(params.id) as Record<string, unknown>[];
     const agents = agentRows.map((r) => parseRow(r, ["skills"])) as unknown as TeamAgentData[];
+    const availableAgents = db.prepare(
+      `SELECT a.id, a.name
+       FROM agents a
+       WHERE a.id NOT IN (SELECT ta.agent_id FROM team_agents ta WHERE ta.team_id = ?)
+       ORDER BY a.name`,
+    ).all(params.id) as { id: string; name: string }[];
 
-    return html(teamDetailPage(team, agents));
+    return html(teamDetailPage(team, agents, availableAgents));
   });
 
   // Escalations
