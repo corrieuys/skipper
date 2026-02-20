@@ -171,7 +171,20 @@ function taskTableRow(task: TaskData): string {
   </tr>`;
 }
 
-export function taskDetailPage(task: TaskData): string {
+// --- Artifacts ---
+
+export interface ArtifactData {
+  id: string;
+  task_id: string;
+  agent_id: string | null;
+  name: string;
+  type: string;
+  content: string | null;
+  path: string | null;
+  created_at: string;
+}
+
+export function taskDetailPage(task: TaskData, artifacts: ArtifactData[] = []): string {
   return layout(
     task.title,
     `<a href="/tasks" hx-get="/tasks" hx-target="body" hx-push-url="true">&larr; Back to Tasks</a>
@@ -186,8 +199,24 @@ export function taskDetailPage(task: TaskData): string {
       </div>
       ${task.description ? `<div class="detail-desc"><strong>Description:</strong><p>${escapeHtml(task.description)}</p></div>` : ""}
       ${task.result ? `<div class="detail-desc"><strong>Result:</strong><pre>${escapeHtml(JSON.stringify(task.result, null, 2))}</pre></div>` : ""}
-    </div>`,
+    </div>
+
+    <h2>Artifacts</h2>
+    ${artifacts.length === 0 ? "<p class='muted'>No artifacts</p>" : artifacts.map(artifactCard).join("")}`,
   );
+}
+
+function artifactCard(artifact: ArtifactData): string {
+  return `<div class="card artifact-card">
+    <div class="artifact-header">
+      <span class="badge badge-artifact-${escapeHtml(artifact.type)}">${escapeHtml(artifact.type)}</span>
+      <strong>${escapeHtml(artifact.name)}</strong>
+      <span class="muted">${artifact.agent_id ? escapeHtml(artifact.agent_id.slice(0, 8)) : "Unknown"}</span>
+      <span class="muted">${escapeHtml(artifact.created_at)}</span>
+    </div>
+    ${artifact.path ? `<div class="artifact-path"><strong>Path:</strong> <code>${escapeHtml(artifact.path)}</code></div>` : ""}
+    ${artifact.content ? `<details class="artifact-content"><summary>Content</summary><pre>${escapeHtml(artifact.content)}</pre></details>` : ""}
+  </div>`;
 }
 
 // --- Agents ---
@@ -500,5 +529,14 @@ function baseStyles(): string {
     .escalation-question { margin-bottom: 0.5rem; }
     .escalation-response { margin-top: 0.5rem; padding: 0.5rem; background: #1a3a2a; border-radius: 4px; }
     .escalation-form textarea { margin-bottom: 0.5rem; }
+    .artifact-card { margin-bottom: 0.75rem; }
+    .artifact-header { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; }
+    .artifact-path { font-size: 0.875rem; color: #8b949e; margin-bottom: 0.25rem; }
+    .artifact-path code { color: #79c0ff; font-family: "SF Mono", "Fira Code", monospace; }
+    .badge-artifact-file { background: #0d419d; color: #58a6ff; }
+    .badge-artifact-log { background: #30363d; color: #8b949e; }
+    .badge-artifact-report { background: #1a3a2a; color: #3fb950; }
+    details.artifact-content summary { cursor: pointer; color: #58a6ff; font-size: 0.875rem; margin-bottom: 0.25rem; }
+    details.artifact-content pre { background: #0d1117; padding: 0.75rem; border-radius: 4px; overflow-x: auto; font-size: 0.875rem; margin-top: 0.25rem; max-height: 300px; overflow-y: auto; }
   `;
 }

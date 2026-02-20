@@ -133,6 +133,71 @@ describe("taskDetailPage", () => {
     expect(html).toContain("P3");
     expect(html).toContain("Back to Tasks");
   });
+
+  it("shows empty artifacts state when no artifacts", () => {
+    const html = taskDetailPage({
+      id: "t1",
+      title: "Test Task",
+      status: "running",
+      priority: 3,
+      current_phase: 0,
+      created_at: "2024-01-01",
+    });
+    expect(html).toContain("Artifacts");
+    expect(html).toContain("No artifacts");
+  });
+
+  it("renders artifacts with type badge, name, agent, and timestamp", () => {
+    const html = taskDetailPage(
+      { id: "t1", title: "Test Task", status: "running", priority: 3, current_phase: 0, created_at: "2024-01-01" },
+      [
+        { id: "a1", task_id: "t1", agent_id: "agent-uuid-1234", name: "output.log", type: "log", content: "log content", path: null, created_at: "2024-01-02" },
+        { id: "a2", task_id: "t1", agent_id: null, name: "report.md", type: "report", content: null, path: null, created_at: "2024-01-03" },
+      ],
+    );
+    expect(html).toContain("badge-artifact-log");
+    expect(html).toContain("output.log");
+    expect(html).toContain("agent-uu"); // truncated agent id
+    expect(html).toContain("2024-01-02");
+    expect(html).toContain("badge-artifact-report");
+    expect(html).toContain("report.md");
+    expect(html).toContain("Unknown"); // null agent_id
+  });
+
+  it("shows path for file artifacts", () => {
+    const html = taskDetailPage(
+      { id: "t1", title: "Test Task", status: "running", priority: 3, current_phase: 0, created_at: "2024-01-01" },
+      [
+        { id: "a1", task_id: "t1", agent_id: null, name: "result.txt", type: "file", content: null, path: "/workspace/result.txt", created_at: "2024-01-01" },
+      ],
+    );
+    expect(html).toContain("badge-artifact-file");
+    expect(html).toContain("/workspace/result.txt");
+    expect(html).toContain("Path:");
+  });
+
+  it("shows collapsible content block for artifacts with content", () => {
+    const html = taskDetailPage(
+      { id: "t1", title: "Test Task", status: "running", priority: 3, current_phase: 0, created_at: "2024-01-01" },
+      [
+        { id: "a1", task_id: "t1", agent_id: null, name: "out.log", type: "log", content: "line1\nline2", path: null, created_at: "2024-01-01" },
+      ],
+    );
+    expect(html).toContain("<details");
+    expect(html).toContain("<summary>Content</summary>");
+    expect(html).toContain("line1\nline2");
+  });
+
+  it("escapes HTML in artifact content", () => {
+    const html = taskDetailPage(
+      { id: "t1", title: "Test Task", status: "running", priority: 3, current_phase: 0, created_at: "2024-01-01" },
+      [
+        { id: "a1", task_id: "t1", agent_id: null, name: "out.log", type: "log", content: "<script>alert(1)</script>", path: null, created_at: "2024-01-01" },
+      ],
+    );
+    expect(html).not.toContain("<script>alert");
+    expect(html).toContain("&lt;script&gt;");
+  });
 });
 
 describe("agentsPage", () => {

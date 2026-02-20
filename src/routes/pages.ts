@@ -21,6 +21,7 @@ import type {
   TeamData,
   TeamAgentData,
   EscalationData,
+  ArtifactData,
 } from "../html/components";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 
@@ -67,7 +68,8 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(params.id) as Record<string, unknown> | null;
     if (!row) return html("<p>Task not found</p>");
     const task = parseRow(row, ["result", "orchestration_state"]) as unknown as TaskData;
-    return html(taskDetailPage(task));
+    const artifacts = db.prepare("SELECT * FROM artifacts WHERE task_id = ? ORDER BY created_at").all(params.id) as ArtifactData[];
+    return html(taskDetailPage(task, artifacts));
   });
 
   // Agents list
