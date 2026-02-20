@@ -32,6 +32,7 @@ describe("Schema creation", () => {
       "agents",
       "artifacts",
       "cli_runtimes",
+      "daemon_state",
       "delegations",
       "escalations",
       "events",

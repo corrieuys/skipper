@@ -235,6 +235,12 @@ CREATE TABLE IF NOT EXISTS artifacts (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Daemon state persistence (survives restarts)
+CREATE TABLE IF NOT EXISTS daemon_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- CLI runtime detection cache
 CREATE TABLE IF NOT EXISTS cli_runtimes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

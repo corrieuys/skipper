@@ -106,6 +106,21 @@ export class ManagerDaemon {
     }
   }
 
+  getStatus(): { state: "running" | "paused" | "stopped"; uptime: number } {
+    const state = this.intervalId ? "running" : "stopped";
+    return { state, uptime: process.uptime() };
+  }
+
+  pause(): void {
+    // Stub: full cooperative pause will be implemented in STORY-R03
+    this.stop();
+  }
+
+  resume(): void {
+    // Stub: full cooperative resume will be implemented in STORY-R03
+    this.start();
+  }
+
   async tick(): Promise<void> {
     const runId = this.recordDaemonRun();
     let tasksProcessed = 0;

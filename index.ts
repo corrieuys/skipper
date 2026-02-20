@@ -3,10 +3,28 @@ import { registerAgentRoutes } from "./src/routes/agents";
 import { registerTaskRoutes } from "./src/routes/tasks";
 import { registerTeamRoutes } from "./src/routes/teams";
 import { registerPageRoutes } from "./src/routes/pages";
+import { registerDaemonRoutes } from "./src/routes/daemon";
+import { ManagerDaemon } from "./src/agents/manager-daemon";
+import { closeDb } from "./src/db/connection";
+
+const daemon = new ManagerDaemon();
 
 registerAgentRoutes();
 registerTaskRoutes();
 registerTeamRoutes();
-registerPageRoutes();
+registerDaemonRoutes(daemon);
+registerPageRoutes(daemon);
 
-startServer();
+daemon.start();
+
+const server = startServer();
+
+function shutdown() {
+  daemon.stop();
+  server.stop(true);
+  closeDb();
+  process.exit(0);
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);

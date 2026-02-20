@@ -21,6 +21,7 @@ import type {
   TeamAgentData,
   EscalationData,
 } from "../html/components";
+import type { ManagerDaemon } from "../agents/manager-daemon";
 
 function html(content: string): Response {
   return new Response(content, {
@@ -42,14 +43,15 @@ function parseRow(row: Record<string, unknown>, jsonFields: string[]): Record<st
   return result;
 }
 
-export function registerPageRoutes(): void {
+export function registerPageRoutes(daemon?: ManagerDaemon): void {
   const db = getDb();
 
   // Dashboard
   addRoute("GET", "/", () => {
     const tasks = db.prepare("SELECT id, title, status, priority FROM tasks ORDER BY priority, created_at DESC").all() as DashboardData["tasks"];
     const agents = db.prepare("SELECT id, name, status, type, current_task_id FROM agents ORDER BY created_at").all() as DashboardData["agents"];
-    return html(dashboardPage({ tasks, agents }));
+    const daemonStatus = daemon ? daemon.getStatus() : { state: "stopped" as const, uptime: 0 };
+    return html(dashboardPage({ tasks, agents, daemon: daemonStatus }));
   });
 
   // Tasks list

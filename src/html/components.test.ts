@@ -13,7 +13,7 @@ import {
 
 describe("layout", () => {
   it("includes HTMX script and navigation", () => {
-    const html = dashboardPage({ tasks: [], agents: [] });
+    const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 100 } });
     expect(html).toContain("htmx.org");
     expect(html).toContain("htmx-ext-sse");
     expect(html).toContain("PlayHive");
@@ -27,7 +27,7 @@ describe("layout", () => {
 
 describe("dashboardPage", () => {
   it("renders empty state", () => {
-    const html = dashboardPage({ tasks: [], agents: [] });
+    const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 100 } });
     expect(html).toContain("Dashboard");
     expect(html).toContain("No active tasks");
     expect(html).toContain("No agents configured");
@@ -42,6 +42,7 @@ describe("dashboardPage", () => {
       agents: [
         { id: "a1", name: "Dev Agent", status: "busy", type: "claude-code", current_task_id: "t1" },
       ],
+      daemon: { state: "running", uptime: 100 },
     });
     expect(html).toContain("Build feature");
     expect(html).toContain("Fix bug");
@@ -60,6 +61,7 @@ describe("dashboardPage", () => {
         { id: "a1", name: "X", status: "busy", type: "claude-code", current_task_id: "t1" },
         { id: "a2", name: "Y", status: "idle", type: "codex", current_task_id: null },
       ],
+      daemon: { state: "running", uptime: 100 },
     });
     // 2 total tasks, 1 active, 2 agents, 1 busy
     expect(html).toContain(">2<"); // total tasks
@@ -67,9 +69,18 @@ describe("dashboardPage", () => {
   });
 
   it("connects to SSE endpoints for real-time updates", () => {
-    const html = dashboardPage({ tasks: [], agents: [] });
+    const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 100 } });
     expect(html).toContain('sse-connect="/events/tasks"');
     expect(html).toContain('sse-connect="/events/agents"');
+  });
+
+  it("shows daemon status badge", () => {
+    const running = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 100 } });
+    expect(running).toContain("Daemon");
+    expect(running).toContain("running");
+
+    const stopped = dashboardPage({ tasks: [], agents: [], daemon: { state: "stopped", uptime: 0 } });
+    expect(stopped).toContain("stopped");
   });
 });
 
