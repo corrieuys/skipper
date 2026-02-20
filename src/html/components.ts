@@ -357,9 +357,26 @@ export function teamDetailPage(team: TeamData, agents: TeamAgentData[]): string 
       <div class="detail-grid">
         <div><strong>Goal:</strong> ${team.goal ? escapeHtml(team.goal) : "None"}</div>
         <div><strong>Entrypoint:</strong> ${team.entrypoint_agent_id ? escapeHtml(team.entrypoint_agent_id.slice(0, 8)) : "None"}</div>
-        <div><strong>Phases:</strong> ${team.phases.length}</div>
       </div>
     </div>
+
+    <h2>Phases (${team.phases.length})</h2>
+    ${team.phases.length === 0 ? "<p class='muted'>No phases defined</p>" : `<table class="data-table">
+      <thead><tr><th>#</th><th>Name</th><th>Prompt</th><th></th></tr></thead>
+      <tbody>${team.phases.map((p, i) => `<tr>
+        <td>${i + 1}</td>
+        <td>${escapeHtml(p.name)}</td>
+        <td class="muted">${escapeHtml(p.prompt.length > 80 ? p.prompt.slice(0, 80) + "…" : p.prompt)}</td>
+        <td><button hx-delete="/api/teams/${escapeHtml(team.id)}/phases/${i}" hx-target="body" hx-swap="innerHTML" hx-confirm="Remove this phase?" class="btn-sm btn-danger">Remove</button></td>
+      </tr>`).join("")}</tbody>
+    </table>`}
+
+    <h3>Add Phase</h3>
+    <form hx-post="/api/teams/${escapeHtml(team.id)}/phases" hx-target="body" hx-swap="innerHTML" class="inline-form" hx-on::after-request="if(event.detail.successful) this.reset()">
+      <input type="text" name="name" placeholder="Phase name" required>
+      <textarea name="prompt" placeholder="Phase prompt" rows="3" required></textarea>
+      <button type="submit">Add Phase</button>
+    </form>
 
     <h2>Members</h2>
     ${agents.length === 0 ? "<p class='muted'>No agents in this team</p>" : `<table class="data-table">

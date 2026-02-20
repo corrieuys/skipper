@@ -214,6 +214,19 @@ export class TeamManager {
     };
   }
 
+  updatePhases(teamId: string, phases: Phase[]): Team {
+    const team = this.getTeam(teamId);
+    if (!team) throw new Error(`Team not found: ${teamId}`);
+
+    this.db
+      .prepare(
+        "UPDATE teams SET phases = ?, updated_at = datetime('now') WHERE id = ?",
+      )
+      .run(JSON.stringify(phases), teamId);
+
+    return this.getTeam(teamId)!;
+  }
+
   private getTeamAgent(id: string): TeamAgent | null {
     const row = this.db
       .prepare("SELECT * FROM team_agents WHERE id = ?")

@@ -265,6 +265,89 @@ describe("teamDetailPage", () => {
     expect(html).toContain("coding");
     expect(html).toContain("Add Agent");
   });
+
+  it("renders phases list when phases exist", () => {
+    const html = teamDetailPage(
+      {
+        id: "t1",
+        name: "Alpha",
+        entrypoint_agent_id: null,
+        phases: [
+          { name: "Planning", prompt: "Plan carefully" },
+          { name: "Execution", prompt: "Execute the plan" },
+        ],
+      },
+      [],
+    );
+    expect(html).toContain("Phases (2)");
+    expect(html).toContain("Planning");
+    expect(html).toContain("Plan carefully");
+    expect(html).toContain("Execution");
+    expect(html).toContain("Execute the plan");
+    expect(html).toContain("Remove");
+  });
+
+  it("renders empty phases state when no phases", () => {
+    const html = teamDetailPage(
+      { id: "t1", name: "Alpha", entrypoint_agent_id: null, phases: [] },
+      [],
+    );
+    expect(html).toContain("Phases (0)");
+    expect(html).toContain("No phases defined");
+  });
+
+  it("shows Add Phase form", () => {
+    const html = teamDetailPage(
+      { id: "t1", name: "Alpha", entrypoint_agent_id: null, phases: [] },
+      [],
+    );
+    expect(html).toContain('hx-post="/api/teams/t1/phases"');
+    expect(html).toContain('name="name"');
+    expect(html).toContain('name="prompt"');
+    expect(html).toContain("Add Phase");
+  });
+
+  it("shows delete button with correct route for each phase", () => {
+    const html = teamDetailPage(
+      {
+        id: "t1",
+        name: "Alpha",
+        entrypoint_agent_id: null,
+        phases: [{ name: "Phase 1", prompt: "Do it" }],
+      },
+      [],
+    );
+    expect(html).toContain('hx-delete="/api/teams/t1/phases/0"');
+  });
+
+  it("truncates long prompts in the phases table", () => {
+    const longPrompt = "A".repeat(100);
+    const html = teamDetailPage(
+      {
+        id: "t1",
+        name: "Alpha",
+        entrypoint_agent_id: null,
+        phases: [{ name: "Long Phase", prompt: longPrompt }],
+      },
+      [],
+    );
+    expect(html).toContain("…");
+    expect(html).not.toContain(longPrompt);
+  });
+
+  it("escapes HTML in phase names and prompts", () => {
+    const html = teamDetailPage(
+      {
+        id: "t1",
+        name: "Alpha",
+        entrypoint_agent_id: null,
+        phases: [{ name: '<script>alert(1)</script>', prompt: '<img src=x>' }],
+      },
+      [],
+    );
+    expect(html).not.toContain("<script>alert");
+    expect(html).toContain("&lt;script&gt;");
+  });
 });
 
 describe("escalationsPage", () => {

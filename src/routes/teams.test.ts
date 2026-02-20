@@ -172,6 +172,151 @@ describe("POST /api/teams/:id/agents - HTMX form submission", () => {
   });
 });
 
+describe("POST /api/teams/:id/phases", () => {
+  it("adds a phase and returns JSON when no HX-Request header", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Phase Test Team A" }),
+    });
+    const team = await teamRes.json();
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/phases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Planning", prompt: "Plan the work carefully" }),
+    });
+    expect(res.status).toBe(201);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = await res.json();
+    expect(body.phases).toHaveLength(1);
+    expect(body.phases[0].name).toBe("Planning");
+    expect(body.phases[0].prompt).toBe("Plan the work carefully");
+  });
+
+  it("returns 400 when name or prompt is missing", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Phase Test Team B" }),
+    });
+    const team = await teamRes.json();
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/phases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Only name" }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("required");
+  });
+
+  it("returns full HTML team detail page for HTMX requests", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Phase Test Team C" }),
+    });
+    const team = await teamRes.json();
+
+    const formData = new URLSearchParams();
+    formData.set("name", "Execution");
+    formData.set("prompt", "Execute the plan step by step");
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/phases`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "HX-Request": "true",
+      },
+      body: formData.toString(),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("<!DOCTYPE html");
+    expect(body).toContain("Phase Test Team C");
+    expect(body).toContain("Execution");
+    expect(body).toContain("Execute the plan step by step");
+  });
+});
+
+describe("DELETE /api/teams/:id/phases/:index", () => {
+  it("removes a phase by index and returns JSON", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Delete Phase Team A" }),
+    });
+    const team = await teamRes.json();
+
+    // Add two phases first
+    await fetch(`${baseUrl}/api/teams/${team.id}/phases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Phase 1", prompt: "Do it" }),
+    });
+    await fetch(`${baseUrl}/api/teams/${team.id}/phases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Phase 2", prompt: "Do more" }),
+    });
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/phases/0`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.phases).toHaveLength(1);
+    expect(body.phases[0].name).toBe("Phase 2");
+  });
+
+  it("returns 400 for invalid phase index", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Delete Phase Team B" }),
+    });
+    const team = await teamRes.json();
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/phases/99`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("Invalid phase index");
+  });
+
+  it("returns HTML for HTMX requests after deleting a phase", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Delete Phase Team C" }),
+    });
+    const team = await teamRes.json();
+
+    await fetch(`${baseUrl}/api/teams/${team.id}/phases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Phase A", prompt: "Do A" }),
+    });
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/phases/0`, {
+      method: "DELETE",
+      headers: { "HX-Request": "true" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("<!DOCTYPE html");
+    expect(body).toContain("Delete Phase Team C");
+    expect(body).toContain("No phases defined");
+  });
+});
+
 describe("teamListFragment in components", () => {
   it("renders teamListFragment separately for HTMX usage", async () => {
     // Verify that the HTMX response does NOT include the full page layout

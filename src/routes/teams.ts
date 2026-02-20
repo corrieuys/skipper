@@ -112,6 +112,56 @@ export function registerTeamRoutes(database?: Database): void {
     }
   });
 
+  addRoute("POST", "/api/teams/:id/phases", async (req, params) => {
+    const body = await parseBody(req);
+
+    if (!body.name || !body.prompt) {
+      return Response.json(
+        { error: "name and prompt are required" },
+        { status: 400 },
+      );
+    }
+
+    const team = manager.getTeam(params.id);
+    if (!team) {
+      return Response.json({ error: "Team not found" }, { status: 404 });
+    }
+
+    const updatedTeam = manager.updatePhases(params.id, [
+      ...team.phases,
+      { name: body.name, prompt: body.prompt },
+    ]) as unknown as TeamData;
+
+    if (req.headers.get("HX-Request")) {
+      const agents = getTeamAgentsWithNames(db, params.id);
+      return html(teamDetailPage(updatedTeam, agents));
+    }
+
+    return Response.json(updatedTeam, { status: 201 });
+  });
+
+  addRoute("DELETE", "/api/teams/:id/phases/:index", async (req, params) => {
+    const team = manager.getTeam(params.id);
+    if (!team) {
+      return Response.json({ error: "Team not found" }, { status: 404 });
+    }
+
+    const idx = Number(params.index);
+    if (isNaN(idx) || idx < 0 || idx >= team.phases.length) {
+      return Response.json({ error: "Invalid phase index" }, { status: 400 });
+    }
+
+    const newPhases = team.phases.filter((_, i) => i !== idx);
+    const updatedTeam = manager.updatePhases(params.id, newPhases) as unknown as TeamData;
+
+    if (req.headers.get("HX-Request")) {
+      const agents = getTeamAgentsWithNames(db, params.id);
+      return html(teamDetailPage(updatedTeam, agents));
+    }
+
+    return Response.json(updatedTeam);
+  });
+
   addRoute("POST", "/api/teams/:id/entrypoint", async (req, params) => {
     const body = await parseBody(req);
 
