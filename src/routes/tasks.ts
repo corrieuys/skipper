@@ -1,5 +1,35 @@
 import { addRoute } from "../server";
 import { TaskScheduler } from "../tasks/scheduler";
+import { getDb } from "../db/connection";
+import { tasksPage } from "../html/components";
+import type { TaskData } from "../html/components";
+
+function html(content: string): Response {
+  return new Response(content, {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
+
+function parseTaskRow(row: Record<string, unknown>): TaskData {
+  const result = { ...row };
+  for (const field of ["result", "orchestration_state"]) {
+    if (typeof result[field] === "string") {
+      try {
+        result[field] = JSON.parse(result[field] as string);
+      } catch {
+        // leave as string if not valid JSON
+      }
+    }
+  }
+  return result as unknown as TaskData;
+}
+
+function tasksPageResponse(): Response {
+  const db = getDb();
+  const rows = db.prepare("SELECT * FROM tasks ORDER BY priority, created_at DESC").all() as Record<string, unknown>[];
+  const tasks = rows.map(parseTaskRow);
+  return html(tasksPage(tasks));
+}
 
 export function registerTaskRoutes(): void {
   const scheduler = new TaskScheduler();
@@ -40,8 +70,8 @@ export function registerTaskRoutes(): void {
 
   addRoute("POST", "/api/tasks/:id/approve", (_req, params) => {
     try {
-      const task = scheduler.approveTask(params.id);
-      return Response.json(task);
+      scheduler.approveTask(params.id);
+      return tasksPageResponse();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Internal error";
       return Response.json({ error: message }, { status: 400 });
@@ -50,8 +80,8 @@ export function registerTaskRoutes(): void {
 
   addRoute("POST", "/api/tasks/:id/cancel", (_req, params) => {
     try {
-      const task = scheduler.cancelTask(params.id);
-      return Response.json(task);
+      scheduler.cancelTask(params.id);
+      return tasksPageResponse();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Internal error";
       return Response.json({ error: message }, { status: 400 });
@@ -60,8 +90,8 @@ export function registerTaskRoutes(): void {
 
   addRoute("POST", "/api/tasks/:id/retry", (_req, params) => {
     try {
-      const task = scheduler.retryTask(params.id);
-      return Response.json(task);
+      scheduler.retryTask(params.id);
+      return tasksPageResponse();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Internal error";
       return Response.json({ error: message }, { status: 400 });
