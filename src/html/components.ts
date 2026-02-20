@@ -120,6 +120,18 @@ export interface TaskData {
   result?: unknown;
 }
 
+export interface DelegationData {
+  id: string;
+  parent_agent_id: string;
+  child_agent_id: string;
+  task_id: string;
+  prompt: string;
+  result: string | null;
+  status: string;
+  created_at: string;
+  completed_at: string | null;
+}
+
 export function tasksPage(tasks: TaskData[]): string {
   return layout(
     "Tasks",
@@ -171,7 +183,7 @@ function taskTableRow(task: TaskData): string {
   </tr>`;
 }
 
-export function taskDetailPage(task: TaskData): string {
+export function taskDetailPage(task: TaskData, delegations: DelegationData[] = []): string {
   return layout(
     task.title,
     `<a href="/tasks" hx-get="/tasks" hx-target="body" hx-push-url="true">&larr; Back to Tasks</a>
@@ -186,8 +198,25 @@ export function taskDetailPage(task: TaskData): string {
       </div>
       ${task.description ? `<div class="detail-desc"><strong>Description:</strong><p>${escapeHtml(task.description)}</p></div>` : ""}
       ${task.result ? `<div class="detail-desc"><strong>Result:</strong><pre>${escapeHtml(JSON.stringify(task.result, null, 2))}</pre></div>` : ""}
-    </div>`,
+    </div>
+
+    <h2>Delegations</h2>
+    ${delegations.length === 0 ? "<p class='muted'>No delegations</p>" : `<table class="data-table">
+      <thead><tr><th>Status</th><th>Parent Agent</th><th>Child Agent</th><th>Prompt</th><th>Created</th><th>Completed</th></tr></thead>
+      <tbody>${delegations.map(delegationTableRow).join("")}</tbody>
+    </table>`}`,
   );
+}
+
+function delegationTableRow(d: DelegationData): string {
+  return `<tr>
+    <td><span class="badge badge-${d.status}">${d.status}</span></td>
+    <td>${escapeHtml(d.parent_agent_id.slice(0, 8))}</td>
+    <td>${escapeHtml(d.child_agent_id.slice(0, 8))}</td>
+    <td class="muted">${escapeHtml(d.prompt.length > 80 ? d.prompt.slice(0, 80) + "…" : d.prompt)}</td>
+    <td>${escapeHtml(d.created_at)}</td>
+    <td>${d.completed_at ? escapeHtml(d.completed_at) : "-"}</td>
+  </tr>`;
 }
 
 // --- Agents ---

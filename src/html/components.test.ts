@@ -12,6 +12,7 @@ import {
   escalationsPage,
   terminalOutputFragment,
 } from "./components";
+import type { DelegationData } from "./components";
 
 describe("layout", () => {
   it("includes HTMX script and navigation", () => {
@@ -132,6 +133,108 @@ describe("taskDetailPage", () => {
     expect(html).toContain("badge-running");
     expect(html).toContain("P3");
     expect(html).toContain("Back to Tasks");
+  });
+
+  it("renders empty delegations state", () => {
+    const html = taskDetailPage(
+      { id: "t1", title: "Test Task", status: "running", priority: 1, current_phase: 0, created_at: "2024-01-01" },
+      [],
+    );
+    expect(html).toContain("Delegations");
+    expect(html).toContain("No delegations");
+  });
+
+  it("renders delegations table when delegations exist", () => {
+    const delegations: DelegationData[] = [
+      {
+        id: "d1",
+        parent_agent_id: "parent-agent-uuid",
+        child_agent_id: "child-agent-uuid",
+        task_id: "t1",
+        prompt: "Do the thing",
+        result: null,
+        status: "running",
+        created_at: "2024-01-01",
+        completed_at: null,
+      },
+    ];
+    const html = taskDetailPage(
+      { id: "t1", title: "Test Task", status: "running", priority: 1, current_phase: 0, created_at: "2024-01-01" },
+      delegations,
+    );
+    expect(html).toContain("Delegations");
+    expect(html).toContain("badge-running");
+    expect(html).toContain("parent-a");
+    expect(html).toContain("child-ag");
+    expect(html).toContain("Do the thing");
+    expect(html).not.toContain("No delegations");
+  });
+
+  it("truncates long delegation prompts", () => {
+    const longPrompt = "A".repeat(100);
+    const delegations: DelegationData[] = [
+      {
+        id: "d1",
+        parent_agent_id: "parent-agent-uuid",
+        child_agent_id: "child-agent-uuid",
+        task_id: "t1",
+        prompt: longPrompt,
+        result: null,
+        status: "pending",
+        created_at: "2024-01-01",
+        completed_at: null,
+      },
+    ];
+    const html = taskDetailPage(
+      { id: "t1", title: "Test Task", status: "running", priority: 1, current_phase: 0, created_at: "2024-01-01" },
+      delegations,
+    );
+    expect(html).toContain("…");
+    expect(html).not.toContain(longPrompt);
+  });
+
+  it("shows completed_at when delegation is completed", () => {
+    const delegations: DelegationData[] = [
+      {
+        id: "d1",
+        parent_agent_id: "parent-agent-uuid",
+        child_agent_id: "child-agent-uuid",
+        task_id: "t1",
+        prompt: "Do something",
+        result: "Done",
+        status: "completed",
+        created_at: "2024-01-01",
+        completed_at: "2024-01-02",
+      },
+    ];
+    const html = taskDetailPage(
+      { id: "t1", title: "Test Task", status: "completed", priority: 1, current_phase: 1, created_at: "2024-01-01" },
+      delegations,
+    );
+    expect(html).toContain("2024-01-02");
+    expect(html).toContain("badge-completed");
+  });
+
+  it("escapes HTML in delegation prompt", () => {
+    const delegations: DelegationData[] = [
+      {
+        id: "d1",
+        parent_agent_id: "parent-agent-uuid",
+        child_agent_id: "child-agent-uuid",
+        task_id: "t1",
+        prompt: '<script>alert("xss")</script>',
+        result: null,
+        status: "pending",
+        created_at: "2024-01-01",
+        completed_at: null,
+      },
+    ];
+    const html = taskDetailPage(
+      { id: "t1", title: "Test Task", status: "running", priority: 1, current_phase: 0, created_at: "2024-01-01" },
+      delegations,
+    );
+    expect(html).not.toContain("<script>alert");
+    expect(html).toContain("&lt;script&gt;");
   });
 });
 
