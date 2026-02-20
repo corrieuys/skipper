@@ -606,6 +606,15 @@ describe("handleJsonOutput", () => {
     manager.handleJsonOutput(agent.id, { type: "system", session_id: "sess-123" }, "{}");
 
     expect(runningAgent.sessionId).toBe("sess-123");
+
+    // Session ID should be persisted to DB eagerly (not just on process exit)
+    const row = db
+      .prepare(
+        "SELECT json_extract(state_metadata, '$.session_id') as session_id FROM agent_states WHERE agent_id = ?",
+      )
+      .get(agent.id) as { session_id: string | null } | null;
+    expect(row).not.toBeNull();
+    expect(row!.session_id).toBe("sess-123");
   });
 
   it("does not overwrite existing session_id", () => {
@@ -624,6 +633,14 @@ describe("handleJsonOutput", () => {
     manager.handleJsonOutput(agent.id, { type: "system", session_id: "new-session" }, "{}");
 
     expect(runningAgent.sessionId).toBe("existing-session");
+
+    // DB should not be updated since session was already set
+    const row = db
+      .prepare(
+        "SELECT json_extract(state_metadata, '$.session_id') as session_id FROM agent_states WHERE agent_id = ?",
+      )
+      .get(agent.id) as { session_id: string | null } | null;
+    expect(row).toBeNull();
   });
 
   it("detects embedded signals in Claude Code assistant output", () => {
