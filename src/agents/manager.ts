@@ -76,6 +76,14 @@ export interface CreateAgentInput {
   goal?: string;
 }
 
+export interface UpdateAgentInput {
+  name: string;
+  type: string;
+  model?: string;
+  capabilities?: string[];
+  goal?: string;
+}
+
 export interface SpawnAgentOptions {
   workingDir: string;
   sessionId?: string;
@@ -650,6 +658,51 @@ export class AgentManager {
       .prepare("SELECT * FROM agents ORDER BY created_at")
       .all() as AgentRow[];
     return rows.map(rowToAgent);
+  }
+
+  updateAgent(id: string, input: UpdateAgentInput): Agent {
+    const agent = this.getAgent(id);
+    if (!agent) {
+      throw new Error(`Agent not found: ${id}`);
+    }
+
+    if (agent.status === "busy") {
+      throw new Error("Cannot edit a busy agent");
+    }
+
+    const typeDef = getAgentTypeDefinition(input.type, this.db);
+    if (!typeDef) {
+      throw new Error(`Unknown agent type: ${input.type}`);
+    }
+
+    const config: AgentConfig = { ...agent.config };
+    if (input.goal && input.goal.trim()) {
+      config.goal = input.goal.trim();
+    } else {
+      delete config.goal;
+    }
+    if (input.model && input.model.trim()) {
+      config.model = input.model.trim();
+    } else {
+      delete config.model;
+    }
+
+    this.db
+      .prepare(
+        `UPDATE agents
+         SET name = ?, type = ?, model = ?, config = ?, capabilities = ?, updated_at = datetime('now')
+         WHERE id = ?`,
+      )
+      .run(
+        input.name.trim(),
+        input.type.trim(),
+        input.model?.trim() ? input.model.trim() : "default",
+        JSON.stringify(config),
+        JSON.stringify(input.capabilities ?? agent.capabilities),
+        id,
+      );
+
+    return this.getAgent(id)!;
   }
 
   deleteAgent(id: string): boolean {

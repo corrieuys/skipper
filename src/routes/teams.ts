@@ -79,6 +79,34 @@ export function registerTeamRoutes(database?: Database): void {
     return Response.json(team);
   });
 
+  addRoute("POST", "/api/teams/:id", async (req, params) => {
+    const body = await parseBody(req);
+
+    if (!body.name || !body.name.trim()) {
+      return Response.json(
+        { error: "name is required" },
+        { status: 400 },
+      );
+    }
+
+    try {
+      const team = manager.updateTeam(params.id, {
+        name: body.name,
+        goal: body.goal,
+      }) as unknown as TeamData;
+
+      if (req.headers.get("HX-Request")) {
+        const agents = getTeamAgentsWithNames(db, params.id);
+        return html(teamDetailPage(team, agents));
+      }
+
+      return Response.json(team);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      return Response.json({ error: message }, { status: 400 });
+    }
+  });
+
   addRoute("POST", "/api/teams/:id/agents", async (req, params) => {
     const body = await parseBody(req);
 

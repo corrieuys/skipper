@@ -65,6 +65,13 @@ export interface CreateTaskInput {
   priority?: number;
 }
 
+export interface UpdateTaskInput {
+  title: string;
+  description?: string;
+  teamId?: string;
+  priority?: number;
+}
+
 export class TaskScheduler {
   private db: Database;
 
@@ -102,6 +109,35 @@ export class TaskScheduler {
       .prepare("SELECT * FROM tasks ORDER BY priority ASC, created_at ASC")
       .all() as TaskRow[];
     return rows.map(rowToTask);
+  }
+
+  updateTask(id: string, input: UpdateTaskInput): Task {
+    const task = this.getTask(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    if (task.status !== "draft") {
+      throw new Error(`Can only edit draft tasks, current status: ${task.status}`);
+    }
+
+    const priority = input.priority ?? task.priority;
+    if (priority < 1 || priority > 10) {
+      throw new Error("Priority must be between 1 and 10");
+    }
+
+    this.db
+      .prepare(
+        `UPDATE tasks
+         SET title = ?, description = ?, team_id = ?, priority = ?, updated_at = datetime('now')
+         WHERE id = ?`,
+      )
+      .run(
+        input.title.trim(),
+        input.description?.trim() ? input.description.trim() : null,
+        input.teamId?.trim() ? input.teamId.trim() : null,
+        priority,
+        id,
+      );
+
+    return this.getTask(id)!;
   }
 
   approveTask(id: string): Task {

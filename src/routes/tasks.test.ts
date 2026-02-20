@@ -164,3 +164,51 @@ describe("POST /api/tasks/:id/retry", () => {
     expect(body.error).toBeDefined();
   });
 });
+
+describe("POST /api/tasks/:id", () => {
+  it("updates a draft task and returns JSON", async () => {
+    const createBody = new URLSearchParams({ title: "Task to edit", priority: "4" });
+    await fetch(`${baseUrl}/api/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: createBody.toString(),
+    });
+
+    const db = getDb();
+    const tasks = db.prepare("SELECT id FROM tasks WHERE title = ?").all("Task to edit") as { id: string }[];
+    const taskId = tasks[tasks.length - 1].id;
+
+    const res = await fetch(`${baseUrl}/api/tasks/${taskId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "Task edited",
+        description: "Updated description",
+        teamId: "",
+        priority: 2,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.title).toBe("Task edited");
+    expect(body.description).toBe("Updated description");
+    expect(body.priority).toBe(2);
+  });
+
+  it("returns 400 when trying to edit a non-draft task", async () => {
+    const db = getDb();
+    const id = crypto.randomUUID();
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(id, "Locked Task", "approved");
+
+    const res = await fetch(`${baseUrl}/api/tasks/${id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Should fail" }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("Can only edit draft tasks");
+  });
+});

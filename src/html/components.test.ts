@@ -135,6 +135,32 @@ describe("taskDetailPage", () => {
     expect(html).toContain("Back to Tasks");
   });
 
+  it("shows edit form for draft tasks", () => {
+    const html = taskDetailPage({
+      id: "t1",
+      title: "Draft Task",
+      status: "draft",
+      priority: 3,
+      current_phase: 0,
+      created_at: "2024-01-01",
+    });
+    expect(html).toContain("Edit Task");
+    expect(html).toContain('hx-post="/api/tasks/t1"');
+    expect(html).toContain("Save Changes");
+  });
+
+  it("shows non-editable message for non-draft tasks", () => {
+    const html = taskDetailPage({
+      id: "t1",
+      title: "Running Task",
+      status: "running",
+      priority: 3,
+      current_phase: 1,
+      created_at: "2024-01-01",
+    });
+    expect(html).toContain("Only draft tasks can be edited");
+  });
+
   it("shows plain phase number when no phases provided", () => {
     const html = taskDetailPage({
       id: "t1",
@@ -309,6 +335,23 @@ describe("agentDetailPage", () => {
     expect(html).toContain("Build features");
     expect(html).toContain("coding, testing");
   });
+
+  it("renders editable form for non-busy agents", () => {
+    const html = agentDetailPage({
+      id: "a1",
+      name: "Editor Agent",
+      type: "codex",
+      model: "default",
+      status: "idle",
+      capabilities: [],
+      config: {},
+      process_pid: null,
+      current_task_id: null,
+    });
+    expect(html).toContain("Edit Agent");
+    expect(html).toContain('hx-post="/api/agents/a1"');
+    expect(html).toContain("Save Changes");
+  });
 });
 
 describe("terminalOutputFragment", () => {
@@ -377,6 +420,16 @@ describe("teamDetailPage", () => {
     expect(html).toContain("lead");
     expect(html).toContain("coding");
     expect(html).toContain("Add Agent");
+  });
+
+  it("renders edit form", () => {
+    const html = teamDetailPage(
+      { id: "t1", name: "Alpha", entrypoint_agent_id: "a1", goal: "Ship", phases: [] },
+      [],
+    );
+    expect(html).toContain("Edit Team");
+    expect(html).toContain('hx-post="/api/teams/t1"');
+    expect(html).toContain("Save Changes");
   });
 
   it("renders phases list when phases exist", () => {

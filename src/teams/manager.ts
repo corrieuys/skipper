@@ -82,6 +82,11 @@ export interface CreateTeamInput {
   phases?: Phase[];
 }
 
+export interface UpdateTeamInput {
+  name: string;
+  goal?: string;
+}
+
 export interface AddTeamAgentInput {
   agent_id: string;
   role?: string;
@@ -129,6 +134,21 @@ export class TeamManager {
       .prepare("SELECT * FROM teams ORDER BY created_at")
       .all() as TeamRow[];
     return rows.map(rowToTeam);
+  }
+
+  updateTeam(teamId: string, input: UpdateTeamInput): Team {
+    const team = this.getTeam(teamId);
+    if (!team) throw new Error(`Team not found: ${teamId}`);
+
+    this.db
+      .prepare(
+        `UPDATE teams
+         SET name = ?, goal = ?, updated_at = datetime('now')
+         WHERE id = ?`,
+      )
+      .run(input.name.trim(), input.goal?.trim() ? input.goal.trim() : null, teamId);
+
+    return this.getTeam(teamId)!;
   }
 
   updatePhases(teamId: string, phases: Phase[]): Team {

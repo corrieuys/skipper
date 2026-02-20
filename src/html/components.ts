@@ -247,6 +247,17 @@ export function taskDetailPage(
       ${task.result ? `<div class="detail-desc"><strong>Result:</strong><pre>${escapeHtml(JSON.stringify(task.result, null, 2))}</pre></div>` : ""}
     </div>
 
+    <div class="card">
+      <h2>Edit Task</h2>
+      ${task.status === "draft" ? `<form hx-post="/api/tasks/${escapeHtml(task.id)}" hx-target="body" hx-swap="innerHTML">
+        <label>Title <input type="text" name="title" value="${escapeHtml(task.title)}" required></label>
+        <label>Description <textarea name="description" rows="3">${task.description ? escapeHtml(task.description) : ""}</textarea></label>
+        <label>Priority <input type="number" name="priority" min="1" max="10" value="${task.priority}"></label>
+        <label>Team ID <input type="text" name="teamId" value="${task.team_id ? escapeHtml(task.team_id) : ""}"></label>
+        <button type="submit">Save Changes</button>
+      </form>` : `<p class="muted">Only draft tasks can be edited.</p>`}
+    </div>
+
     ${phaseStepper(task.current_phase, task.phases)}
 
     <h2>Notes</h2>
@@ -391,6 +402,23 @@ export function agentDetailPage(agent: AgentData): string {
       ${agent.config.goal ? `<div class="detail-desc"><strong>Goal:</strong><p>${escapeHtml(String(agent.config.goal))}</p></div>` : ""}
     </div>
 
+    <div class="card">
+      <h2>Edit Agent</h2>
+      ${agent.status === "busy" ? `<p class="muted">Busy agents cannot be edited.</p>` : `<form hx-post="/api/agents/${escapeHtml(agent.id)}" hx-target="body" hx-swap="innerHTML">
+        <label>Name <input type="text" name="name" value="${escapeHtml(agent.name)}" required></label>
+        <label>Type
+          <select name="type">
+            <option value="claude-code"${agent.type === "claude-code" ? " selected" : ""}>claude-code</option>
+            <option value="codex"${agent.type === "codex" ? " selected" : ""}>codex</option>
+            <option value="custom"${agent.type === "custom" ? " selected" : ""}>custom</option>
+          </select>
+        </label>
+        <label>Model <input type="text" name="model" value="${escapeHtml(agent.model)}" placeholder="default"></label>
+        <label>Goal <input type="text" name="goal" value="${agent.config.goal ? escapeHtml(String(agent.config.goal)) : ""}"></label>
+        <button type="submit">Save Changes</button>
+      </form>`}
+    </div>
+
     <h2>Terminal Output</h2>
     <div id="terminal" class="terminal" hx-ext="sse" sse-connect="/events/agent/${escapeHtml(agent.id)}/output" sse-swap="agent:output" hx-swap="beforeend scroll:bottom">
       <div hx-get="/agents/${escapeHtml(agent.id)}/output" hx-trigger="load" hx-swap="innerHTML"></div>
@@ -473,6 +501,15 @@ export function teamDetailPage(team: TeamData, agents: TeamAgentData[]): string 
         <div><strong>Goal:</strong> ${team.goal ? escapeHtml(team.goal) : "None"}</div>
         <div><strong>Entrypoint:</strong> ${team.entrypoint_agent_id ? escapeHtml(team.entrypoint_agent_id.slice(0, 8)) : "None"}</div>
       </div>
+    </div>
+
+    <div class="card">
+      <h2>Edit Team</h2>
+      <form hx-post="/api/teams/${escapeHtml(team.id)}" hx-target="body" hx-swap="innerHTML">
+        <label>Name <input type="text" name="name" value="${escapeHtml(team.name)}" required></label>
+        <label>Goal <input type="text" name="goal" value="${team.goal ? escapeHtml(team.goal) : ""}"></label>
+        <button type="submit">Save Changes</button>
+      </form>
     </div>
 
     <h2>Phases (${team.phases.length})</h2>

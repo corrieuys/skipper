@@ -242,6 +242,55 @@ describe("POST /api/teams/:id/phases", () => {
   });
 });
 
+describe("POST /api/teams/:id", () => {
+  it("updates team name and goal and returns JSON", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Editable Team", goal: "Before" }),
+    });
+    const team = await teamRes.json();
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Edited Team", goal: "After" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.name).toBe("Edited Team");
+    expect(body.goal).toBe("After");
+  });
+
+  it("returns full HTML team detail for HTMX requests", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "HTMX Edit Team", goal: "Old Goal" }),
+    });
+    const team = await teamRes.json();
+
+    const formData = new URLSearchParams();
+    formData.set("name", "HTMX Edited Team");
+    formData.set("goal", "New Goal");
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "HX-Request": "true",
+      },
+      body: formData.toString(),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("<!DOCTYPE html");
+    expect(body).toContain("HTMX Edited Team");
+    expect(body).toContain("New Goal");
+  });
+});
+
 describe("DELETE /api/teams/:id/phases/:index", () => {
   it("removes a phase by index and returns JSON", async () => {
     const teamRes = await fetch(`${baseUrl}/api/teams`, {

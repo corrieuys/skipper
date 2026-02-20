@@ -1,6 +1,6 @@
 import { addRoute } from "../server";
 import { AgentManager } from "../agents/manager";
-import { agentListFragment, agentsPage } from "../html/components";
+import { agentDetailPage, agentListFragment, agentsPage } from "../html/components";
 import type { AgentData } from "../html/components";
 
 function htmlResponse(content: string, status = 200): Response {
@@ -63,6 +63,36 @@ export function registerAgentRoutes(): void {
       return Response.json({ error: "Agent not found" }, { status: 404 });
     }
     return Response.json(agent);
+  });
+
+  addRoute("POST", "/api/agents/:id", async (req, params) => {
+    const body = await parseBody(req);
+
+    if (!body.name || !body.type) {
+      return Response.json(
+        { error: "name and type are required" },
+        { status: 400 },
+      );
+    }
+
+    try {
+      const updated = manager.updateAgent(params.id, {
+        name: body.name,
+        type: body.type,
+        model: body.model,
+        goal: body.goal,
+        capabilities: body.capabilities ? JSON.parse(body.capabilities) : undefined,
+      }) as unknown as AgentData;
+
+      if (req.headers.get("HX-Request")) {
+        return htmlResponse(agentDetailPage(updated));
+      }
+
+      return Response.json(updated);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      return Response.json({ error: message }, { status: 400 });
+    }
   });
 
   addRoute("DELETE", "/api/agents/:id", (_req, params) => {
