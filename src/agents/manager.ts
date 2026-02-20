@@ -490,6 +490,8 @@ export class AgentManager {
     // Capture session_id for --resume support
     if (json.session_id && runningAgent && !runningAgent.sessionId) {
       runningAgent.sessionId = json.session_id;
+      // Persist eagerly so session_id survives server crashes
+      this.persistSessionId(agentId);
     }
 
     // Extract text and check for embedded signals
