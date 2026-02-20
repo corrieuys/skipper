@@ -4,6 +4,7 @@ import { registerTaskRoutes } from "./src/routes/tasks";
 import { registerTeamRoutes } from "./src/routes/teams";
 import { registerPageRoutes } from "./src/routes/pages";
 import { registerDaemonRoutes } from "./src/routes/daemon";
+import { registerEventRoutes } from "./src/routes/events";
 import { ManagerDaemon } from "./src/agents/manager-daemon";
 import { closeDb } from "./src/db/connection";
 
@@ -13,6 +14,7 @@ registerAgentRoutes();
 registerTaskRoutes();
 registerTeamRoutes();
 registerDaemonRoutes(daemon);
+registerEventRoutes();
 registerPageRoutes(daemon);
 
 daemon.start();

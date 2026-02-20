@@ -4,6 +4,7 @@ import { getDb } from "../db/connection";
 import { getAgentTypeDefinition } from "./types";
 import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
+import { logError } from "../db/log-error";
 
 export interface Agent {
   id: string;
@@ -300,8 +301,8 @@ export class AgentManager {
               "INSERT INTO terminal_outputs (agent_id, stream, data, sequence) VALUES (?, ?, ?, ?)",
             )
             .run(runningAgent.id, streamType, text, seq);
-        } catch {
-          // DB may be closed during test teardown
+        } catch (err) {
+          logError(this.db, "terminal_output_insert_failed", { agentId: runningAgent.id }, err);
         }
 
         // Emit event for real-time UI
@@ -385,8 +386,8 @@ export class AgentManager {
       this.db
         .prepare("UPDATE agents SET process_pid = NULL, status = ? WHERE id = ?")
         .run(newStatus, agentId);
-    } catch {
-      // DB may be closed during test teardown
+    } catch (err) {
+      logError(this.db, "agent_exit_status_update_failed", { agentId }, err);
     }
 
     // Emit exit event
@@ -413,8 +414,8 @@ export class AgentManager {
              updated_at = datetime('now')`,
         )
         .run(agentId, runningAgent.sessionId, runningAgent.sessionId);
-    } catch {
-      // DB may be closed during test teardown
+    } catch (err) {
+      logError(this.db, "session_id_persist_failed", { agentId }, err);
     }
   }
 
@@ -433,7 +434,8 @@ export class AgentManager {
         )
         .get(agentId) as { session_id: string | null } | null;
       return row?.session_id ?? null;
-    } catch {
+    } catch (err) {
+      logError(this.db, "session_id_fetch_failed", { agentId }, err);
       return null;
     }
   }

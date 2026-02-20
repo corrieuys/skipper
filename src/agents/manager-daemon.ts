@@ -12,6 +12,7 @@ import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
 import { TaskStateMachine } from "../orchestrator/state";
 import type { TaskOrchStep } from "../orchestrator/state";
+import { logError } from "../db/log-error";
 
 const DAEMON_INTERVAL_MS = 30_000;
 const STREAMS_DRAIN_TIMEOUT_MS = 5_000;
@@ -179,8 +180,8 @@ export class ManagerDaemon {
       this.db
         .prepare("INSERT OR REPLACE INTO daemon_state (key, value) VALUES ('paused', 'true')")
         .run();
-    } catch {
-      // Best-effort persistence
+    } catch (err) {
+      logError(this.db, "daemon_state_persist_failed", {}, err);
     }
   }
 
@@ -189,8 +190,8 @@ export class ManagerDaemon {
       this.db
         .prepare("DELETE FROM daemon_state WHERE key = 'paused'")
         .run();
-    } catch {
-      // Best-effort
+    } catch (err) {
+      logError(this.db, "daemon_state_delete_failed", {}, err);
     }
   }
 
@@ -200,7 +201,8 @@ export class ManagerDaemon {
         .prepare("SELECT value FROM daemon_state WHERE key = 'paused'")
         .get() as { value: string } | null;
       return row?.value === "true";
-    } catch {
+    } catch (err) {
+      logError(this.db, "daemon_state_load_failed", {}, err);
       return false;
     }
   }
@@ -452,8 +454,8 @@ export class ManagerDaemon {
                 agent.current_task_id,
                 "Agent process died unexpectedly",
               );
-            } catch {
-              // Task may already be in a terminal state
+            } catch (err) {
+              logError(this.db, "task_fail_error", { agentId: agent.id, taskId: agent.current_task_id }, err);
             }
             this.db
               .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
@@ -524,8 +526,8 @@ export class ManagerDaemon {
         // Non-zero exit: fail the task
         try {
           this.taskScheduler.failTask(taskId, `Agent exited with code ${event.code}`);
-        } catch {
-          // Task may already be in a terminal state
+        } catch (err) {
+          logError(this.db, "agent_exit_fail_task_error", { agentId: event.agentId, taskId }, err);
         }
       }
 
@@ -533,8 +535,8 @@ export class ManagerDaemon {
       this.db
         .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
         .run(event.agentId);
-    } catch {
-      // DB may be closed during shutdown
+    } catch (err) {
+      logError(this.db, "agent_exit_handler_failed", { agentId: event.agentId }, err);
     }
   }
 
@@ -569,8 +571,8 @@ export class ManagerDaemon {
       // Last phase or no phases — complete the task
       try {
         this.taskScheduler.completeTask(task.id);
-      } catch {
-        // Task may already be complete
+      } catch (err) {
+        logError(this.db, "task_complete_error", { taskId: task.id }, err);
       }
     } else {
       // More phases — advance and respawn
@@ -756,8 +758,8 @@ export class ManagerDaemon {
         parentAgentId,
         `[SYSTEM] Delegated to agent ${childAgentId}. Waiting for results...`,
       );
-    } catch {
-      // Parent may not have open stdin
+    } catch (err) {
+      logError(this.db, "delegation_notify_parent_failed", { agentId: parentAgentId, childAgentId, taskId }, err);
     }
 
     // 14. Set parent state to waiting_delegation
@@ -817,8 +819,8 @@ export class ManagerDaemon {
         delegation_id: delegation.id,
         child_agent_id: childAgentId,
       });
-    } catch {
-      // DB may be closed during shutdown
+    } catch (err) {
+      logError(this.db, "delegation_complete_handler_failed", { agentId: childAgentId }, err);
     }
   }
 
@@ -868,8 +870,8 @@ export class ManagerDaemon {
         // Reset parent state
         this.setAgentState(delegation.parent_agent_id, "working");
       }
-    } catch {
-      // DB may be closed during shutdown
+    } catch (err) {
+      logError(this.db, "child_exit_handler_failed", { agentId: event.agentId, taskId: delegation.task_id }, err);
     }
   }
 
@@ -907,8 +909,8 @@ export class ManagerDaemon {
 
         // Reset parent state
         this.setAgentState(delegation.parent_agent_id, "working");
-      } catch {
-        // Ignore individual delegation timeout errors
+      } catch (err) {
+        logError(this.db, "delegation_timeout_error", { taskId: delegation.task_id, agentId: delegation.child_agent_id }, err);
       }
     }
 
@@ -928,8 +930,8 @@ export class ManagerDaemon {
       try {
         this.agentManager.sendInput(parentAgentId, message);
         return;
-      } catch {
-        // Stdin may be closed
+      } catch (err) {
+        logError(this.db, "delegation_result_routing_failed", { agentId: parentAgentId, childAgentId }, err);
       }
     }
 
@@ -953,7 +955,8 @@ export class ManagerDaemon {
         )
         .all(agentId) as { data: string }[];
       return rows.map((r) => r.data).join("");
-    } catch {
+    } catch (err) {
+      logError(this.db, "terminal_output_gather_failed", { agentId }, err);
       return "";
     }
   }
@@ -964,7 +967,8 @@ export class ManagerDaemon {
         .prepare("SELECT * FROM delegations WHERE id = ?")
         .get(id) as Delegation | null;
       return row ?? null;
-    } catch {
+    } catch (err) {
+      logError(this.db, "delegation_fetch_failed", {}, err);
       return null;
     }
   }
@@ -977,7 +981,8 @@ export class ManagerDaemon {
         )
         .get(parentAgentId) as Delegation | null;
       return row ?? null;
-    } catch {
+    } catch (err) {
+      logError(this.db, "delegation_parent_fetch_failed", { agentId: parentAgentId }, err);
       return null;
     }
   }
@@ -990,7 +995,8 @@ export class ManagerDaemon {
         )
         .get(childAgentId) as Delegation | null;
       return row ?? null;
-    } catch {
+    } catch (err) {
+      logError(this.db, "delegation_child_fetch_failed", { agentId: childAgentId }, err);
       return null;
     }
   }
@@ -1049,8 +1055,8 @@ export class ManagerDaemon {
         previousState: "",
         newState: state,
       });
-    } catch {
-      // Ignore state update errors
+    } catch (err) {
+      logError(this.db, "state_update_failed", { agentId }, err);
     }
   }
 
@@ -1082,8 +1088,8 @@ export class ManagerDaemon {
       // Last phase or no phases — complete the task
       try {
         this.taskScheduler.completeTask(task.id);
-      } catch {
-        // Task may already be complete
+      } catch (err) {
+        logError(this.db, "phase_complete_task_error", { agentId, taskId }, err);
       }
     } else {
       // More phases — advance and send next prompt
@@ -1155,8 +1161,8 @@ export class ManagerDaemon {
           "INSERT INTO task_notes (id, task_id, agent_id, content) VALUES (?, ?, ?, ?)",
         )
         .run(noteId, taskId, agentId, `[PHASE REGRESSION to phase ${targetPhaseOneIndexed}] ${reason}`);
-    } catch {
-      // Ignore note creation errors
+    } catch (err) {
+      logError(this.db, "phase_regression_note_failed", { agentId, taskId }, err);
     }
 
     // Check regression limit
@@ -1228,12 +1234,13 @@ export class ManagerDaemon {
     try {
       const workingDir = process.cwd();
       await this.agentManager.spawnAgent(entrypointAgentId, { workingDir, sessionId });
-    } catch {
+    } catch (spawnErr) {
       try {
         this.taskScheduler.failTask(task.id, "Failed to respawn agent for regression");
-      } catch {
-        // DB may be closed during shutdown
+      } catch (err) {
+        logError(this.db, "regression_respawn_fail_task_error", { agentId: entrypointAgentId, taskId: task.id }, err);
       }
+      logError(this.db, "regression_respawn_failed", { agentId: entrypointAgentId, taskId: task.id }, spawnErr);
       return;
     }
 
@@ -1291,8 +1298,8 @@ export class ManagerDaemon {
         type: "max_regressions",
         question: `Maximum regressions reached. Last reason: ${reason}`,
       });
-    } catch {
-      // Ignore escalation creation errors
+    } catch (err) {
+      logError(this.db, "auto_escalate_failed", { agentId, taskId: task.id }, err);
     }
   }
 
@@ -1309,8 +1316,8 @@ export class ManagerDaemon {
           "INSERT INTO phase_regressions (task_id, agent_id, from_phase, to_phase, reason) VALUES (?, ?, ?, ?, ?)",
         )
         .run(taskId, agentId, fromPhase, toPhase, reason);
-    } catch {
-      // Ignore audit logging errors
+    } catch (err) {
+      logError(this.db, "phase_regression_audit_failed", { agentId, taskId }, err);
     }
   }
 
@@ -1372,8 +1379,8 @@ export class ManagerDaemon {
            AND id NOT IN (SELECT id FROM agents WHERE process_pid IS NOT NULL)`,
         )
         .run();
-    } catch {
-      // Ignore cleanup errors on startup
+    } catch (err) {
+      logError(this.db, "cleanup_stale_state_failed", {}, err);
     }
   }
 
@@ -1428,8 +1435,8 @@ export class ManagerDaemon {
         const didRecover = await this.recoverTask(taskId);
         if (didRecover) recovered++;
       }
-    } catch {
-      // Ignore recovery errors
+    } catch (err) {
+      logError(this.db, "stale_task_recovery_failed", {}, err);
     }
 
     return recovered;
@@ -1574,8 +1581,8 @@ export class ManagerDaemon {
           "UPDATE tasks SET orchestration_state = ?, updated_at = datetime('now') WHERE id = ?",
         )
         .run(JSON.stringify(state), taskId);
-    } catch {
-      // Ignore state update errors — invalid transitions are logged but not fatal
+    } catch (err) {
+      logError(this.db, "orchestration_state_update_failed", { taskId }, err);
     }
   }
 
@@ -1589,7 +1596,8 @@ export class ManagerDaemon {
       // Return null for empty/default state
       if (!parsed.step) return null;
       return parsed as OrchestrationState;
-    } catch {
+    } catch (err) {
+      logError(this.db, "orchestration_state_fetch_failed", { taskId }, err);
       return null;
     }
   }
@@ -1637,8 +1645,8 @@ export class ManagerDaemon {
           JSON.stringify(contextSnapshot),
           termSeqRow?.max_seq ?? null,
         );
-    } catch {
-      // Ignore checkpoint errors
+    } catch (err) {
+      logError(this.db, "checkpoint_write_failed", { taskId }, err);
     }
   }
 
@@ -1715,7 +1723,8 @@ export class ManagerDaemon {
         .prepare("INSERT INTO manager_runs (started_at) VALUES (datetime('now'))")
         .run();
       return Number(result.lastInsertRowid);
-    } catch {
+    } catch (err) {
+      logError(this.db, "daemon_run_record_failed", {}, err);
       return 0;
     }
   }
@@ -1738,8 +1747,8 @@ export class ManagerDaemon {
            WHERE id = ?`,
         )
         .run(tasksProcessed, agentsChecked, JSON.stringify(errors), runId);
-    } catch {
-      // Ignore DB errors during run completion
+    } catch (err) {
+      logError(this.db, "daemon_run_complete_failed", {}, err);
     }
   }
 }

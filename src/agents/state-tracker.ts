@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { AgentManager } from "./manager";
 import { eventBus } from "../events/bus";
+import { logError } from "../db/log-error";
 
 const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_NUDGES = 3;
@@ -142,8 +143,8 @@ export class StateTracker {
           agentId,
           `[SYSTEM] You appear to be idle. Please continue your work. (nudge ${nudgeCount}/${MAX_NUDGES})`,
         );
-      } catch {
-        // Agent stdin may be closed — nudge is still recorded
+      } catch (err) {
+        logError(this.db, "stuck_agent_nudge_failed", { agentId }, err);
       }
 
       // Increment nudge count and reset heartbeat so we don't immediately
@@ -216,7 +217,8 @@ export class StateTracker {
         .map((r) => r.data)
         .join("");
       return combined.slice(-FINGERPRINT_CHARS);
-    } catch {
+    } catch (err) {
+      logError(this.db, "fingerprint_compute_failed", { agentId }, err);
       return "";
     }
   }
@@ -242,8 +244,8 @@ export class StateTracker {
            VALUES (?, ?, ?, ?)`,
         )
         .run(agentId, detectionType, fingerprint, JSON.stringify(details));
-    } catch {
-      // Ignore logging errors
+    } catch (err) {
+      logError(this.db, "stuck_detection_log_failed", { agentId }, err);
     }
   }
 }
