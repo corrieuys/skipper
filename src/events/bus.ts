@@ -48,9 +48,14 @@ export interface AgentStateChangedEvent {
   newState: string;
 }
 
+export interface AgentStreamsDrainedEvent {
+  agentId: string;
+}
+
 export interface EventMap {
   "agent:output": [AgentOutputEvent];
   "agent:exit": [AgentExitEvent];
+  "agent:streams_drained": [AgentStreamsDrainedEvent];
   "agent:state_changed": [AgentStateChangedEvent];
   "escalation:created": [EscalationCreatedEvent];
   "escalation:resolved": [EscalationResolvedEvent];

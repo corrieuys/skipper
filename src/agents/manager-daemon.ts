@@ -12,7 +12,7 @@ import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
 
 const DAEMON_INTERVAL_MS = 30_000;
-const EXIT_GRACE_PERIOD_MS = 1_000;
+const STREAMS_DRAIN_TIMEOUT_MS = 5_000;
 const MAX_REGRESSIONS = 3;
 const MAX_DELEGATION_DEPTH = 3;
 const DELEGATION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
@@ -216,8 +216,7 @@ export class ManagerDaemon {
     // Kill if already running (clean slate)
     if (this.agentManager.getRunningAgent(entrypointAgentId)) {
       this.agentManager.killAgent(entrypointAgentId);
-      // Small delay for cleanup
-      await new Promise((r) => setTimeout(r, 100));
+      await this.agentManager.waitForExit(entrypointAgentId);
     }
 
     // Spawn the entrypoint agent
@@ -383,10 +382,9 @@ export class ManagerDaemon {
     this.exitHandlerRegistered = true;
 
     eventBus.on("agent:exit", (event: AgentExitEvent) => {
-      // Grace period to let stdout processing finish
-      setTimeout(() => {
-        this.handleAgentExit(event);
-      }, EXIT_GRACE_PERIOD_MS);
+      // Wait for streams to finish draining, then handle exit
+      this.agentManager.waitForStreamsDrained(event.agentId, STREAMS_DRAIN_TIMEOUT_MS)
+        .then(() => this.handleAgentExit(event));
     });
   }
 
@@ -605,7 +603,7 @@ export class ManagerDaemon {
     // 8. Kill child if running, spawn fresh
     if (this.agentManager.getRunningAgent(childAgentId)) {
       this.agentManager.killAgent(childAgentId);
-      await new Promise((r) => setTimeout(r, 200));
+      await this.agentManager.waitForExit(childAgentId);
     }
 
     try {
@@ -1120,7 +1118,7 @@ export class ManagerDaemon {
     // Kill current process if running
     if (this.agentManager.getRunningAgent(entrypointAgentId)) {
       this.agentManager.killAgent(entrypointAgentId);
-      await new Promise((r) => setTimeout(r, 200));
+      await this.agentManager.waitForExit(entrypointAgentId);
     }
 
     // Spawn fresh (with resume if supported)
@@ -1388,7 +1386,7 @@ export class ManagerDaemon {
     // Kill existing process if any
     if (this.agentManager.getRunningAgent(entrypointAgentId)) {
       this.agentManager.killAgent(entrypointAgentId);
-      await new Promise((r) => setTimeout(r, 100));
+      await this.agentManager.waitForExit(entrypointAgentId);
     }
 
     // Spawn agent
