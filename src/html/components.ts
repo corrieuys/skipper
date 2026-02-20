@@ -20,6 +20,7 @@ export function layout(title: string, content: string): string {
       <a href="/agents" hx-get="/agents" hx-target="body" hx-push-url="true">Agents</a>
       <a href="/teams" hx-get="/teams" hx-target="body" hx-push-url="true">Teams</a>
       <a href="/escalations" hx-get="/escalations" hx-target="body" hx-push-url="true">Escalations</a>
+      <a href="/audit-events" hx-get="/audit-events" hx-target="body" hx-push-url="true">Events</a>
     </div>
   </nav>
   <main class="container">${content}</main>
@@ -462,6 +463,78 @@ function escalationCard(esc: EscalationData): string {
       <button type="submit">Respond</button>
     </form>` : `<div class="escalation-response"><strong>Response:</strong> ${esc.response ? escapeHtml(esc.response) : "-"}</div>`}
   </div>`;
+}
+
+// --- Audit Events ---
+
+export interface AuditEventData {
+  id: number;
+  type: string;
+  payload: string;
+  source_agent_id: string | null;
+  task_id: string | null;
+  created_at: string;
+}
+
+export interface AuditEventFilters {
+  type?: string;
+  task_id?: string;
+  agent_id?: string;
+}
+
+export function auditEventsPage(events: AuditEventData[], filters: AuditEventFilters): string {
+  return layout(
+    "Events",
+    `<h1>Events Audit Log</h1>
+
+    <div class="card">
+      <form id="filter-form" hx-get="/audit-events" hx-target="body" hx-push-url="true" hx-swap="innerHTML" style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end">
+        <label style="flex:1;min-width:150px">Type
+          <input type="text" name="type" value="${escapeHtml(filters.type ?? "")}" placeholder="e.g. task:state_changed">
+        </label>
+        <label style="flex:1;min-width:150px">Task ID
+          <input type="text" name="task_id" value="${escapeHtml(filters.task_id ?? "")}" placeholder="Task ID">
+        </label>
+        <label style="flex:1;min-width:150px">Agent ID
+          <input type="text" name="agent_id" value="${escapeHtml(filters.agent_id ?? "")}" placeholder="Agent ID">
+        </label>
+        <div style="display:flex;gap:0.5rem">
+          <button type="submit">Filter</button>
+          <a href="/audit-events" hx-get="/audit-events" hx-target="body" hx-push-url="true" style="padding:0.5rem 1rem;background:#30363d;color:#e1e4e8;border-radius:6px;font-size:0.875rem">Clear</a>
+        </div>
+      </form>
+    </div>
+
+    <div id="event-list">
+      ${auditEventsTable(events)}
+    </div>`,
+  );
+}
+
+export function auditEventsTableFragment(events: AuditEventData[]): string {
+  return auditEventsTable(events);
+}
+
+function auditEventsTable(events: AuditEventData[]): string {
+  if (events.length === 0) {
+    return "<p class='muted'>No events found</p>";
+  }
+  return `<table class="data-table">
+    <thead><tr><th>ID</th><th>Type</th><th>Source Agent</th><th>Task</th><th>Payload</th><th>Timestamp</th></tr></thead>
+    <tbody>${events.map(auditEventRow).join("")}</tbody>
+  </table>`;
+}
+
+function auditEventRow(event: AuditEventData): string {
+  const payload = event.payload.length > 120 ? escapeHtml(event.payload.slice(0, 120)) + "…" : escapeHtml(event.payload);
+  return `<tr>
+    <td class="muted">${event.id}</td>
+    <td><code style="font-size:0.75rem">${escapeHtml(event.type)}</code></td>
+    <td class="muted">${event.source_agent_id ? escapeHtml(event.source_agent_id.slice(0, 8)) : "-"}</td>
+    <td class="muted">${event.task_id ? escapeHtml(event.task_id.slice(0, 8)) : "-"}</td>
+    <td style="font-size:0.75rem;max-width:300px;word-break:break-all"><code>${payload}</code></td>
+    <td class="muted" style="white-space:nowrap">${escapeHtml(event.created_at)}</td>
+  </tr>`;
 }
 
 // --- Utility ---
