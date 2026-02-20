@@ -1,5 +1,14 @@
 import { addRoute } from "../server";
 import { AgentManager } from "../agents/manager";
+import { agentListFragment, agentsPage } from "../html/components";
+import type { AgentData } from "../html/components";
+
+function htmlResponse(content: string, status = 200): Response {
+  return new Response(content, {
+    status,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
 
 export function registerAgentRoutes(): void {
   const manager = new AgentManager();
@@ -15,14 +24,15 @@ export function registerAgentRoutes(): void {
     }
 
     try {
-      const agent = manager.createAgent({
+      manager.createAgent({
         name: body.name,
         type: body.type,
         model: body.model,
         capabilities: body.capabilities,
         goal: body.goal,
       });
-      return Response.json(agent, { status: 201 });
+      const agents = manager.listAgents() as unknown as AgentData[];
+      return htmlResponse(agentListFragment(agents), 201);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Internal error";
       return Response.json({ error: message }, { status: 400 });
@@ -48,7 +58,8 @@ export function registerAgentRoutes(): void {
       if (!deleted) {
         return Response.json({ error: "Agent not found" }, { status: 404 });
       }
-      return Response.json({ deleted: true });
+      const agents = manager.listAgents() as unknown as AgentData[];
+      return htmlResponse(agentsPage(agents));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Internal error";
       return Response.json({ error: message }, { status: 400 });

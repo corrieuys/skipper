@@ -238,6 +238,15 @@ export function agentsPage(agents: AgentData[]): string {
   );
 }
 
+export function agentListFragment(agents: AgentData[]): string {
+  return agents.length === 0
+    ? "<p class='muted'>No agents configured</p>"
+    : `<table class="data-table">
+        <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>PID</th><th>Task</th><th>Actions</th></tr></thead>
+        <tbody>${agents.map(agentTableRow).join("")}</tbody>
+      </table>`;
+}
+
 function agentTableRow(agent: AgentData): string {
   return `<tr>
     <td><span class="badge badge-${agent.status}">${agent.status}</span></td>

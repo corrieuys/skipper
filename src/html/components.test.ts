@@ -4,6 +4,7 @@ import {
   tasksPage,
   taskDetailPage,
   agentsPage,
+  agentListFragment,
   agentDetailPage,
   teamsPage,
   teamDetailPage,
@@ -154,6 +155,24 @@ describe("agentsPage", () => {
       { id: "a1", name: "Busy", type: "claude-code", model: "default", status: "busy", capabilities: [], config: {}, process_pid: 1234, current_task_id: "t1" },
     ]);
     expect(html).not.toContain("Delete");
+  });
+});
+
+describe("agentListFragment", () => {
+  it("renders empty state without full page layout", () => {
+    const html = agentListFragment([]);
+    expect(html).toContain("No agents configured");
+    expect(html).not.toContain("<html");
+    expect(html).not.toContain("PlayHive");
+  });
+
+  it("renders agent table without full page layout", () => {
+    const html = agentListFragment([
+      { id: "a1", name: "Agent One", type: "claude-code", model: "opus", status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null },
+    ]);
+    expect(html).toContain("Agent One");
+    expect(html).toContain("claude-code");
+    expect(html).not.toContain("<html");
   });
 });
 
