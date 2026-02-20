@@ -12,6 +12,7 @@ import {
   escalationsPage,
   terminalOutputFragment,
   helpPage,
+  formatTimestamp,
 } from "./components";
 
 describe("layout", () => {
@@ -590,5 +591,112 @@ describe("XSS prevention", () => {
     ]);
     expect(html).not.toContain("<script>alert");
     expect(html).toContain("&lt;script&gt;");
+  });
+});
+
+describe("formatTimestamp", () => {
+  it("returns relative time for recent timestamps", () => {
+    const now = new Date();
+    const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
+    const result = formatTimestamp(fiveMinAgo);
+    expect(result).toContain("5m ago");
+    expect(result).toContain("title=");
+  });
+
+  it("returns 'just now' for very recent timestamps", () => {
+    const now = new Date().toISOString();
+    const result = formatTimestamp(now);
+    expect(result).toContain("just now");
+  });
+
+  it("returns hours ago for older timestamps", () => {
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    const result = formatTimestamp(threeHoursAgo);
+    expect(result).toContain("3h ago");
+  });
+
+  it("returns days ago for multi-day timestamps", () => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const result = formatTimestamp(twoDaysAgo);
+    expect(result).toContain("2d ago");
+  });
+
+  it("returns original string for invalid dates", () => {
+    const result = formatTimestamp("not-a-date");
+    expect(result).toContain("not-a-date");
+  });
+
+  it("includes full timestamp in title attribute", () => {
+    const ts = new Date(Date.now() - 60 * 1000).toISOString();
+    const result = formatTimestamp(ts);
+    expect(result).toContain(`title="${ts}"`);
+  });
+});
+
+describe("active nav indicator", () => {
+  it("marks Dashboard as active on dashboard page", () => {
+    const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 100 } });
+    expect(html).toContain('hx-get="/" hx-target="body" hx-push-url="true" class="active"');
+  });
+
+  it("marks Tasks as active on tasks page", () => {
+    const html = tasksPage([]);
+    expect(html).toContain('hx-get="/tasks" hx-target="body" hx-push-url="true" class="active"');
+  });
+
+  it("marks Agents as active on agent detail page", () => {
+    const html = agentDetailPage({
+      id: "a1", name: "Agent", type: "claude-code", model: "default",
+      status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null,
+    });
+    expect(html).toContain('hx-get="/agents" hx-target="body" hx-push-url="true" class="active"');
+  });
+
+  it("does not mark other nav items as active", () => {
+    const html = tasksPage([]);
+    expect(html).not.toContain('hx-get="/" hx-target="body" hx-push-url="true" class="active"');
+  });
+});
+
+describe("UI polish", () => {
+  it("includes loading bar indicator", () => {
+    const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 100 } });
+    expect(html).toContain("loading-bar");
+    expect(html).toContain("htmx-request");
+  });
+
+  it("includes table row hover styles", () => {
+    const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 100 } });
+    expect(html).toContain("data-table tbody tr:hover");
+  });
+
+  it("includes form focus styles", () => {
+    const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 100 } });
+    expect(html).toContain("form input:focus");
+    expect(html).toContain("box-shadow");
+  });
+
+  it("includes button transitions", () => {
+    const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 100 } });
+    expect(html).toContain("transition:");
+  });
+
+  it("renders styled empty states", () => {
+    const html = tasksPage([]);
+    expect(html).toContain("empty-state");
+    expect(html).toContain("empty-state-icon");
+    expect(html).toContain("Create your first task");
+  });
+
+  it("renders styled empty states for agents", () => {
+    const html = agentsPage([]);
+    expect(html).toContain("empty-state");
+    expect(html).toContain("Create an agent");
+  });
+
+  it("renders styled empty states for escalations", () => {
+    const html = escalationsPage([]);
+    expect(html).toContain("empty-state");
+    expect(html).toContain("All clear");
   });
 });

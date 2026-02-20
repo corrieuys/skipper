@@ -1,6 +1,44 @@
 // Server-rendered HTML components for HTMX UI
 
-export function layout(title: string, content: string): string {
+export function formatTimestamp(isoString: string): string {
+  const date = new Date(isoString);
+  if (isNaN(date.getTime())) return escapeHtml(isoString);
+
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHr = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHr / 24);
+
+  let relative: string;
+  if (diffSec < 60) relative = "just now";
+  else if (diffMin < 60) relative = `${diffMin}m ago`;
+  else if (diffHr < 24) relative = `${diffHr}h ago`;
+  else if (diffDay < 30) relative = `${diffDay}d ago`;
+  else relative = date.toLocaleDateString();
+
+  return `<span title="${escapeHtml(isoString)}">${relative}</span>`;
+}
+
+const navItems: { href: string; label: string }[] = [
+  { href: "/", label: "Dashboard" },
+  { href: "/tasks", label: "Tasks" },
+  { href: "/agents", label: "Agents" },
+  { href: "/teams", label: "Teams" },
+  { href: "/escalations", label: "Escalations" },
+  { href: "/audit-events", label: "Events" },
+  { href: "/help", label: "Help" },
+];
+
+export function layout(title: string, content: string, currentPath: string = "/"): string {
+  const navLinksHtml = navItems
+    .map((item) => {
+      const isActive = item.href === "/" ? currentPath === "/" : currentPath.startsWith(item.href);
+      return `<a href="${item.href}" hx-get="${item.href}" hx-target="body" hx-push-url="true"${isActive ? ' class="active"' : ""}>${item.label}</a>`;
+    })
+    .join("\n      ");
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -15,15 +53,10 @@ export function layout(title: string, content: string): string {
   <nav class="navbar">
     <a href="/" class="brand">PlayHive</a>
     <div class="nav-links">
-      <a href="/" hx-get="/" hx-target="body" hx-push-url="true">Dashboard</a>
-      <a href="/tasks" hx-get="/tasks" hx-target="body" hx-push-url="true">Tasks</a>
-      <a href="/agents" hx-get="/agents" hx-target="body" hx-push-url="true">Agents</a>
-      <a href="/teams" hx-get="/teams" hx-target="body" hx-push-url="true">Teams</a>
-      <a href="/escalations" hx-get="/escalations" hx-target="body" hx-push-url="true">Escalations</a>
-      <a href="/audit-events" hx-get="/audit-events" hx-target="body" hx-push-url="true">Events</a>
-      <a href="/help" hx-get="/help" hx-target="body" hx-push-url="true">Help</a>
+      ${navLinksHtml}
     </div>
   </nav>
+  <div class="htmx-indicator loading-bar"></div>
   <main class="container">${content}</main>
 </body>
 </html>`;
@@ -74,17 +107,18 @@ export function dashboardPage(data: DashboardData): string {
       <section>
         <h2>Active Tasks</h2>
         <div id="active-tasks" hx-ext="sse" sse-connect="/events/tasks" sse-swap="task:state_changed" hx-swap="innerHTML">
-          ${activeTasks.length === 0 ? "<p class='muted'>No active tasks</p>" : activeTasks.map(taskRow).join("")}
+          ${activeTasks.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#9745;</div><p>No active tasks</p><p class="muted">Approve a draft task to get started</p></div>` : activeTasks.map(taskRow).join("")}
         </div>
       </section>
 
       <section>
         <h2>Agent Status</h2>
         <div id="agent-status" hx-ext="sse" sse-connect="/events/agents" sse-swap="agent:state_changed" hx-swap="innerHTML">
-          ${data.agents.length === 0 ? "<p class='muted'>No agents configured</p>" : data.agents.map(agentStatusRow).join("")}
+          ${data.agents.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#9881;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>` : data.agents.map(agentStatusRow).join("")}
         </div>
       </section>
     </div>`,
+    "/",
   );
 }
 
@@ -171,7 +205,7 @@ export interface AuditEventFilters {
 
 export function taskListFragment(tasks: TaskData[]): string {
   return tasks.length === 0
-    ? "<p class='muted'>No tasks yet</p>"
+    ? `<div class="empty-state"><div class="empty-state-icon">&#128203;</div><p>No tasks yet</p><p class="muted">Create your first task to get started</p></div>`
     : `<table class="data-table">
         <thead><tr><th>Status</th><th>Title</th><th>Priority</th><th>Phase</th><th>Created</th><th>Actions</th></tr></thead>
         <tbody>${tasks.map(taskTableRow).join("")}</tbody>
@@ -200,6 +234,7 @@ export function tasksPage(tasks: TaskData[]): string {
     <div id="task-list">
       ${taskListFragment(tasks)}
     </div>`,
+    "/tasks",
   );
 }
 
@@ -221,7 +256,7 @@ function taskTableRow(task: TaskData): string {
     <td><a href="/tasks/${escapeHtml(task.id)}" hx-get="/tasks/${escapeHtml(task.id)}" hx-target="body" hx-push-url="true">${escapeHtml(task.title)}</a></td>
     <td>P${task.priority}</td>
     <td>${task.current_phase}</td>
-    <td>${escapeHtml(task.created_at)}</td>
+    <td>${formatTimestamp(task.created_at)}</td>
     <td>${actions.join(" ")}</td>
   </tr>`;
 }
@@ -241,7 +276,7 @@ export function taskDetailPage(
         <div><strong>Status:</strong> <span class="badge badge-${task.status}">${task.status}</span></div>
         <div><strong>Priority:</strong> P${task.priority}</div>
         <div><strong>Team:</strong> ${task.team_id ? escapeHtml(task.team_id) : "None"}</div>
-        <div><strong>Created:</strong> ${escapeHtml(task.created_at)}</div>
+        <div><strong>Created:</strong> ${formatTimestamp(task.created_at)}</div>
       </div>
       ${task.description ? `<div class="detail-desc"><strong>Description:</strong><p>${escapeHtml(task.description)}</p></div>` : ""}
       ${task.result ? `<div class="detail-desc"><strong>Result:</strong><pre>${escapeHtml(JSON.stringify(task.result, null, 2))}</pre></div>` : ""}
@@ -261,19 +296,20 @@ export function taskDetailPage(
     ${phaseStepper(task.current_phase, task.phases)}
 
     <h2>Notes</h2>
-    ${notes.length === 0 ? "<p class='muted'>No notes yet</p>" : notes.map((n) => `<div class="card">
-      <div class="muted">Agent: ${escapeHtml(n.agent_id.slice(0, 8))} | ${escapeHtml(n.created_at)}</div>
+    ${notes.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#128221;</div><p>No notes yet</p></div>` : notes.map((n) => `<div class="card">
+      <div class="muted">Agent: ${escapeHtml(n.agent_id.slice(0, 8))} | ${formatTimestamp(n.created_at)}</div>
       <p>${escapeHtml(n.content)}</p>
     </div>`).join("")}
 
     <h2>Delegations</h2>
-    ${delegations.length === 0 ? "<p class='muted'>No delegations</p>" : `<table class="data-table">
+    ${delegations.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#128257;</div><p>No delegations</p></div>` : `<table class="data-table">
       <thead><tr><th>Status</th><th>Parent Agent</th><th>Child Agent</th><th>Prompt</th><th>Created</th><th>Completed</th></tr></thead>
       <tbody>${delegations.map(delegationTableRow).join("")}</tbody>
     </table>`}
 
     <h2>Artifacts</h2>
-    ${artifacts.length === 0 ? "<p class='muted'>No artifacts</p>" : artifacts.map(artifactCard).join("")}`,
+    ${artifacts.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#128230;</div><p>No artifacts</p></div>` : artifacts.map(artifactCard).join("")}`,
+    "/tasks",
   );
 }
 
@@ -299,8 +335,8 @@ function delegationTableRow(d: DelegationData): string {
     <td>${escapeHtml(d.parent_agent_id.slice(0, 8))}</td>
     <td>${escapeHtml(d.child_agent_id.slice(0, 8))}</td>
     <td class="muted">${escapeHtml(d.prompt.length > 80 ? d.prompt.slice(0, 80) + "…" : d.prompt)}</td>
-    <td>${escapeHtml(d.created_at)}</td>
-    <td>${d.completed_at ? escapeHtml(d.completed_at) : "-"}</td>
+    <td>${formatTimestamp(d.created_at)}</td>
+    <td>${d.completed_at ? formatTimestamp(d.completed_at) : "-"}</td>
   </tr>`;
 }
 
@@ -309,7 +345,7 @@ function artifactCard(a: ArtifactData): string {
     <div class="artifact-header">
       <span class="badge badge-artifact-${a.type}">${escapeHtml(a.type)}</span>
       <strong>${escapeHtml(a.name)}</strong>
-      <span class="muted">Agent: ${escapeHtml(a.agent_id.slice(0, 8))} | ${escapeHtml(a.created_at)}</span>
+      <span class="muted">Agent: ${escapeHtml(a.agent_id.slice(0, 8))} | ${formatTimestamp(a.created_at)}</span>
     </div>
     ${a.path ? `<div class="artifact-path"><code>${escapeHtml(a.path)}</code></div>` : ""}
     ${a.content ? `<details class="artifact-content"><summary>View content</summary><pre>${escapeHtml(a.content)}</pre></details>` : ""}
@@ -356,17 +392,18 @@ export function agentsPage(agents: AgentData[]): string {
     </div>
 
     <div id="agent-list">
-      ${agents.length === 0 ? "<p class='muted'>No agents configured</p>" : `<table class="data-table">
+      ${agents.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#129302;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>` : `<table class="data-table">
         <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>PID</th><th>Task</th><th>Actions</th></tr></thead>
         <tbody>${agents.map(agentTableRow).join("")}</tbody>
       </table>`}
     </div>`,
+    "/agents",
   );
 }
 
 export function agentListFragment(agents: AgentData[]): string {
   return agents.length === 0
-    ? "<p class='muted'>No agents configured</p>"
+    ? `<div class="empty-state"><div class="empty-state-icon">&#129302;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>`
     : `<table class="data-table">
         <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>PID</th><th>Task</th><th>Actions</th></tr></thead>
         <tbody>${agents.map(agentTableRow).join("")}</tbody>
@@ -423,6 +460,7 @@ export function agentDetailPage(agent: AgentData): string {
     <div id="terminal" class="terminal" hx-ext="sse" sse-connect="/events/agent/${escapeHtml(agent.id)}/output" sse-swap="agent:output" hx-swap="beforeend scroll:bottom">
       <div hx-get="/agents/${escapeHtml(agent.id)}/output" hx-trigger="load" hx-swap="innerHTML"></div>
     </div>`,
+    "/agents",
   );
 }
 
@@ -452,7 +490,7 @@ export interface TeamAgentData {
 
 export function teamListFragment(teams: TeamData[]): string {
   return teams.length === 0
-    ? "<p class='muted'>No teams configured</p>"
+    ? `<div class="empty-state"><div class="empty-state-icon">&#128101;</div><p>No teams configured</p><p class="muted">Create a team to organize your agents</p></div>`
     : `<table class="data-table">
         <thead><tr><th>Name</th><th>Goal</th><th>Entrypoint</th><th>Phases</th></tr></thead>
         <tbody>${teams.map(teamTableRow).join("")}</tbody>
@@ -479,6 +517,7 @@ export function teamsPage(teams: TeamData[]): string {
     <div id="team-list">
       ${teamListFragment(teams)}
     </div>`,
+    "/teams",
   );
 }
 
@@ -513,7 +552,7 @@ export function teamDetailPage(team: TeamData, agents: TeamAgentData[]): string 
     </div>
 
     <h2>Phases (${team.phases.length})</h2>
-    ${team.phases.length === 0 ? "<p class='muted'>No phases defined</p>" : `<table class="data-table">
+    ${team.phases.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#9654;</div><p>No phases defined</p></div>` : `<table class="data-table">
       <thead><tr><th>#</th><th>Name</th><th>Prompt</th><th>Actions</th></tr></thead>
       <tbody>${team.phases.map((p, i) => `<tr>
         <td>${i}</td>
@@ -531,7 +570,7 @@ export function teamDetailPage(team: TeamData, agents: TeamAgentData[]): string 
     </form>
 
     <h2>Members</h2>
-    ${agents.length === 0 ? "<p class='muted'>No agents in this team</p>" : `<table class="data-table">
+    ${agents.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#128101;</div><p>No agents in this team</p></div>` : `<table class="data-table">
       <thead><tr><th>Name</th><th>Role</th><th>Level</th><th>Skills</th></tr></thead>
       <tbody>${agents.map((a) => `<tr>
         <td>${escapeHtml(a.agent_name)}</td>
@@ -547,6 +586,7 @@ export function teamDetailPage(team: TeamData, agents: TeamAgentData[]): string 
       <input type="text" name="role" placeholder="Role">
       <button type="submit">Add</button>
     </form>`,
+    "/teams",
   );
 }
 
@@ -573,11 +613,12 @@ export function escalationsPage(escalations: EscalationData[]): string {
 
     <h2>Open (${open.length})</h2>
     <div id="escalation-list" hx-ext="sse" sse-connect="/events/escalations" sse-swap="escalation:created" hx-swap="afterbegin">
-      ${open.length === 0 ? "<p class='muted'>No open escalations</p>" : open.map(escalationCard).join("")}
+      ${open.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#9989;</div><p>No open escalations</p><p class="muted">All clear — no agents need help right now</p></div>` : open.map(escalationCard).join("")}
     </div>
 
     <h2>Resolved (${resolved.length})</h2>
-    ${resolved.length === 0 ? "<p class='muted'>No resolved escalations</p>" : resolved.map(escalationCard).join("")}`,
+    ${resolved.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#128172;</div><p>No resolved escalations</p></div>` : resolved.map(escalationCard).join("")}`,
+    "/escalations",
   );
 }
 
@@ -586,7 +627,7 @@ function escalationCard(esc: EscalationData): string {
     <div class="escalation-header">
       <span class="badge badge-${esc.status}">${esc.status}</span>
       <span class="badge">${escapeHtml(esc.type)}</span>
-      <span class="muted">${escapeHtml(esc.created_at)}</span>
+      <span class="muted">${formatTimestamp(esc.created_at)}</span>
     </div>
     <div class="escalation-question"><strong>Question:</strong> ${escapeHtml(esc.question)}</div>
     <div class="muted">Agent: ${escapeHtml(esc.agent_id.slice(0, 8))} | Task: ${escapeHtml(esc.task_id.slice(0, 8))}</div>
@@ -617,11 +658,12 @@ export function auditEventsPage(events: AuditEventData[], filters: AuditEventFil
     <div id="event-list">
       ${auditEventsTableFragment(events)}
     </div>`,
+    "/audit-events",
   );
 }
 
 export function auditEventsTableFragment(events: AuditEventData[]): string {
-  if (events.length === 0) return "<p class='muted'>No events found</p>";
+  if (events.length === 0) return `<div class="empty-state"><div class="empty-state-icon">&#128240;</div><p>No events found</p></div>`;
   return `<table class="data-table">
     <thead><tr><th>ID</th><th>Type</th><th>Source Agent</th><th>Task</th><th>Payload</th><th>Timestamp</th></tr></thead>
     <tbody>${events.map(auditEventRow).join("")}</tbody>
@@ -636,7 +678,7 @@ function auditEventRow(e: AuditEventData): string {
     <td>${e.source_agent_id ? escapeHtml(e.source_agent_id.slice(0, 8)) : "-"}</td>
     <td>${e.task_id ? escapeHtml(e.task_id.slice(0, 8)) : "-"}</td>
     <td class="muted"><code>${escapeHtml(payload)}</code></td>
-    <td>${escapeHtml(e.created_at)}</td>
+    <td>${formatTimestamp(e.created_at)}</td>
   </tr>`;
 }
 
@@ -845,6 +887,7 @@ export function helpPage(): string {
         <li>View the completed task's notes, artifacts, and delegation history</li>
       </ol>
     </div>`,
+    "/help",
   );
 }
 
@@ -868,8 +911,9 @@ function baseStyles(): string {
     .navbar { display: flex; align-items: center; gap: 2rem; padding: 0.75rem 1.5rem; background: #161b22; border-bottom: 1px solid #30363d; }
     .brand { font-weight: bold; font-size: 1.2rem; color: #f0f6fc; }
     .nav-links { display: flex; gap: 1rem; }
-    .nav-links a { color: #8b949e; }
-    .nav-links a:hover { color: #f0f6fc; }
+    .nav-links a { color: #8b949e; padding: 0.25rem 0; border-bottom: 2px solid transparent; transition: color 0.2s, border-color 0.2s; }
+    .nav-links a:hover { color: #f0f6fc; text-decoration: none; }
+    .nav-links a.active { color: #f0f6fc; border-bottom-color: #58a6ff; }
     .container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
     h1 { margin-bottom: 1rem; color: #f0f6fc; }
     h2 { margin: 1.5rem 0 0.75rem; color: #c9d1d9; }
@@ -899,16 +943,20 @@ function baseStyles(): string {
     .data-table { width: 100%; border-collapse: collapse; }
     .data-table th { text-align: left; padding: 0.5rem; border-bottom: 2px solid #30363d; color: #8b949e; font-size: 0.875rem; }
     .data-table td { padding: 0.5rem; border-bottom: 1px solid #21262d; }
+    .data-table tbody tr { transition: background-color 0.15s; }
+    .data-table tbody tr:hover { background-color: #1c2128; }
     .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
     .detail-desc { margin-top: 1rem; }
     .detail-desc pre { background: #0d1117; padding: 0.75rem; border-radius: 4px; overflow-x: auto; font-size: 0.875rem; margin-top: 0.25rem; }
-    button, .btn-sm { background: #238636; color: #fff; border: none; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.875rem; }
+    button, .btn-sm { background: #238636; color: #fff; border: none; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.875rem; transition: background-color 0.2s, transform 0.1s; }
     button:hover { background: #2ea043; }
+    button:active { transform: scale(0.98); }
     .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.75rem; }
     .btn-danger { background: #da3633; }
     .btn-danger:hover { background: #f85149; }
     form label { display: block; margin-bottom: 0.75rem; color: #c9d1d9; font-size: 0.875rem; }
-    form input, form textarea, form select { display: block; width: 100%; margin-top: 0.25rem; padding: 0.5rem; background: #0d1117; border: 1px solid #30363d; border-radius: 4px; color: #e1e4e8; font-size: 0.875rem; }
+    form input, form textarea, form select { display: block; width: 100%; margin-top: 0.25rem; padding: 0.5rem; background: #0d1117; border: 1px solid #30363d; border-radius: 4px; color: #e1e4e8; font-size: 0.875rem; transition: border-color 0.2s, box-shadow 0.2s; outline: none; }
+    form input:focus, form textarea:focus, form select:focus { border-color: #58a6ff; box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.3); }
     .inline-form { display: flex; gap: 0.5rem; align-items: flex-end; }
     .inline-form input { width: auto; }
     .terminal { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 0.75rem; max-height: 500px; overflow-y: auto; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8rem; white-space: pre-wrap; word-break: break-all; }
@@ -939,5 +987,11 @@ function baseStyles(): string {
     details.artifact-content { margin-top: 0.5rem; }
     details.artifact-content pre { background: #0d1117; padding: 0.75rem; border-radius: 4px; overflow-x: auto; font-size: 0.8rem; max-height: 300px; overflow-y: auto; }
     .help-diagram { background: #0d1117; padding: 1rem; border-radius: 4px; overflow-x: auto; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.85rem; line-height: 1.4; color: #58a6ff; border: 1px solid #30363d; }
+    .loading-bar { position: fixed; top: 0; left: 0; width: 100%; height: 3px; background: transparent; z-index: 9999; pointer-events: none; }
+    .htmx-request .loading-bar, .htmx-request.loading-bar { background: linear-gradient(90deg, #58a6ff 0%, #1f6feb 50%, #58a6ff 100%); background-size: 200% 100%; animation: loading-slide 1.5s ease-in-out infinite; }
+    @keyframes loading-slide { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    .empty-state { text-align: center; padding: 2rem 1rem; color: #8b949e; }
+    .empty-state-icon { font-size: 2rem; margin-bottom: 0.5rem; opacity: 0.6; }
+    .empty-state p { margin: 0.25rem 0; }
   `;
 }
