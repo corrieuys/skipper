@@ -98,18 +98,50 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
   });
 
   // Agent detail
-  addRoute("GET", "/agents/:id", (_req, params) => {
+  addRoute("GET", "/agents/:id", (req, params) => {
     const row = db.prepare("SELECT * FROM agents WHERE id = ?").get(params.id) as Record<string, unknown> | null;
     if (!row) return html("<p>Agent not found</p>");
     const agent = parseRow(row, ["config", "capabilities"]) as unknown as AgentData;
-    return html(agentDetailPage(agent));
+
+    // Fetch sessions for this agent
+    const sessions = db.prepare(
+      "SELECT id, created_at FROM agent_sessions WHERE agent_id = ? ORDER BY created_at DESC",
+    ).all(params.id) as { id: string; created_at: string }[];
+
+    // Determine selected session from query param
+    const url = new URL(req.url);
+    const selectedSessionId = url.searchParams.get("session") ?? undefined;
+
+    return html(agentDetailPage(agent, sessions, selectedSessionId));
   });
 
   // Agent terminal output
-  addRoute("GET", "/agents/:id/output", (_req, params) => {
-    const rows = db.prepare(
-      "SELECT stream, data, sequence FROM terminal_outputs WHERE agent_id = ? ORDER BY sequence",
-    ).all(params.id) as { stream: string; data: string; sequence: number }[];
+  addRoute("GET", "/agents/:id/output", (req, params) => {
+    const url = new URL(req.url);
+    const sessionId = url.searchParams.get("session");
+
+    let rows: { stream: string; data: string; sequence: number }[];
+    if (sessionId) {
+      rows = db.prepare(
+        "SELECT stream, data, sequence FROM terminal_outputs WHERE agent_id = ? AND session_id = ? ORDER BY sequence",
+      ).all(params.id, sessionId) as { stream: string; data: string; sequence: number }[];
+    } else {
+      // Default: show latest session's output
+      const latestSession = db.prepare(
+        "SELECT id FROM agent_sessions WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
+      ).get(params.id) as { id: string } | null;
+
+      if (latestSession) {
+        rows = db.prepare(
+          "SELECT stream, data, sequence FROM terminal_outputs WHERE agent_id = ? AND session_id = ? ORDER BY sequence",
+        ).all(params.id, latestSession.id) as { stream: string; data: string; sequence: number }[];
+      } else {
+        // Fallback for outputs without session_id (pre-migration data)
+        rows = db.prepare(
+          "SELECT stream, data, sequence FROM terminal_outputs WHERE agent_id = ? ORDER BY sequence",
+        ).all(params.id) as { stream: string; data: string; sequence: number }[];
+      }
+    }
     return html(terminalOutputFragment(rows));
   });
 

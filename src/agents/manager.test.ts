@@ -222,10 +222,10 @@ describe("spawnAgent", () => {
     await new Promise((r) => setTimeout(r, 50));
   });
 
-  it("clears old terminal outputs on spawn", async () => {
+  it("preserves old terminal outputs and creates new session on spawn", async () => {
     const { agentId } = createTestEchoAgent('echo "test"');
 
-    // Insert some old terminal output
+    // Insert some old terminal output (without session_id, simulating legacy data)
     db.prepare(
       "INSERT INTO terminal_outputs (agent_id, stream, data, sequence) VALUES (?, ?, ?, ?)",
     ).run(agentId, "stdout", "old data", 1);
@@ -237,12 +237,26 @@ describe("spawnAgent", () => {
 
     const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
     await running.process.exited;
+    await new Promise((r) => setTimeout(r, 100));
 
-    // Old rows should be gone (new rows may exist from the echo output)
-    const rows = db
+    // Old rows should still be present (no longer deleted)
+    const oldDataRows = db
       .prepare("SELECT * FROM terminal_outputs WHERE agent_id = ? AND data = 'old data'")
       .all(agentId);
-    expect(rows).toHaveLength(0);
+    expect(oldDataRows).toHaveLength(1);
+
+    // A new session should have been created
+    const sessions = db
+      .prepare("SELECT * FROM agent_sessions WHERE agent_id = ?")
+      .all(agentId) as { id: string }[];
+    expect(sessions.length).toBeGreaterThanOrEqual(1);
+
+    // New output should be tagged with the session_id
+    const newRows = db
+      .prepare("SELECT * FROM terminal_outputs WHERE agent_id = ? AND session_id IS NOT NULL")
+      .all(agentId) as { session_id: string }[];
+    expect(newRows.length).toBeGreaterThanOrEqual(1);
+    expect(newRows[0].session_id).toBe(sessions[0].id);
   });
 
   it("captures stdout in terminal_outputs and emits events", async () => {

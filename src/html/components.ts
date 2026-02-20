@@ -422,7 +422,29 @@ function agentTableRow(agent: AgentData): string {
   </tr>`;
 }
 
-export function agentDetailPage(agent: AgentData): string {
+export interface AgentSessionData {
+  id: string;
+  created_at: string;
+}
+
+export function agentDetailPage(agent: AgentData, sessions: AgentSessionData[] = [], selectedSessionId?: string): string {
+  const isViewingHistory = !!selectedSessionId;
+  const latestSessionId = sessions.length > 0 ? sessions[0].id : null;
+  const activeSessionId = selectedSessionId ?? latestSessionId;
+
+  const sessionSelector = sessions.length > 1 ? `<div class="session-selector">
+      <label>Session:
+        <select onchange="window.location.href='/agents/${escapeHtml(agent.id)}?session=' + this.value">
+          ${sessions.map((s, i) => `<option value="${escapeHtml(s.id)}"${s.id === activeSessionId ? " selected" : ""}>${i === 0 ? "Latest" : formatTimestamp(s.created_at)} (${escapeHtml(s.id.slice(0, 8))})</option>`).join("")}
+        </select>
+      </label>
+      <span class="muted">${sessions.length} session${sessions.length !== 1 ? "s" : ""}</span>
+    </div>` : sessions.length === 1 ? `<div class="session-selector"><span class="muted">1 session</span></div>` : "";
+
+  const outputUrl = activeSessionId
+    ? `/agents/${escapeHtml(agent.id)}/output?session=${escapeHtml(activeSessionId)}`
+    : `/agents/${escapeHtml(agent.id)}/output`;
+
   return layout(
     agent.name,
     `<a href="/agents" hx-get="/agents" hx-target="body" hx-push-url="true">&larr; Back to Agents</a>
@@ -457,8 +479,9 @@ export function agentDetailPage(agent: AgentData): string {
     </div>
 
     <h2>Terminal Output</h2>
-    <div id="terminal" class="terminal" hx-ext="sse" sse-connect="/events/agent/${escapeHtml(agent.id)}/output" sse-swap="agent:output" hx-swap="beforeend scroll:bottom">
-      <div hx-get="/agents/${escapeHtml(agent.id)}/output" hx-trigger="load" hx-swap="innerHTML"></div>
+    ${sessionSelector}
+    <div id="terminal" class="terminal"${!isViewingHistory ? ` hx-ext="sse" sse-connect="/events/agent/${escapeHtml(agent.id)}/output" sse-swap="agent:output" hx-swap="beforeend scroll:bottom"` : ""}>
+      <div hx-get="${outputUrl}" hx-trigger="load" hx-swap="innerHTML"></div>
     </div>`,
     "/agents",
   );
@@ -990,6 +1013,8 @@ function baseStyles(): string {
     .loading-bar { position: fixed; top: 0; left: 0; width: 100%; height: 3px; background: transparent; z-index: 9999; pointer-events: none; }
     .htmx-request .loading-bar, .htmx-request.loading-bar { background: linear-gradient(90deg, #58a6ff 0%, #1f6feb 50%, #58a6ff 100%); background-size: 200% 100%; animation: loading-slide 1.5s ease-in-out infinite; }
     @keyframes loading-slide { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    .session-selector { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .session-selector select { width: auto; display: inline-block; }
     .empty-state { text-align: center; padding: 2rem 1rem; color: #8b949e; }
     .empty-state-icon { font-size: 2rem; margin-bottom: 0.5rem; opacity: 0.6; }
     .empty-state p { margin: 0.25rem 0; }
