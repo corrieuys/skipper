@@ -56,12 +56,12 @@ export async function detectRuntime(
         if (versionResult.exitCode === 0 && versionResult.stdout) {
           version = versionResult.stdout.split("\n")[0] ?? null;
         }
-      } catch {
-        // version detection is best-effort
+      } catch (err) {
+        console.error("[cli.runtime.version_detection]", command, err);
       }
     }
-  } catch {
-    // command not found
+  } catch (err) {
+    console.error("[cli.runtime.detect]", command, err);
   }
 
   const info: RuntimeInfo = {

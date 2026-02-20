@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
 import { AgentManager } from "../agents/manager";
 import { eventBus } from "../events/bus";
+import { logError } from "../logging";
 
 export interface Escalation {
   id: string;
@@ -153,8 +154,8 @@ export class EscalationManager {
 
     try {
       await this.agentManager.sendResumeMessage(agentId, message);
-    } catch {
-      // Resume not supported or no session — agent will pick up response on next spawn
+    } catch (err) {
+      logError(this.db, "escalation.inject_response", { agentId }, err);
     }
   }
 
@@ -175,8 +176,8 @@ export class EscalationManager {
         previousState: "",
         newState: state,
       });
-    } catch {
-      // Ignore state update errors
+    } catch (err) {
+      logError(this.db, "escalation.set_agent_state", { agentId, state }, err);
     }
   }
 }

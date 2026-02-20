@@ -241,6 +241,18 @@ CREATE TABLE IF NOT EXISTS daemon_state (
   value TEXT NOT NULL
 );
 
+-- Structured error log
+CREATE TABLE IF NOT EXISTS error_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  category TEXT NOT NULL,
+  message TEXT NOT NULL,
+  context TEXT NOT NULL DEFAULT '{}',       -- JSON
+  stack TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_error_log_category ON error_log(category);
+
 -- CLI runtime detection cache
 CREATE TABLE IF NOT EXISTS cli_runtimes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

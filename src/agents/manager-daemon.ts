@@ -12,6 +12,7 @@ import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
 import { TaskStateMachine } from "../orchestrator/state";
 import type { TaskOrchStep } from "../orchestrator/state";
+import { logError } from "../logging";
 
 const DAEMON_INTERVAL_MS = 30_000;
 const STREAMS_DRAIN_TIMEOUT_MS = 5_000;
@@ -179,8 +180,8 @@ export class ManagerDaemon {
       this.db
         .prepare("INSERT OR REPLACE INTO daemon_state (key, value) VALUES ('paused', 'true')")
         .run();
-    } catch {
-      // Best-effort persistence
+    } catch (err) {
+      logError(this.db, "pause_state_persist", { method: "persistPausedState" }, err);
     }
   }
 
@@ -189,8 +190,8 @@ export class ManagerDaemon {
       this.db
         .prepare("DELETE FROM daemon_state WHERE key = 'paused'")
         .run();
-    } catch {
-      // Best-effort
+    } catch (err) {
+      logError(this.db, "pause_state_delete", { method: "deletePausedState" }, err);
     }
   }
 
@@ -200,7 +201,8 @@ export class ManagerDaemon {
         .prepare("SELECT value FROM daemon_state WHERE key = 'paused'")
         .get() as { value: string } | null;
       return row?.value === "true";
-    } catch {
+    } catch (err) {
+      logError(this.db, "pause_state_load", { method: "loadPausedState" }, err);
       return false;
     }
   }
@@ -414,7 +416,8 @@ export class ManagerDaemon {
       try {
         process.kill(agent.process_pid, 0);
         osAlive = true;
-      } catch {
+      } catch (err) {
+        logError(this.db, "process_liveness_check", { agentId: agent.id, pid: agent.process_pid }, err);
         osAlive = false;
       }
 
@@ -430,8 +433,8 @@ export class ManagerDaemon {
       if (osAlive && !memTracked) {
         try {
           process.kill(agent.process_pid, 9);
-        } catch {
-          // Already exited between the liveness check and the kill attempt
+        } catch (err) {
+          logError(this.db, "orphan_process_kill", { agentId: agent.id, pid: agent.process_pid }, err);
         }
       }
 
@@ -452,8 +455,8 @@ export class ManagerDaemon {
                 agent.current_task_id,
                 "Agent process died unexpectedly",
               );
-            } catch {
-              // Task may already be in a terminal state
+            } catch (err) {
+              logError(this.db, "health_check_fail_task", { agentId: agent.id, taskId: agent.current_task_id }, err);
             }
             this.db
               .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
@@ -524,8 +527,8 @@ export class ManagerDaemon {
         // Non-zero exit: fail the task
         try {
           this.taskScheduler.failTask(taskId, `Agent exited with code ${event.code}`);
-        } catch {
-          // Task may already be in a terminal state
+        } catch (err) {
+          logError(this.db, "agent_exit_fail_task", { agentId: event.agentId, taskId: taskId, exitCode: event.code }, err);
         }
       }
 
@@ -533,8 +536,8 @@ export class ManagerDaemon {
       this.db
         .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
         .run(event.agentId);
-    } catch {
-      // DB may be closed during shutdown
+    } catch (err) {
+      logError(this.db, "agent_exit_handler", { agentId: event.agentId, method: "handleAgentExit" }, err);
     }
   }
 
@@ -569,8 +572,8 @@ export class ManagerDaemon {
       // Last phase or no phases — complete the task
       try {
         this.taskScheduler.completeTask(task.id);
-      } catch {
-        // Task may already be complete
+      } catch (err) {
+        logError(this.db, "task_complete", { taskId: task.id, agentId, method: "handleSuccessfulExit" }, err);
       }
     } else {
       // More phases — advance and respawn
@@ -600,7 +603,8 @@ export class ManagerDaemon {
     try {
       const workingDir = process.cwd();
       await this.agentManager.spawnAgent(entrypointAgentId, { workingDir, sessionId });
-    } catch {
+    } catch (err) {
+      logError(this.db, "phase_respawn", { taskId: task.id, agentId: entrypointAgentId, method: "advanceAndRespawn" }, err);
       this.taskScheduler.failTask(task.id, "Failed to respawn agent for next phase");
       return;
     }
@@ -712,7 +716,8 @@ export class ManagerDaemon {
     try {
       const workingDir = process.cwd();
       await this.agentManager.spawnAgent(childAgentId, { workingDir });
-    } catch {
+    } catch (err) {
+      logError(this.db, "delegation_spawn", { delegationId, parentAgentId, childAgentId, method: "handleDelegation" }, err);
       this.db
         .prepare("UPDATE delegations SET status = 'failed', completed_at = datetime('now') WHERE id = ?")
         .run(delegationId);
@@ -756,8 +761,8 @@ export class ManagerDaemon {
         parentAgentId,
         `[SYSTEM] Delegated to agent ${childAgentId}. Waiting for results...`,
       );
-    } catch {
-      // Parent may not have open stdin
+    } catch (err) {
+      logError(this.db, "delegation_notify_parent", { parentAgentId, childAgentId, method: "handleDelegation" }, err);
     }
 
     // 14. Set parent state to waiting_delegation
@@ -817,8 +822,8 @@ export class ManagerDaemon {
         delegation_id: delegation.id,
         child_agent_id: childAgentId,
       });
-    } catch {
-      // DB may be closed during shutdown
+    } catch (err) {
+      logError(this.db, "delegation_complete", { childAgentId, method: "handleDelegateComplete" }, err);
     }
   }
 
@@ -868,8 +873,8 @@ export class ManagerDaemon {
         // Reset parent state
         this.setAgentState(delegation.parent_agent_id, "working");
       }
-    } catch {
-      // DB may be closed during shutdown
+    } catch (err) {
+      logError(this.db, "child_exit_handler", { delegationId: delegation.id, childAgentId: event.agentId, exitCode: event.code, method: "handleChildExit" }, err);
     }
   }
 
@@ -907,8 +912,8 @@ export class ManagerDaemon {
 
         // Reset parent state
         this.setAgentState(delegation.parent_agent_id, "working");
-      } catch {
-        // Ignore individual delegation timeout errors
+      } catch (err) {
+        logError(this.db, "stale_delegation_cleanup", { delegationId: delegation.id, parentAgentId: delegation.parent_agent_id, childAgentId: delegation.child_agent_id }, err);
       }
     }
 
@@ -928,8 +933,8 @@ export class ManagerDaemon {
       try {
         this.agentManager.sendInput(parentAgentId, message);
         return;
-      } catch {
-        // Stdin may be closed
+      } catch (err) {
+        logError(this.db, "route_result_stdin", { parentAgentId, childAgentId, method: "routeResultToParent" }, err);
       }
     }
 
@@ -953,7 +958,8 @@ export class ManagerDaemon {
         )
         .all(agentId) as { data: string }[];
       return rows.map((r) => r.data).join("");
-    } catch {
+    } catch (err) {
+      logError(this.db, "gather_terminal_output", { agentId, method: "gatherTerminalOutput" }, err);
       return "";
     }
   }
@@ -964,7 +970,8 @@ export class ManagerDaemon {
         .prepare("SELECT * FROM delegations WHERE id = ?")
         .get(id) as Delegation | null;
       return row ?? null;
-    } catch {
+    } catch (err) {
+      logError(this.db, "get_delegation", { delegationId: id, method: "getDelegation" }, err);
       return null;
     }
   }
@@ -977,7 +984,8 @@ export class ManagerDaemon {
         )
         .get(parentAgentId) as Delegation | null;
       return row ?? null;
-    } catch {
+    } catch (err) {
+      logError(this.db, "get_active_delegation_parent", { parentAgentId, method: "getActiveDelegationForParent" }, err);
       return null;
     }
   }
@@ -990,7 +998,8 @@ export class ManagerDaemon {
         )
         .get(childAgentId) as Delegation | null;
       return row ?? null;
-    } catch {
+    } catch (err) {
+      logError(this.db, "get_active_delegation_child", { childAgentId, method: "getActiveDelegationForChild" }, err);
       return null;
     }
   }
@@ -1049,8 +1058,8 @@ export class ManagerDaemon {
         previousState: "",
         newState: state,
       });
-    } catch {
-      // Ignore state update errors
+    } catch (err) {
+      logError(this.db, "agent_state_update", { agentId, state, method: "setAgentState" }, err);
     }
   }
 
@@ -1082,8 +1091,8 @@ export class ManagerDaemon {
       // Last phase or no phases — complete the task
       try {
         this.taskScheduler.completeTask(task.id);
-      } catch {
-        // Task may already be complete
+      } catch (err) {
+        logError(this.db, "phase_complete_task", { taskId: task.id, agentId, method: "handlePhaseComplete" }, err);
       }
     } else {
       // More phases — advance and send next prompt
@@ -1155,8 +1164,8 @@ export class ManagerDaemon {
           "INSERT INTO task_notes (id, task_id, agent_id, content) VALUES (?, ?, ?, ?)",
         )
         .run(noteId, taskId, agentId, `[PHASE REGRESSION to phase ${targetPhaseOneIndexed}] ${reason}`);
-    } catch {
-      // Ignore note creation errors
+    } catch (err) {
+      logError(this.db, "regression_note_create", { taskId, agentId, method: "handlePhaseRegression" }, err);
     }
 
     // Check regression limit
@@ -1228,11 +1237,12 @@ export class ManagerDaemon {
     try {
       const workingDir = process.cwd();
       await this.agentManager.spawnAgent(entrypointAgentId, { workingDir, sessionId });
-    } catch {
+    } catch (err) {
+      logError(this.db, "regression_respawn", { taskId: task.id, agentId: entrypointAgentId, targetPhase, method: "respawnForRegression" }, err);
       try {
         this.taskScheduler.failTask(task.id, "Failed to respawn agent for regression");
-      } catch {
-        // DB may be closed during shutdown
+      } catch (innerErr) {
+        logError(this.db, "regression_respawn_fail_task", { taskId: task.id, method: "respawnForRegression" }, innerErr);
       }
       return;
     }
@@ -1291,8 +1301,8 @@ export class ManagerDaemon {
         type: "max_regressions",
         question: `Maximum regressions reached. Last reason: ${reason}`,
       });
-    } catch {
-      // Ignore escalation creation errors
+    } catch (err) {
+      logError(this.db, "escalation_create", { taskId: task.id, agentId, reason, method: "autoEscalateRegression" }, err);
     }
   }
 
@@ -1309,8 +1319,8 @@ export class ManagerDaemon {
           "INSERT INTO phase_regressions (task_id, agent_id, from_phase, to_phase, reason) VALUES (?, ?, ?, ?, ?)",
         )
         .run(taskId, agentId, fromPhase, toPhase, reason);
-    } catch {
-      // Ignore audit logging errors
+    } catch (err) {
+      logError(this.db, "phase_regression_record", { taskId, agentId, fromPhase, toPhase, method: "recordPhaseRegression" }, err);
     }
   }
 
@@ -1339,8 +1349,8 @@ export class ManagerDaemon {
           try {
             process.kill(row.process_pid, 0); // Check if alive
             process.kill(row.process_pid, 9); // Kill it
-          } catch {
-            // Process already dead — that's fine
+          } catch (err) {
+            logError(this.db, "cleanup_kill_orphan", { agentId: row.id, pid: row.process_pid, method: "cleanupStaleState" }, err);
           }
 
           // Clear PID and reset status
@@ -1354,8 +1364,8 @@ export class ManagerDaemon {
       for (const [agentId, running] of this.agentManager.getRunningAgents()) {
         try {
           process.kill(running.process.pid, 0); // Check alive
-        } catch {
-          // Process is dead — clean up
+        } catch (err) {
+          logError(this.db, "cleanup_dead_agent", { agentId, method: "cleanupStaleState" }, err);
           this.agentManager.getRunningAgents().delete(agentId);
           this.db
             .prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?")
@@ -1372,8 +1382,8 @@ export class ManagerDaemon {
            AND id NOT IN (SELECT id FROM agents WHERE process_pid IS NOT NULL)`,
         )
         .run();
-    } catch {
-      // Ignore cleanup errors on startup
+    } catch (err) {
+      logError(this.db, "cleanup_stale_state", { method: "cleanupStaleState" }, err);
     }
   }
 
@@ -1411,8 +1421,8 @@ export class ManagerDaemon {
           try {
             process.kill(assignedAgent.process_pid, 0); // Check alive
             continue; // Still alive, skip
-          } catch {
-            // Process is dead
+          } catch (err) {
+            logError(this.db, "recovery_liveness_check", { agentId: assignedAgent.id, pid: assignedAgent.process_pid, method: "recoverAllStaleTasks" }, err);
           }
         }
 
@@ -1428,8 +1438,8 @@ export class ManagerDaemon {
         const didRecover = await this.recoverTask(taskId);
         if (didRecover) recovered++;
       }
-    } catch {
-      // Ignore recovery errors
+    } catch (err) {
+      logError(this.db, "recovery_error", { method: "recoverAllStaleTasks" }, err);
     }
 
     return recovered;
@@ -1499,7 +1509,8 @@ export class ManagerDaemon {
         ? { workingDir, sessionId: sessionId! }
         : { workingDir };
       await this.agentManager.spawnAgent(entrypointAgentId, spawnOpts);
-    } catch {
+    } catch (err) {
+      logError(this.db, "recovery_spawn", { taskId, agentId: entrypointAgentId, method: "recoverTask" }, err);
       return false;
     }
 
@@ -1574,8 +1585,8 @@ export class ManagerDaemon {
           "UPDATE tasks SET orchestration_state = ?, updated_at = datetime('now') WHERE id = ?",
         )
         .run(JSON.stringify(state), taskId);
-    } catch {
-      // Ignore state update errors — invalid transitions are logged but not fatal
+    } catch (err) {
+      logError(this.db, "orchestration_state_update", { taskId, step: state.step, method: "updateOrchestrationState" }, err);
     }
   }
 
@@ -1589,7 +1600,8 @@ export class ManagerDaemon {
       // Return null for empty/default state
       if (!parsed.step) return null;
       return parsed as OrchestrationState;
-    } catch {
+    } catch (err) {
+      logError(this.db, "orchestration_state_read", { taskId, method: "getOrchestrationState" }, err);
       return null;
     }
   }
@@ -1637,8 +1649,8 @@ export class ManagerDaemon {
           JSON.stringify(contextSnapshot),
           termSeqRow?.max_seq ?? null,
         );
-    } catch {
-      // Ignore checkpoint errors
+    } catch (err) {
+      logError(this.db, "checkpoint_write", { taskId, checkpointType, method: "writeCheckpoint" }, err);
     }
   }
 
@@ -1664,7 +1676,8 @@ export class ManagerDaemon {
         ...row,
         context_snapshot: JSON.parse(row.context_snapshot),
       };
-    } catch {
+    } catch (err) {
+      logError(this.db, "checkpoint_read", { taskId, method: "getLatestCheckpoint" }, err);
       return null;
     }
   }
@@ -1715,7 +1728,8 @@ export class ManagerDaemon {
         .prepare("INSERT INTO manager_runs (started_at) VALUES (datetime('now'))")
         .run();
       return Number(result.lastInsertRowid);
-    } catch {
+    } catch (err) {
+      logError(this.db, "daemon_run_record", { method: "recordDaemonRun" }, err);
       return 0;
     }
   }
@@ -1738,8 +1752,8 @@ export class ManagerDaemon {
            WHERE id = ?`,
         )
         .run(tasksProcessed, agentsChecked, JSON.stringify(errors), runId);
-    } catch {
-      // Ignore DB errors during run completion
+    } catch (err) {
+      logError(this.db, "daemon_run_complete", { runId, tasksProcessed, agentsChecked, method: "completeDaemonRun" }, err);
     }
   }
 }
