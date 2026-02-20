@@ -108,13 +108,22 @@ async function handleRequest(req: Request): Promise<Response> {
   return Response.json({ error: "Not Found" }, { status: 404 });
 }
 
+function parseIdleTimeoutSeconds(raw: string | undefined): number {
+  if (!raw) return 60;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 60;
+  return Math.floor(parsed);
+}
+
 export function startServer(port: number = Number(process.env.PORT) || 3000): Server {
+  const idleTimeout = parseIdleTimeoutSeconds(process.env.PLAYHIVE_IDLE_TIMEOUT);
   const server = Bun.serve({
     port,
+    idleTimeout,
     fetch: handleRequest,
   });
 
-  console.log(`PlayHive server running on http://localhost:${server.port}`);
+  console.log(`PlayHive server running on http://localhost:${server.port} (idleTimeout=${idleTimeout}s)`);
   return server;
 }
 

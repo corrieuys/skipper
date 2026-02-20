@@ -32,7 +32,7 @@ describe("POST /api/agents/:id", () => {
         name: "Editable Agent",
         type: "codex",
         model: "default",
-        goal: "Before",
+        instruction: "Before",
       }),
     });
 
@@ -49,13 +49,13 @@ describe("POST /api/agents/:id", () => {
         name: "Edited Agent",
         type: "codex",
         model: "default",
-        goal: "After",
+        instruction: "After",
       }),
     });
     expect(update.status).toBe(200);
     const body = await update.json();
     expect(body.name).toBe("Edited Agent");
-    expect(body.config.goal).toBe("After");
+    expect(body.config.instruction).toBe("After");
   });
 
   it("returns full HTML detail page for HTMX requests", async () => {
@@ -78,7 +78,7 @@ describe("POST /api/agents/:id", () => {
     formData.set("name", "HTMX Agent Edited");
     formData.set("type", "codex");
     formData.set("model", "default");
-    formData.set("goal", "New Goal");
+    formData.set("instruction", "New Goal");
 
     const update = await fetch(`${baseUrl}/api/agents/${created.id}`, {
       method: "POST",
@@ -94,5 +94,20 @@ describe("POST /api/agents/:id", () => {
     expect(html).toContain("<!DOCTYPE html");
     expect(html).toContain("HTMX Agent Edited");
     expect(html).toContain("New Goal");
+  });
+
+  it("rejects legacy goal field", async () => {
+    const create = await fetch(`${baseUrl}/api/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Legacy Goal Agent",
+        type: "codex",
+        goal: "Old field",
+      }),
+    });
+    expect(create.status).toBe(400);
+    const body = await create.json();
+    expect(body.error).toContain("goal is no longer supported");
   });
 });

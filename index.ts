@@ -5,10 +5,9 @@ import { registerTeamRoutes } from "./src/routes/teams";
 import { registerPageRoutes } from "./src/routes/pages";
 import { registerDaemonRoutes } from "./src/routes/daemon";
 import { ManagerDaemon } from "./src/agents/manager-daemon";
-import { getDb, initializeDatabase, closeDb } from "./src/db/connection";
+import { initializeDatabase, closeDb } from "./src/db/connection";
 
-const db = getDb();
-initializeDatabase(db);
+initializeDatabase();
 
 const daemon = new ManagerDaemon();
 

@@ -41,6 +41,7 @@ describe("getAgentTypeDefinition", () => {
     expect(def!.supports_stdin).toBe(false);
     expect(def!.supports_resume).toBe(true);
     expect(def!.resume_flag).toBe("--resume");
+    expect(def!.resume_args).toBeNull();
   });
 
   it("returns codex type with correct fields", () => {
@@ -48,7 +49,8 @@ describe("getAgentTypeDefinition", () => {
     expect(def).not.toBeNull();
     expect(def!.command).toBe("codex");
     expect(def!.supports_resume).toBe(true);
-    expect(def!.resume_flag).toBe("exec resume");
+    expect(def!.resume_flag).toBeNull();
+    expect(def!.resume_args).toEqual(["exec", "resume", "{{session_id}}", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"]);
     expect(def!.model_flag).toBeNull();
   });
 
@@ -59,6 +61,7 @@ describe("getAgentTypeDefinition", () => {
     expect(def!.args).toEqual([]);
     expect(def!.supports_resume).toBe(false);
     expect(def!.resume_flag).toBeNull();
+    expect(def!.resume_args).toBeNull();
   });
 
   it("returns null for nonexistent type", () => {

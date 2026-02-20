@@ -26,9 +26,9 @@ afterEach(() => {
 });
 
 // Helper: create an agent and return its id
-function createAgent(name: string, type = "claude-code", goal?: string): string {
+function createAgent(name: string, type = "claude-code", instruction?: string): string {
   const id = crypto.randomUUID();
-  const config = goal ? JSON.stringify({ goal }) : "{}";
+  const config = instruction ? JSON.stringify({ instruction }) : "{}";
   db.prepare(
     "INSERT INTO agents (id, name, type, config, capabilities) VALUES (?, ?, ?, ?, '[]')",
   ).run(id, name, type, config);
@@ -37,16 +37,20 @@ function createAgent(name: string, type = "claude-code", goal?: string): string 
 
 // Helper: create a team, add agents, return team id
 function createTeamWithAgents(
-  agents: { id: string; role?: string; skills?: string[] }[],
+  agents: { id: string; role?: string; capabilities?: string[]; level?: number }[],
 ): string {
   const teamId = crypto.randomUUID();
   db.prepare("INSERT INTO teams (id, name) VALUES (?, ?)").run(teamId, "Test Team");
 
   for (const agent of agents) {
+    if (agent.capabilities) {
+      db.prepare("UPDATE agents SET capabilities = ? WHERE id = ?")
+        .run(JSON.stringify(agent.capabilities), agent.id);
+    }
     const taId = crypto.randomUUID();
     db.prepare(
-      "INSERT INTO team_agents (id, team_id, agent_id, role, skills) VALUES (?, ?, ?, ?, ?)",
-    ).run(taId, teamId, agent.id, agent.role ?? null, JSON.stringify(agent.skills ?? []));
+      "INSERT INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, ?, ?, ?)",
+    ).run(taId, teamId, agent.id, agent.role ?? null, agent.level ?? 0);
   }
 
   return teamId;
@@ -64,12 +68,12 @@ describe("buildInitialPrompt", () => {
   it("builds a simple task prompt without phases", () => {
     const agentId = createAgent("Dev Agent", "claude-code", "Build great software");
     const prompt = builder.buildInitialPrompt({
-      agent: { id: agentId, name: "Dev Agent", type: "claude-code", goal: "Build great software" },
+      agent: { id: agentId, name: "Dev Agent", type: "claude-code", instruction: "Build great software" },
       task: { id: "task-1", title: "Implement login", description: "Add user authentication" },
       isStreaming: true,
     });
 
-    expect(prompt).toContain("GOAL: Build great software");
+    expect(prompt).toContain("INSTRUCTION: Build great software");
     expect(prompt).toContain("TASK: Implement login");
     expect(prompt).toContain("Add user authentication");
     expect(prompt).toContain("[PHASE_COMPLETE]");
@@ -79,7 +83,7 @@ describe("buildInitialPrompt", () => {
   it("builds a phased task prompt", () => {
     const agentId = createAgent("Dev Agent", "claude-code", "Build software");
     const prompt = builder.buildInitialPrompt({
-      agent: { id: agentId, name: "Dev Agent", type: "claude-code", goal: "Build software" },
+      agent: { id: agentId, name: "Dev Agent", type: "claude-code", instruction: "Build software" },
       task: { id: "task-1", title: "Build feature", description: "Full feature" },
       phase: { name: "Planning", prompt: "Create a plan", index: 0, total: 3 },
       isStreaming: true,
@@ -117,7 +121,7 @@ describe("buildInitialPrompt", () => {
     expect(prompt).toContain("--- END REGRESSION NOTICE ---");
   });
 
-  it("omits goal section when agent has no goal", () => {
+  it("omits instruction section when agent has no instruction", () => {
     const agentId = createAgent("Dev Agent", "claude-code");
     const prompt = builder.buildInitialPrompt({
       agent: { id: agentId, name: "Dev Agent", type: "claude-code" },
@@ -125,7 +129,7 @@ describe("buildInitialPrompt", () => {
       isStreaming: true,
     });
 
-    expect(prompt).not.toContain("GOAL:");
+    expect(prompt).not.toContain("INSTRUCTION:");
   });
 
   it("omits description when task has none", () => {
@@ -149,8 +153,8 @@ describe("buildPromptEnrichment", () => {
     const agent1 = createAgent("Dev Agent", "claude-code");
     const agent2 = createAgent("QA Agent", "claude-code");
     createTeamWithAgents([
-      { id: agent1, role: "developer", skills: ["coding", "testing"] },
-      { id: agent2, role: "quality-assurance", skills: ["testing", "code-review"] },
+      { id: agent1, role: "developer", capabilities: ["coding", "testing"] },
+      { id: agent2, role: "quality-assurance", capabilities: ["testing", "code-review"] },
     ]);
 
     const enrichment = builder.buildPromptEnrichment(agent1, "task-1");
@@ -263,14 +267,14 @@ describe("buildDelegationPrompt", () => {
     ).run(taskId);
 
     createTeamWithAgents([
-      { id: parentId, role: "lead", skills: ["coding"] },
-      { id: childId, role: "qa", skills: ["testing"] },
+      { id: parentId, role: "lead", capabilities: ["coding"] },
+      { id: childId, role: "qa", capabilities: ["testing"] },
     ]);
 
     addTaskNote(taskId, parentId, "Using OAuth2 with PKCE");
 
     const prompt = builder.buildDelegationPrompt({
-      childAgent: { id: childId, name: "QA Agent", type: "claude-code", goal: "Ensure quality" },
+      childAgent: { id: childId, name: "QA Agent", type: "claude-code", instruction: "Ensure quality" },
       task: { id: taskId, title: "Build Auth", description: "Implement OAuth2" },
       delegationPrompt: "Review the auth implementation for security issues",
     });
@@ -286,7 +290,7 @@ describe("buildDelegationPrompt", () => {
     expect(prompt).toContain("AVAILABLE COMMANDS:");
   });
 
-  it("omits role when child has no goal", () => {
+  it("omits role when child has no instruction", () => {
     const childId = createAgent("Worker", "claude-code");
 
     const prompt = builder.buildDelegationPrompt({

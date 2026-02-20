@@ -87,11 +87,11 @@ describe("createAgent", () => {
       type: "claude-code",
       model: "opus",
       capabilities: ["coding", "architecture"],
-      goal: "Lead developer",
+      instruction: "Lead developer",
     });
     expect(agent.model).toBe("opus");
     expect(agent.capabilities).toEqual(["coding", "architecture"]);
-    expect(agent.config.goal).toBe("Lead developer");
+    expect(agent.config.instruction).toBe("Lead developer");
   });
 
   it("throws for unknown agent type", () => {
@@ -381,6 +381,37 @@ describe("spawnAgent", () => {
     const allData = rows.map((r) => r.data).join("").trim();
     expect(allData).toBe(workDir);
   });
+
+  it("uses explicit resume_args template when sessionId is provided", async () => {
+    db.prepare(
+      `INSERT OR REPLACE INTO agent_types (
+        name, command, args, resume_args, model_flag, available_models, env_vars, supports_stdin, supports_resume, resume_flag
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "test-resume-args",
+      "bash",
+      JSON.stringify(["-lc", "echo base"]),
+      JSON.stringify(["-lc", "printf '%s' \"$0\"", "{{session_id}}"]),
+      null,
+      JSON.stringify([]),
+      JSON.stringify({}),
+      0,
+      1,
+      null,
+    );
+
+    const agent = manager.createAgent({ name: "Resume Args Agent", type: "test-resume-args" });
+    const running = await manager.spawnAgent(agent.id, { workingDir: "/tmp", sessionId: "sess-resume-xyz" });
+    await running.process.exited;
+    await new Promise((r) => setTimeout(r, 100));
+
+    const rows = db
+      .prepare("SELECT data FROM terminal_outputs WHERE agent_id = ? AND stream = 'stdout'")
+      .all(agent.id) as { data: string }[];
+    const allData = rows.map((r) => r.data).join("");
+    expect(allData).toContain("sess-resume-xyz");
+    expect(allData).not.toContain("base");
+  });
 });
 
 describe("processStdoutBuffer", () => {
@@ -629,6 +660,31 @@ describe("handleJsonOutput", () => {
       .get(agent.id) as { session_id: string | null } | null;
     expect(row).not.toBeNull();
     expect(row!.session_id).toBe("sess-123");
+  });
+
+  it("captures thread_id from Codex JSON events for resume", () => {
+    const agent = manager.createAgent({ name: "Test", type: "codex" });
+    const runningAgent: RunningAgent = {
+      id: agent.id,
+      process: null as any,
+      stdin: null as any,
+      stdoutBuffer: "",
+      stderrBuffer: "",
+      outputSequence: 0,
+      sessionId: null,
+    };
+    manager.getRunningAgents().set(agent.id, runningAgent);
+
+    manager.handleJsonOutput(agent.id, { type: "thread.started", thread_id: "thread-abc-123" }, "{}");
+
+    expect(runningAgent.sessionId).toBe("thread-abc-123");
+    const row = db
+      .prepare(
+        "SELECT json_extract(state_metadata, '$.session_id') as session_id FROM agent_states WHERE agent_id = ?",
+      )
+      .get(agent.id) as { session_id: string | null } | null;
+    expect(row).not.toBeNull();
+    expect(row!.session_id).toBe("thread-abc-123");
   });
 
   it("does not overwrite existing session_id", () => {

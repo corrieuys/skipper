@@ -75,7 +75,7 @@ export class TaskRunner {
       id: agent.id,
       name: agent.name,
       type: agent.type,
-      goal: agent.config.goal,
+      instruction: agent.config.instruction,
     };
 
     const phases = teamExec.team.phases as { name: string; prompt: string }[];

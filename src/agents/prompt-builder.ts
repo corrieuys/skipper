@@ -19,14 +19,15 @@ export interface AgentInfo {
   id: string;
   name: string;
   type: string;
-  goal?: string;
+  instruction?: string;
 }
 
 export interface TeamMember {
   id: string;
   name: string;
   role: string | null;
-  skills: string[];
+  level: number;
+  capabilities: string[];
 }
 
 export interface TaskNote {
@@ -58,9 +59,12 @@ export class PromptBuilder {
   buildInitialPrompt(options: PromptOptions): string {
     const parts: string[] = [];
 
-    // Agent goal
-    if (options.agent.goal) {
-      parts.push(`GOAL: ${options.agent.goal}`);
+    parts.push(this.buildBaseExecutionContext());
+    parts.push("");
+
+    // Agent instruction
+    if (options.agent.instruction) {
+      parts.push(`INSTRUCTION: ${options.agent.instruction}`);
       parts.push("");
     }
 
@@ -117,9 +121,9 @@ export class PromptBuilder {
     if (roster.length > 0) {
       parts.push("TEAM ROSTER (use agent IDs for delegation):");
       for (const member of roster) {
-        const skills = member.skills.length > 0 ? member.skills.join(", ") : "none";
+        const capabilities = member.capabilities.length > 0 ? member.capabilities.join(", ") : "none";
         parts.push(
-          `- ID: ${member.id} | Name: ${member.name} | Role: ${member.role ?? "unassigned"} | Skills: ${skills}`,
+          `- ID: ${member.id} | Name: ${member.name} | Role: ${member.role ?? "unassigned"} | Level: ${member.level} | Skills: ${capabilities}`,
         );
       }
       parts.push("");
@@ -157,9 +161,12 @@ export class PromptBuilder {
   buildDelegationPrompt(options: DelegationPromptOptions): string {
     const parts: string[] = [];
 
+    parts.push(this.buildBaseExecutionContext());
+    parts.push("");
+
     // Child agent role
-    if (options.childAgent.goal) {
-      parts.push(`ROLE: ${options.childAgent.goal}`);
+    if (options.childAgent.instruction) {
+      parts.push(`ROLE: ${options.childAgent.instruction}`);
       parts.push("");
     }
 
@@ -190,9 +197,9 @@ export class PromptBuilder {
     if (roster.length > 0) {
       parts.push("TEAM ROSTER (use agent IDs for delegation):");
       for (const member of roster) {
-        const skills = member.skills.length > 0 ? member.skills.join(", ") : "none";
+        const capabilities = member.capabilities.length > 0 ? member.capabilities.join(", ") : "none";
         parts.push(
-          `- ID: ${member.id} | Name: ${member.name} | Role: ${member.role ?? "unassigned"} | Skills: ${skills}`,
+          `- ID: ${member.id} | Name: ${member.name} | Role: ${member.role ?? "unassigned"} | Level: ${member.level} | Skills: ${capabilities}`,
         );
       }
       parts.push("");
@@ -214,10 +221,20 @@ export class PromptBuilder {
     return parts.join("\n");
   }
 
+  private buildBaseExecutionContext(): string {
+    return [
+      "EXECUTION CONTEXT:",
+      "- You are running inside PlayHive, a multi-agent orchestration system.",
+      "- This is a non-interactive, single-action run for your current assignment.",
+      "- Complete the assigned work and provide output in this run; do not wait for back-and-forth chat.",
+      "- If human input is required, use [ESCALATE] with a clear question.",
+    ].join("\n");
+  }
+
   private getTeamRoster(agentId: string): TeamMember[] {
     const rows = this.db
       .prepare(
-        `SELECT a.id, a.name, ta.role, ta.skills
+        `SELECT a.id, a.name, ta.role, ta.level, a.capabilities
          FROM team_agents ta
          JOIN agents a ON ta.agent_id = a.id
          WHERE ta.team_id IN (
@@ -225,13 +242,14 @@ export class PromptBuilder {
          )
          ORDER BY ta.level, a.name`,
       )
-      .all(agentId) as { id: string; name: string; role: string | null; skills: string }[];
+      .all(agentId) as { id: string; name: string; role: string | null; level: number; capabilities: string }[];
 
     return rows.map((r) => ({
       id: r.id,
       name: r.name,
       role: r.role,
-      skills: JSON.parse(r.skills),
+      level: r.level,
+      capabilities: JSON.parse(r.capabilities),
     }));
   }
 

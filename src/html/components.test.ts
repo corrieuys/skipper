@@ -2,13 +2,22 @@ import { describe, it, expect } from "bun:test";
 import {
   dashboardPage,
   tasksPage,
+  taskListPollingFragment,
   taskDetailPage,
+  taskDetailSummaryFragment,
+  taskPhaseStepperFragment,
+  taskDelegationsFragment,
   agentsPage,
   agentListFragment,
+  agentListPollingFragment,
   agentDetailPage,
+  agentDetailSummaryFragment,
   teamsPage,
   teamListFragment,
+  teamListPollingFragment,
   teamDetailPage,
+  teamDetailSummaryFragment,
+  teamMembersFragment,
   escalationsPage,
   terminalOutputFragment,
   helpPage,
@@ -50,13 +59,13 @@ describe("dashboardPage", () => {
       daemon: { state: "running", uptime: 100 },
     });
     expect(html).toContain("Build feature");
-    expect(html).toContain("Fix bug");
+    expect(html).toContain("1 queued behind current task");
     expect(html).toContain("Dev Agent");
     expect(html).toContain("badge-running");
     expect(html).toContain("badge-busy");
   });
 
-  it("shows correct stat counts", () => {
+  it("focuses on current active task panel instead of metric cards", () => {
     const html = dashboardPage({
       tasks: [
         { id: "t1", title: "A", status: "running", priority: 5 },
@@ -68,9 +77,9 @@ describe("dashboardPage", () => {
       ],
       daemon: { state: "running", uptime: 100 },
     });
-    // 2 total tasks, 1 active, 2 agents, 1 busy
-    expect(html).toContain(">2<"); // total tasks
-    expect(html).toContain(">1<"); // active or busy
+    expect(html).toContain("Current Active Task");
+    expect(html).not.toContain("Total Tasks");
+    expect(html).not.toContain("Busy Agents");
   });
 
   it("connects to SSE endpoints for real-time updates", () => {
@@ -125,6 +134,61 @@ describe("tasksPage", () => {
     expect(html).toContain('name="teamId"');
     expect(html).toContain("Platform Team");
     expect(html).toContain("UX Team");
+  });
+});
+
+describe("polling fragments", () => {
+  it("renders task list polling root with adaptive cadence", () => {
+    const html = taskListPollingFragment([], 3);
+    expect(html).toContain('id="task-list"');
+    expect(html).toContain('hx-get="/fragments/tasks/list"');
+    expect(html).toContain('hx-trigger="every 3s"');
+    expect(html).toContain('hx-swap="outerHTML"');
+  });
+
+  it("renders task detail polling fragments", () => {
+    const task = {
+      id: "task-1",
+      title: "Task",
+      status: "running",
+      priority: 3,
+      current_phase: 1,
+      created_at: "2024-01-01",
+      phases: [{ name: "Plan", prompt: "Plan it" }],
+    };
+    expect(taskDetailSummaryFragment(task, 8)).toContain('id="task-summary-fragment"');
+    expect(taskPhaseStepperFragment(task, 8)).toContain('id="task-phases-fragment"');
+    expect(taskDelegationsFragment(task.id, [], 8)).toContain('id="task-delegations-fragment"');
+  });
+
+  it("renders agent polling fragments", () => {
+    const agent = {
+      id: "a1",
+      name: "Agent One",
+      type: "codex",
+      model: "default",
+      status: "idle",
+      capabilities: ["analysis"],
+      config: { instruction: "Analyze" },
+      process_pid: null,
+      current_task_id: null,
+    };
+    expect(agentListPollingFragment([agent], 3)).toContain('hx-get="/fragments/agents/list"');
+    expect(agentDetailSummaryFragment(agent, 8)).toContain('id="agent-summary-fragment"');
+  });
+
+  it("renders team polling fragments", () => {
+    const team = {
+      id: "t1",
+      name: "Team One",
+      entrypoint_agent_id: "a1",
+      entrypoint_agent_name: "Agent One",
+      phases: [{ name: "Plan", prompt: "Plan" }],
+    };
+    const members = [{ agent_id: "a1", agent_name: "Agent One", role: "lead", level: 0, max_complexity: 10, capabilities: ["planning"] }];
+    expect(teamListPollingFragment([team], 8)).toContain('hx-get="/fragments/teams/list"');
+    expect(teamDetailSummaryFragment(team, members, 3)).toContain('id="team-summary-fragment"');
+    expect(teamMembersFragment(team, members, [], 3)).toContain('id="team-members-fragment"');
   });
 });
 
@@ -237,6 +301,31 @@ describe("taskDetailPage", () => {
     expect(pendingCount).toBe(1);
   });
 
+  it("marks all phases done for completed tasks", () => {
+    const html = taskDetailPage({
+      id: "t1",
+      title: "Completed Task",
+      status: "completed",
+      priority: 5,
+      current_phase: 1,
+      phases: [
+        { name: "Planning", prompt: "p1" },
+        { name: "Implementation", prompt: "p2" },
+      ],
+      created_at: "2024-01-01",
+    });
+
+    const doneCount = (html.match(/class="phase-step phase-step-done"/g) || []).length;
+    const activeCount = (html.match(/class="phase-step phase-step-active"/g) || []).length;
+    const pendingCount = (html.match(/class="phase-step phase-step-pending"/g) || []).length;
+
+    expect(doneCount).toBe(2);
+    expect(activeCount).toBe(0);
+    expect(pendingCount).toBe(0);
+    expect(html).toContain("2/2 phases complete");
+    expect(html).toContain("100%");
+  });
+
   it("escapes HTML in phase names", () => {
     const html = taskDetailPage({
       id: "t1",
@@ -272,7 +361,7 @@ describe("taskDetailPage", () => {
     expect(html).not.toContain("No notes yet");
     expect(html).toContain("agent-ab"); // 8 chars of agent_id
     expect(html).toContain("First note content");
-    expect(html).toContain("2024-01-02T10:00:00");
+    expect(html).toContain('title="1/2/2024, 10:00:00 AM"');
     expect(html).toContain("Second note content");
   });
 
@@ -337,7 +426,7 @@ describe("agentDetailPage", () => {
       model: "opus",
       status: "busy",
       capabilities: ["coding", "testing"],
-      config: { goal: "Build features" },
+      config: { instruction: "Build features" },
       process_pid: 1234,
       current_task_id: "t1",
     });
@@ -426,6 +515,21 @@ describe("terminalOutputFragment", () => {
     expect(html).toContain("error msg");
   });
 
+  it("formats JSON output with structured wrapper", () => {
+    const jsonLine = JSON.stringify({
+      type: "item.completed",
+      item: { type: "agent_message", text: "Created file" },
+    });
+    const html = terminalOutputFragment([
+      { stream: "stdout", data: jsonLine, sequence: 1 },
+    ]);
+    expect(html).toContain("terminal-json");
+    expect(html).toContain("badge-json-type");
+    expect(html).toContain("item.completed");
+    expect(html).toContain("agent_message");
+    expect(html).toContain("Created file");
+  });
+
   it("escapes HTML in output", () => {
     const html = terminalOutputFragment([
       { stream: "stdout", data: "<script>alert('xss')</script>", sequence: 1 },
@@ -473,13 +577,14 @@ describe("teamDetailPage", () => {
   it("renders team with members", () => {
     const html = teamDetailPage(
       { id: "t1", name: "Alpha", entrypoint_agent_id: "a1", goal: "Ship", phases: [] },
-      [{ agent_id: "a1", agent_name: "Dev", role: "lead", level: 0, skills: ["coding"] }],
+      [{ agent_id: "a1", agent_name: "Dev", role: "lead", level: 0, max_complexity: 10, capabilities: ["coding"] }],
     );
     expect(html).toContain("Alpha");
     expect(html).toContain("Dev");
     expect(html).toContain("lead");
     expect(html).toContain("coding");
     expect(html).toContain("Add Agent");
+    expect(html).toContain("Save Member");
   });
 
   it("renders edit form", () => {
@@ -487,9 +592,9 @@ describe("teamDetailPage", () => {
       { id: "t1", name: "Alpha", entrypoint_agent_id: "a1", goal: "Ship", phases: [] },
       [],
     );
-    expect(html).toContain("Edit Team");
+    expect(html).toContain("Team Settings");
     expect(html).toContain('hx-post="/api/teams/t1"');
-    expect(html).toContain("Save Changes");
+    expect(html).toContain("Save Team");
   });
 
   it("renders add-agent dropdown options", () => {
@@ -500,6 +605,19 @@ describe("teamDetailPage", () => {
     );
     expect(html).toContain("Select an agent");
     expect(html).toContain("QA Agent");
+  });
+
+  it("renders member edit controls and remove action", () => {
+    const html = teamDetailPage(
+      { id: "t1", name: "Alpha", entrypoint_agent_id: "a1", phases: [] },
+      [{ agent_id: "a1", agent_name: "Dev", role: "lead", level: 1, max_complexity: 8, capabilities: ["testing", "review"] }],
+    );
+    expect(html).toContain('hx-post="/api/teams/t1/agents/a1"');
+    expect(html).toContain('name="role"');
+    expect(html).toContain('name="level"');
+    expect(html).toContain('name="max_complexity"');
+    expect(html).toContain('name="skills"');
+    expect(html).toContain('hx-delete="/api/teams/t1/agents/a1"');
   });
 
   it("renders phases list when phases exist", () => {
@@ -515,12 +633,14 @@ describe("teamDetailPage", () => {
       },
       [],
     );
-    expect(html).toContain("Phases (2)");
+    expect(html).toContain("2 configured");
     expect(html).toContain("Planning");
     expect(html).toContain("Plan carefully");
     expect(html).toContain("Execution");
     expect(html).toContain("Execute the plan");
     expect(html).toContain("Remove");
+    expect(html).toContain('hx-post="/api/teams/t1/phases/0"');
+    expect(html).toContain("Save Phase");
   });
 
   it("renders empty phases state when no phases", () => {
@@ -528,7 +648,7 @@ describe("teamDetailPage", () => {
       { id: "t1", name: "Alpha", entrypoint_agent_id: null, phases: [] },
       [],
     );
-    expect(html).toContain("Phases (0)");
+    expect(html).toContain("0 configured");
     expect(html).toContain("No phases defined");
   });
 
@@ -556,7 +676,7 @@ describe("teamDetailPage", () => {
     expect(html).toContain('hx-delete="/api/teams/t1/phases/0"');
   });
 
-  it("truncates long prompts in the phases table", () => {
+  it("keeps full prompt text in editable phase textarea", () => {
     const longPrompt = "A".repeat(100);
     const html = teamDetailPage(
       {
@@ -567,8 +687,8 @@ describe("teamDetailPage", () => {
       },
       [],
     );
-    expect(html).toContain("…");
-    expect(html).not.toContain(longPrompt);
+    expect(html).toContain(longPrompt);
+    expect(html).toContain('name="prompt"');
   });
 
   it("escapes HTML in phase names and prompts", () => {
@@ -681,7 +801,13 @@ describe("formatTimestamp", () => {
   it("returns hours ago for older timestamps", () => {
     const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
     const result = formatTimestamp(threeHoursAgo);
-    expect(result).toContain("3h ago");
+    expect(result).toContain("3h 0m ago");
+  });
+
+  it("includes hours and minutes for times under 10 hours", () => {
+    const ts = new Date(Date.now() - (2 * 60 + 37) * 60 * 1000).toISOString();
+    const result = formatTimestamp(ts);
+    expect(result).toContain("2h 37m ago");
   });
 
   it("returns days ago for multi-day timestamps", () => {
@@ -695,10 +821,16 @@ describe("formatTimestamp", () => {
     expect(result).toContain("not-a-date");
   });
 
+  it("parses sqlite UTC timestamps correctly", () => {
+    const result = formatTimestamp("2026-02-20 17:04:16");
+    expect(result).not.toContain("2026-02-20 17:04:16");
+    expect(result).toContain("title=");
+  });
+
   it("includes full timestamp in title attribute", () => {
     const ts = new Date(Date.now() - 60 * 1000).toISOString();
     const result = formatTimestamp(ts);
-    expect(result).toContain(`title="${ts}"`);
+    expect(result).toContain("title=");
   });
 });
 
@@ -820,6 +952,16 @@ describe("STORY-003: agent log preview", () => {
     expect(html).not.toContain(longData);
   });
 
+  it("recentActivityFragment parses json safely and tags event type", () => {
+    const html = recentActivityFragment([
+      { agent_id: "a1", agent_name: "Agent", stream: "stdout", data: "{\"type\":\"turn.started\"}", created_at: "2024-01-01T00:00:00" },
+      { agent_id: "a1", agent_name: "Agent", stream: "stdout", data: "plain text output", created_at: "2024-01-01T00:00:01" },
+    ]);
+    expect(html).toContain("badge-json-type");
+    expect(html).toContain("turn.started");
+    expect(html).toContain("plain text output");
+  });
+
   it("agent detail page shows terminal output before edit form", () => {
     const html = agentDetailPage({
       id: "a1", name: "Dev Agent", type: "claude-code", model: "opus",
@@ -840,33 +982,10 @@ describe("STORY-003: agent log preview", () => {
     expect(html).toContain("terminal-line-count");
   });
 
-  it("agent list shows Last Output column header", () => {
+  it("agent list does not include Last Output column", () => {
     const html = agentsPage([
       { id: "a1", name: "Agent One", type: "claude-code", model: "opus", status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null },
     ]);
-    expect(html).toContain("Last Output");
-  });
-
-  it("agent list shows last output line for agent", () => {
-    const html = agentsPage([
-      {
-        id: "a1", name: "Agent One", type: "claude-code", model: "opus",
-        status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null,
-        lastOutput: { stream: "stdout", data: "Working on task..." },
-      },
-    ]);
-    expect(html).toContain("Working on task...");
-    expect(html).toContain("badge-stream-stdout");
-  });
-
-  it("agent list shows dash when no last output", () => {
-    const html = agentsPage([
-      {
-        id: "a1", name: "Agent One", type: "claude-code", model: "opus",
-        status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null,
-        lastOutput: null,
-      },
-    ]);
-    expect(html).toContain("—");
+    expect(html).not.toContain("Last Output");
   });
 });

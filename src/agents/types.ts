@@ -5,6 +5,7 @@ export interface AgentTypeDefinition {
   name: string;
   command: string;
   args: string[];
+  resume_args: string[] | null;
   model_flag: string | null;
   available_models: string[];
   env_vars: Record<string, string>;
@@ -17,6 +18,7 @@ interface AgentTypeRow {
   name: string;
   command: string;
   args: string;
+  resume_args: string | null;
   model_flag: string | null;
   available_models: string;
   env_vars: string;
@@ -32,6 +34,7 @@ function rowToDefinition(row: AgentTypeRow): AgentTypeDefinition {
     name: row.name,
     command: row.command,
     args: JSON.parse(row.args),
+    resume_args: row.resume_args ? JSON.parse(row.resume_args) : null,
     model_flag: row.model_flag,
     available_models: JSON.parse(row.available_models),
     env_vars: JSON.parse(row.env_vars),

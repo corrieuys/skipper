@@ -5,13 +5,25 @@ import { eventBus } from "../events/bus";
 import type { AgentOutputEvent, AgentExitEvent, TaskStateChangedEvent, AgentStateChangedEvent, EscalationCreatedEvent } from "../events/bus";
 import {
   dashboardPage,
+  dashboardActiveTaskFragment,
+  dashboardAgentStatusFragment,
   tasksPage,
+  taskListPollingFragment,
   taskDetailPage,
+  taskDetailSummaryFragment,
+  taskPhaseStepperFragment,
+  taskDelegationsFragment,
   agentsPage,
+  agentListPollingFragment,
   agentDetailPage,
+  agentDetailSummaryFragment,
   teamsPage,
+  teamListPollingFragment,
   teamDetailPage,
+  teamDetailSummaryFragment,
+  teamMembersFragment,
   escalationsPage,
+  renderTerminalOutputChunk,
   terminalOutputFragment,
   auditEventsPage,
   logsPage,
@@ -20,6 +32,7 @@ import {
 } from "../html/components";
 import type {
   DashboardData,
+  PollIntervalSeconds,
   TaskData,
   AgentData,
   TeamData,
@@ -56,6 +69,113 @@ function parseRow(row: Record<string, unknown>, jsonFields: string[]): Record<st
   return result;
 }
 
+export function getPollIntervalSeconds(db: ReturnType<typeof getDb>): PollIntervalSeconds {
+  const row = db.prepare(
+    `SELECT
+      EXISTS(SELECT 1 FROM tasks WHERE status IN ('running', 'approved')) AS has_active_task,
+      EXISTS(SELECT 1 FROM agents WHERE status = 'busy') AS has_busy_agent`,
+  ).get() as { has_active_task: number; has_busy_agent: number };
+
+  return (row.has_active_task === 1 || row.has_busy_agent === 1) ? 3 : 8;
+}
+
+function fetchTasksWithTeams(db: ReturnType<typeof getDb>): TaskData[] {
+  const rows = db.prepare(
+    `SELECT t.*, tm.name AS team_name
+     FROM tasks t
+     LEFT JOIN teams tm ON tm.id = t.team_id
+     ORDER BY t.priority, t.created_at DESC`,
+  ).all() as Record<string, unknown>[];
+  return rows.map((r) => parseRow(r, ["result", "orchestration_state"])) as unknown as TaskData[];
+}
+
+function fetchTaskById(db: ReturnType<typeof getDb>, taskId: string): TaskData | null {
+  const row = db.prepare(
+    `SELECT t.*, tm.name AS team_name
+     FROM tasks t
+     LEFT JOIN teams tm ON tm.id = t.team_id
+     WHERE t.id = ?`,
+  ).get(taskId) as Record<string, unknown> | null;
+  if (!row) return null;
+  const task = parseRow(row, ["result", "orchestration_state"]) as unknown as TaskData;
+
+  if (task.team_id) {
+    const teamRow = db.prepare("SELECT phases FROM teams WHERE id = ?").get(task.team_id) as { phases: string } | null;
+    if (teamRow) {
+      try {
+        task.phases = JSON.parse(teamRow.phases);
+      } catch {
+        // ignore invalid phases payload
+      }
+    }
+  }
+
+  return task;
+}
+
+function fetchTaskDelegations(db: ReturnType<typeof getDb>, taskId: string): DelegationData[] {
+  return db.prepare(
+    `SELECT d.*,
+            pa.name AS parent_agent_name,
+            ca.name AS child_agent_name
+     FROM delegations d
+     LEFT JOIN agents pa ON pa.id = d.parent_agent_id
+     LEFT JOIN agents ca ON ca.id = d.child_agent_id
+     WHERE d.task_id = ?
+     ORDER BY d.created_at`,
+  ).all(taskId) as DelegationData[];
+}
+
+function fetchAgents(db: ReturnType<typeof getDb>): AgentData[] {
+  const rows = db.prepare("SELECT * FROM agents ORDER BY created_at").all() as Record<string, unknown>[];
+  return rows.map((r) => parseRow(r, ["config", "capabilities"])) as unknown as AgentData[];
+}
+
+function fetchAgentById(db: ReturnType<typeof getDb>, agentId: string): AgentData | null {
+  const row = db.prepare("SELECT * FROM agents WHERE id = ?").get(agentId) as Record<string, unknown> | null;
+  if (!row) return null;
+  return parseRow(row, ["config", "capabilities"]) as unknown as AgentData;
+}
+
+function fetchTeams(db: ReturnType<typeof getDb>): TeamData[] {
+  const rows = db.prepare(
+    `SELECT t.*, a.name AS entrypoint_agent_name
+     FROM teams t
+     LEFT JOIN agents a ON a.id = t.entrypoint_agent_id
+     ORDER BY t.created_at`,
+  ).all() as Record<string, unknown>[];
+  return rows.map((r) => parseRow(r, ["phases"])) as unknown as TeamData[];
+}
+
+function fetchTeamById(db: ReturnType<typeof getDb>, teamId: string): TeamData | null {
+  const row = db.prepare(
+    `SELECT t.*, a.name AS entrypoint_agent_name
+     FROM teams t
+     LEFT JOIN agents a ON a.id = t.entrypoint_agent_id
+     WHERE t.id = ?`,
+  ).get(teamId) as Record<string, unknown> | null;
+  if (!row) return null;
+  return parseRow(row, ["phases"]) as unknown as TeamData;
+}
+
+function fetchTeamMembers(db: ReturnType<typeof getDb>, teamId: string): TeamAgentData[] {
+  const agentRows = db.prepare(
+    `SELECT ta.agent_id, a.name as agent_name, ta.role, ta.level, ta.max_complexity, a.capabilities
+     FROM team_agents ta JOIN agents a ON ta.agent_id = a.id
+     WHERE ta.team_id = ? ORDER BY ta.level`,
+  ).all(teamId) as Record<string, unknown>[];
+  return agentRows.map((r) => parseRow(r, ["capabilities"])) as unknown as TeamAgentData[];
+}
+
+function fetchAvailableTeamAgents(db: ReturnType<typeof getDb>, teamId: string): { id: string; name: string }[] {
+  return db.prepare(
+    `SELECT a.id, a.name
+     FROM agents a
+     WHERE a.id NOT IN (SELECT ta.agent_id FROM team_agents ta WHERE ta.team_id = ?)
+     ORDER BY a.name`,
+  ).all(teamId) as { id: string; name: string }[];
+}
+
 export function registerPageRoutes(daemon: ManagerDaemon): void {
   const db = getDb();
 
@@ -86,35 +206,15 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
 
   // Tasks list
   addRoute("GET", "/tasks", () => {
-    const rows = db.prepare(
-      `SELECT t.*, tm.name AS team_name
-       FROM tasks t
-       LEFT JOIN teams tm ON tm.id = t.team_id
-       ORDER BY t.priority, t.created_at DESC`,
-    ).all() as Record<string, unknown>[];
-    const tasks = rows.map((r) => parseRow(r, ["result", "orchestration_state"])) as unknown as TaskData[];
+    const tasks = fetchTasksWithTeams(db);
     const teams = db.prepare("SELECT id, name FROM teams ORDER BY name").all() as { id: string; name: string }[];
-    return html(tasksPage(tasks, teams));
+    return html(tasksPage(tasks, teams, getPollIntervalSeconds(db)));
   });
 
   // Task detail
   addRoute("GET", "/tasks/:id", (_req, params) => {
-    const row = db.prepare(
-      `SELECT t.*, tm.name AS team_name
-       FROM tasks t
-       LEFT JOIN teams tm ON tm.id = t.team_id
-       WHERE t.id = ?`,
-    ).get(params.id) as Record<string, unknown> | null;
-    if (!row) return html("<p>Task not found</p>");
-    const task = parseRow(row, ["result", "orchestration_state"]) as unknown as TaskData;
-
-    // Attach team phases for the stepper
-    if (task.team_id) {
-      const teamRow = db.prepare("SELECT phases FROM teams WHERE id = ?").get(task.team_id) as { phases: string } | null;
-      if (teamRow) {
-        try { task.phases = JSON.parse(teamRow.phases); } catch { /* ignore */ }
-      }
-    }
+    const task = fetchTaskById(db, params.id);
+    if (!task) return html("<p>Task not found</p>");
 
     const notes = db.prepare(
       `SELECT n.*, a.name AS agent_name
@@ -123,16 +223,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
        WHERE n.task_id = ?
        ORDER BY n.created_at`,
     ).all(params.id) as TaskNoteData[];
-    const delegations = db.prepare(
-      `SELECT d.*,
-              pa.name AS parent_agent_name,
-              ca.name AS child_agent_name
-       FROM delegations d
-       LEFT JOIN agents pa ON pa.id = d.parent_agent_id
-       LEFT JOIN agents ca ON ca.id = d.child_agent_id
-       WHERE d.task_id = ?
-       ORDER BY d.created_at`,
-    ).all(params.id) as DelegationData[];
+    const delegations = fetchTaskDelegations(db, params.id);
     const artifacts = db.prepare(
       `SELECT ar.*, a.name AS agent_name
        FROM artifacts ar
@@ -142,33 +233,43 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     ).all(params.id) as ArtifactData[];
     const teams = db.prepare("SELECT id, name FROM teams ORDER BY name").all() as { id: string; name: string }[];
 
-    return html(taskDetailPage(task, notes, delegations, artifacts, teams));
+    return html(taskDetailPage(task, notes, delegations, artifacts, teams, getPollIntervalSeconds(db)));
+  });
+
+  addRoute("GET", "/fragments/tasks/list", () => {
+    const tasks = fetchTasksWithTeams(db);
+    return html(taskListPollingFragment(tasks, getPollIntervalSeconds(db)));
+  });
+
+  addRoute("GET", "/fragments/tasks/:id/summary", (_req, params) => {
+    const task = fetchTaskById(db, params.id);
+    return html(taskDetailSummaryFragment(task, getPollIntervalSeconds(db)));
+  });
+
+  addRoute("GET", "/fragments/tasks/:id/phases", (_req, params) => {
+    const task = fetchTaskById(db, params.id);
+    return html(taskPhaseStepperFragment(task, getPollIntervalSeconds(db)));
+  });
+
+  addRoute("GET", "/fragments/tasks/:id/delegations", (_req, params) => {
+    const task = fetchTaskById(db, params.id);
+    const delegations = task ? fetchTaskDelegations(db, params.id) : [];
+    if (!task) {
+      return html(taskDelegationsFragment(params.id, delegations, 8, false));
+    }
+    return html(taskDelegationsFragment(params.id, delegations, getPollIntervalSeconds(db)));
   });
 
   // Agents list
   addRoute("GET", "/agents", () => {
-    const rows = db.prepare("SELECT * FROM agents ORDER BY created_at").all() as Record<string, unknown>[];
-    const agents = rows.map((r) => parseRow(r, ["config", "capabilities"])) as unknown as AgentData[];
-    // Attach last output line per agent
-    const lastOutputMap = new Map<string, { stream: string; data: string }>();
-    const lastOutputRows = db.prepare(
-      `SELECT agent_id, stream, data FROM terminal_outputs
-       WHERE id IN (SELECT MAX(id) FROM terminal_outputs GROUP BY agent_id)`,
-    ).all() as { agent_id: string; stream: string; data: string }[];
-    for (const row of lastOutputRows) {
-      lastOutputMap.set(row.agent_id, { stream: row.stream, data: row.data });
-    }
-    for (const agent of agents) {
-      agent.lastOutput = lastOutputMap.get(agent.id) ?? null;
-    }
-    return html(agentsPage(agents));
+    const agents = fetchAgents(db);
+    return html(agentsPage(agents, getPollIntervalSeconds(db)));
   });
 
   // Agent detail
   addRoute("GET", "/agents/:id", (req, params) => {
-    const row = db.prepare("SELECT * FROM agents WHERE id = ?").get(params.id) as Record<string, unknown> | null;
-    if (!row) return html("<p>Agent not found</p>");
-    const agent = parseRow(row, ["config", "capabilities"]) as unknown as AgentData;
+    const agent = fetchAgentById(db, params.id);
+    if (!agent) return html("<p>Agent not found</p>");
 
     // Fetch sessions for this agent
     const sessions = db.prepare(
@@ -179,7 +280,17 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     const url = new URL(req.url);
     const selectedSessionId = url.searchParams.get("session") ?? undefined;
 
-    return html(agentDetailPage(agent, sessions, selectedSessionId));
+    return html(agentDetailPage(agent, sessions, selectedSessionId, getPollIntervalSeconds(db)));
+  });
+
+  addRoute("GET", "/fragments/agents/list", () => {
+    const agents = fetchAgents(db);
+    return html(agentListPollingFragment(agents, getPollIntervalSeconds(db)));
+  });
+
+  addRoute("GET", "/fragments/agents/:id/summary", (_req, params) => {
+    const agent = fetchAgentById(db, params.id);
+    return html(agentDetailSummaryFragment(agent, getPollIntervalSeconds(db)));
   });
 
   // Agent terminal output
@@ -214,41 +325,35 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
 
   // Teams list
   addRoute("GET", "/teams", () => {
-    const rows = db.prepare(
-      `SELECT t.*, a.name AS entrypoint_agent_name
-       FROM teams t
-       LEFT JOIN agents a ON a.id = t.entrypoint_agent_id
-       ORDER BY t.created_at`,
-    ).all() as Record<string, unknown>[];
-    const teams = rows.map((r) => parseRow(r, ["phases"])) as unknown as TeamData[];
-    return html(teamsPage(teams));
+    const teams = fetchTeams(db);
+    return html(teamsPage(teams, getPollIntervalSeconds(db)));
   });
 
   // Team detail
   addRoute("GET", "/teams/:id", (_req, params) => {
-    const row = db.prepare(
-      `SELECT t.*, a.name AS entrypoint_agent_name
-       FROM teams t
-       LEFT JOIN agents a ON a.id = t.entrypoint_agent_id
-       WHERE t.id = ?`,
-    ).get(params.id) as Record<string, unknown> | null;
-    if (!row) return html("<p>Team not found</p>");
-    const team = parseRow(row, ["phases"]) as unknown as TeamData;
+    const team = fetchTeamById(db, params.id);
+    if (!team) return html("<p>Team not found</p>");
+    const agents = fetchTeamMembers(db, params.id);
+    const availableAgents = fetchAvailableTeamAgents(db, params.id);
+    return html(teamDetailPage(team, agents, availableAgents, getPollIntervalSeconds(db)));
+  });
 
-    const agentRows = db.prepare(
-      `SELECT ta.agent_id, a.name as agent_name, ta.role, ta.level, ta.skills
-       FROM team_agents ta JOIN agents a ON ta.agent_id = a.id
-       WHERE ta.team_id = ? ORDER BY ta.level`,
-    ).all(params.id) as Record<string, unknown>[];
-    const agents = agentRows.map((r) => parseRow(r, ["skills"])) as unknown as TeamAgentData[];
-    const availableAgents = db.prepare(
-      `SELECT a.id, a.name
-       FROM agents a
-       WHERE a.id NOT IN (SELECT ta.agent_id FROM team_agents ta WHERE ta.team_id = ?)
-       ORDER BY a.name`,
-    ).all(params.id) as { id: string; name: string }[];
+  addRoute("GET", "/fragments/teams/list", () => {
+    const teams = fetchTeams(db);
+    return html(teamListPollingFragment(teams, getPollIntervalSeconds(db)));
+  });
 
-    return html(teamDetailPage(team, agents, availableAgents));
+  addRoute("GET", "/fragments/teams/:id/summary", (_req, params) => {
+    const team = fetchTeamById(db, params.id);
+    const agents = team ? fetchTeamMembers(db, params.id) : [];
+    return html(teamDetailSummaryFragment(team, agents, getPollIntervalSeconds(db)));
+  });
+
+  addRoute("GET", "/fragments/teams/:id/members", (_req, params) => {
+    const team = fetchTeamById(db, params.id);
+    const agents = team ? fetchTeamMembers(db, params.id) : [];
+    const availableAgents = team ? fetchAvailableTeamAgents(db, params.id) : [];
+    return html(teamMembersFragment(team, agents, availableAgents, getPollIntervalSeconds(db)));
   });
 
   // Escalations
@@ -342,9 +447,9 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
 
   addRoute("GET", "/events/tasks", () => {
     return createSSEStream((send) => {
-      const handler = (event: TaskStateChangedEvent) => {
+      const handler = (_event: TaskStateChangedEvent) => {
         const tasks = db.prepare("SELECT id, title, status, priority FROM tasks WHERE status IN ('running', 'approved') ORDER BY priority").all();
-        send("task:state_changed", tasks.map((t: any) => taskRowHtml(t)).join("") || "<p class='muted'>No active tasks</p>");
+        send("task:state_changed", dashboardActiveTaskFragment(tasks as { id: string; title: string; status: string; priority: number }[]));
       };
       eventBus.on("task:state_changed", handler);
       return () => eventBus.off("task:state_changed", handler);
@@ -353,9 +458,15 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
 
   addRoute("GET", "/events/agents", () => {
     return createSSEStream((send) => {
-      const handler = (event: AgentStateChangedEvent) => {
-        const agents = db.prepare("SELECT id, name, status, type FROM agents ORDER BY created_at").all();
-        send("agent:state_changed", agents.map((a: any) => agentRowHtml(a)).join("") || "<p class='muted'>No agents configured</p>");
+      const handler = (_event: AgentStateChangedEvent) => {
+        const agents = db.prepare("SELECT id, name, status, type, current_task_id FROM agents ORDER BY created_at").all();
+        send("agent:state_changed", dashboardAgentStatusFragment(agents as {
+          id: string;
+          name: string;
+          status: string;
+          type: string;
+          current_task_id: string | null;
+        }[]));
       };
       eventBus.on("agent:state_changed", handler);
       return () => eventBus.off("agent:state_changed", handler);
@@ -366,8 +477,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return createSSEStream((send) => {
       const handler = (event: AgentOutputEvent) => {
         if (event.agentId === params.id) {
-          const cls = event.stream === "stderr" ? "terminal-stderr" : "terminal-stdout";
-          send("agent:output", `<div class="terminal-line ${cls}">${escapeForHtml(event.data)}</div>`);
+          send("agent:output", renderTerminalOutputChunk(event.stream, event.data));
         }
       };
       eventBus.on("agent:output", handler);
@@ -404,23 +514,6 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
       return () => eventBus.off("agent:output", handler);
     });
   });
-}
-
-// Inline HTML helpers for SSE updates (avoid importing full components for small fragments)
-function taskRowHtml(task: { id: string; title: string; status: string; priority: number }): string {
-  return `<div class="list-item">
-    <span class="badge badge-${task.status}">${task.status}</span>
-    <a href="/tasks/${escapeForHtml(task.id)}">${escapeForHtml(task.title)}</a>
-    <span class="priority">P${task.priority}</span>
-  </div>`;
-}
-
-function agentRowHtml(agent: { id: string; name: string; status: string; type: string }): string {
-  return `<div class="list-item">
-    <span class="badge badge-${agent.status}">${agent.status}</span>
-    <a href="/agents/${escapeForHtml(agent.id)}">${escapeForHtml(agent.name)}</a>
-    <span class="muted">${escapeForHtml(agent.type)}</span>
-  </div>`;
 }
 
 function escalationCardHtml(esc: EscalationData): string {

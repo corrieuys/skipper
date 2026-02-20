@@ -21,7 +21,7 @@ export interface Agent {
 }
 
 export interface AgentConfig {
-  goal?: string;
+  instruction?: string;
   model?: string;
   environment?: Record<string, string>;
   constraints?: Record<string, string>;
@@ -74,7 +74,7 @@ export interface CreateAgentInput {
   type: string;
   model?: string;
   capabilities?: string[];
-  goal?: string;
+  instruction?: string;
 }
 
 export interface UpdateAgentInput {
@@ -82,7 +82,7 @@ export interface UpdateAgentInput {
   type: string;
   model?: string;
   capabilities?: string[];
-  goal?: string;
+  instruction?: string;
 }
 
 export interface SpawnAgentOptions {
@@ -121,6 +121,7 @@ export interface ParsedSignal {
 export interface JsonEvent {
   type?: string;
   session_id?: string;
+  thread_id?: string;
   message?: { content?: Array<{ type: string; text?: string }> };
   item?: { type?: string; text?: string; content?: Array<{ type: string; text?: string }> };
   result?: string;
@@ -220,8 +221,16 @@ export class AgentManager {
 
     // Build command args
     const args = [...typeDef.args];
-    if (options.sessionId && typeDef.supports_resume && typeDef.resume_flag) {
-      args.push(...typeDef.resume_flag.split(" "), options.sessionId);
+    if (options.sessionId && typeDef.supports_resume) {
+      if (typeDef.resume_args && typeDef.resume_args.length > 0) {
+        args.splice(
+          0,
+          args.length,
+          ...typeDef.resume_args.map((arg) => arg.replaceAll("{{session_id}}", options.sessionId!)),
+        );
+      } else if (typeDef.resume_flag) {
+        args.push(...typeDef.resume_flag.split(" "), options.sessionId);
+      }
     }
     if (agent.model !== "default" && typeDef.model_flag) {
       args.push(typeDef.model_flag, agent.model);
@@ -569,9 +578,11 @@ export class AgentManager {
   handleJsonOutput(agentId: string, json: JsonEvent, raw: string): ParsedSignal {
     const runningAgent = this.agents.get(agentId);
 
-    // Capture session_id for --resume support
-    if (json.session_id && runningAgent && !runningAgent.sessionId) {
-      runningAgent.sessionId = json.session_id;
+    // Capture resume session identifier for --resume support.
+    // Codex uses `thread_id`; Claude-style payloads may use `session_id`.
+    const resumeSessionId = json.session_id ?? json.thread_id;
+    if (resumeSessionId && runningAgent && !runningAgent.sessionId) {
+      runningAgent.sessionId = resumeSessionId;
       // Persist eagerly so session_id survives server crashes
       this.persistSessionId(agentId);
     }
@@ -633,7 +644,7 @@ export class AgentManager {
 
     const id = crypto.randomUUID();
     const config: AgentConfig = {};
-    if (input.goal) config.goal = input.goal;
+    if (input.instruction) config.instruction = input.instruction;
     if (input.model) config.model = input.model;
 
     this.db
@@ -683,10 +694,10 @@ export class AgentManager {
     }
 
     const config: AgentConfig = { ...agent.config };
-    if (input.goal && input.goal.trim()) {
-      config.goal = input.goal.trim();
+    if (input.instruction && input.instruction.trim()) {
+      config.instruction = input.instruction.trim();
     } else {
-      delete config.goal;
+      delete config.instruction;
     }
     if (input.model && input.model.trim()) {
       config.model = input.model.trim();

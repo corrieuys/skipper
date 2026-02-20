@@ -7,8 +7,9 @@ import { eventBus } from "../events/bus";
 import { logError } from "../logging";
 
 const MAX_DELEGATION_DEPTH = 3;
-const MAX_DELEGATIONS_PER_PARENT = 3;
+const MAX_DELEGATIONS_PER_PARENT = 20;
 const DELEGATION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const DELEGATION_TIMEOUT_SECONDS = Math.floor(DELEGATION_TIMEOUT_MS / 1000);
 
 export interface Delegation {
   id: string;
@@ -116,7 +117,7 @@ export class DelegationManager {
       id: childAgent.id,
       name: childAgent.name,
       type: childAgent.type,
-      goal: childAgent.config.goal,
+      instruction: childAgent.config.instruction,
     };
 
     const prompt = this.promptBuilder.buildDelegationPrompt({
@@ -173,7 +174,7 @@ export class DelegationManager {
         .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
         .run(childAgentId);
 
-      this.routeResultToParent(delegation.parent_agent_id, childAgentId, result);
+      this.routeResultToParent(delegation.parent_agent_id, childAgentId, result, delegation.task_id);
 
       this.setAgentState(delegation.parent_agent_id, "working");
 
@@ -210,7 +211,7 @@ export class DelegationManager {
           .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
           .run(event.agentId);
 
-        this.routeResultToParent(delegation.parent_agent_id, event.agentId, result);
+        this.routeResultToParent(delegation.parent_agent_id, event.agentId, result, delegation.task_id);
 
         this.setAgentState(delegation.parent_agent_id, "working");
       } else {
@@ -228,6 +229,7 @@ export class DelegationManager {
           delegation.parent_agent_id,
           event.agentId,
           `[DELEGATION_FAILED] Agent exited with code ${event.code}`,
+          delegation.task_id,
         );
 
         this.setAgentState(delegation.parent_agent_id, "working");
@@ -238,12 +240,11 @@ export class DelegationManager {
   }
 
   checkStaleDelegations(): number {
-    const cutoff = new Date(Date.now() - DELEGATION_TIMEOUT_MS).toISOString();
     const stale = this.db
       .prepare(
-        "SELECT * FROM delegations WHERE status = 'running' AND created_at < ?",
+        "SELECT * FROM delegations WHERE status = 'running' AND unixepoch(created_at) < (unixepoch('now') - ?)",
       )
-      .all(cutoff) as Delegation[];
+      .all(DELEGATION_TIMEOUT_SECONDS) as Delegation[];
 
     for (const delegation of stale) {
       try {
@@ -263,6 +264,7 @@ export class DelegationManager {
           delegation.parent_agent_id,
           delegation.child_agent_id,
           `[DELEGATION_FAILED] Delegation timed out after 10 minutes`,
+          delegation.task_id,
         );
 
         this.setAgentState(delegation.parent_agent_id, "working");
@@ -278,6 +280,7 @@ export class DelegationManager {
     parentAgentId: string,
     childAgentId: string,
     result: string,
+    taskId?: string,
   ): void {
     const message = `[DELEGATION_RESULT from:${childAgentId}]\n${result}\n[END_DELEGATION_RESULT]`;
 
@@ -296,8 +299,31 @@ export class DelegationManager {
 
     const typeDef = getAgentTypeDefinition(parentAgent.type, this.db);
     if (typeDef?.supports_resume) {
-      this.agentManager.sendResumeMessage(parentAgentId, message).catch(() => {
-        // Resume failed — result lost
+      const closeStdin = !(typeDef.supports_stdin ?? false);
+      this.agentManager.sendResumeMessage(parentAgentId, message, closeStdin).catch((err) => {
+        logError(
+          this.db,
+          "route_result_resume_failed",
+          {
+            parentAgentId,
+            childAgentId,
+            method: "routeResultToParent",
+            messageLength: message.length,
+          },
+          err,
+        );
+        if (taskId) {
+          try {
+            this.taskScheduler.failTask(taskId, `Failed to route delegation result to parent agent: ${String(err)}`);
+          } catch (failErr) {
+            logError(
+              this.db,
+              "route_result_resume_failed_task_fail",
+              { parentAgentId, childAgentId, taskId, method: "routeResultToParent" },
+              failErr,
+            );
+          }
+        }
       });
     }
   }

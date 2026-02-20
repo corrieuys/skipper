@@ -172,6 +172,222 @@ describe("POST /api/teams/:id/agents - HTMX form submission", () => {
   });
 });
 
+describe("POST /api/teams/:id/agents/:agent_id", () => {
+  it("updates member metadata and agent skills via JSON", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Member Edit Team A" }),
+    });
+    const team = await teamRes.json();
+
+    db.prepare(
+      `INSERT INTO agents (id, name, type, model, status, config, capabilities)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run("edit-agent-a", "Edit Agent A", "codex", "default", "idle", "{}", "[]");
+
+    await fetch(`${baseUrl}/api/teams/${team.id}/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_id: "edit-agent-a", role: "worker" }),
+    });
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/agents/edit-agent-a`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        role: "reviewer",
+        level: 2,
+        max_complexity: 8,
+        skills: ["testing", "review", "testing"],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.role).toBe("reviewer");
+    expect(body.level).toBe(2);
+    expect(body.max_complexity).toBe(8);
+    expect(body.skills).toEqual(["testing", "review"]);
+  });
+
+  it("returns 400 for invalid level/max_complexity", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Member Edit Team B" }),
+    });
+    const team = await teamRes.json();
+
+    db.prepare(
+      `INSERT INTO agents (id, name, type, model, status, config, capabilities)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run("edit-agent-b", "Edit Agent B", "codex", "default", "idle", "{}", "[]");
+
+    await fetch(`${baseUrl}/api/teams/${team.id}/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_id: "edit-agent-b" }),
+    });
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/agents/edit-agent-b`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ level: -1, max_complexity: 99 }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBeDefined();
+  });
+
+  it("returns 404 when member does not exist", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Member Edit Team C" }),
+    });
+    const team = await teamRes.json();
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/agents/missing`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "x" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns full HTML team detail for HTMX", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Member Edit Team D" }),
+    });
+    const team = await teamRes.json();
+
+    db.prepare(
+      `INSERT INTO agents (id, name, type, model, status, config, capabilities)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run("edit-agent-d", "Edit Agent D", "codex", "default", "idle", "{}", "[]");
+
+    await fetch(`${baseUrl}/api/teams/${team.id}/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_id: "edit-agent-d" }),
+    });
+
+    const formData = new URLSearchParams();
+    formData.set("role", "qa");
+    formData.set("level", "1");
+    formData.set("max_complexity", "6");
+    formData.set("skills", "testing,automation");
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/agents/edit-agent-d`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "HX-Request": "true",
+      },
+      body: formData.toString(),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("<!DOCTYPE html");
+    expect(body).toContain("Member Edit Team D");
+    expect(body).toContain("testing, automation");
+  });
+});
+
+describe("DELETE /api/teams/:id/agents/:agent_id", () => {
+  it("removes a member and returns JSON", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Member Delete Team A" }),
+    });
+    const team = await teamRes.json();
+
+    db.prepare(
+      `INSERT INTO agents (id, name, type, model, status, config, capabilities)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run("delete-agent-a", "Delete Agent A", "codex", "default", "idle", "{}", "[]");
+
+    await fetch(`${baseUrl}/api/teams/${team.id}/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_id: "delete-agent-a" }),
+    });
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/agents/delete-agent-a`, {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+  });
+
+  it("clears entrypoint when removing that member", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Member Delete Team B" }),
+    });
+    const team = await teamRes.json();
+
+    db.prepare(
+      `INSERT INTO agents (id, name, type, model, status, config, capabilities)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run("delete-agent-b", "Delete Agent B", "codex", "default", "idle", "{}", "[]");
+
+    await fetch(`${baseUrl}/api/teams/${team.id}/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_id: "delete-agent-b" }),
+    });
+
+    await fetch(`${baseUrl}/api/teams/${team.id}/entrypoint`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_id: "delete-agent-b" }),
+    });
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/agents/delete-agent-b`, {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(200);
+
+    const teamDetails = await fetch(`${baseUrl}/api/teams/${team.id}`);
+    const updated = await teamDetails.json();
+    expect(updated.entrypoint_agent_id).toBeNull();
+  });
+
+  it("returns full HTML for HTMX requests", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Member Delete Team C" }),
+    });
+    const team = await teamRes.json();
+
+    db.prepare(
+      `INSERT INTO agents (id, name, type, model, status, config, capabilities)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run("delete-agent-c", "Delete Agent C", "codex", "default", "idle", "{}", "[]");
+
+    await fetch(`${baseUrl}/api/teams/${team.id}/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent_id: "delete-agent-c" }),
+    });
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/agents/delete-agent-c`, {
+      method: "DELETE",
+      headers: { "HX-Request": "true" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+  });
+});
+
 describe("POST /api/teams/:id/phases", () => {
   it("adds a phase and returns JSON when no HX-Request header", async () => {
     const teamRes = await fetch(`${baseUrl}/api/teams`, {
@@ -404,6 +620,88 @@ describe("DELETE /api/teams/:id/phases/:index", () => {
     expect(body).toContain("<!DOCTYPE html");
     expect(body).toContain("Delete Phase Team C");
     expect(body).toContain("No phases defined");
+  });
+});
+
+describe("POST /api/teams/:id/phases/:index", () => {
+  it("updates a phase by index and returns JSON", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Edit Phase Team A" }),
+    });
+    const team = await teamRes.json();
+
+    await fetch(`${baseUrl}/api/teams/${team.id}/phases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Phase Old", prompt: "Old prompt" }),
+    });
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/phases/0`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Phase New", prompt: "New prompt text" }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = await res.json();
+    expect(body.phases).toHaveLength(1);
+    expect(body.phases[0].name).toBe("Phase New");
+    expect(body.phases[0].prompt).toBe("New prompt text");
+  });
+
+  it("returns 400 for invalid phase input", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Edit Phase Team B" }),
+    });
+    const team = await teamRes.json();
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/phases/0`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "" }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("required");
+  });
+
+  it("returns full HTML team detail page for HTMX requests", async () => {
+    const teamRes = await fetch(`${baseUrl}/api/teams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Edit Phase Team C" }),
+    });
+    const team = await teamRes.json();
+
+    await fetch(`${baseUrl}/api/teams/${team.id}/phases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Phase 1", prompt: "Prompt 1" }),
+    });
+
+    const formData = new URLSearchParams();
+    formData.set("name", "Phase 1 Updated");
+    formData.set("prompt", "Prompt 1 Updated");
+
+    const res = await fetch(`${baseUrl}/api/teams/${team.id}/phases/0`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "HX-Request": "true",
+      },
+      body: formData.toString(),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("<!DOCTYPE html");
+    expect(body).toContain("Edit Phase Team C");
+    expect(body).toContain("Phase 1 Updated");
+    expect(body).toContain("Prompt 1 Updated");
   });
 });
 

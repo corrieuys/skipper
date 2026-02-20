@@ -23,7 +23,6 @@ export interface TeamAgent {
   role: string | null;
   level: number;
   parent_agent_id: string | null;
-  skills: string[];
   max_complexity: number;
   created_at: string;
 }
@@ -45,7 +44,6 @@ interface TeamAgentRow {
   role: string | null;
   level: number;
   parent_agent_id: string | null;
-  skills: string;
   max_complexity: number;
   created_at: string;
 }
@@ -70,7 +68,6 @@ function rowToTeamAgent(row: TeamAgentRow): TeamAgent {
     role: row.role,
     level: row.level,
     parent_agent_id: row.parent_agent_id,
-    skills: JSON.parse(row.skills),
     max_complexity: row.max_complexity,
     created_at: row.created_at,
   };
@@ -92,7 +89,12 @@ export interface AddTeamAgentInput {
   role?: string;
   level?: number;
   parent_agent_id?: string;
-  skills?: string[];
+  max_complexity?: number;
+}
+
+export interface UpdateTeamAgentInput {
+  role?: string;
+  level?: number;
   max_complexity?: number;
 }
 
@@ -209,8 +211,8 @@ export class TeamManager {
 
     this.db
       .prepare(
-        `INSERT INTO team_agents (id, team_id, agent_id, role, level, parent_agent_id, skills, max_complexity)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO team_agents (id, team_id, agent_id, role, level, parent_agent_id, max_complexity)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -219,11 +221,60 @@ export class TeamManager {
         input.role ?? null,
         input.level ?? 0,
         input.parent_agent_id ?? null,
-        JSON.stringify(input.skills ?? []),
         input.max_complexity ?? 10,
       );
 
     return this.getTeamAgent(id)!;
+  }
+
+  isTeamMember(teamId: string, agentId: string): boolean {
+    const row = this.db
+      .prepare("SELECT 1 as found FROM team_agents WHERE team_id = ? AND agent_id = ? LIMIT 1")
+      .get(teamId, agentId) as { found: number } | null;
+    return !!row;
+  }
+
+  updateTeamAgent(teamId: string, agentId: string, input: UpdateTeamAgentInput): TeamAgent {
+    const row = this.db
+      .prepare("SELECT id, level, max_complexity FROM team_agents WHERE team_id = ? AND agent_id = ?")
+      .get(teamId, agentId) as { id: string; level: number; max_complexity: number | null } | null;
+
+    if (!row) throw new Error("Team member not found");
+
+    this.db
+      .prepare(
+        `UPDATE team_agents
+         SET role = ?, level = ?, max_complexity = ?
+         WHERE team_id = ? AND agent_id = ?`,
+      )
+      .run(
+        input.role?.trim() ? input.role.trim() : null,
+        input.level ?? row.level,
+        input.max_complexity ?? (row.max_complexity ?? 10),
+        teamId,
+        agentId,
+      );
+
+    return this.getTeamAgent(row.id)!;
+  }
+
+  removeAgent(teamId: string, agentId: string): void {
+    const membership = this.db
+      .prepare("SELECT id FROM team_agents WHERE team_id = ? AND agent_id = ?")
+      .get(teamId, agentId) as { id: string } | null;
+    if (!membership) throw new Error("Team member not found");
+
+    this.db
+      .prepare("DELETE FROM team_agents WHERE team_id = ? AND agent_id = ?")
+      .run(teamId, agentId);
+
+    this.db
+      .prepare(
+        `UPDATE teams
+         SET entrypoint_agent_id = NULL, updated_at = datetime('now')
+         WHERE id = ? AND entrypoint_agent_id = ?`,
+      )
+      .run(teamId, agentId);
   }
 
   getTeamAgents(teamId: string): TeamAgent[] {

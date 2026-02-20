@@ -89,13 +89,11 @@ describe("addAgent", () => {
     const membership = teamManager.addAgent(team.id, {
       agent_id: agent.id,
       role: "developer",
-      skills: ["coding"],
     });
 
     expect(membership.team_id).toBe(team.id);
     expect(membership.agent_id).toBe(agent.id);
     expect(membership.role).toBe("developer");
-    expect(membership.skills).toEqual(["coding"]);
     expect(membership.level).toBe(0);
     expect(membership.max_complexity).toBe(10);
   });
@@ -217,6 +215,46 @@ describe("getTeamAgents", () => {
     expect(agents).toHaveLength(2);
     expect(agents[0].level).toBe(0);
     expect(agents[1].level).toBe(1);
+  });
+});
+
+describe("updateTeamAgent", () => {
+  it("updates role, level, and max complexity for a team member", () => {
+    const agent = agentManager.createAgent({ name: "Agent", type: "claude-code" });
+    const team = teamManager.createTeam({ name: "Team" });
+    teamManager.addAgent(team.id, { agent_id: agent.id });
+
+    const updated = teamManager.updateTeamAgent(team.id, agent.id, {
+      role: "reviewer",
+      level: 2,
+      max_complexity: 8,
+    });
+
+    expect(updated.role).toBe("reviewer");
+    expect(updated.level).toBe(2);
+    expect(updated.max_complexity).toBe(8);
+  });
+});
+
+describe("removeAgent", () => {
+  it("removes a member from team", () => {
+    const agent = agentManager.createAgent({ name: "Agent", type: "claude-code" });
+    const team = teamManager.createTeam({ name: "Team" });
+    teamManager.addAgent(team.id, { agent_id: agent.id });
+
+    teamManager.removeAgent(team.id, agent.id);
+    expect(teamManager.isTeamMember(team.id, agent.id)).toBe(false);
+  });
+
+  it("clears entrypoint when removed member is entrypoint", () => {
+    const agent = agentManager.createAgent({ name: "Agent", type: "claude-code" });
+    const team = teamManager.createTeam({ name: "Team" });
+    teamManager.addAgent(team.id, { agent_id: agent.id });
+    teamManager.setEntrypoint(team.id, agent.id);
+
+    teamManager.removeAgent(team.id, agent.id);
+    const updatedTeam = teamManager.getTeam(team.id);
+    expect(updatedTeam?.entrypoint_agent_id).toBeNull();
   });
 });
 

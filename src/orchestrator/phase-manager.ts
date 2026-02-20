@@ -75,7 +75,7 @@ export class PhaseManager {
         id: agent.id,
         name: agent.name,
         type: agent.type,
-        goal: agent.config.goal,
+        instruction: agent.config.instruction,
       };
 
       const phaseInfo: PhaseInfo = {
@@ -205,7 +205,7 @@ export class PhaseManager {
       id: agent.id,
       name: agent.name,
       type: agent.type,
-      goal: agent.config.goal,
+      instruction: agent.config.instruction,
     };
 
     const phaseInfo: PhaseInfo = {
@@ -297,7 +297,7 @@ export class PhaseManager {
       id: agent.id,
       name: agent.name,
       type: agent.type,
-      goal: agent.config.goal,
+      instruction: agent.config.instruction,
     };
 
     const phaseInfo: PhaseInfo = {

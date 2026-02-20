@@ -1,24 +1,57 @@
 // Server-rendered HTML components for HTMX UI
 
 export function formatTimestamp(isoString: string): string {
-  const date = new Date(isoString);
+  const date = parseTimestamp(isoString);
   if (isNaN(date.getTime())) return escapeHtml(isoString);
 
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
+  const absDiffMs = Math.abs(diffMs);
   const diffSec = Math.floor(diffMs / 1000);
+  const absDiffSec = Math.floor(absDiffMs / 1000);
   const diffMin = Math.floor(diffSec / 60);
+  const absDiffMin = Math.floor(absDiffSec / 60);
   const diffHr = Math.floor(diffMin / 60);
+  const absDiffHr = Math.floor(absDiffMin / 60);
   const diffDay = Math.floor(diffHr / 24);
+  const absDiffDay = Math.floor(absDiffHr / 24);
 
   let relative: string;
-  if (diffSec < 60) relative = "just now";
-  else if (diffMin < 60) relative = `${diffMin}m ago`;
-  else if (diffHr < 24) relative = `${diffHr}h ago`;
-  else if (diffDay < 30) relative = `${diffDay}d ago`;
-  else relative = date.toLocaleDateString();
+  if (Math.abs(diffSec) < 60) {
+    relative = "just now";
+  } else if (diffMs >= 0) {
+    if (diffMin < 60) relative = `${diffMin}m ago`;
+    else if (diffHr < 10) {
+      const hours = diffHr;
+      const minutes = diffMin % 60;
+      relative = `${hours}h ${minutes}m ago`;
+    } else if (diffHr < 24) relative = `${diffHr}h ago`;
+    else if (diffDay < 30) relative = `${diffDay}d ago`;
+    else relative = date.toLocaleDateString();
+  } else {
+    if (absDiffMin < 60) relative = `in ${absDiffMin}m`;
+    else if (absDiffHr < 10) {
+      const hours = absDiffHr;
+      const minutes = absDiffMin % 60;
+      relative = `in ${hours}h ${minutes}m`;
+    } else if (absDiffHr < 24) relative = `in ${absDiffHr}h`;
+    else if (absDiffDay < 30) relative = `in ${absDiffDay}d`;
+    else relative = date.toLocaleDateString();
+  }
 
-  return `<span title="${escapeHtml(isoString)}">${relative}</span>`;
+  return `<span title="${escapeHtml(date.toLocaleString())}">${relative}</span>`;
+}
+
+function parseTimestamp(input: string): Date {
+  // SQLite datetime('now') format is UTC but lacks timezone, e.g. "2026-02-20 17:04:16".
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(input)) {
+    return new Date(input.replace(" ", "T") + "Z");
+  }
+  // Handle ISO-like values missing timezone as UTC for consistent server-generated timestamps.
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(input)) {
+    return new Date(input + "Z");
+  }
+  return new Date(input);
 }
 
 const navItems: { href: string; label: string }[] = [
@@ -80,58 +113,79 @@ export interface DashboardData {
   recentLogs?: RecentLogEntry[];
 }
 
+export function dashboardActiveTaskFragment(tasks: { id: string; title: string; status: string; priority: number }[]): string {
+  if (tasks.length === 0) {
+    return `<div class="empty-state"><div class="empty-state-icon">&#9745;</div><p>No active tasks</p><p class="muted">Approve a draft task to get started</p></div>`;
+  }
+
+  const [current, ...queued] = tasks;
+  return `<div class="active-task-card">
+    <div class="active-task-head">
+      <span class="badge badge-${current.status}">${current.status}</span>
+      <span class="priority">P${current.priority}</span>
+    </div>
+    <a href="/tasks/${escapeHtml(current.id)}" hx-get="/tasks/${escapeHtml(current.id)}" hx-target="body" hx-push-url="true" class="active-task-title">${escapeHtml(current.title)}</a>
+    <p class="muted">${queued.length} queued behind current task</p>
+  </div>`;
+}
+
+export function dashboardAgentStatusFragment(
+  agents: { id: string; name: string; status: string; type: string; current_task_id?: string | null }[],
+): string {
+  if (agents.length === 0) {
+    return `<div class="empty-state"><div class="empty-state-icon">&#9881;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>`;
+  }
+
+  return agents.map((agent) => `<div class="status-row">
+      <span class="badge badge-${agent.status}">${agent.status}</span>
+      <a href="/agents/${escapeHtml(agent.id)}" hx-get="/agents/${escapeHtml(agent.id)}" hx-target="body" hx-push-url="true" class="status-agent">${escapeHtml(agent.name)}</a>
+      <span class="muted">${escapeHtml(agent.type)}</span>
+      <span class="muted">${agent.current_task_id ? escapeHtml(agent.current_task_id.slice(0, 8)) : "-"}</span>
+    </div>`).join("");
+}
+
 export function dashboardPage(data: DashboardData): string {
   const activeTasks = data.tasks.filter((t) => t.status === "running" || t.status === "approved");
-  const busyAgents = data.agents.filter((a) => a.status === "busy");
 
   return layout(
     "Dashboard",
     `<h1>Dashboard</h1>
-    <div class="stats-row">
-      <div class="stat-card">
-        <div class="stat-value">${data.tasks.length}</div>
-        <div class="stat-label">Total Tasks</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">${activeTasks.length}</div>
-        <div class="stat-label">Active Tasks</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">${data.agents.length}</div>
-        <div class="stat-label">Agents</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">${busyAgents.length}</div>
-        <div class="stat-label">Busy Agents</div>
-      </div>
-      <div class="stat-card">
+    <div class="dashboard-toolbar">
+      <div class="card daemon-card">
         <span class="badge badge-${data.daemon.state === "running" ? "running" : data.daemon.state === "pausing" ? "stopped" : data.daemon.state === "paused" ? "stopped" : "error"}">${data.daemon.state}</span>
-        <div class="stat-label">Daemon</div>
+        <div class="muted">Daemon</div>
         ${data.daemon.state === "running" ? `<button hx-post="/api/daemon/pause" hx-target="body" hx-swap="innerHTML" class="btn-sm" style="margin-top:0.5rem">Pause</button>` : ""}
         ${data.daemon.state === "paused" ? `<button hx-post="/api/daemon/resume" hx-target="body" hx-swap="innerHTML" class="btn-sm" style="margin-top:0.5rem">Resume</button>` : ""}
         ${data.daemon.state === "pausing" ? `<span class="muted" style="margin-top:0.5rem;display:block">Pausing...</span>` : ""}
       </div>
     </div>
 
-    <div class="grid-2">
-      <section>
-        <h2>Active Tasks</h2>
+    <div class="dashboard-grid">
+      <section class="card dashboard-panel">
+        <div class="dashboard-panel-head">
+          <h2>Current Active Task</h2>
+        </div>
         <div id="active-tasks" hx-ext="sse" sse-connect="/events/tasks" sse-swap="task:state_changed" hx-swap="innerHTML">
-          ${activeTasks.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#9745;</div><p>No active tasks</p><p class="muted">Approve a draft task to get started</p></div>` : activeTasks.map(taskRow).join("")}
+          ${dashboardActiveTaskFragment(activeTasks)}
         </div>
       </section>
 
-      <section>
-        <h2>Agent Status</h2>
+      <section class="card dashboard-panel">
+        <div class="dashboard-panel-head">
+          <h2>Agent Status</h2>
+          <span class="muted">${data.agents.length} total</span>
+        </div>
         <div id="agent-status" hx-ext="sse" sse-connect="/events/agents" sse-swap="agent:state_changed" hx-swap="innerHTML">
-          ${data.agents.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#9881;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>` : data.agents.map(agentStatusRow).join("")}
+          ${dashboardAgentStatusFragment(data.agents)}
         </div>
       </section>
     </div>
 
-    <section>
-      <h2>Recent Agent Activity</h2>
-      <div id="recent-activity" class="activity-feed" hx-ext="sse" sse-connect="/events/logs" sse-swap="logs:activity" hx-swap="innerHTML">
+    <section class="card dashboard-panel">
+      <div class="dashboard-panel-head">
+        <h2>Recent Agent Activity</h2>
+      </div>
+      <div id="recent-activity" class="activity-feed activity-feed-rich" hx-ext="sse" sse-connect="/events/logs" sse-swap="logs:activity" hx-swap="innerHTML">
         ${recentActivityFragment(data.recentLogs ?? [])}
       </div>
     </section>`,
@@ -139,36 +193,20 @@ export function dashboardPage(data: DashboardData): string {
   );
 }
 
-function taskRow(task: { id: string; title: string; status: string; priority: number }): string {
-  return `<div class="list-item">
-    <span class="badge badge-${task.status}">${task.status}</span>
-    <a href="/tasks/${escapeHtml(task.id)}" hx-get="/tasks/${escapeHtml(task.id)}" hx-target="body" hx-push-url="true">
-      ${escapeHtml(task.title)}
-    </a>
-    <span class="priority">P${task.priority}</span>
-  </div>`;
-}
-
-function agentStatusRow(agent: { id: string; name: string; status: string; type: string }): string {
-  return `<div class="list-item">
-    <span class="badge badge-${agent.status}">${agent.status}</span>
-    <a href="/agents/${escapeHtml(agent.id)}" hx-get="/agents/${escapeHtml(agent.id)}" hx-target="body" hx-push-url="true">
-      ${escapeHtml(agent.name)}
-    </a>
-    <span class="muted">${escapeHtml(agent.type)}</span>
-  </div>`;
-}
-
 export function recentActivityFragment(logs: RecentLogEntry[]): string {
   if (logs.length === 0) {
     return `<div class="empty-state"><div class="empty-state-icon">&#128240;</div><p>No recent activity</p><p class="muted">Agent output will appear here</p></div>`;
   }
   return logs.map((entry) => {
-    const truncated = entry.data.length > 120 ? entry.data.slice(0, 120) + "…" : entry.data;
-    return `<div class="activity-entry">
+    const parsed = parseJsonLine(entry.data.trim());
+    const summary = parsed ? terminalJsonSummary(parsed) : "";
+    const type = parsed && typeof parsed.type === "string" ? parsed.type : null;
+    const display = summary || (entry.data.length > 120 ? entry.data.slice(0, 120) + "…" : entry.data);
+    return `<div class="activity-entry activity-entry-rich">
       <a href="/agents/${escapeHtml(entry.agent_id)}" hx-get="/agents/${escapeHtml(entry.agent_id)}" hx-target="body" hx-push-url="true" class="activity-agent">${escapeHtml(entry.agent_name)}</a>
       <span class="badge badge-stream-${escapeHtml(entry.stream)}">${escapeHtml(entry.stream)}</span>
-      <code class="activity-data">${escapeHtml(truncated)}</code>
+      ${type ? `<span class="badge badge-json-type">${escapeHtml(type)}</span>` : ""}
+      <code class="activity-data">${escapeHtml(display)}</code>
       <span class="muted activity-time">${formatTimestamp(entry.created_at)}</span>
     </div>`;
   }).join("");
@@ -230,6 +268,12 @@ export interface TeamOptionData {
   name: string;
 }
 
+export type PollIntervalSeconds = 3 | 8;
+
+function pollingRoot(id: string, endpoint: string, pollIntervalSeconds: PollIntervalSeconds, content: string): string {
+  return `<div id="${escapeHtml(id)}" class="poll-fragment" hx-get="${escapeHtml(endpoint)}" hx-trigger="every ${pollIntervalSeconds}s" hx-swap="outerHTML">${content}</div>`;
+}
+
 export interface AuditEventData {
   id: number;
   type: string;
@@ -254,7 +298,70 @@ export function taskListFragment(tasks: TaskData[]): string {
       </table>`;
 }
 
-export function tasksPage(tasks: TaskData[], teams: TeamOptionData[] = []): string {
+export function taskListPollingFragment(tasks: TaskData[], pollIntervalSeconds: PollIntervalSeconds): string {
+  return pollingRoot("task-list", "/fragments/tasks/list", pollIntervalSeconds, taskListFragment(tasks));
+}
+
+function taskDetailSummaryContent(task: TaskData): string {
+  return `<div class="card">
+      <div class="detail-grid">
+        <div><strong>Status:</strong> <span class="badge badge-${task.status}">${task.status}</span></div>
+        <div><strong>Priority:</strong> P${task.priority}</div>
+        <div><strong>Team:</strong> ${task.team_name ? escapeHtml(task.team_name) : "None"}</div>
+        <div><strong>Created:</strong> ${formatTimestamp(task.created_at)}</div>
+      </div>
+      ${task.description ? `<div class="detail-desc"><strong>Description:</strong><p>${escapeHtml(task.description)}</p></div>` : ""}
+      ${task.result ? `<div class="detail-desc"><strong>Result:</strong><pre>${escapeHtml(JSON.stringify(task.result, null, 2))}</pre></div>` : ""}
+    </div>`;
+}
+
+export function taskDetailSummaryFragment(task: TaskData | null, pollIntervalSeconds: PollIntervalSeconds): string {
+  const content = task
+    ? taskDetailSummaryContent(task)
+    : `<div class="card"><p class="muted">Task not found.</p></div>`;
+  const interval = task ? pollIntervalSeconds : 8;
+  const endpoint = task ? `/fragments/tasks/${escapeHtml(task.id)}/summary` : "/fragments/tasks/missing/summary";
+  return pollingRoot("task-summary-fragment", endpoint, interval, content);
+}
+
+function taskPhasesContent(task: TaskData): string {
+  return phaseStepper(task.current_phase, task.phases, task.status);
+}
+
+export function taskPhaseStepperFragment(task: TaskData | null, pollIntervalSeconds: PollIntervalSeconds): string {
+  const content = task
+    ? taskPhasesContent(task)
+    : `<div class="card"><p class="muted">Task not found.</p></div>`;
+  const interval = task ? pollIntervalSeconds : 8;
+  const endpoint = task ? `/fragments/tasks/${escapeHtml(task.id)}/phases` : "/fragments/tasks/missing/phases";
+  return pollingRoot("task-phases-fragment", endpoint, interval, content);
+}
+
+function taskDelegationsContent(delegations: DelegationData[]): string {
+  return `<h2>Delegations</h2>
+    ${delegations.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#128257;</div><p>No delegations</p></div>` : `<table class="data-table">
+      <thead><tr><th>Status</th><th>Parent Agent</th><th>Child Agent</th><th>Prompt</th><th>Created</th><th>Completed</th></tr></thead>
+      <tbody>${delegations.map(delegationTableRow).join("")}</tbody>
+    </table>`}`;
+}
+
+export function taskDelegationsFragment(
+  taskId: string,
+  delegations: DelegationData[],
+  pollIntervalSeconds: PollIntervalSeconds,
+  taskExists: boolean = true,
+): string {
+  const content = taskExists
+    ? taskDelegationsContent(delegations)
+    : `<div class="card"><p class="muted">Task not found.</p></div>`;
+  return pollingRoot("task-delegations-fragment", `/fragments/tasks/${escapeHtml(taskId)}/delegations`, pollIntervalSeconds, content);
+}
+
+export function tasksPage(
+  tasks: TaskData[],
+  teams: TeamOptionData[] = [],
+  pollIntervalSeconds: PollIntervalSeconds = 8,
+): string {
   return layout(
     "Tasks",
     `<div class="page-header">
@@ -278,9 +385,7 @@ export function tasksPage(tasks: TaskData[], teams: TeamOptionData[] = []): stri
       </form>
     </div>
 
-    <div id="task-list">
-      ${taskListFragment(tasks)}
-    </div>`,
+    ${taskListPollingFragment(tasks, pollIntervalSeconds)}`,
     "/tasks",
   );
 }
@@ -315,21 +420,13 @@ export function taskDetailPage(
   delegations: DelegationData[] = [],
   artifacts: ArtifactData[] = [],
   teams: TeamOptionData[] = [],
+  pollIntervalSeconds: PollIntervalSeconds = 8,
 ): string {
   return layout(
     task.title,
     `<a href="/tasks" hx-get="/tasks" hx-target="body" hx-push-url="true">&larr; Back to Tasks</a>
     <h1>${escapeHtml(task.title)}</h1>
-    <div class="card">
-      <div class="detail-grid">
-        <div><strong>Status:</strong> <span class="badge badge-${task.status}">${task.status}</span></div>
-        <div><strong>Priority:</strong> P${task.priority}</div>
-        <div><strong>Team:</strong> ${task.team_name ? escapeHtml(task.team_name) : "None"}</div>
-        <div><strong>Created:</strong> ${formatTimestamp(task.created_at)}</div>
-      </div>
-      ${task.description ? `<div class="detail-desc"><strong>Description:</strong><p>${escapeHtml(task.description)}</p></div>` : ""}
-      ${task.result ? `<div class="detail-desc"><strong>Result:</strong><pre>${escapeHtml(JSON.stringify(task.result, null, 2))}</pre></div>` : ""}
-    </div>
+    ${taskDetailSummaryFragment(task, pollIntervalSeconds)}
 
     <div class="card">
       <h2>Edit Task</h2>
@@ -347,7 +444,7 @@ export function taskDetailPage(
       </form>` : `<p class="muted">Only draft tasks can be edited.</p>`}
     </div>
 
-    ${phaseStepper(task.current_phase, task.phases)}
+    ${taskPhaseStepperFragment(task, pollIntervalSeconds)}
 
     <h2>Notes</h2>
     ${notes.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#128221;</div><p>No notes yet</p></div>` : notes.map((n) => `<div class="card">
@@ -355,11 +452,7 @@ export function taskDetailPage(
       <p>${escapeHtml(n.content)}</p>
     </div>`).join("")}
 
-    <h2>Delegations</h2>
-    ${delegations.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#128257;</div><p>No delegations</p></div>` : `<table class="data-table">
-      <thead><tr><th>Status</th><th>Parent Agent</th><th>Child Agent</th><th>Prompt</th><th>Created</th><th>Completed</th></tr></thead>
-      <tbody>${delegations.map(delegationTableRow).join("")}</tbody>
-    </table>`}
+    ${taskDelegationsFragment(task.id, delegations, pollIntervalSeconds)}
 
     <h2>Artifacts</h2>
     ${artifacts.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#128230;</div><p>No artifacts</p></div>` : artifacts.map(artifactCard).join("")}`,
@@ -367,20 +460,60 @@ export function taskDetailPage(
   );
 }
 
-function phaseStepper(currentPhase: number, phases?: { name: string; prompt: string }[]): string {
+function phaseStepper(
+  currentPhase: number,
+  phases?: { name: string; prompt: string }[],
+  taskStatus?: string,
+): string {
   if (!phases || phases.length === 0) {
     return `<div class="card"><strong>Phase:</strong> ${currentPhase}</div>`;
   }
+
+  const total = phases.length;
+  const completedCount = taskStatus === "completed"
+    ? total
+    : Math.max(0, Math.min(currentPhase, total));
+  const progressPct = Math.round((completedCount / total) * 100);
+
   const steps = phases.map((p, i) => {
-    const state = i < currentPhase ? "done" : i === currentPhase ? "active" : "pending";
-    const icon = state === "done" ? "&#10003;" : `${i}`;
+    let state: "done" | "active" | "pending" | "failed";
+
+    if (taskStatus === "completed") {
+      state = "done";
+    } else if (taskStatus === "failed" && i === currentPhase) {
+      state = "failed";
+    } else if (i < currentPhase) {
+      state = "done";
+    } else if (i === currentPhase) {
+      state = "active";
+    } else {
+      state = "pending";
+    }
+
+    const icon = state === "done"
+      ? "&#10003;"
+      : state === "failed"
+        ? "!"
+        : `${i + 1}`;
+
     return `<div class="phase-step phase-step-${state}">
-      ${i > 0 ? `<div class="phase-connector${state === "pending" ? "" : " phase-connector-done"}"></div>` : ""}
       <div class="phase-circle">${icon}</div>
       <div class="phase-name">${escapeHtml(p.name)}</div>
     </div>`;
   });
-  return `<div class="phase-stepper">${steps.join("")}</div>`;
+
+  return `<div class="phase-stepper">
+    <div class="phase-summary">
+      <span>${completedCount}/${total} phases complete</span>
+      <span>${progressPct}%</span>
+    </div>
+    <div class="phase-progress">
+      <div class="phase-progress-fill" style="width:${progressPct}%"></div>
+    </div>
+    <div class="phase-grid" style="--phase-cols:${Math.min(total, 6)}">
+      ${steps.join("")}
+    </div>
+  </div>`;
 }
 
 function delegationTableRow(d: DelegationData): string {
@@ -418,10 +551,9 @@ export interface AgentData {
   config: Record<string, unknown>;
   process_pid: number | null;
   current_task_id: string | null;
-  lastOutput?: { stream: string; data: string } | null;
 }
 
-export function agentsPage(agents: AgentData[]): string {
+export function agentsPage(agents: AgentData[], pollIntervalSeconds: PollIntervalSeconds = 8): string {
   return layout(
     "Agents",
     `<div class="page-header">
@@ -441,17 +573,12 @@ export function agentsPage(agents: AgentData[]): string {
           </select>
         </label>
         <label>Model <input type="text" name="model" placeholder="default"></label>
-        <label>Goal <input type="text" name="goal"></label>
+        <label>Instruction <input type="text" name="instruction"></label>
         <button type="submit">Create</button>
       </form>
     </div>
 
-    <div id="agent-list">
-      ${agents.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#129302;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>` : `<table class="data-table">
-        <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>PID</th><th>Task</th><th>Last Output</th><th>Actions</th></tr></thead>
-        <tbody>${agents.map(agentTableRow).join("")}</tbody>
-      </table>`}
-    </div>`,
+    ${agentListPollingFragment(agents, pollIntervalSeconds)}`,
     "/agents",
   );
 }
@@ -460,17 +587,16 @@ export function agentListFragment(agents: AgentData[]): string {
   return agents.length === 0
     ? `<div class="empty-state"><div class="empty-state-icon">&#129302;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>`
     : `<table class="data-table">
-        <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>PID</th><th>Task</th><th>Last Output</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>PID</th><th>Task</th><th>Actions</th></tr></thead>
         <tbody>${agents.map(agentTableRow).join("")}</tbody>
       </table>`;
 }
 
+export function agentListPollingFragment(agents: AgentData[], pollIntervalSeconds: PollIntervalSeconds): string {
+  return pollingRoot("agent-list", "/fragments/agents/list", pollIntervalSeconds, agentListFragment(agents));
+}
+
 function agentTableRow(agent: AgentData): string {
-  let lastOutputCell = `<span class="muted">—</span>`;
-  if (agent.lastOutput) {
-    const truncated = agent.lastOutput.data.length > 60 ? agent.lastOutput.data.slice(0, 60) + "…" : agent.lastOutput.data;
-    lastOutputCell = `<span class="badge badge-stream-${escapeHtml(agent.lastOutput.stream)}">${escapeHtml(agent.lastOutput.stream)}</span> <code class="muted">${escapeHtml(truncated)}</code>`;
-  }
   return `<tr>
     <td><span class="badge badge-${agent.status}">${agent.status}</span></td>
     <td><a href="/agents/${escapeHtml(agent.id)}" hx-get="/agents/${escapeHtml(agent.id)}" hx-target="body" hx-push-url="true">${escapeHtml(agent.name)}</a></td>
@@ -478,7 +604,6 @@ function agentTableRow(agent: AgentData): string {
     <td>${escapeHtml(agent.model)}</td>
     <td>${agent.process_pid ?? "-"}</td>
     <td>${agent.current_task_id ? escapeHtml(agent.current_task_id.slice(0, 8)) : "-"}</td>
-    <td class="last-output-cell">${lastOutputCell}</td>
     <td>${agent.status !== "busy" ? `<button hx-delete="/api/agents/${escapeHtml(agent.id)}" hx-target="body" hx-swap="innerHTML" hx-confirm="Delete this agent?" class="btn-sm btn-danger">Delete</button>` : ""}</td>
   </tr>`;
 }
@@ -488,7 +613,35 @@ export interface AgentSessionData {
   created_at: string;
 }
 
-export function agentDetailPage(agent: AgentData, sessions: AgentSessionData[] = [], selectedSessionId?: string): string {
+function agentDetailSummaryContent(agent: AgentData): string {
+  return `<div class="card">
+      <div class="detail-grid">
+        <div><strong>Status:</strong> <span class="badge badge-${agent.status}">${agent.status}</span></div>
+        <div><strong>Type:</strong> ${escapeHtml(agent.type)}</div>
+        <div><strong>Model:</strong> ${escapeHtml(agent.model)}</div>
+        <div><strong>PID:</strong> ${agent.process_pid ?? "None"}</div>
+        <div><strong>Task:</strong> ${agent.current_task_id ?? "None"}</div>
+        <div><strong>Capabilities:</strong> ${agent.capabilities.length > 0 ? agent.capabilities.map(escapeHtml).join(", ") : "None"}</div>
+      </div>
+      ${agent.config.instruction ? `<div class="detail-desc"><strong>Instruction:</strong><p>${escapeHtml(String(agent.config.instruction))}</p></div>` : ""}
+    </div>`;
+}
+
+export function agentDetailSummaryFragment(agent: AgentData | null, pollIntervalSeconds: PollIntervalSeconds): string {
+  const content = agent
+    ? agentDetailSummaryContent(agent)
+    : `<div class="card"><p class="muted">Agent not found.</p></div>`;
+  const interval = agent ? pollIntervalSeconds : 8;
+  const endpoint = agent ? `/fragments/agents/${escapeHtml(agent.id)}/summary` : "/fragments/agents/missing/summary";
+  return pollingRoot("agent-summary-fragment", endpoint, interval, content);
+}
+
+export function agentDetailPage(
+  agent: AgentData,
+  sessions: AgentSessionData[] = [],
+  selectedSessionId?: string,
+  pollIntervalSeconds: PollIntervalSeconds = 8,
+): string {
   const isViewingHistory = !!selectedSessionId;
   const latestSessionId = sessions.length > 0 ? sessions[0].id : null;
   const activeSessionId = selectedSessionId ?? latestSessionId;
@@ -510,17 +663,7 @@ export function agentDetailPage(agent: AgentData, sessions: AgentSessionData[] =
     agent.name,
     `<a href="/agents" hx-get="/agents" hx-target="body" hx-push-url="true">&larr; Back to Agents</a>
     <h1>${escapeHtml(agent.name)}</h1>
-    <div class="card">
-      <div class="detail-grid">
-        <div><strong>Status:</strong> <span class="badge badge-${agent.status}">${agent.status}</span></div>
-        <div><strong>Type:</strong> ${escapeHtml(agent.type)}</div>
-        <div><strong>Model:</strong> ${escapeHtml(agent.model)}</div>
-        <div><strong>PID:</strong> ${agent.process_pid ?? "None"}</div>
-        <div><strong>Task:</strong> ${agent.current_task_id ?? "None"}</div>
-        <div><strong>Capabilities:</strong> ${agent.capabilities.length > 0 ? agent.capabilities.map(escapeHtml).join(", ") : "None"}</div>
-      </div>
-      ${agent.config.goal ? `<div class="detail-desc"><strong>Goal:</strong><p>${escapeHtml(String(agent.config.goal))}</p></div>` : ""}
-    </div>
+    ${agentDetailSummaryFragment(agent, pollIntervalSeconds)}
 
     <div class="terminal-section-header">
       <h2>Terminal Output</h2>
@@ -543,7 +686,7 @@ export function agentDetailPage(agent: AgentData, sessions: AgentSessionData[] =
           </select>
         </label>
         <label>Model <input type="text" name="model" value="${escapeHtml(agent.model)}" placeholder="default"></label>
-        <label>Goal <input type="text" name="goal" value="${agent.config.goal ? escapeHtml(String(agent.config.goal)) : ""}"></label>
+        <label>Instruction <input type="text" name="instruction" value="${agent.config.instruction ? escapeHtml(String(agent.config.instruction)) : ""}"></label>
         <button type="submit">Save Changes</button>
       </form>`}
     </div>`,
@@ -551,10 +694,75 @@ export function agentDetailPage(agent: AgentData, sessions: AgentSessionData[] =
   );
 }
 
+export function renderTerminalOutputChunk(stream: string, data: string): string {
+  const lines = data.split(/\r?\n/);
+  return lines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => renderTerminalLine(stream, line))
+    .join("");
+}
+
 export function terminalOutputFragment(outputs: { stream: string; data: string; sequence: number }[]): string {
   return outputs
-    .map((o) => `<div class="terminal-line terminal-${o.stream}">${escapeHtml(o.data)}</div>`)
+    .map((o) => renderTerminalOutputChunk(o.stream, o.data))
     .join("");
+}
+
+function renderTerminalLine(stream: string, line: string): string {
+  const trimmed = line.trim();
+  const parsed = parseJsonLine(trimmed);
+  if (!parsed) {
+    return `<div class="terminal-line terminal-${stream}">${escapeHtml(line)}</div>`;
+  }
+
+  const type = typeof parsed.type === "string" ? parsed.type : null;
+  const summary = terminalJsonSummary(parsed);
+
+  return `<div class="terminal-line terminal-${stream} terminal-json"><div class="terminal-json-header"><span class="badge badge-stream-${escapeHtml(stream)}">${escapeHtml(stream)}</span>${type ? `<span class="badge badge-json-type">${escapeHtml(type)}</span>` : ""}${summary ? `<span class="terminal-json-summary">${escapeHtml(summary)}</span>` : ""}</div><details class="terminal-json-details"><summary>raw json</summary><pre class="terminal-json-body">${escapeHtml(JSON.stringify(parsed, null, 2))}</pre></details></div>`;
+}
+
+function parseJsonLine(line: string): Record<string, unknown> | null {
+  if (!line.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(line);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function terminalJsonSummary(event: Record<string, unknown>): string {
+  const item = event.item;
+  if (item && typeof item === "object") {
+    const itemType = typeof (item as Record<string, unknown>).type === "string"
+      ? String((item as Record<string, unknown>).type)
+      : "";
+    const itemText = typeof (item as Record<string, unknown>).text === "string"
+      ? String((item as Record<string, unknown>).text)
+      : "";
+    const command = typeof (item as Record<string, unknown>).command === "string"
+      ? String((item as Record<string, unknown>).command)
+      : "";
+
+    if (itemType === "command_execution" && command) {
+      return command.length > 140 ? command.slice(0, 140) + "…" : command;
+    }
+    if (itemText) {
+      return itemText.length > 140 ? itemText.slice(0, 140) + "…" : itemText;
+    }
+    if (itemType) return itemType;
+  }
+
+  if (typeof event.result === "string") {
+    return event.result.length > 140 ? event.result.slice(0, 140) + "…" : event.result;
+  }
+
+  const error = event.error;
+  if (error && typeof error === "object" && typeof (error as Record<string, unknown>).message === "string") {
+    return String((error as Record<string, unknown>).message);
+  }
+
+  return "";
 }
 
 // --- Teams ---
@@ -573,7 +781,8 @@ export interface TeamAgentData {
   agent_name: string;
   role: string | null;
   level: number;
-  skills: string[];
+  max_complexity: number | null;
+  capabilities: string[];
 }
 
 export interface AgentOptionData {
@@ -590,7 +799,11 @@ export function teamListFragment(teams: TeamData[]): string {
       </table>`;
 }
 
-export function teamsPage(teams: TeamData[]): string {
+export function teamListPollingFragment(teams: TeamData[], pollIntervalSeconds: PollIntervalSeconds): string {
+  return pollingRoot("team-list", "/fragments/teams/list", pollIntervalSeconds, teamListFragment(teams));
+}
+
+export function teamsPage(teams: TeamData[], pollIntervalSeconds: PollIntervalSeconds = 8): string {
   return layout(
     "Teams",
     `<div class="page-header">
@@ -607,9 +820,7 @@ export function teamsPage(teams: TeamData[]): string {
       </form>
     </div>
 
-    <div id="team-list">
-      ${teamListFragment(teams)}
-    </div>`,
+    ${teamListPollingFragment(teams, pollIntervalSeconds)}`,
     "/teams",
   );
 }
@@ -627,76 +838,145 @@ export function teamDetailPage(
   team: TeamData,
   agents: TeamAgentData[],
   availableAgents: AgentOptionData[] = [],
+  pollIntervalSeconds: PollIntervalSeconds = 8,
 ): string {
+  const phaseCards = team.phases.map((p, i) => `<div class="phase-card">
+      <div class="phase-card-header">
+        <span class="badge badge-phase-index">Phase ${i + 1}</span>
+      </div>
+      <form hx-post="/api/teams/${escapeHtml(team.id)}/phases/${i}" hx-target="body" hx-swap="innerHTML" class="phase-edit-form">
+        <label>Name <input type="text" name="name" value="${escapeHtml(p.name)}" required></label>
+        <label>Prompt <textarea name="prompt" rows="3" required>${escapeHtml(p.prompt)}</textarea></label>
+        <div class="phase-card-actions">
+          <button type="submit" class="btn-sm">Save Phase</button>
+          <button type="button" hx-delete="/api/teams/${escapeHtml(team.id)}/phases/${i}" hx-target="body" hx-swap="innerHTML" hx-confirm="Remove this phase?" class="btn-sm btn-danger">Remove</button>
+        </div>
+      </form>
+    </div>`).join("");
+
   return layout(
     team.name,
     `<a href="/teams" hx-get="/teams" hx-target="body" hx-push-url="true">&larr; Back to Teams</a>
-    <h1>${escapeHtml(team.name)}</h1>
-    <div class="card">
-      <div class="detail-grid">
-        <div><strong>Goal:</strong> ${team.goal ? escapeHtml(team.goal) : "None"}</div>
-        <div><strong>Entrypoint:</strong> ${team.entrypoint_agent_name ? escapeHtml(team.entrypoint_agent_name) : "None"}</div>
+    ${teamDetailSummaryFragment(team, agents, pollIntervalSeconds)}
+
+    <div class="team-layout">
+      <section class="card team-section">
+        <h2>Team Settings</h2>
+        <form hx-post="/api/teams/${escapeHtml(team.id)}" hx-target="body" hx-swap="innerHTML">
+          <label>Name <input type="text" name="name" value="${escapeHtml(team.name)}" required></label>
+          <label>Goal <input type="text" name="goal" value="${team.goal ? escapeHtml(team.goal) : ""}" placeholder="What this team is optimizing for"></label>
+          <button type="submit">Save Team</button>
+        </form>
+      </section>
+    </div>
+
+    <section class="card team-section">
+      <div class="team-section-header">
+        <h2>Phases</h2>
+        <span class="muted">${team.phases.length} configured</span>
       </div>
-    </div>
+      ${team.phases.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#9654;</div><p>No phases defined</p><p class="muted">Add at least one phase to guide execution.</p></div>` : `<div class="phase-card-list">${phaseCards}</div>`}
 
-    <div class="card">
-      <h2>Edit Team</h2>
-      <form hx-post="/api/teams/${escapeHtml(team.id)}" hx-target="body" hx-swap="innerHTML">
-        <label>Name <input type="text" name="name" value="${escapeHtml(team.name)}" required></label>
-        <label>Goal <input type="text" name="goal" value="${team.goal ? escapeHtml(team.goal) : ""}"></label>
-        <button type="submit">Save Changes</button>
-      </form>
-    </div>
+      <div class="phase-add">
+        <h3>Add Phase</h3>
+        <form hx-post="/api/teams/${escapeHtml(team.id)}/phases" hx-target="body" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.reset()">
+          <label>Name <input type="text" name="name" required></label>
+          <label>Prompt <textarea name="prompt" rows="3" required></textarea></label>
+          <button type="submit">Add Phase</button>
+        </form>
+      </div>
+    </section>
 
-    <h2>Phases (${team.phases.length})</h2>
-    ${team.phases.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#9654;</div><p>No phases defined</p></div>` : `<table class="data-table">
-      <thead><tr><th>#</th><th>Name</th><th>Prompt</th><th>Actions</th></tr></thead>
-      <tbody>${team.phases.map((p, i) => `<tr>
-        <td>${i}</td>
-        <td>${escapeHtml(p.name)}</td>
-        <td class="muted">${escapeHtml(p.prompt.length > 80 ? p.prompt.slice(0, 80) + "…" : p.prompt)}</td>
-        <td><button hx-delete="/api/teams/${escapeHtml(team.id)}/phases/${i}" hx-target="body" hx-swap="innerHTML" hx-confirm="Remove this phase?" class="btn-sm btn-danger">Remove</button></td>
-      </tr>`).join("")}</tbody>
-    </table>`}
-
-    <h3>Add Phase</h3>
-    <form hx-post="/api/teams/${escapeHtml(team.id)}/phases" hx-target="body" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.reset()">
-      <label>Name <input type="text" name="name" required></label>
-      <label>Prompt <textarea name="prompt" rows="2" required></textarea></label>
-      <button type="submit">Add Phase</button>
-    </form>
-
-    <h2>Members</h2>
-    ${agents.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#128101;</div><p>No agents in this team</p></div>` : `<table class="data-table">
-      <thead><tr><th>Name</th><th>Role</th><th>Level</th><th>Skills</th></tr></thead>
-      <tbody>${agents.map((a) => `<tr>
-        <td>${escapeHtml(a.agent_name)}</td>
-        <td>${a.role ? escapeHtml(a.role) : "-"}</td>
-        <td>${a.level}</td>
-        <td>${a.skills.length > 0 ? a.skills.map(escapeHtml).join(", ") : "-"}</td>
-      </tr>`).join("")}</tbody>
-    </table>`}
-
-    <h3>Add Agent</h3>
-    <form hx-post="/api/teams/${escapeHtml(team.id)}/agents" hx-target="body" hx-swap="innerHTML" class="inline-form">
-      <select name="agent_id" required>
-        <option value="">Select an agent</option>
-        ${availableAgents.map((agent) => `<option value="${escapeHtml(agent.id)}">${escapeHtml(agent.name)}</option>`).join("")}
-      </select>
-      <input type="text" name="role" placeholder="Role">
-      <button type="submit">Add</button>
-    </form>
-
-    <h3>Set Entrypoint</h3>
-    <form hx-post="/api/teams/${escapeHtml(team.id)}/entrypoint" hx-target="body" hx-swap="innerHTML" class="inline-form">
-      <select name="agent_id" required>
-        <option value="">Select team member</option>
-        ${agents.map((agent) => `<option value="${escapeHtml(agent.agent_id)}"${team.entrypoint_agent_id === agent.agent_id ? " selected" : ""}>${escapeHtml(agent.agent_name)}</option>`).join("")}
-      </select>
-      <button type="submit">Save Entrypoint</button>
-    </form>`,
+    ${teamMembersFragment(team, agents, availableAgents, pollIntervalSeconds)}`,
     "/teams",
   );
+}
+
+function teamDetailSummaryContent(team: TeamData, agents: TeamAgentData[]): string {
+  return `<div class="team-hero">
+      <h1>${escapeHtml(team.name)}</h1>
+      <div class="team-hero-meta">
+        <span class="badge badge-phase-index">${team.phases.length} phase${team.phases.length === 1 ? "" : "s"}</span>
+        <span class="muted">Entrypoint: ${team.entrypoint_agent_name ? escapeHtml(team.entrypoint_agent_name) : "None"}</span>
+      </div>
+    </div>
+    <section class="card team-section">
+      <h2>Entrypoint</h2>
+      <p class="muted" style="margin-bottom:0.6rem">Pick which team member receives tasks first.</p>
+      <form hx-post="/api/teams/${escapeHtml(team.id)}/entrypoint" hx-target="body" hx-swap="innerHTML" class="inline-form">
+        <select name="agent_id" required>
+          <option value="">Select team member</option>
+          ${agents.map((agent) => `<option value="${escapeHtml(agent.agent_id)}"${team.entrypoint_agent_id === agent.agent_id ? " selected" : ""}>${escapeHtml(agent.agent_name)}</option>`).join("")}
+        </select>
+        <button type="submit">Save Entrypoint</button>
+      </form>
+    </section>`;
+}
+
+export function teamDetailSummaryFragment(
+  team: TeamData | null,
+  agents: TeamAgentData[],
+  pollIntervalSeconds: PollIntervalSeconds,
+): string {
+  const content = team
+    ? teamDetailSummaryContent(team, agents)
+    : `<div class="card"><p class="muted">Team not found.</p></div>`;
+  const interval = team ? pollIntervalSeconds : 8;
+  const endpoint = team ? `/fragments/teams/${escapeHtml(team.id)}/summary` : "/fragments/teams/missing/summary";
+  return pollingRoot("team-summary-fragment", endpoint, interval, content);
+}
+
+function teamMembersContent(team: TeamData, agents: TeamAgentData[], availableAgents: AgentOptionData[]): string {
+  return `<section class="card team-section">
+      <div class="team-section-header">
+        <h2>Members</h2>
+        <span class="muted">${agents.length} total</span>
+      </div>
+      ${agents.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#128101;</div><p>No agents in this team</p></div>` : `<div class="member-card-list">
+        ${agents.map((a) => `<form hx-post="/api/teams/${escapeHtml(team.id)}/agents/${escapeHtml(a.agent_id)}" hx-target="body" hx-swap="innerHTML" class="member-card">
+          <div class="member-card-head">
+            <strong>${escapeHtml(a.agent_name)}</strong>
+            <span class="muted">${escapeHtml(a.agent_id.slice(0, 8))}</span>
+          </div>
+          <div class="member-grid">
+            <label>Role <input type="text" name="role" value="${a.role ? escapeHtml(a.role) : ""}" placeholder="Role"></label>
+            <label>Level <input type="number" name="level" min="0" value="${a.level}"></label>
+            <label>Max Complexity <input type="number" name="max_complexity" min="1" max="10" value="${a.max_complexity ?? 10}"></label>
+          </div>
+          <label>Skills (agent-level)
+            <input type="text" name="skills" value="${escapeHtml(a.capabilities.join(", "))}" placeholder="e.g. testing, backend, review">
+          </label>
+          <div class="member-actions">
+            <button type="submit" class="btn-sm">Save Member</button>
+            <button type="button" class="btn-sm btn-danger" hx-delete="/api/teams/${escapeHtml(team.id)}/agents/${escapeHtml(a.agent_id)}" hx-target="body" hx-swap="innerHTML" hx-confirm="Remove this member from the team?">Remove</button>
+          </div>
+        </form>`).join("")}
+      </div>`}
+
+      <h3>Add Agent</h3>
+      <form hx-post="/api/teams/${escapeHtml(team.id)}/agents" hx-target="body" hx-swap="innerHTML" class="inline-form">
+        <select name="agent_id" required>
+          <option value="">Select an agent</option>
+          ${availableAgents.map((agent) => `<option value="${escapeHtml(agent.id)}">${escapeHtml(agent.name)}</option>`).join("")}
+        </select>
+        <input type="text" name="role" placeholder="Role">
+        <button type="submit">Add</button>
+      </form>
+    </section>`;
+}
+
+export function teamMembersFragment(
+  team: TeamData | null,
+  agents: TeamAgentData[],
+  availableAgents: AgentOptionData[],
+  pollIntervalSeconds: PollIntervalSeconds,
+): string {
+  const content = team
+    ? teamMembersContent(team, agents, availableAgents)
+    : `<section class="card team-section"><p class="muted">Team not found.</p></section>`;
+  const interval = team ? pollIntervalSeconds : 8;
+  const endpoint = team ? `/fragments/teams/${escapeHtml(team.id)}/members` : "/fragments/teams/missing/members";
+  return pollingRoot("team-members-fragment", endpoint, interval, content);
 }
 
 // --- Escalations ---
@@ -1101,6 +1381,22 @@ function baseStyles(): string {
     .stat-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; text-align: center; }
     .stat-value { font-size: 2rem; font-weight: bold; color: #58a6ff; }
     .stat-label { color: #8b949e; font-size: 0.875rem; }
+    .dashboard-toolbar { display: flex; justify-content: flex-end; margin-bottom: 1rem; }
+    .daemon-card { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem; }
+    .dashboard-grid { display: grid; grid-template-columns: 0.95fr 1.05fr; gap: 1rem; margin-bottom: 1rem; }
+    .dashboard-panel { margin-bottom: 0; }
+    .dashboard-panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin-bottom: 0.6rem; }
+    .dashboard-panel-head h2 { margin: 0; }
+    .active-task-card { border: 1px solid #2a3443; border-radius: 10px; background: #111723; padding: 0.8rem; }
+    .active-task-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
+    .active-task-title { display: block; font-size: 1.02rem; font-weight: 600; margin-bottom: 0.25rem; color: #9ecbff; }
+    .status-row { display: grid; grid-template-columns: auto minmax(120px, 1fr) auto auto; align-items: center; gap: 0.5rem; padding: 0.4rem 0; border-bottom: 1px solid #21262d; }
+    .status-row:last-child { border-bottom: none; }
+    .status-agent { font-weight: 600; color: #79c0ff; }
+    @media (max-width: 900px) {
+      .dashboard-grid { grid-template-columns: 1fr; }
+      .dashboard-toolbar { justify-content: flex-start; }
+    }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
     @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
     .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
@@ -1138,25 +1434,46 @@ function baseStyles(): string {
     form input:focus, form textarea:focus, form select:focus { border-color: #58a6ff; box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.3); }
     .inline-form { display: flex; gap: 0.5rem; align-items: flex-end; }
     .inline-form input, .inline-form select { width: auto; min-width: 220px; }
-    .terminal { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 0.75rem; max-height: 500px; overflow-y: auto; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8rem; white-space: pre-wrap; word-break: break-all; }
-    .terminal-line { padding: 1px 0; }
+    .terminal { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 0.45rem; max-height: 500px; overflow-y: auto; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.8rem; line-height: 1.28; white-space: pre-wrap; word-break: break-all; }
+    .terminal-line { padding: 0; margin: 0; }
     .terminal-stdout { color: #e1e4e8; }
     .terminal-stderr { color: #f85149; }
+    .terminal-json { margin: 0.04rem 0; padding: 0.14rem 0.24rem; border: 1px solid #2a3443; border-radius: 6px; background: #101722; color: #c9d1d9; white-space: normal; }
+    .terminal-json-header { display: flex; align-items: center; gap: 0.25rem; margin-bottom: 0.06rem; flex-wrap: wrap; }
+    .badge-json-type { background: #1c2333; color: #79c0ff; }
+    .terminal-json-summary { color: #8b949e; font-size: 0.74rem; line-height: 1.2; }
+    .terminal-json-details { margin: 0; line-height: 1; }
+    .terminal-json-details > summary { cursor: pointer; color: #8b949e; font-size: 0.71rem; text-transform: uppercase; letter-spacing: 0.02em; list-style: none; }
+    .terminal-json-details > summary::-webkit-details-marker { display: none; }
+    .terminal-json-body { margin: 0.12rem 0 0; background: #0c121b; border: 1px solid #243041; border-radius: 5px; padding: 0.2rem 0.26rem; overflow-x: auto; white-space: pre; word-break: normal; font-size: 0.72rem; line-height: 1.18; }
     .escalation-card { margin-bottom: 0.75rem; }
     .escalation-header { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
     .escalation-question { margin-bottom: 0.5rem; }
     .escalation-response { margin-top: 0.5rem; padding: 0.5rem; background: #1a3a2a; border-radius: 4px; }
     .escalation-form textarea { margin-bottom: 0.5rem; }
     .badge-pending { background: #1c2333; color: #8b949e; }
-    .phase-stepper { display: flex; align-items: flex-start; gap: 0; margin: 1rem 0; padding: 1rem; background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow-x: auto; }
-    .phase-step { display: flex; flex-direction: column; align-items: center; position: relative; min-width: 80px; }
-    .phase-circle { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: 600; z-index: 1; }
-    .phase-name { font-size: 0.75rem; margin-top: 0.25rem; text-align: center; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .phase-stepper { margin: 1rem 0; padding: 1rem; background: linear-gradient(180deg, #171d27 0%, #131923 100%); border: 1px solid #30363d; border-radius: 12px; }
+    .phase-summary { display: flex; justify-content: space-between; align-items: center; color: #8b949e; font-size: 0.82rem; margin-bottom: 0.55rem; }
+    .phase-progress { width: 100%; height: 8px; background: #212733; border-radius: 999px; overflow: hidden; margin-bottom: 0.9rem; }
+    .phase-progress-fill { height: 100%; background: linear-gradient(90deg, #238636 0%, #2ea043 100%); border-radius: 999px; transition: width 0.28s ease; }
+    .phase-grid { display: grid; grid-template-columns: repeat(var(--phase-cols, 3), minmax(0, 1fr)); gap: 0.6rem; }
+    .phase-step { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; padding: 0.65rem 0.7rem; border: 1px solid #2a3240; border-radius: 10px; background: #111823; min-width: 0; }
+    .phase-circle { width: 30px; height: 30px; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: 700; }
+    .phase-name { font-size: 0.82rem; line-height: 1.25; overflow-wrap: anywhere; }
+    .phase-step-done { border-color: rgba(46, 160, 67, 0.45); background: rgba(46, 160, 67, 0.08); }
     .phase-step-done .phase-circle { background: #238636; color: #fff; }
-    .phase-step-active .phase-circle { background: #1f6feb; color: #fff; box-shadow: 0 0 8px #1f6feb; }
+    .phase-step-active { border-color: rgba(31, 111, 235, 0.65); background: rgba(31, 111, 235, 0.12); box-shadow: 0 0 0 1px rgba(31, 111, 235, 0.2) inset; }
+    .phase-step-active .phase-circle { background: #1f6feb; color: #fff; box-shadow: 0 0 10px rgba(31, 111, 235, 0.45); }
+    .phase-step-pending { border-color: #2a3240; background: #111823; }
     .phase-step-pending .phase-circle { background: #30363d; color: #8b949e; }
-    .phase-connector { position: absolute; top: 16px; right: 50%; width: 100%; height: 2px; background: #30363d; z-index: 0; }
-    .phase-connector-done { background: #238636; }
+    .phase-step-failed { border-color: rgba(248, 81, 73, 0.5); background: rgba(248, 81, 73, 0.1); }
+    .phase-step-failed .phase-circle { background: #5c1a1a; color: #f85149; }
+    @media (max-width: 900px) {
+      .phase-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 560px) {
+      .phase-grid { grid-template-columns: 1fr; }
+    }
     .artifact-card { margin-bottom: 0.75rem; }
     .artifact-header { display: flex; gap: 0.5rem; align-items: center; }
     .artifact-path { margin-top: 0.25rem; }
@@ -1175,7 +1492,9 @@ function baseStyles(): string {
     .empty-state-icon { font-size: 2rem; margin-bottom: 0.5rem; opacity: 0.6; }
     .empty-state p { margin: 0.25rem 0; }
     .activity-feed { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 0.5rem 0.75rem; min-height: 60px; }
+    .activity-feed-rich { background: #0f151f; border-color: #283447; }
     .activity-entry { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #21262d; flex-wrap: wrap; }
+    .activity-entry-rich { align-items: center; padding: 0.5rem 0.1rem; }
     .activity-entry:last-child { border-bottom: none; }
     .activity-agent { font-weight: 600; color: #58a6ff; font-size: 0.85rem; flex-shrink: 0; }
     .activity-data { color: #e1e4e8; font-size: 0.78rem; font-family: "SF Mono", "Fira Code", monospace; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1185,6 +1504,32 @@ function baseStyles(): string {
     .terminal-section-header { display: flex; align-items: center; gap: 1rem; margin: 1.5rem 0 0.5rem; }
     .terminal-section-header h2 { margin: 0; }
     .terminal-line-count { font-size: 0.8rem; }
-    .last-output-cell { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .team-hero { margin: 0.5rem 0 1rem; padding: 1rem; border: 1px solid #30363d; border-radius: 10px; background: linear-gradient(140deg, #151b27 0%, #111827 100%); }
+    .team-hero h1 { margin: 0 0 0.4rem; }
+    .team-hero-meta { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+    .team-layout { display: grid; grid-template-columns: 1.25fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+    .team-section { margin-bottom: 1rem; }
+    .team-section-header { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.55rem; }
+    .team-section-header h2 { margin: 0; }
+    .badge-phase-index { background: #1f2a3f; color: #9ecbff; }
+    .phase-card-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 0.75rem; }
+    .phase-card { border: 1px solid #2a3443; border-radius: 10px; background: #111723; padding: 0.7rem; }
+    .phase-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem; }
+    .phase-edit-form label { margin-bottom: 0.55rem; }
+    .phase-edit-form textarea { min-height: 86px; resize: vertical; }
+    .phase-card-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+    .phase-add { margin-top: 0.95rem; padding-top: 0.8rem; border-top: 1px solid #242d3a; }
+    .member-card-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 0.75rem; margin-bottom: 0.8rem; }
+    .member-card { border: 1px solid #2a3443; border-radius: 10px; background: #111723; padding: 0.7rem; }
+    .member-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .member-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.55rem; }
+    .member-grid label { margin-bottom: 0.4rem; }
+    .member-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem; }
+    @media (max-width: 900px) {
+      .team-layout { grid-template-columns: 1fr; }
+      .phase-card-list { grid-template-columns: 1fr; }
+      .member-card-list { grid-template-columns: 1fr; }
+      .member-grid { grid-template-columns: 1fr; }
+    }
   `;
 }

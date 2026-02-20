@@ -31,10 +31,10 @@ function setupAgentType(
 function createAgent(
   name: string,
   type = "test-echo",
-  goal?: string,
+  instruction?: string,
 ): string {
   const id = crypto.randomUUID();
-  const config = goal ? JSON.stringify({ goal }) : "{}";
+  const config = instruction ? JSON.stringify({ instruction }) : "{}";
   db.prepare(
     "INSERT INTO agents (id, name, type, config, capabilities) VALUES (?, ?, ?, ?, '[]')",
   ).run(id, name, type, config);
@@ -1166,6 +1166,23 @@ describe("delegation helpers", () => {
 
   it("getDelegation returns null for nonexistent id", () => {
     expect(daemon.getDelegation("nonexistent")).toBeNull();
+  });
+
+  it("closes stdin when routing delegation result via resume to non-streaming parent", () => {
+    const parentId = createAgent("Resume Parent", "codex");
+    const childId = createAgent("Child");
+    const agentManager = daemon.getAgentManager();
+    const resumeSpy = spyOn(agentManager, "sendResumeMessage").mockResolvedValue();
+
+    daemon.getDelegationManager().routeResultToParent(parentId, childId, "child result");
+
+    expect(resumeSpy).toHaveBeenCalledTimes(1);
+    expect(resumeSpy).toHaveBeenCalledWith(
+      parentId,
+      expect.stringContaining("[DELEGATION_RESULT"),
+      true,
+    );
+    resumeSpy.mockRestore();
   });
 });
 

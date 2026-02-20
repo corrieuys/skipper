@@ -11,11 +11,11 @@ function html(content: string): Response {
   });
 }
 
-async function parseBody(req: Request): Promise<Record<string, string>> {
+async function parseBody(req: Request): Promise<Record<string, unknown>> {
   const contentType = req.headers.get("content-type") ?? "";
   if (contentType.includes("application/x-www-form-urlencoded")) {
     const formData = await req.formData();
-    const body: Record<string, string> = {};
+    const body: Record<string, unknown> = {};
     formData.forEach((value, key) => {
       body[key] = value.toString();
     });
@@ -27,14 +27,14 @@ async function parseBody(req: Request): Promise<Record<string, string>> {
 function getTeamAgentsWithNames(db: Database, teamId: string): TeamAgentData[] {
   const rows = db
     .prepare(
-      `SELECT ta.agent_id, a.name as agent_name, ta.role, ta.level, ta.skills
+      `SELECT ta.agent_id, a.name as agent_name, ta.role, ta.level, ta.max_complexity, a.capabilities
        FROM team_agents ta JOIN agents a ON ta.agent_id = a.id
        WHERE ta.team_id = ? ORDER BY ta.level`,
     )
-    .all(teamId) as (TeamAgentData & { skills: string | string[] })[];
+    .all(teamId) as (TeamAgentData & { capabilities: string | string[] })[];
   return rows.map((r) => ({
     ...r,
-    skills: typeof r.skills === "string" ? JSON.parse(r.skills) : r.skills,
+    capabilities: typeof r.capabilities === "string" ? JSON.parse(r.capabilities) : r.capabilities,
   }));
 }
 
@@ -85,6 +85,51 @@ function renderTeamDetailPage(db: Database, teamId: string): Response {
   return html(teamDetailPage(team, agents, availableAgents));
 }
 
+function normalizeSkills(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Map(
+        value
+          .map((entry) => String(entry).trim())
+          .filter((entry) => entry.length > 0)
+          .map((entry) => [entry.toLowerCase(), entry]),
+      ).values(),
+    );
+  }
+
+  if (typeof value !== "string") return [];
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      return normalizeSkills(parsed);
+    } catch {
+      // fallback to comma split
+    }
+  }
+
+  return Array.from(
+    new Map(
+      trimmed
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+        .map((entry) => [entry.toLowerCase(), entry]),
+    ).values(),
+  );
+}
+
+function parseOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
 export function registerTeamRoutes(database?: Database): void {
   const db = database ?? getDb();
   const manager = new TeamManager(db);
@@ -92,7 +137,7 @@ export function registerTeamRoutes(database?: Database): void {
   addRoute("POST", "/api/teams", async (req) => {
     const body = await parseBody(req);
 
-    if (!body.name) {
+    if (typeof body.name !== "string" || !body.name.trim()) {
       return Response.json(
         { error: "name is required" },
         { status: 400 },
@@ -101,8 +146,8 @@ export function registerTeamRoutes(database?: Database): void {
 
     const team = manager.createTeam({
       name: body.name,
-      goal: body.goal,
-      phases: body.phases ? JSON.parse(body.phases) : undefined,
+      goal: typeof body.goal === "string" ? body.goal : undefined,
+      phases: typeof body.phases === "string" ? JSON.parse(body.phases) : undefined,
     });
 
     if (req.headers.get("HX-Request")) {
@@ -129,7 +174,7 @@ export function registerTeamRoutes(database?: Database): void {
   addRoute("POST", "/api/teams/:id", async (req, params) => {
     const body = await parseBody(req);
 
-    if (!body.name || !body.name.trim()) {
+    if (typeof body.name !== "string" || !body.name.trim()) {
       return Response.json(
         { error: "name is required" },
         { status: 400 },
@@ -139,7 +184,7 @@ export function registerTeamRoutes(database?: Database): void {
     try {
       const team = manager.updateTeam(params.id, {
         name: body.name,
-        goal: body.goal,
+        goal: typeof body.goal === "string" ? body.goal : undefined,
       }) as unknown as TeamData;
 
       if (req.headers.get("HX-Request")) {
@@ -156,7 +201,7 @@ export function registerTeamRoutes(database?: Database): void {
   addRoute("POST", "/api/teams/:id/agents", async (req, params) => {
     const body = await parseBody(req);
 
-    if (!body.agent_id) {
+    if (typeof body.agent_id !== "string" || !body.agent_id.trim()) {
       return Response.json(
         { error: "agent_id is required" },
         { status: 400 },
@@ -166,11 +211,10 @@ export function registerTeamRoutes(database?: Database): void {
     try {
       const teamAgent = manager.addAgent(params.id, {
         agent_id: body.agent_id,
-        role: body.role,
-        level: body.level ? Number(body.level) : undefined,
-        parent_agent_id: body.parent_agent_id,
-        skills: body.skills ? JSON.parse(body.skills) : undefined,
-        max_complexity: body.max_complexity ? Number(body.max_complexity) : undefined,
+        role: typeof body.role === "string" ? body.role : undefined,
+        level: parseOptionalNumber(body.level),
+        parent_agent_id: typeof body.parent_agent_id === "string" ? body.parent_agent_id : undefined,
+        max_complexity: parseOptionalNumber(body.max_complexity),
       });
 
       if (req.headers.get("HX-Request")) {
@@ -184,10 +228,68 @@ export function registerTeamRoutes(database?: Database): void {
     }
   });
 
+  addRoute("POST", "/api/teams/:id/agents/:agent_id", async (req, params) => {
+    const body = await parseBody(req);
+    const level = parseOptionalNumber(body.level);
+    const maxComplexity = parseOptionalNumber(body.max_complexity);
+
+    if (level !== undefined && (!Number.isInteger(level) || level < 0)) {
+      return Response.json({ error: "level must be an integer >= 0" }, { status: 400 });
+    }
+    if (maxComplexity !== undefined && (!Number.isInteger(maxComplexity) || maxComplexity < 1 || maxComplexity > 10)) {
+      return Response.json({ error: "max_complexity must be an integer between 1 and 10" }, { status: 400 });
+    }
+
+    if (!manager.isTeamMember(params.id, params.agent_id)) {
+      return Response.json({ error: "Team member not found" }, { status: 404 });
+    }
+
+    try {
+      const member = manager.updateTeamAgent(params.id, params.agent_id, {
+        role: typeof body.role === "string" ? body.role : undefined,
+        level,
+        max_complexity: maxComplexity,
+      });
+
+      const skills = normalizeSkills(body.skills ?? body.capabilities);
+      db.prepare(
+        "UPDATE agents SET capabilities = ?, updated_at = datetime('now') WHERE id = ?",
+      ).run(JSON.stringify(skills), params.agent_id);
+
+      if (req.headers.get("HX-Request")) {
+        return renderTeamDetailPage(db, params.id);
+      }
+
+      return Response.json({
+        ...member,
+        skills,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      return Response.json({ error: message }, { status: 400 });
+    }
+  });
+
+  addRoute("DELETE", "/api/teams/:id/agents/:agent_id", (req, params) => {
+    try {
+      manager.removeAgent(params.id, params.agent_id);
+
+      if (req.headers.get("HX-Request")) {
+        return renderTeamDetailPage(db, params.id);
+      }
+
+      return Response.json({ ok: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      const status = message.includes("not found") ? 404 : 400;
+      return Response.json({ error: message }, { status });
+    }
+  });
+
   addRoute("POST", "/api/teams/:id/phases", async (req, params) => {
     const body = await parseBody(req);
 
-    if (!body.name || !body.prompt) {
+    if (typeof body.name !== "string" || typeof body.prompt !== "string" || !body.name.trim() || !body.prompt.trim()) {
       return Response.json(
         { error: "name and prompt are required" },
         { status: 400 },
@@ -201,7 +303,7 @@ export function registerTeamRoutes(database?: Database): void {
 
     const updatedTeam = manager.updatePhases(params.id, [
       ...team.phases,
-      { name: body.name, prompt: body.prompt },
+      { name: body.name.trim(), prompt: body.prompt.trim() },
     ]) as unknown as TeamData;
 
     if (req.headers.get("HX-Request")) {
@@ -209,6 +311,39 @@ export function registerTeamRoutes(database?: Database): void {
     }
 
     return Response.json(updatedTeam, { status: 201 });
+  });
+
+  addRoute("POST", "/api/teams/:id/phases/:index", async (req, params) => {
+    const body = await parseBody(req);
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+
+    if (!name || !prompt) {
+      return Response.json(
+        { error: "name and prompt are required" },
+        { status: 400 },
+      );
+    }
+
+    const team = manager.getTeam(params.id);
+    if (!team) {
+      return Response.json({ error: "Team not found" }, { status: 404 });
+    }
+
+    const idx = Number(params.index);
+    if (isNaN(idx) || idx < 0 || idx >= team.phases.length) {
+      return Response.json({ error: "Invalid phase index" }, { status: 400 });
+    }
+
+    const phases = [...team.phases];
+    phases[idx] = { name, prompt };
+    const updatedTeam = manager.updatePhases(params.id, phases) as unknown as TeamData;
+
+    if (req.headers.get("HX-Request")) {
+      return renderTeamDetailPage(db, params.id);
+    }
+
+    return Response.json(updatedTeam);
   });
 
   addRoute("DELETE", "/api/teams/:id/phases/:index", async (req, params) => {
@@ -235,7 +370,7 @@ export function registerTeamRoutes(database?: Database): void {
   addRoute("POST", "/api/teams/:id/entrypoint", async (req, params) => {
     const body = await parseBody(req);
 
-    if (!body.agent_id) {
+    if (typeof body.agent_id !== "string" || !body.agent_id.trim()) {
       return Response.json(
         { error: "agent_id is required" },
         { status: 400 },
@@ -243,7 +378,7 @@ export function registerTeamRoutes(database?: Database): void {
     }
 
     try {
-      manager.setEntrypoint(params.id, body.agent_id);
+      manager.setEntrypoint(params.id, body.agent_id.trim());
       if (req.headers.get("HX-Request")) {
         return renderTeamDetailPage(db, params.id);
       }

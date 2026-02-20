@@ -192,7 +192,7 @@ export class RecoveryManager {
       id: agent.id,
       name: agent.name,
       type: agent.type,
-      goal: agent.config.goal,
+      instruction: agent.config.instruction,
     };
 
     let phaseInfo: PhaseInfo | undefined;

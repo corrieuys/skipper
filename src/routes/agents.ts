@@ -35,6 +35,12 @@ export function registerAgentRoutes(): void {
         { status: 400 },
       );
     }
+    if (Object.prototype.hasOwnProperty.call(body, "goal")) {
+      return Response.json(
+        { error: "goal is no longer supported; use instruction" },
+        { status: 400 },
+      );
+    }
 
     try {
       manager.createAgent({
@@ -42,7 +48,7 @@ export function registerAgentRoutes(): void {
         type: body.type,
         model: body.model,
         capabilities: body.capabilities ? JSON.parse(body.capabilities) : undefined,
-        goal: body.goal,
+        instruction: body.instruction,
       });
       const agents = manager.listAgents() as unknown as AgentData[];
       return htmlResponse(agentListFragment(agents), 201);
@@ -74,13 +80,19 @@ export function registerAgentRoutes(): void {
         { status: 400 },
       );
     }
+    if (Object.prototype.hasOwnProperty.call(body, "goal")) {
+      return Response.json(
+        { error: "goal is no longer supported; use instruction" },
+        { status: 400 },
+      );
+    }
 
     try {
       const updated = manager.updateAgent(params.id, {
         name: body.name,
         type: body.type,
         model: body.model,
-        goal: body.goal,
+        instruction: body.instruction,
         capabilities: body.capabilities ? JSON.parse(body.capabilities) : undefined,
       }) as unknown as AgentData;
 
