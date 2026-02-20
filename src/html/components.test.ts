@@ -7,6 +7,7 @@ import {
   agentListFragment,
   agentDetailPage,
   teamsPage,
+  teamListFragment,
   teamDetailPage,
   escalationsPage,
   terminalOutputFragment,
@@ -230,6 +231,25 @@ describe("teamsPage", () => {
     ]);
     expect(html).toContain("Alpha Team");
     expect(html).toContain("Ship fast");
+  });
+});
+
+describe("teamListFragment", () => {
+  it("renders empty state without full page layout", () => {
+    const fragment = teamListFragment([]);
+    expect(fragment).toContain("No teams configured");
+    expect(fragment).not.toContain("<!DOCTYPE html");
+    expect(fragment).not.toContain("<nav");
+  });
+
+  it("renders team table without full page layout", () => {
+    const fragment = teamListFragment([
+      { id: "t1", name: "Beta Team", entrypoint_agent_id: null, goal: "Move fast", phases: [] },
+    ]);
+    expect(fragment).toContain("Beta Team");
+    expect(fragment).toContain("Move fast");
+    expect(fragment).toContain("data-table");
+    expect(fragment).not.toContain("<!DOCTYPE html");
   });
 });
 

@@ -307,6 +307,15 @@ export interface TeamAgentData {
   skills: string[];
 }
 
+export function teamListFragment(teams: TeamData[]): string {
+  return teams.length === 0
+    ? "<p class='muted'>No teams configured</p>"
+    : `<table class="data-table">
+        <thead><tr><th>Name</th><th>Goal</th><th>Entrypoint</th><th>Phases</th></tr></thead>
+        <tbody>${teams.map(teamTableRow).join("")}</tbody>
+      </table>`;
+}
+
 export function teamsPage(teams: TeamData[]): string {
   return layout(
     "Teams",
@@ -325,10 +334,7 @@ export function teamsPage(teams: TeamData[]): string {
     </div>
 
     <div id="team-list">
-      ${teams.length === 0 ? "<p class='muted'>No teams configured</p>" : `<table class="data-table">
-        <thead><tr><th>Name</th><th>Goal</th><th>Entrypoint</th><th>Phases</th></tr></thead>
-        <tbody>${teams.map(teamTableRow).join("")}</tbody>
-      </table>`}
+      ${teamListFragment(teams)}
     </div>`,
   );
 }
