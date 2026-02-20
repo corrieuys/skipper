@@ -1,27 +1,40 @@
 import { addRoute } from "../server";
 import { TaskScheduler } from "../tasks/scheduler";
+import { taskListFragment } from "../html/components";
+import type { TaskData } from "../html/components";
+
+function htmlFragment(content: string): Response {
+  return new Response(content, {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
 
 export function registerTaskRoutes(): void {
   const scheduler = new TaskScheduler();
 
   addRoute("POST", "/api/tasks", async (req) => {
-    const body = await req.json();
+    const formData = await req.formData();
+    const title = formData.get("title");
+    const description = formData.get("description");
+    const teamId = formData.get("teamId");
+    const priorityRaw = formData.get("priority");
 
-    if (!body.title) {
-      return Response.json({ error: "title is required" }, { status: 400 });
+    if (!title || typeof title !== "string" || !title.trim()) {
+      return htmlFragment("<p class='error'>title is required</p>");
     }
 
     try {
-      const task = scheduler.createTask({
-        title: body.title,
-        description: body.description,
-        teamId: body.teamId,
-        priority: body.priority,
+      scheduler.createTask({
+        title: title.trim(),
+        description: typeof description === "string" && description.trim() ? description.trim() : undefined,
+        teamId: typeof teamId === "string" && teamId.trim() ? teamId.trim() : undefined,
+        priority: priorityRaw ? Number(priorityRaw) : undefined,
       });
-      return Response.json(task, { status: 201 });
+      const tasks = scheduler.listTasks() as unknown as TaskData[];
+      return htmlFragment(taskListFragment(tasks));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Internal error";
-      return Response.json({ error: message }, { status: 400 });
+      return htmlFragment(`<p class='error'>${message}</p>`);
     }
   });
 

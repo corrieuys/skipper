@@ -120,6 +120,15 @@ export interface TaskData {
   result?: unknown;
 }
 
+export function taskListFragment(tasks: TaskData[]): string {
+  return tasks.length === 0
+    ? "<p class='muted'>No tasks yet</p>"
+    : `<table class="data-table">
+        <thead><tr><th>Status</th><th>Title</th><th>Priority</th><th>Phase</th><th>Created</th><th>Actions</th></tr></thead>
+        <tbody>${tasks.map(taskTableRow).join("")}</tbody>
+      </table>`;
+}
+
 export function tasksPage(tasks: TaskData[]): string {
   return layout(
     "Tasks",
@@ -140,10 +149,7 @@ export function tasksPage(tasks: TaskData[]): string {
     </div>
 
     <div id="task-list">
-      ${tasks.length === 0 ? "<p class='muted'>No tasks yet</p>" : `<table class="data-table">
-        <thead><tr><th>Status</th><th>Title</th><th>Priority</th><th>Phase</th><th>Created</th><th>Actions</th></tr></thead>
-        <tbody>${tasks.map(taskTableRow).join("")}</tbody>
-      </table>`}
+      ${taskListFragment(tasks)}
     </div>`,
   );
 }

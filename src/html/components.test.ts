@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import {
   dashboardPage,
   tasksPage,
+  taskListFragment,
   taskDetailPage,
   agentsPage,
   agentDetailPage,
@@ -110,6 +111,33 @@ describe("tasksPage", () => {
     expect(html).toContain('hx-post="/api/tasks"');
     expect(html).toContain('name="title"');
     expect(html).toContain('name="priority"');
+  });
+});
+
+describe("taskListFragment", () => {
+  it("renders empty state without full page layout", () => {
+    const html = taskListFragment([]);
+    expect(html).toContain("No tasks yet");
+    expect(html).not.toContain("<!DOCTYPE html>");
+    expect(html).not.toContain("<nav");
+  });
+
+  it("renders task table rows for tasks", () => {
+    const html = taskListFragment([
+      { id: "t1", title: "My Task", status: "draft", priority: 3, current_phase: 0, created_at: "2024-01-01" },
+    ]);
+    expect(html).toContain("My Task");
+    expect(html).toContain("badge-draft");
+    expect(html).toContain("P3");
+    expect(html).not.toContain("<!DOCTYPE html>");
+  });
+
+  it("escapes HTML in task titles", () => {
+    const html = taskListFragment([
+      { id: "t1", title: '<script>alert(1)</script>', status: "draft", priority: 5, current_phase: 0, created_at: "now" },
+    ]);
+    expect(html).not.toContain("<script>alert");
+    expect(html).toContain("&lt;script&gt;");
   });
 });
 
