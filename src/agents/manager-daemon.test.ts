@@ -192,9 +192,9 @@ describe("tick", () => {
 
   it("records errors in daemon run", async () => {
     // Create a scenario that will error — corrupt state
-    // We'll spy on processTaskQueue to throw
-    const originalProcess = daemon.processTaskQueue.bind(daemon);
-    spyOn(daemon, "processTaskQueue").mockImplementation(() => {
+    // We'll spy on the internal taskRunner's processTaskQueue to throw
+    const taskRunner = daemon.getTaskRunner();
+    spyOn(taskRunner, "processTaskQueue").mockImplementation(() => {
       throw new Error("Test error");
     });
 
