@@ -21,6 +21,7 @@ export function layout(title: string, content: string): string {
       <a href="/teams" hx-get="/teams" hx-target="body" hx-push-url="true">Teams</a>
       <a href="/escalations" hx-get="/escalations" hx-target="body" hx-push-url="true">Escalations</a>
       <a href="/audit-events" hx-get="/audit-events" hx-target="body" hx-push-url="true">Events</a>
+      <a href="/help" hx-get="/help" hx-target="body" hx-push-url="true">Help</a>
     </div>
   </nav>
   <main class="container">${content}</main>
@@ -602,6 +603,214 @@ function auditEventRow(e: AuditEventData): string {
   </tr>`;
 }
 
+// --- Help ---
+
+export function helpPage(): string {
+  return layout(
+    "Help",
+    `<h1>PlayHive Help</h1>
+
+    <div class="card">
+      <h2>Platform Overview</h2>
+      <p>PlayHive is an AI agent orchestrator that coordinates teams of coding agents to complete software engineering tasks.
+      It manages task lifecycles, delegates work between agents, handles multi-phase execution, and escalates to humans when needed.</p>
+    </div>
+
+    <h2>Core Concepts</h2>
+
+    <div class="card">
+      <h3>Task Lifecycle</h3>
+      <p>Every task progresses through a series of states:</p>
+      <pre class="help-diagram">
+  draft ──&gt; approved ──&gt; running ──&gt; completed
+    │                       │
+    └──&gt; cancelled          └──&gt; failed ──&gt; (retry) ──&gt; approved
+      </pre>
+      <p>Tasks start as <strong>draft</strong>, must be <strong>approved</strong> before the daemon picks them up,
+      run until <strong>completed</strong> or <strong>failed</strong>, and failed tasks can be retried.</p>
+    </div>
+
+    <div class="card">
+      <h3>Team Hierarchy</h3>
+      <p>Teams organize agents into a hierarchy with an entrypoint agent that receives tasks first:</p>
+      <pre class="help-diagram">
+              ┌─────────────┐
+              │    Team      │
+              └──────┬───────┘
+                     │
+          ┌──────────┴──────────┐
+          │  Entrypoint Agent   │  (level 0, receives tasks)
+          └──────────┬──────────┘
+                     │
+        ┌────────────┼────────────┐
+        ▼            ▼            ▼
+   ┌─────────┐ ┌─────────┐ ┌─────────┐
+   │ Agent A  │ │ Agent B  │ │ Agent C  │  (can be delegated to)
+   │ senior   │ │ mid-level│ │ junior   │
+   └─────────┘ └─────────┘ └─────────┘
+      </pre>
+    </div>
+
+    <div class="card">
+      <h3>Phase Execution</h3>
+      <p>Tasks can have multiple phases that execute sequentially. Each phase has its own prompt and is assigned to the team's entrypoint agent:</p>
+      <pre class="help-diagram">
+  Phase 0        Phase 1        Phase 2
+  ┌──────┐      ┌──────┐      ┌──────┐
+  │ Plan │ ──&gt; │ Code │ ──&gt; │Review│ ──&gt; Complete
+  └──────┘      └──────┘      └──────┘
+     │             │             │
+  agent runs    agent runs    agent runs
+  &amp; signals     &amp; signals     &amp; exits 0
+  PHASE_COMPLETE PHASE_COMPLETE
+      </pre>
+    </div>
+
+    <div class="card">
+      <h3>Delegation Flow</h3>
+      <p>A parent agent can delegate subtasks to child agents on the same team:</p>
+      <pre class="help-diagram">
+  Parent Agent                    Child Agent
+  ┌───────────┐                  ┌───────────┐
+  │ Working   │                  │           │
+  │ on task   │  [DELEGATE]      │           │
+  │           │ ───────────────&gt; │  Spawned  │
+  │ (paused)  │                  │  with     │
+  │           │                  │  prompt   │
+  │           │  result          │           │
+  │ Resumed   │ &lt;─────────────── │  Exits    │
+  │ with      │                  │           │
+  │ context   │                  └───────────┘
+  └───────────┘
+      </pre>
+      <p>There is a maximum of 3 delegations per parent per task to prevent loops.</p>
+    </div>
+
+    <div class="card">
+      <h3>Escalation Flow</h3>
+      <p>When an agent needs human input, it escalates via a signal:</p>
+      <pre class="help-diagram">
+  Agent                Human (UI)
+  ┌───────────┐       ┌───────────┐
+  │ Working   │       │           │
+  │           │       │           │
+  │ [ESCALATE]│ ────&gt; │ Question  │
+  │           │       │ appears   │
+  │ (paused)  │       │           │
+  │           │       │ Types     │
+  │ Resumed   │ &lt;──── │ response  │
+  │ with      │       │           │
+  │ answer    │       └───────────┘
+  └───────────┘
+      </pre>
+    </div>
+
+    <h2>Signal System</h2>
+
+    <div class="card">
+      <p>Agents communicate with PlayHive by printing signals to stdout. The daemon parses these in real time:</p>
+      <table class="data-table">
+        <thead><tr><th>Signal</th><th>Format</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>[PHASE_COMPLETE]</code></td>
+            <td><code>[PHASE_COMPLETE]</code></td>
+            <td>Current phase finished successfully; advance to next phase</td>
+          </tr>
+          <tr>
+            <td><code>[DELEGATE]</code></td>
+            <td><code>[DELEGATE] agent_name: prompt text</code></td>
+            <td>Delegate a subtask to another agent on the team</td>
+          </tr>
+          <tr>
+            <td><code>[ESCALATE]</code></td>
+            <td><code>[ESCALATE] question text</code></td>
+            <td>Ask a human for help; agent pauses until response</td>
+          </tr>
+          <tr>
+            <td><code>[NOTE]</code></td>
+            <td><code>[NOTE] content text</code></td>
+            <td>Attach a note to the current task for logging/context</td>
+          </tr>
+          <tr>
+            <td><code>[ARTIFACT]</code></td>
+            <td><code>[ARTIFACT] name|type|content_or_path</code></td>
+            <td>Register a file, log, or report as a task artifact</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Features Guide</h2>
+
+    <div class="card">
+      <h3>Dashboard</h3>
+      <p>The <a href="/">Dashboard</a> shows an overview of your orchestrator: total tasks, active tasks, agent count,
+      busy agents, and daemon status. It updates in real time via SSE.</p>
+    </div>
+
+    <div class="card">
+      <h3>Tasks</h3>
+      <p>The <a href="/tasks">Tasks</a> page lets you create, approve, cancel, and retry tasks. Click a task to see its
+      detail view with notes, delegations, artifacts, and a phase stepper showing execution progress.</p>
+    </div>
+
+    <div class="card">
+      <h3>Agents</h3>
+      <p>The <a href="/agents">Agents</a> page lets you create agents of type <strong>claude-code</strong>,
+      <strong>codex</strong>, or <strong>custom</strong>. Each agent detail page shows a live terminal output viewer
+      streaming stdout/stderr in real time.</p>
+    </div>
+
+    <div class="card">
+      <h3>Teams</h3>
+      <p>The <a href="/teams">Teams</a> page lets you create teams, add agents with roles and skill levels,
+      and define execution phases. Each phase has a name and prompt that the entrypoint agent receives.</p>
+    </div>
+
+    <div class="card">
+      <h3>Escalations</h3>
+      <p>The <a href="/escalations">Escalations</a> page shows open agent questions that need human responses.
+      Type a response and submit to resume the paused agent with your answer.</p>
+    </div>
+
+    <div class="card">
+      <h3>Audit Events</h3>
+      <p>The <a href="/audit-events">Events</a> page provides a filterable log of all system events.
+      Filter by event type, task ID, or agent ID to trace what happened and when.</p>
+    </div>
+
+    <h2>Daemon Controls</h2>
+
+    <div class="card">
+      <p>The daemon is the orchestration engine that runs the tick loop (every 30 seconds). Control it from the Dashboard:</p>
+      <ul style="margin:0.5rem 0 0 1.5rem">
+        <li><strong>Running</strong> &mdash; actively picking up approved tasks and executing them</li>
+        <li><strong>Paused</strong> &mdash; stops picking up new tasks; in-flight work continues until current agent exits</li>
+        <li><strong>Stopped</strong> &mdash; daemon is not running</li>
+      </ul>
+      <p style="margin-top:0.5rem">Only one task runs at a time. The daemon assigns the highest-priority approved task to the team's entrypoint agent.</p>
+    </div>
+
+    <h2>Workflow Example</h2>
+
+    <div class="card">
+      <p>End-to-end walkthrough of using PlayHive:</p>
+      <ol style="margin:0.5rem 0 0 1.5rem;line-height:2">
+        <li>Go to <a href="/agents">Agents</a> and create one or more agents (e.g. a claude-code agent named "senior-dev")</li>
+        <li>Go to <a href="/teams">Teams</a> and create a team, then add your agents to it</li>
+        <li>Set the entrypoint agent and add phases (e.g. "Planning", "Implementation", "Review")</li>
+        <li>Go to <a href="/tasks">Tasks</a> and create a new task, assigning it to your team</li>
+        <li>Approve the task &mdash; the daemon will pick it up on the next tick</li>
+        <li>Watch the entrypoint agent's terminal output on its <a href="/agents">detail page</a></li>
+        <li>If the agent escalates, respond on the <a href="/escalations">Escalations</a> page</li>
+        <li>Track progress via the phase stepper on the task detail page</li>
+        <li>View the completed task's notes, artifacts, and delegation history</li>
+      </ol>
+    </div>`,
+  );
+}
+
 // --- Utility ---
 
 function escapeHtml(str: string): string {
@@ -692,5 +901,6 @@ function baseStyles(): string {
     .badge-artifact-report { background: #1a3a2a; color: #3fb950; }
     details.artifact-content { margin-top: 0.5rem; }
     details.artifact-content pre { background: #0d1117; padding: 0.75rem; border-radius: 4px; overflow-x: auto; font-size: 0.8rem; max-height: 300px; overflow-y: auto; }
+    .help-diagram { background: #0d1117; padding: 1rem; border-radius: 4px; overflow-x: auto; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.85rem; line-height: 1.4; color: #58a6ff; border: 1px solid #30363d; }
   `;
 }

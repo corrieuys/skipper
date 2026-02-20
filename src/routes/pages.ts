@@ -14,6 +14,7 @@ import {
   escalationsPage,
   terminalOutputFragment,
   auditEventsPage,
+  helpPage,
 } from "../html/components";
 import type {
   DashboardData,
@@ -166,6 +167,11 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     // Redirect back to escalations page
     const rows = db.prepare("SELECT * FROM escalations ORDER BY created_at DESC").all() as EscalationData[];
     return html(escalationsPage(rows));
+  });
+
+  // Help page
+  addRoute("GET", "/help", () => {
+    return html(helpPage());
   });
 
   // Events audit log

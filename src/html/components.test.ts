@@ -11,6 +11,7 @@ import {
   teamDetailPage,
   escalationsPage,
   terminalOutputFragment,
+  helpPage,
 } from "./components";
 
 describe("layout", () => {
@@ -478,6 +479,46 @@ describe("escalationsPage", () => {
   it("connects to SSE for real-time escalation updates", () => {
     const html = escalationsPage([]);
     expect(html).toContain('sse-connect="/events/escalations"');
+  });
+});
+
+describe("helpPage", () => {
+  it("renders all major sections", () => {
+    const html = helpPage();
+    expect(html).toContain("PlayHive Help");
+    expect(html).toContain("Platform Overview");
+    expect(html).toContain("Core Concepts");
+    expect(html).toContain("Task Lifecycle");
+    expect(html).toContain("Team Hierarchy");
+    expect(html).toContain("Phase Execution");
+    expect(html).toContain("Delegation Flow");
+    expect(html).toContain("Escalation Flow");
+    expect(html).toContain("Signal System");
+    expect(html).toContain("Features Guide");
+    expect(html).toContain("Daemon Controls");
+    expect(html).toContain("Workflow Example");
+  });
+
+  it("includes signal documentation", () => {
+    const html = helpPage();
+    expect(html).toContain("[PHASE_COMPLETE]");
+    expect(html).toContain("[DELEGATE]");
+    expect(html).toContain("[ESCALATE]");
+    expect(html).toContain("[NOTE]");
+    expect(html).toContain("[ARTIFACT]");
+  });
+
+  it("includes navigation link to help page", () => {
+    const html = helpPage();
+    expect(html).toContain('href="/help"');
+  });
+
+  it("contains ASCII diagrams", () => {
+    const html = helpPage();
+    expect(html).toContain("help-diagram");
+    expect(html).toContain("draft");
+    expect(html).toContain("approved");
+    expect(html).toContain("Entrypoint Agent");
   });
 });
 
