@@ -15,7 +15,7 @@ registerTeamRoutes();
 registerDaemonRoutes(daemon);
 registerPageRoutes(daemon);
 
-daemon.start();
+daemon.start().catch((err) => console.error("Daemon startup failed:", err));
 
 const server = startServer();
 

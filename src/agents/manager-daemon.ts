@@ -97,7 +97,7 @@ export class ManagerDaemon {
     return this.stateTracker;
   }
 
-  start(): void {
+  async start(): Promise<void> {
     if (this.intervalId) return;
 
     // Check if we were paused before restart
@@ -107,7 +107,11 @@ export class ManagerDaemon {
       return;
     }
 
+    // Recovery-first startup: clean dead agents, then attempt to recover
+    // running tasks instead of destroying them
     this.cleanupStaleState();
+    await this.recoverAllStaleTasks();
+
     this.tick();
     this.intervalId = setInterval(() => this.tick(), DAEMON_INTERVAL_MS);
   }
@@ -1335,6 +1339,11 @@ export class ManagerDaemon {
 
   // --- Recovery & Resilience ---
 
+  /**
+   * Clean up stale agent process state on startup.
+   * Only clears PID/status — does NOT fail running tasks or clear task assignments.
+   * Task recovery is handled separately by recoverAllStaleTasks().
+   */
   cleanupStaleState(): void {
     try {
       // 1. Kill stale OS processes for agents that have PIDs but aren't tracked in memory
@@ -1353,7 +1362,7 @@ export class ManagerDaemon {
             logError(this.db, "cleanup_kill_orphan", { agentId: row.id, pid: row.process_pid, method: "cleanupStaleState" }, err);
           }
 
-          // Clear PID and reset status
+          // Clear PID and reset status, but preserve task assignment for recovery
           this.db
             .prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?")
             .run(row.id);
@@ -1373,15 +1382,8 @@ export class ManagerDaemon {
         }
       }
 
-      // 3. Clear task assignments for agents with no live process
-      this.db
-        .prepare(
-          `UPDATE agents SET current_task_id = NULL
-           WHERE current_task_id IS NOT NULL
-           AND process_pid IS NULL
-           AND id NOT IN (SELECT id FROM agents WHERE process_pid IS NOT NULL)`,
-        )
-        .run();
+      // Note: task assignments are intentionally preserved here.
+      // recoverAllStaleTasks() will either recover them or clean them up.
     } catch (err) {
       logError(this.db, "cleanup_stale_state", { method: "cleanupStaleState" }, err);
     }
@@ -1513,6 +1515,11 @@ export class ManagerDaemon {
       logError(this.db, "recovery_spawn", { taskId, agentId: entrypointAgentId, method: "recoverTask" }, err);
       return false;
     }
+
+    // Clear any stale task assignments from other agents before reassigning
+    this.db
+      .prepare("UPDATE agents SET current_task_id = NULL WHERE current_task_id = ? AND id != ?")
+      .run(taskId, entrypointAgentId);
 
     // Assign task
     this.db
