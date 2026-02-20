@@ -32,6 +32,7 @@ export function layout(title: string, content: string): string {
 export interface DashboardData {
   tasks: { id: string; title: string; status: string; priority: number }[];
   agents: { id: string; name: string; status: string; type: string; current_task_id: string | null }[];
+  daemon: { state: "running" | "paused" | "stopped"; uptime: number };
 }
 
 export function dashboardPage(data: DashboardData): string {
@@ -57,6 +58,10 @@ export function dashboardPage(data: DashboardData): string {
       <div class="stat-card">
         <div class="stat-value">${busyAgents.length}</div>
         <div class="stat-label">Busy Agents</div>
+      </div>
+      <div class="stat-card">
+        <span class="badge badge-${data.daemon.state === "running" ? "running" : data.daemon.state === "paused" ? "stopped" : "error"}">${data.daemon.state}</span>
+        <div class="stat-label">Daemon</div>
       </div>
     </div>
 
