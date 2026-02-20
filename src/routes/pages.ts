@@ -13,6 +13,7 @@ import {
   teamDetailPage,
   escalationsPage,
   terminalOutputFragment,
+  auditEventsPage,
 } from "../html/components";
 import type {
   DashboardData,
@@ -21,6 +22,8 @@ import type {
   TeamData,
   TeamAgentData,
   EscalationData,
+  AuditEventData,
+  AuditEventFilters,
 } from "../html/components";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 
@@ -120,6 +123,39 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
   addRoute("GET", "/escalations", () => {
     const rows = db.prepare("SELECT * FROM escalations ORDER BY created_at DESC").all() as EscalationData[];
     return html(escalationsPage(rows));
+  });
+
+  // Audit Events log
+  addRoute("GET", "/audit-events", (req) => {
+    const url = new URL(req.url);
+    const filters: AuditEventFilters = {
+      type: url.searchParams.get("type") ?? undefined,
+      task_id: url.searchParams.get("task_id") ?? undefined,
+      agent_id: url.searchParams.get("agent_id") ?? undefined,
+    };
+
+    const conditions: string[] = [];
+    const params: string[] = [];
+
+    if (filters.type) {
+      conditions.push("type = ?");
+      params.push(filters.type);
+    }
+    if (filters.task_id) {
+      conditions.push("task_id = ?");
+      params.push(filters.task_id);
+    }
+    if (filters.agent_id) {
+      conditions.push("source_agent_id = ?");
+      params.push(filters.agent_id);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const rows = db.prepare(
+      `SELECT id, type, payload, source_agent_id, task_id, created_at FROM events ${where} ORDER BY id DESC LIMIT 100`
+    ).all(...params) as AuditEventData[];
+
+    return html(auditEventsPage(rows, filters));
   });
 
   // Escalation resolve
