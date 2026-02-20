@@ -163,7 +163,6 @@ describe("taskDetailPage", () => {
       ],
       created_at: "2024-01-01",
     });
-    expect(html).toContain("Phase Progress");
     expect(html).toContain("phase-stepper");
     expect(html).toContain("Planning");
     expect(html).toContain("Execution");

@@ -18,11 +18,13 @@ import {
 import type {
   DashboardData,
   TaskData,
-  TaskNoteData,
   AgentData,
   TeamData,
   TeamAgentData,
   EscalationData,
+  TaskNoteData,
+  DelegationData,
+  ArtifactData,
   AuditEventData,
   AuditEventFilters,
 } from "../html/components";
@@ -71,18 +73,20 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(params.id) as Record<string, unknown> | null;
     if (!row) return html("<p>Task not found</p>");
     const task = parseRow(row, ["result", "orchestration_state"]) as unknown as TaskData;
+
+    // Attach team phases for the stepper
     if (task.team_id) {
-      const teamRow = db.prepare("SELECT phases FROM teams WHERE id = ?").get(task.team_id) as Record<string, unknown> | null;
-      if (teamRow && typeof teamRow.phases === "string") {
-        try {
-          task.phases = JSON.parse(teamRow.phases) as { name: string; prompt: string }[];
-        } catch {
-          task.phases = [];
-        }
+      const teamRow = db.prepare("SELECT phases FROM teams WHERE id = ?").get(task.team_id) as { phases: string } | null;
+      if (teamRow) {
+        try { task.phases = JSON.parse(teamRow.phases); } catch { /* ignore */ }
       }
     }
+
     const notes = db.prepare("SELECT * FROM task_notes WHERE task_id = ? ORDER BY created_at").all(params.id) as TaskNoteData[];
-    return html(taskDetailPage(task, notes));
+    const delegations = db.prepare("SELECT * FROM delegations WHERE task_id = ? ORDER BY created_at").all(params.id) as DelegationData[];
+    const artifacts = db.prepare("SELECT * FROM artifacts WHERE task_id = ? ORDER BY created_at").all(params.id) as ArtifactData[];
+
+    return html(taskDetailPage(task, notes, delegations, artifacts));
   });
 
   // Agents list
@@ -137,42 +141,17 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return html(escalationsPage(rows));
   });
 
-  // Audit Events log
-  addRoute("GET", "/audit-events", (req) => {
-    const url = new URL(req.url);
-    const filters: AuditEventFilters = {
-      type: url.searchParams.get("type") ?? undefined,
-      task_id: url.searchParams.get("task_id") ?? undefined,
-      agent_id: url.searchParams.get("agent_id") ?? undefined,
-    };
-
-    const conditions: string[] = [];
-    const params: string[] = [];
-
-    if (filters.type) {
-      conditions.push("type = ?");
-      params.push(filters.type);
-    }
-    if (filters.task_id) {
-      conditions.push("task_id = ?");
-      params.push(filters.task_id);
-    }
-    if (filters.agent_id) {
-      conditions.push("source_agent_id = ?");
-      params.push(filters.agent_id);
-    }
-
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    const rows = db.prepare(
-      `SELECT id, type, payload, source_agent_id, task_id, created_at FROM events ${where} ORDER BY id DESC LIMIT 100`
-    ).all(...params) as AuditEventData[];
-
-    return html(auditEventsPage(rows, filters));
-  });
-
   // Escalation resolve
   addRoute("POST", "/api/escalations/:id/resolve", async (req, params) => {
-    const body = await req.json();
+    let body: Record<string, string>;
+    const contentType = req.headers.get("content-type") ?? "";
+    if (contentType.includes("application/x-www-form-urlencoded")) {
+      const formData = await req.formData();
+      body = {};
+      formData.forEach((value, key) => { body[key] = value.toString(); });
+    } else {
+      body = await req.json();
+    }
     if (!body.response) {
       return Response.json({ error: "response is required" }, { status: 400 });
     }
@@ -187,6 +166,28 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     // Redirect back to escalations page
     const rows = db.prepare("SELECT * FROM escalations ORDER BY created_at DESC").all() as EscalationData[];
     return html(escalationsPage(rows));
+  });
+
+  // Events audit log
+  addRoute("GET", "/audit-events", (req) => {
+    const url = new URL(req.url);
+    const filters: AuditEventFilters = {};
+    const conditions: string[] = [];
+    const values: string[] = [];
+
+    const type = url.searchParams.get("type");
+    if (type) { filters.type = type; conditions.push("type = ?"); values.push(type); }
+
+    const taskId = url.searchParams.get("task_id");
+    if (taskId) { filters.task_id = taskId; conditions.push("task_id = ?"); values.push(taskId); }
+
+    const agentId = url.searchParams.get("agent_id");
+    if (agentId) { filters.agent_id = agentId; conditions.push("source_agent_id = ?"); values.push(agentId); }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const events = db.prepare(`SELECT * FROM events ${where} ORDER BY id DESC LIMIT 100`).all(...values) as AuditEventData[];
+
+    return html(auditEventsPage(events, filters));
   });
 
   // --- SSE Endpoints ---

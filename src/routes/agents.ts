@@ -10,11 +10,24 @@ function htmlResponse(content: string, status = 200): Response {
   });
 }
 
+async function parseBody(req: Request): Promise<Record<string, string>> {
+  const contentType = req.headers.get("content-type") ?? "";
+  if (contentType.includes("application/x-www-form-urlencoded")) {
+    const formData = await req.formData();
+    const body: Record<string, string> = {};
+    formData.forEach((value, key) => {
+      body[key] = value.toString();
+    });
+    return body;
+  }
+  return req.json();
+}
+
 export function registerAgentRoutes(): void {
   const manager = new AgentManager();
 
   addRoute("POST", "/api/agents", async (req) => {
-    const body = await req.json();
+    const body = await parseBody(req);
 
     if (!body.name || !body.type) {
       return Response.json(
@@ -28,7 +41,7 @@ export function registerAgentRoutes(): void {
         name: body.name,
         type: body.type,
         model: body.model,
-        capabilities: body.capabilities,
+        capabilities: body.capabilities ? JSON.parse(body.capabilities) : undefined,
         goal: body.goal,
       });
       const agents = manager.listAgents() as unknown as AgentData[];
