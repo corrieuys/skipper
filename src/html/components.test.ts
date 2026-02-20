@@ -13,6 +13,7 @@ import {
   terminalOutputFragment,
   helpPage,
   formatTimestamp,
+  recentActivityFragment,
 } from "./components";
 
 describe("layout", () => {
@@ -698,5 +699,106 @@ describe("UI polish", () => {
     const html = escalationsPage([]);
     expect(html).toContain("empty-state");
     expect(html).toContain("All clear");
+  });
+});
+
+describe("STORY-003: agent log preview", () => {
+  it("dashboard shows Recent Agent Activity section with SSE connection", () => {
+    const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 0 } });
+    expect(html).toContain("Recent Agent Activity");
+    expect(html).toContain('sse-connect="/events/logs"');
+    expect(html).toContain('sse-swap="logs:activity"');
+  });
+
+  it("dashboard shows empty activity state when no logs", () => {
+    const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 0 }, recentLogs: [] });
+    expect(html).toContain("No recent activity");
+  });
+
+  it("dashboard shows recent log entries with agent name, stream badge, content, and timestamp", () => {
+    const html = dashboardPage({
+      tasks: [],
+      agents: [],
+      daemon: { state: "running", uptime: 0 },
+      recentLogs: [
+        { agent_id: "a1", agent_name: "Dev Agent", stream: "stdout", data: "Building project...", created_at: "2024-01-01T10:00:00" },
+        { agent_id: "a2", agent_name: "Test Agent", stream: "stderr", data: "Error: test failed", created_at: "2024-01-01T10:01:00" },
+      ],
+    });
+    expect(html).toContain("Dev Agent");
+    expect(html).toContain("Test Agent");
+    expect(html).toContain("Building project...");
+    expect(html).toContain("Error: test failed");
+    expect(html).toContain("badge-stream-stdout");
+    expect(html).toContain("badge-stream-stderr");
+  });
+
+  it("recentActivityFragment renders entries and escapes HTML", () => {
+    const html = recentActivityFragment([
+      { agent_id: "a1", agent_name: "<bad>", stream: "stdout", data: '<script>xss</script>', created_at: "2024-01-01T00:00:00" },
+    ]);
+    expect(html).not.toContain("<bad>");
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;bad&gt;");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("recentActivityFragment truncates long data lines", () => {
+    const longData = "X".repeat(150);
+    const html = recentActivityFragment([
+      { agent_id: "a1", agent_name: "Agent", stream: "stdout", data: longData, created_at: "2024-01-01T00:00:00" },
+    ]);
+    expect(html).toContain("…");
+    expect(html).not.toContain(longData);
+  });
+
+  it("agent detail page shows terminal output before edit form", () => {
+    const html = agentDetailPage({
+      id: "a1", name: "Dev Agent", type: "claude-code", model: "opus",
+      status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null,
+    });
+    const terminalPos = html.indexOf("Terminal Output");
+    const editPos = html.indexOf("Edit Agent");
+    expect(terminalPos).toBeGreaterThan(-1);
+    expect(editPos).toBeGreaterThan(-1);
+    expect(terminalPos).toBeLessThan(editPos);
+  });
+
+  it("agent detail page shows line count indicator", () => {
+    const html = agentDetailPage({
+      id: "a1", name: "Dev Agent", type: "claude-code", model: "opus",
+      status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null,
+    });
+    expect(html).toContain("terminal-line-count");
+  });
+
+  it("agent list shows Last Output column header", () => {
+    const html = agentsPage([
+      { id: "a1", name: "Agent One", type: "claude-code", model: "opus", status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null },
+    ]);
+    expect(html).toContain("Last Output");
+  });
+
+  it("agent list shows last output line for agent", () => {
+    const html = agentsPage([
+      {
+        id: "a1", name: "Agent One", type: "claude-code", model: "opus",
+        status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null,
+        lastOutput: { stream: "stdout", data: "Working on task..." },
+      },
+    ]);
+    expect(html).toContain("Working on task...");
+    expect(html).toContain("badge-stream-stdout");
+  });
+
+  it("agent list shows dash when no last output", () => {
+    const html = agentsPage([
+      {
+        id: "a1", name: "Agent One", type: "claude-code", model: "opus",
+        status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null,
+        lastOutput: null,
+      },
+    ]);
+    expect(html).toContain("—");
   });
 });

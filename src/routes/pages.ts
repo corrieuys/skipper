@@ -15,6 +15,7 @@ import {
   terminalOutputFragment,
   auditEventsPage,
   helpPage,
+  recentActivityFragment,
 } from "../html/components";
 import type {
   DashboardData,
@@ -28,6 +29,7 @@ import type {
   ArtifactData,
   AuditEventData,
   AuditEventFilters,
+  RecentLogEntry,
 } from "../html/components";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 
@@ -59,7 +61,24 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     const tasks = db.prepare("SELECT id, title, status, priority FROM tasks ORDER BY priority, created_at DESC").all() as DashboardData["tasks"];
     const agents = db.prepare("SELECT id, name, status, type, current_task_id FROM agents ORDER BY created_at").all() as DashboardData["agents"];
     const daemonStatus = daemon ? daemon.getStatus() : { state: "stopped" as const, uptime: 0 };
-    return html(dashboardPage({ tasks, agents, daemon: daemonStatus }));
+    const recentLogs = db.prepare(
+      `SELECT to2.agent_id, a.name as agent_name, to2.stream, to2.data, to2.created_at
+       FROM terminal_outputs to2
+       JOIN agents a ON to2.agent_id = a.id
+       ORDER BY to2.id DESC LIMIT 10`,
+    ).all() as RecentLogEntry[];
+    return html(dashboardPage({ tasks, agents, daemon: daemonStatus, recentLogs }));
+  });
+
+  // Recent logs fragment (for SSE-triggered HTMX refresh fallback)
+  addRoute("GET", "/api/logs/recent", () => {
+    const recentLogs = db.prepare(
+      `SELECT to2.agent_id, a.name as agent_name, to2.stream, to2.data, to2.created_at
+       FROM terminal_outputs to2
+       JOIN agents a ON to2.agent_id = a.id
+       ORDER BY to2.id DESC LIMIT 10`,
+    ).all() as RecentLogEntry[];
+    return html(recentActivityFragment(recentLogs));
   });
 
   // Tasks list
@@ -94,6 +113,18 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
   addRoute("GET", "/agents", () => {
     const rows = db.prepare("SELECT * FROM agents ORDER BY created_at").all() as Record<string, unknown>[];
     const agents = rows.map((r) => parseRow(r, ["config", "capabilities"])) as unknown as AgentData[];
+    // Attach last output line per agent
+    const lastOutputMap = new Map<string, { stream: string; data: string }>();
+    const lastOutputRows = db.prepare(
+      `SELECT agent_id, stream, data FROM terminal_outputs
+       WHERE id IN (SELECT MAX(id) FROM terminal_outputs GROUP BY agent_id)`,
+    ).all() as { agent_id: string; stream: string; data: string }[];
+    for (const row of lastOutputRows) {
+      lastOutputMap.set(row.agent_id, { stream: row.stream, data: row.data });
+    }
+    for (const agent of agents) {
+      agent.lastOutput = lastOutputMap.get(agent.id) ?? null;
+    }
     return html(agentsPage(agents));
   });
 
@@ -243,6 +274,23 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
       };
       eventBus.on("escalation:created", handler);
       return () => eventBus.off("escalation:created", handler);
+    });
+  });
+
+  // All-agents log feed for dashboard activity section
+  addRoute("GET", "/events/logs", () => {
+    return createSSEStream((send) => {
+      const handler = (_event: AgentOutputEvent) => {
+        const recentLogs = db.prepare(
+          `SELECT to2.agent_id, a.name as agent_name, to2.stream, to2.data, to2.created_at
+           FROM terminal_outputs to2
+           JOIN agents a ON to2.agent_id = a.id
+           ORDER BY to2.id DESC LIMIT 10`,
+        ).all() as RecentLogEntry[];
+        send("logs:activity", recentActivityFragment(recentLogs));
+      };
+      eventBus.on("agent:output", handler);
+      return () => eventBus.off("agent:output", handler);
     });
   });
 }
