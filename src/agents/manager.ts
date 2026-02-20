@@ -4,6 +4,7 @@ import { getDb } from "../db/connection";
 import { getAgentTypeDefinition } from "./types";
 import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
+import { logError } from "../logging";
 
 export interface Agent {
   id: string;
@@ -300,8 +301,8 @@ export class AgentManager {
               "INSERT INTO terminal_outputs (agent_id, stream, data, sequence) VALUES (?, ?, ?, ?)",
             )
             .run(runningAgent.id, streamType, text, seq);
-        } catch {
-          // DB may be closed during test teardown
+        } catch (err) {
+          logError(this.db, "agent.store_output", { agentId: runningAgent.id, streamType, seq }, err);
         }
 
         // Emit event for real-time UI
@@ -385,8 +386,8 @@ export class AgentManager {
       this.db
         .prepare("UPDATE agents SET process_pid = NULL, status = ? WHERE id = ?")
         .run(newStatus, agentId);
-    } catch {
-      // DB may be closed during test teardown
+    } catch (err) {
+      logError(this.db, "agent.process_exit_update", { agentId, code }, err);
     }
 
     // Emit exit event
@@ -413,8 +414,8 @@ export class AgentManager {
              updated_at = datetime('now')`,
         )
         .run(agentId, runningAgent.sessionId, runningAgent.sessionId);
-    } catch {
-      // DB may be closed during test teardown
+    } catch (err) {
+      logError(this.db, "agent.persist_session_id", { agentId }, err);
     }
   }
 
@@ -433,7 +434,8 @@ export class AgentManager {
         )
         .get(agentId) as { session_id: string | null } | null;
       return row?.session_id ?? null;
-    } catch {
+    } catch (err) {
+      logError(this.db, "agent.get_session_id", { agentId }, err);
       return null;
     }
   }
@@ -479,8 +481,8 @@ export class AgentManager {
       try {
         const json = JSON.parse(line) as JsonEvent;
         return this.handleJsonOutput(agentId, json, line);
-      } catch {
-        // Not valid JSON, fall through
+      } catch (err) {
+        logError(this.db, "agent.parse_json_output", { agentId, line: line.slice(0, 200) }, err);
       }
     }
 

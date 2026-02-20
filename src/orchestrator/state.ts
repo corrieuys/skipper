@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { logError } from "../logging";
 
 export type TaskOrchStep =
   | "IDLE"
@@ -60,7 +61,8 @@ export class TaskStateMachine {
       const parsed = JSON.parse(row.orchestration_state);
       if (!parsed.step) return "IDLE";
       return parsed.step as TaskOrchStep;
-    } catch {
+    } catch (err) {
+      logError(this.db, "orchestrator.state.parse", { taskId: this.taskId }, err);
       return "IDLE";
     }
   }
@@ -87,8 +89,8 @@ export class TaskStateMachine {
           JSON.stringify({ from, to }),
           this.taskId,
         );
-    } catch {
-      // Best-effort logging
+    } catch (err) {
+      logError(this.db, "orchestrator.state.log_transition", { taskId: this.taskId, from, to }, err);
     }
   }
 }

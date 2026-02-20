@@ -1,5 +1,6 @@
 import { addRoute } from "../server";
 import { getDb } from "../db/connection";
+import { logError } from "../logging";
 import { eventBus } from "../events/bus";
 import type { AgentOutputEvent, AgentExitEvent, TaskStateChangedEvent, AgentStateChangedEvent, EscalationCreatedEvent } from "../events/bus";
 import {
@@ -35,8 +36,8 @@ function parseRow(row: Record<string, unknown>, jsonFields: string[]): Record<st
     if (typeof result[field] === "string") {
       try {
         result[field] = JSON.parse(result[field] as string);
-      } catch {
-        // keep as string
+      } catch (err) {
+        logError(getDb(), "routes.pages.parse_row", { field }, err);
       }
     }
   }
@@ -237,8 +238,8 @@ function createSSEStream(setup: (send: (event: string, data: string) => void) =>
         const lines = data.replace(/\n/g, "\ndata: ");
         try {
           controller.enqueue(encoder.encode(`event: ${event}\ndata: ${lines}\n\n`));
-        } catch {
-          // Stream closed
+        } catch (err) {
+          logError(getDb(), "routes.pages.sse_stream_write", { event }, err);
           cleanup?.();
         }
       };
