@@ -35,6 +35,7 @@ export interface RunningAgent {
   stderrBuffer: string;
   outputSequence: number;
   sessionId: string | null;
+  spawnSessionId: string;
   drainedStreams: number;
 }
 
@@ -251,6 +252,16 @@ export class AgentManager {
       stdin: "pipe",
     });
 
+    // Create a new spawn session for terminal output grouping
+    const spawnSessionId = crypto.randomUUID();
+    try {
+      this.db
+        .prepare("INSERT INTO agent_sessions (id, agent_id) VALUES (?, ?)")
+        .run(spawnSessionId, agentId);
+    } catch (err) {
+      logError(this.db, "agent.create_session", { agentId, spawnSessionId }, err);
+    }
+
     const runningAgent: RunningAgent = {
       id: agentId,
       process: proc,
@@ -259,6 +270,7 @@ export class AgentManager {
       stderrBuffer: "",
       outputSequence: 0,
       sessionId: options.sessionId ?? null,
+      spawnSessionId,
       drainedStreams: 0,
     };
 
@@ -269,11 +281,6 @@ export class AgentManager {
     this.db
       .prepare("UPDATE agents SET process_pid = ?, status = 'busy' WHERE id = ?")
       .run(proc.pid, agentId);
-
-    // Clear old terminal outputs
-    this.db
-      .prepare("DELETE FROM terminal_outputs WHERE agent_id = ?")
-      .run(agentId);
 
     // Wire output handlers
     this.readStream(runningAgent, proc.stdout, "stdout");
@@ -306,9 +313,9 @@ export class AgentManager {
         try {
           this.db
             .prepare(
-              "INSERT INTO terminal_outputs (agent_id, stream, data, sequence) VALUES (?, ?, ?, ?)",
+              "INSERT INTO terminal_outputs (agent_id, session_id, stream, data, sequence) VALUES (?, ?, ?, ?, ?)",
             )
-            .run(runningAgent.id, streamType, text, seq);
+            .run(runningAgent.id, runningAgent.spawnSessionId, streamType, text, seq);
         } catch (err) {
           logError(this.db, "agent.store_output", { agentId: runningAgent.id, streamType, seq }, err);
         }

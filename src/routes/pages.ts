@@ -14,7 +14,9 @@ import {
   escalationsPage,
   terminalOutputFragment,
   auditEventsPage,
+  logsPage,
   helpPage,
+  recentActivityFragment,
 } from "../html/components";
 import type {
   DashboardData,
@@ -28,6 +30,9 @@ import type {
   ArtifactData,
   AuditEventData,
   AuditEventFilters,
+  LogEntryData,
+  LogFilters,
+  RecentLogEntry,
 } from "../html/components";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 
@@ -59,7 +64,24 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     const tasks = db.prepare("SELECT id, title, status, priority FROM tasks ORDER BY priority, created_at DESC").all() as DashboardData["tasks"];
     const agents = db.prepare("SELECT id, name, status, type, current_task_id FROM agents ORDER BY created_at").all() as DashboardData["agents"];
     const daemonStatus = daemon ? daemon.getStatus() : { state: "stopped" as const, uptime: 0 };
-    return html(dashboardPage({ tasks, agents, daemon: daemonStatus }));
+    const recentLogs = db.prepare(
+      `SELECT to2.agent_id, a.name as agent_name, to2.stream, to2.data, to2.created_at
+       FROM terminal_outputs to2
+       JOIN agents a ON to2.agent_id = a.id
+       ORDER BY to2.id DESC LIMIT 10`,
+    ).all() as RecentLogEntry[];
+    return html(dashboardPage({ tasks, agents, daemon: daemonStatus, recentLogs }));
+  });
+
+  // Recent logs fragment (for SSE-triggered HTMX refresh fallback)
+  addRoute("GET", "/api/logs/recent", () => {
+    const recentLogs = db.prepare(
+      `SELECT to2.agent_id, a.name as agent_name, to2.stream, to2.data, to2.created_at
+       FROM terminal_outputs to2
+       JOIN agents a ON to2.agent_id = a.id
+       ORDER BY to2.id DESC LIMIT 10`,
+    ).all() as RecentLogEntry[];
+    return html(recentActivityFragment(recentLogs));
   });
 
   // Tasks list
@@ -94,22 +116,66 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
   addRoute("GET", "/agents", () => {
     const rows = db.prepare("SELECT * FROM agents ORDER BY created_at").all() as Record<string, unknown>[];
     const agents = rows.map((r) => parseRow(r, ["config", "capabilities"])) as unknown as AgentData[];
+    // Attach last output line per agent
+    const lastOutputMap = new Map<string, { stream: string; data: string }>();
+    const lastOutputRows = db.prepare(
+      `SELECT agent_id, stream, data FROM terminal_outputs
+       WHERE id IN (SELECT MAX(id) FROM terminal_outputs GROUP BY agent_id)`,
+    ).all() as { agent_id: string; stream: string; data: string }[];
+    for (const row of lastOutputRows) {
+      lastOutputMap.set(row.agent_id, { stream: row.stream, data: row.data });
+    }
+    for (const agent of agents) {
+      agent.lastOutput = lastOutputMap.get(agent.id) ?? null;
+    }
     return html(agentsPage(agents));
   });
 
   // Agent detail
-  addRoute("GET", "/agents/:id", (_req, params) => {
+  addRoute("GET", "/agents/:id", (req, params) => {
     const row = db.prepare("SELECT * FROM agents WHERE id = ?").get(params.id) as Record<string, unknown> | null;
     if (!row) return html("<p>Agent not found</p>");
     const agent = parseRow(row, ["config", "capabilities"]) as unknown as AgentData;
-    return html(agentDetailPage(agent));
+
+    // Fetch sessions for this agent
+    const sessions = db.prepare(
+      "SELECT id, created_at FROM agent_sessions WHERE agent_id = ? ORDER BY created_at DESC",
+    ).all(params.id) as { id: string; created_at: string }[];
+
+    // Determine selected session from query param
+    const url = new URL(req.url);
+    const selectedSessionId = url.searchParams.get("session") ?? undefined;
+
+    return html(agentDetailPage(agent, sessions, selectedSessionId));
   });
 
   // Agent terminal output
-  addRoute("GET", "/agents/:id/output", (_req, params) => {
-    const rows = db.prepare(
-      "SELECT stream, data, sequence FROM terminal_outputs WHERE agent_id = ? ORDER BY sequence",
-    ).all(params.id) as { stream: string; data: string; sequence: number }[];
+  addRoute("GET", "/agents/:id/output", (req, params) => {
+    const url = new URL(req.url);
+    const sessionId = url.searchParams.get("session");
+
+    let rows: { stream: string; data: string; sequence: number }[];
+    if (sessionId) {
+      rows = db.prepare(
+        "SELECT stream, data, sequence FROM terminal_outputs WHERE agent_id = ? AND session_id = ? ORDER BY sequence",
+      ).all(params.id, sessionId) as { stream: string; data: string; sequence: number }[];
+    } else {
+      // Default: show latest session's output
+      const latestSession = db.prepare(
+        "SELECT id FROM agent_sessions WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
+      ).get(params.id) as { id: string } | null;
+
+      if (latestSession) {
+        rows = db.prepare(
+          "SELECT stream, data, sequence FROM terminal_outputs WHERE agent_id = ? AND session_id = ? ORDER BY sequence",
+        ).all(params.id, latestSession.id) as { stream: string; data: string; sequence: number }[];
+      } else {
+        // Fallback for outputs without session_id (pre-migration data)
+        rows = db.prepare(
+          "SELECT stream, data, sequence FROM terminal_outputs WHERE agent_id = ? ORDER BY sequence",
+        ).all(params.id) as { stream: string; data: string; sequence: number }[];
+      }
+    }
     return html(terminalOutputFragment(rows));
   });
 
@@ -167,6 +233,33 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     // Redirect back to escalations page
     const rows = db.prepare("SELECT * FROM escalations ORDER BY created_at DESC").all() as EscalationData[];
     return html(escalationsPage(rows));
+  });
+
+  // Agent Logs page
+  addRoute("GET", "/logs", (req) => {
+    const url = new URL(req.url);
+    const filters: LogFilters = {};
+    const conditions: string[] = [];
+    const values: unknown[] = [];
+
+    const agentId = url.searchParams.get("agent_id");
+    if (agentId) { filters.agent_id = agentId; conditions.push("t.agent_id = ?"); values.push(agentId); }
+
+    const stream = url.searchParams.get("stream");
+    if (stream) { filters.stream = stream; conditions.push("t.stream = ?"); values.push(stream); }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const entries = db.prepare(
+      `SELECT t.id, t.agent_id, a.name as agent_name, t.session_id, t.stream, t.data, t.sequence, t.created_at
+       FROM terminal_outputs t
+       JOIN agents a ON t.agent_id = a.id
+       ${where}
+       ORDER BY t.id DESC LIMIT 200`,
+    ).all(...values) as LogEntryData[];
+
+    const agents = db.prepare("SELECT id, name FROM agents ORDER BY name").all() as { id: string; name: string }[];
+
+    return html(logsPage(entries, filters, agents));
   });
 
   // Help page
@@ -243,6 +336,23 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
       };
       eventBus.on("escalation:created", handler);
       return () => eventBus.off("escalation:created", handler);
+    });
+  });
+
+  // All-agents log feed for dashboard activity section
+  addRoute("GET", "/events/logs", () => {
+    return createSSEStream((send) => {
+      const handler = (_event: AgentOutputEvent) => {
+        const recentLogs = db.prepare(
+          `SELECT to2.agent_id, a.name as agent_name, to2.stream, to2.data, to2.created_at
+           FROM terminal_outputs to2
+           JOIN agents a ON to2.agent_id = a.id
+           ORDER BY to2.id DESC LIMIT 10`,
+        ).all() as RecentLogEntry[];
+        send("logs:activity", recentActivityFragment(recentLogs));
+      };
+      eventBus.on("agent:output", handler);
+      return () => eventBus.off("agent:output", handler);
     });
   });
 }

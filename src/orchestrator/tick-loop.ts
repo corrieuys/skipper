@@ -7,6 +7,7 @@ import type { HealthMonitor } from "./health-monitor";
 import { logError } from "../logging";
 
 const DAEMON_INTERVAL_MS = 30_000;
+const LOG_RETENTION_HOURS = 24;
 
 export class DaemonLoop {
   private intervalId: ReturnType<typeof setInterval> | null = null;
@@ -157,6 +158,12 @@ export class DaemonLoop {
       } catch (err) {
         errors.push(err instanceof Error ? err.message : String(err));
       }
+
+      try {
+        this.cleanupOldTerminalOutputs();
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       this.completeDaemonRun(runId, tasksProcessed, agentsChecked, errors);
       this._tickRunning = false;
@@ -199,6 +206,20 @@ export class DaemonLoop {
     } catch (err) {
       logError(this.db, "pause_state_load", { method: "loadPausedState" }, err);
       return false;
+    }
+  }
+
+  cleanupOldTerminalOutputs(): void {
+    const cutoff = `datetime('now', '-${LOG_RETENTION_HOURS} hours')`;
+    try {
+      this.db
+        .prepare(`DELETE FROM terminal_outputs WHERE created_at < ${cutoff}`)
+        .run();
+      this.db
+        .prepare(`DELETE FROM agent_sessions WHERE created_at < ${cutoff}`)
+        .run();
+    } catch (err) {
+      logError(this.db, "terminal_output_cleanup", { retentionHours: LOG_RETENTION_HOURS }, err);
     }
   }
 
