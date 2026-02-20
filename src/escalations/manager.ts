@@ -105,6 +105,23 @@ export class EscalationManager {
       .all() as Escalation[];
   }
 
+  reconcileOpenEscalationsForInactiveTasks(): number {
+    const result = this.db
+      .prepare(
+        `UPDATE escalations
+         SET status = 'resolved',
+             response = COALESCE(response, 'Auto-resolved: task is no longer running.'),
+             resolved_at = datetime('now')
+         WHERE status = 'open'
+           AND task_id IN (
+             SELECT id FROM tasks WHERE status != 'running'
+           )`,
+      )
+      .run();
+
+    return Number(result.changes ?? 0);
+  }
+
   async resolveEscalation(escalationId: string, response: string): Promise<Escalation> {
     const escalation = this.getEscalation(escalationId);
     if (!escalation) {

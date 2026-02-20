@@ -123,7 +123,7 @@ export function startServer(port: number = Number(process.env.PORT) || 3000): Se
     fetch: handleRequest,
   });
 
-  console.log(`PlayHive server running on http://localhost:${server.port} (idleTimeout=${idleTimeout}s)`);
+  console.log(`Skipper server running on http://localhost:${server.port} (idleTimeout=${idleTimeout}s)`);
   return server;
 }
 

@@ -31,7 +31,7 @@ describe("Static file serving", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("text/html");
     const text = await res.text();
-    expect(text).toContain("PlayHive Orchestrator");
+    expect(text).toContain("Skipper Orchestrator");
   });
 });
 

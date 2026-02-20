@@ -16,6 +16,13 @@ function createTeam(database: Database, id = "team-1"): string {
   return id;
 }
 
+function createAgent(database: Database, id = "agent-1"): string {
+  database
+    .prepare("INSERT INTO agents (id, name, type, config, capabilities) VALUES (?, ?, 'claude-code', '{}', '[]')")
+    .run(id, `Agent ${id}`);
+  return id;
+}
+
 beforeEach(() => {
   db = new Database(TEST_DB);
   db.exec("PRAGMA foreign_keys = ON");
@@ -140,6 +147,24 @@ describe("completeTask", () => {
     expect(() => scheduler.completeTask(task.id)).toThrow(
       "Can only complete running tasks",
     );
+  });
+
+  it("auto-resolves open escalations for the task", () => {
+    const teamId = createTeam(db);
+    const task = scheduler.createTask({ title: "Task", teamId });
+    const agentId = createAgent(db);
+    scheduler.approveTask(task.id);
+    scheduler.startTask(task.id);
+
+    db.prepare(
+      "INSERT INTO escalations (id, agent_id, task_id, type, question) VALUES (?, ?, ?, 'agent_request', 'Need help')",
+    ).run("esc-1", agentId, task.id);
+
+    scheduler.completeTask(task.id);
+
+    const escalation = db.prepare("SELECT status, response FROM escalations WHERE id = 'esc-1'").get() as { status: string; response: string | null };
+    expect(escalation.status).toBe("resolved");
+    expect(escalation.response).toContain("task completed");
   });
 });
 

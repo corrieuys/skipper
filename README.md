@@ -1,4 +1,6 @@
-# throng
+# Skipper (throng)
+
+Skipper is a multi-agent orchestration app for coordinating teams of coding agents.
 
 To install dependencies:
 

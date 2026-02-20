@@ -204,6 +204,7 @@ export class TaskScheduler {
       .run(result ? JSON.stringify(result) : null, id);
 
     const updated = this.getTask(id)!;
+    this.resolveOpenEscalationsForTask(id, "Auto-resolved: task completed.");
     eventBus.emit("task:state_changed", {
       taskId: id,
       previousStatus: "running",
@@ -229,6 +230,7 @@ export class TaskScheduler {
       .run(result, id);
 
     const updated = this.getTask(id)!;
+    this.resolveOpenEscalationsForTask(id, "Auto-resolved: task failed.");
     eventBus.emit("task:state_changed", {
       taskId: id,
       previousStatus: "running",
@@ -278,6 +280,7 @@ export class TaskScheduler {
       .run(JSON.stringify({ error: "Cancelled by user" }), id);
 
     const updated = this.getTask(id)!;
+    this.resolveOpenEscalationsForTask(id, "Auto-resolved: task cancelled.");
     eventBus.emit("task:state_changed", {
       taskId: id,
       previousStatus,
@@ -354,5 +357,30 @@ export class TaskScheduler {
          WHERE status = 'running'`,
       )
       .run(JSON.stringify({ error: "Server restart - task was running" }));
+
+    this.db
+      .prepare(
+        `UPDATE escalations
+         SET status = 'resolved',
+             response = COALESCE(response, 'Auto-resolved: task is no longer running.'),
+             resolved_at = datetime('now')
+         WHERE status = 'open'
+           AND task_id IN (
+             SELECT id FROM tasks WHERE status != 'running'
+           )`,
+      )
+      .run();
+  }
+
+  private resolveOpenEscalationsForTask(taskId: string, response: string): void {
+    this.db
+      .prepare(
+        `UPDATE escalations
+         SET status = 'resolved',
+             response = COALESCE(response, ?),
+             resolved_at = datetime('now')
+         WHERE task_id = ? AND status = 'open'`,
+      )
+      .run(response, taskId);
   }
 }

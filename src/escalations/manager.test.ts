@@ -165,6 +165,28 @@ describe("listEscalations", () => {
     expect(escalationManager.listEscalations("open").length).toBe(1);
     expect(escalationManager.listEscalations("resolved").length).toBe(1);
   });
+
+  it("reconciles open escalations for non-running tasks", () => {
+    setupAgentType();
+    const agentId = createAgent("agent-1");
+    const taskId = createRunningTask(agentId);
+
+    const esc = escalationManager.createEscalation({
+      agentId,
+      taskId,
+      type: "agent_request",
+      question: "Still needed?",
+    });
+
+    db.prepare("UPDATE tasks SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(taskId);
+
+    const changes = escalationManager.reconcileOpenEscalationsForInactiveTasks();
+    expect(changes).toBe(1);
+
+    const refreshed = escalationManager.getEscalation(esc.id)!;
+    expect(refreshed.status).toBe("resolved");
+    expect(refreshed.response).toContain("Auto-resolved");
+  });
 });
 
 describe("handleEscalation", () => {

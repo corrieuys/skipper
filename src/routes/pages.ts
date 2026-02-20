@@ -358,7 +358,13 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
 
   // Escalations
   addRoute("GET", "/escalations", () => {
-    const rows = db.prepare("SELECT * FROM escalations ORDER BY created_at DESC").all() as EscalationData[];
+    daemon.getEscalationManager().reconcileOpenEscalationsForInactiveTasks();
+    const rows = db.prepare(
+      `SELECT e.*, t.status as task_status
+       FROM escalations e
+       LEFT JOIN tasks t ON t.id = e.task_id
+       ORDER BY e.created_at DESC`,
+    ).all() as EscalationData[];
     return html(escalationsPage(rows));
   });
 
@@ -385,7 +391,13 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     }
 
     // Redirect back to escalations page
-    const rows = db.prepare("SELECT * FROM escalations ORDER BY created_at DESC").all() as EscalationData[];
+    daemon.getEscalationManager().reconcileOpenEscalationsForInactiveTasks();
+    const rows = db.prepare(
+      `SELECT e.*, t.status as task_status
+       FROM escalations e
+       LEFT JOIN tasks t ON t.id = e.task_id
+       ORDER BY e.created_at DESC`,
+    ).all() as EscalationData[];
     return html(escalationsPage(rows));
   });
 
@@ -488,7 +500,12 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
   addRoute("GET", "/events/escalations", () => {
     return createSSEStream((send) => {
       const handler = (event: EscalationCreatedEvent) => {
-        const row = db.prepare("SELECT * FROM escalations WHERE id = ?").get(event.escalationId) as EscalationData | null;
+        const row = db.prepare(
+          `SELECT e.*, t.status as task_status
+           FROM escalations e
+           LEFT JOIN tasks t ON t.id = e.task_id
+           WHERE e.id = ?`,
+        ).get(event.escalationId) as EscalationData | null;
         if (row) {
           send("escalation:created", escalationCardHtml(row));
         }

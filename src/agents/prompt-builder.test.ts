@@ -163,7 +163,7 @@ describe("buildPromptEnrichment", () => {
     expect(enrichment).toContain(`ID: ${agent1}`);
     expect(enrichment).toContain("Name: Dev Agent");
     expect(enrichment).toContain("Role: developer");
-    expect(enrichment).toContain("Skills: coding, testing");
+    expect(enrichment).toContain("Capabilities: coding, testing");
     expect(enrichment).toContain(`ID: ${agent2}`);
     expect(enrichment).toContain("Name: QA Agent");
   });
@@ -214,6 +214,8 @@ describe("buildPromptEnrichment", () => {
     const enrichment = builder.buildPromptEnrichment(agent1, "task-1");
 
     expect(enrichment).toContain("[DELEGATE to:<agent-id>]");
+    expect(enrichment).toContain("[DELEGATION_RESULT");
+    expect(enrichment).toContain("Do not busy-wait or sleep-loop");
   });
 
   it("hides DELEGATE when agent is alone in team", () => {
@@ -288,6 +290,7 @@ describe("buildDelegationPrompt", () => {
     expect(prompt).toContain("Review the auth implementation for security issues");
     expect(prompt).toContain("TEAM ROSTER");
     expect(prompt).toContain("AVAILABLE COMMANDS:");
+    expect(prompt).toContain("[DELEGATION_RESULT");
   });
 
   it("omits role when child has no instruction", () => {

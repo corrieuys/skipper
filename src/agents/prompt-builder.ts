@@ -123,7 +123,7 @@ export class PromptBuilder {
       for (const member of roster) {
         const capabilities = member.capabilities.length > 0 ? member.capabilities.join(", ") : "none";
         parts.push(
-          `- ID: ${member.id} | Name: ${member.name} | Role: ${member.role ?? "unassigned"} | Level: ${member.level} | Skills: ${capabilities}`,
+          `- ID: ${member.id} | Name: ${member.name} | Role: ${member.role ?? "unassigned"} | Level: ${member.level} | Capabilities: ${capabilities}`,
         );
       }
       parts.push("");
@@ -147,6 +147,12 @@ export class PromptBuilder {
     if (otherMembers.length > 0 && this.agentSupportsDelegation(agentId)) {
       parts.push(
         "- To delegate work to a team member: [DELEGATE to:<agent-id>] description of work",
+      );
+      parts.push(
+        "- After delegating, stop active implementation and hand off. Do not claim task completion until a [DELEGATION_RESULT ...] is received.",
+      );
+      parts.push(
+        "- Do not busy-wait or sleep-loop. End this run after delegation; the orchestrator will resume you with the child result.",
       );
     }
 
@@ -199,7 +205,7 @@ export class PromptBuilder {
       for (const member of roster) {
         const capabilities = member.capabilities.length > 0 ? member.capabilities.join(", ") : "none";
         parts.push(
-          `- ID: ${member.id} | Name: ${member.name} | Role: ${member.role ?? "unassigned"} | Level: ${member.level} | Skills: ${capabilities}`,
+          `- ID: ${member.id} | Name: ${member.name} | Role: ${member.role ?? "unassigned"} | Level: ${member.level} | Capabilities: ${capabilities}`,
         );
       }
       parts.push("");
@@ -211,6 +217,12 @@ export class PromptBuilder {
     if (otherMembers.length > 0 && this.agentSupportsDelegation(options.childAgent.id)) {
       parts.push(
         "- To delegate work to a team member: [DELEGATE to:<agent-id>] description of work",
+      );
+      parts.push(
+        "- After delegating, stop active implementation and hand off. Do not claim task completion until a [DELEGATION_RESULT ...] is received.",
+      );
+      parts.push(
+        "- Do not busy-wait or sleep-loop. End this run after delegation; the orchestrator will resume you with the child result.",
       );
     }
     parts.push("- To ask the human user a question: [ESCALATE] your question here");
@@ -224,9 +236,10 @@ export class PromptBuilder {
   private buildBaseExecutionContext(): string {
     return [
       "EXECUTION CONTEXT:",
-      "- You are running inside PlayHive, a multi-agent orchestration system.",
+      "- You are running inside Skipper, a multi-agent orchestration system.",
       "- This is a non-interactive, single-action run for your current assignment.",
       "- Complete the assigned work and provide output in this run; do not wait for back-and-forth chat.",
+      "- If you delegate, treat this run as a handoff and wait for orchestrator resume rather than continuing in parallel.",
       "- If human input is required, use [ESCALATE] with a clear question.",
     ].join("\n");
   }

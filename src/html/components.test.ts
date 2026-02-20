@@ -30,7 +30,7 @@ describe("layout", () => {
     const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 100 } });
     expect(html).toContain("htmx.org");
     expect(html).toContain("htmx-ext-sse");
-    expect(html).toContain("PlayHive");
+    expect(html).toContain("Skipper");
     expect(html).toContain('href="/"');
     expect(html).toContain('href="/tasks"');
     expect(html).toContain('href="/agents"');
@@ -728,7 +728,7 @@ describe("escalationsPage", () => {
 describe("helpPage", () => {
   it("renders all major sections", () => {
     const html = helpPage();
-    expect(html).toContain("PlayHive Help");
+    expect(html).toContain("Skipper Help");
     expect(html).toContain("Platform Overview");
     expect(html).toContain("Core Concepts");
     expect(html).toContain("Task Lifecycle");
