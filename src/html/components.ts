@@ -65,10 +65,19 @@ export function layout(title: string, content: string, currentPath: string = "/"
 
 // --- Dashboard ---
 
+export interface RecentLogEntry {
+  agent_id: string;
+  agent_name: string;
+  stream: string;
+  data: string;
+  created_at: string;
+}
+
 export interface DashboardData {
   tasks: { id: string; title: string; status: string; priority: number }[];
   agents: { id: string; name: string; status: string; type: string; current_task_id: string | null }[];
   daemon: { state: "running" | "pausing" | "paused" | "stopped"; uptime: number };
+  recentLogs?: RecentLogEntry[];
 }
 
 export function dashboardPage(data: DashboardData): string {
@@ -118,7 +127,14 @@ export function dashboardPage(data: DashboardData): string {
           ${data.agents.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#9881;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>` : data.agents.map(agentStatusRow).join("")}
         </div>
       </section>
-    </div>`,
+    </div>
+
+    <section>
+      <h2>Recent Agent Activity</h2>
+      <div id="recent-activity" class="activity-feed" hx-ext="sse" sse-connect="/events/logs" sse-swap="logs:activity" hx-swap="innerHTML">
+        ${recentActivityFragment(data.recentLogs ?? [])}
+      </div>
+    </section>`,
     "/",
   );
 }
@@ -141,6 +157,21 @@ function agentStatusRow(agent: { id: string; name: string; status: string; type:
     </a>
     <span class="muted">${escapeHtml(agent.type)}</span>
   </div>`;
+}
+
+export function recentActivityFragment(logs: RecentLogEntry[]): string {
+  if (logs.length === 0) {
+    return `<div class="empty-state"><div class="empty-state-icon">&#128240;</div><p>No recent activity</p><p class="muted">Agent output will appear here</p></div>`;
+  }
+  return logs.map((entry) => {
+    const truncated = entry.data.length > 120 ? entry.data.slice(0, 120) + "…" : entry.data;
+    return `<div class="activity-entry">
+      <a href="/agents/${escapeHtml(entry.agent_id)}" hx-get="/agents/${escapeHtml(entry.agent_id)}" hx-target="body" hx-push-url="true" class="activity-agent">${escapeHtml(entry.agent_name)}</a>
+      <span class="badge badge-stream-${escapeHtml(entry.stream)}">${escapeHtml(entry.stream)}</span>
+      <code class="activity-data">${escapeHtml(truncated)}</code>
+      <span class="muted activity-time">${formatTimestamp(entry.created_at)}</span>
+    </div>`;
+  }).join("");
 }
 
 // --- Tasks ---
@@ -365,6 +396,7 @@ export interface AgentData {
   config: Record<string, unknown>;
   process_pid: number | null;
   current_task_id: string | null;
+  lastOutput?: { stream: string; data: string } | null;
 }
 
 export function agentsPage(agents: AgentData[]): string {
@@ -394,7 +426,7 @@ export function agentsPage(agents: AgentData[]): string {
 
     <div id="agent-list">
       ${agents.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#129302;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>` : `<table class="data-table">
-        <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>PID</th><th>Task</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>PID</th><th>Task</th><th>Last Output</th><th>Actions</th></tr></thead>
         <tbody>${agents.map(agentTableRow).join("")}</tbody>
       </table>`}
     </div>`,
@@ -406,12 +438,17 @@ export function agentListFragment(agents: AgentData[]): string {
   return agents.length === 0
     ? `<div class="empty-state"><div class="empty-state-icon">&#129302;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>`
     : `<table class="data-table">
-        <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>PID</th><th>Task</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>PID</th><th>Task</th><th>Last Output</th><th>Actions</th></tr></thead>
         <tbody>${agents.map(agentTableRow).join("")}</tbody>
       </table>`;
 }
 
 function agentTableRow(agent: AgentData): string {
+  let lastOutputCell = `<span class="muted">—</span>`;
+  if (agent.lastOutput) {
+    const truncated = agent.lastOutput.data.length > 60 ? agent.lastOutput.data.slice(0, 60) + "…" : agent.lastOutput.data;
+    lastOutputCell = `<span class="badge badge-stream-${escapeHtml(agent.lastOutput.stream)}">${escapeHtml(agent.lastOutput.stream)}</span> <code class="muted">${escapeHtml(truncated)}</code>`;
+  }
   return `<tr>
     <td><span class="badge badge-${agent.status}">${agent.status}</span></td>
     <td><a href="/agents/${escapeHtml(agent.id)}" hx-get="/agents/${escapeHtml(agent.id)}" hx-target="body" hx-push-url="true">${escapeHtml(agent.name)}</a></td>
@@ -419,6 +456,7 @@ function agentTableRow(agent: AgentData): string {
     <td>${escapeHtml(agent.model)}</td>
     <td>${agent.process_pid ?? "-"}</td>
     <td>${agent.current_task_id ? escapeHtml(agent.current_task_id.slice(0, 8)) : "-"}</td>
+    <td class="last-output-cell">${lastOutputCell}</td>
     <td>${agent.status !== "busy" ? `<button hx-delete="/api/agents/${escapeHtml(agent.id)}" hx-target="body" hx-swap="innerHTML" hx-confirm="Delete this agent?" class="btn-sm btn-danger">Delete</button>` : ""}</td>
   </tr>`;
 }
@@ -462,6 +500,15 @@ export function agentDetailPage(agent: AgentData, sessions: AgentSessionData[] =
       ${agent.config.goal ? `<div class="detail-desc"><strong>Goal:</strong><p>${escapeHtml(String(agent.config.goal))}</p></div>` : ""}
     </div>
 
+    <div class="terminal-section-header">
+      <h2>Terminal Output</h2>
+      <span id="terminal-line-count" class="muted terminal-line-count">Loading...</span>
+    </div>
+    ${sessionSelector}
+    <div id="terminal" class="terminal"${!isViewingHistory ? ` hx-ext="sse" sse-connect="/events/agent/${escapeHtml(agent.id)}/output" sse-swap="agent:output" hx-swap="beforeend scroll:bottom"` : ""}>
+      <div hx-get="${outputUrl}" hx-trigger="load" hx-swap="innerHTML" hx-on::after-settle="(function(){var el=document.getElementById('terminal-line-count');if(el)el.textContent=document.querySelectorAll('#terminal .terminal-line').length+' lines';})()"></div>
+    </div>
+
     <div class="card">
       <h2>Edit Agent</h2>
       ${agent.status === "busy" ? `<p class="muted">Busy agents cannot be edited.</p>` : `<form hx-post="/api/agents/${escapeHtml(agent.id)}" hx-target="body" hx-swap="innerHTML">
@@ -477,12 +524,6 @@ export function agentDetailPage(agent: AgentData, sessions: AgentSessionData[] =
         <label>Goal <input type="text" name="goal" value="${agent.config.goal ? escapeHtml(String(agent.config.goal)) : ""}"></label>
         <button type="submit">Save Changes</button>
       </form>`}
-    </div>
-
-    <h2>Terminal Output</h2>
-    ${sessionSelector}
-    <div id="terminal" class="terminal"${!isViewingHistory ? ` hx-ext="sse" sse-connect="/events/agent/${escapeHtml(agent.id)}/output" sse-swap="agent:output" hx-swap="beforeend scroll:bottom"` : ""}>
-      <div hx-get="${outputUrl}" hx-trigger="load" hx-swap="innerHTML"></div>
     </div>`,
     "/agents",
   );
@@ -1089,5 +1130,17 @@ function baseStyles(): string {
     .empty-state { text-align: center; padding: 2rem 1rem; color: #8b949e; }
     .empty-state-icon { font-size: 2rem; margin-bottom: 0.5rem; opacity: 0.6; }
     .empty-state p { margin: 0.25rem 0; }
+    .activity-feed { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 0.5rem 0.75rem; min-height: 60px; }
+    .activity-entry { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #21262d; flex-wrap: wrap; }
+    .activity-entry:last-child { border-bottom: none; }
+    .activity-agent { font-weight: 600; color: #58a6ff; font-size: 0.85rem; flex-shrink: 0; }
+    .activity-data { color: #e1e4e8; font-size: 0.78rem; font-family: "SF Mono", "Fira Code", monospace; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .activity-time { flex-shrink: 0; }
+    .badge-stream-stdout { background: #1c2333; color: #79c0ff; }
+    .badge-stream-stderr { background: #5c1a1a; color: #f85149; }
+    .terminal-section-header { display: flex; align-items: center; gap: 1rem; margin: 1.5rem 0 0.5rem; }
+    .terminal-section-header h2 { margin: 0; }
+    .terminal-line-count { font-size: 0.8rem; }
+    .last-output-cell { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   `;
 }
