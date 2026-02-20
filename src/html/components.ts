@@ -32,7 +32,7 @@ export function layout(title: string, content: string): string {
 export interface DashboardData {
   tasks: { id: string; title: string; status: string; priority: number }[];
   agents: { id: string; name: string; status: string; type: string; current_task_id: string | null }[];
-  daemon: { state: "running" | "paused" | "stopped"; uptime: number };
+  daemon: { state: "running" | "pausing" | "paused" | "stopped"; uptime: number };
 }
 
 export function dashboardPage(data: DashboardData): string {
@@ -60,8 +60,11 @@ export function dashboardPage(data: DashboardData): string {
         <div class="stat-label">Busy Agents</div>
       </div>
       <div class="stat-card">
-        <span class="badge badge-${data.daemon.state === "running" ? "running" : data.daemon.state === "paused" ? "stopped" : "error"}">${data.daemon.state}</span>
+        <span class="badge badge-${data.daemon.state === "running" ? "running" : data.daemon.state === "pausing" ? "stopped" : data.daemon.state === "paused" ? "stopped" : "error"}">${data.daemon.state}</span>
         <div class="stat-label">Daemon</div>
+        ${data.daemon.state === "running" ? `<button hx-post="/api/daemon/pause" hx-target="body" hx-swap="innerHTML" class="btn-sm" style="margin-top:0.5rem">Pause</button>` : ""}
+        ${data.daemon.state === "paused" ? `<button hx-post="/api/daemon/resume" hx-target="body" hx-swap="innerHTML" class="btn-sm" style="margin-top:0.5rem">Resume</button>` : ""}
+        ${data.daemon.state === "pausing" ? `<span class="muted" style="margin-top:0.5rem;display:block">Pausing...</span>` : ""}
       </div>
     </div>
 

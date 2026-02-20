@@ -7,10 +7,10 @@ export function registerDaemonRoutes(daemon: ManagerDaemon): void {
     return Response.json(status);
   });
 
-  addRoute("POST", "/api/daemon/pause", () => {
+  addRoute("POST", "/api/daemon/pause", async () => {
     try {
-      daemon.pause();
-      return Response.json({ status: "pausing" });
+      await daemon.pause();
+      return Response.json({ status: "paused" });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Internal error";
       return Response.json({ error: message }, { status: 400 });
