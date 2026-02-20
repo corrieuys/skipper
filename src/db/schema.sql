@@ -109,10 +109,20 @@ CREATE TABLE IF NOT EXISTS agent_states (
   UNIQUE(agent_id)
 );
 
+-- Agent spawn sessions
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent ON agent_sessions(agent_id, created_at DESC);
+
 -- Terminal output capture
 CREATE TABLE IF NOT EXISTS terminal_outputs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  session_id TEXT REFERENCES agent_sessions(id) ON DELETE CASCADE,
   stream TEXT NOT NULL CHECK (stream IN ('stdout', 'stderr')),
   data TEXT NOT NULL,
   sequence INTEGER NOT NULL,
@@ -120,6 +130,8 @@ CREATE TABLE IF NOT EXISTS terminal_outputs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_terminal_outputs_agent_seq ON terminal_outputs(agent_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_terminal_outputs_session ON terminal_outputs(session_id);
+CREATE INDEX IF NOT EXISTS idx_terminal_outputs_created ON terminal_outputs(created_at);
 
 -- Delegation records
 CREATE TABLE IF NOT EXISTS delegations (

@@ -353,6 +353,54 @@ describe("agentDetailPage", () => {
     expect(html).toContain('hx-post="/api/agents/a1"');
     expect(html).toContain("Save Changes");
   });
+
+  it("shows session selector when multiple sessions exist", () => {
+    const html = agentDetailPage(
+      {
+        id: "a1", name: "Agent", type: "claude-code", model: "default",
+        status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null,
+      },
+      [
+        { id: "sess-111", created_at: "2024-01-02T10:00:00" },
+        { id: "sess-222", created_at: "2024-01-01T10:00:00" },
+      ],
+    );
+    expect(html).toContain("session-selector");
+    expect(html).toContain("2 sessions");
+    expect(html).toContain("Latest");
+    expect(html).toContain("sess-111");
+    expect(html).toContain("sess-222");
+  });
+
+  it("disables SSE when viewing historical session", () => {
+    const html = agentDetailPage(
+      {
+        id: "a1", name: "Agent", type: "claude-code", model: "default",
+        status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null,
+      },
+      [
+        { id: "sess-111", created_at: "2024-01-02T10:00:00" },
+        { id: "sess-222", created_at: "2024-01-01T10:00:00" },
+      ],
+      "sess-222",
+    );
+    // Should NOT have SSE connection when viewing old session
+    expect(html).not.toContain("sse-connect");
+    // Should load the selected session's output
+    expect(html).toContain("session=sess-222");
+  });
+
+  it("enables SSE when viewing latest session", () => {
+    const html = agentDetailPage(
+      {
+        id: "a1", name: "Agent", type: "claude-code", model: "default",
+        status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null,
+      },
+      [{ id: "sess-111", created_at: "2024-01-02T10:00:00" }],
+    );
+    // Should have SSE for live output (no selectedSessionId = latest)
+    expect(html).toContain("sse-connect");
+  });
 });
 
 describe("terminalOutputFragment", () => {
