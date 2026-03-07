@@ -173,7 +173,14 @@ export class PhaseManager {
     const isStreaming = typeDef?.supports_stdin ?? false;
 
     if (isStreaming) {
-      this.respawnForRegression(task, teamExec.entrypoint_agent_id, phases, targetPhase, reason);
+      this.respawnForRegression(task, teamExec.entrypoint_agent_id, phases, targetPhase, reason).catch((err) => {
+        logError(this.db, "regression_respawn_async", { taskId: task.id, agentId, targetPhase, method: "handlePhaseRegression" }, err);
+        try {
+          this.taskScheduler.failTask(task.id, `Failed to respawn for regression: ${err instanceof Error ? err.message : String(err)}`);
+        } catch (innerErr) {
+          logError(this.db, "regression_respawn_async_fail_task", { taskId: task.id, method: "handlePhaseRegression" }, innerErr);
+        }
+      });
     } else {
       this.pendingRegressions.set(agentId, { targetPhase, reason });
     }
@@ -266,7 +273,14 @@ export class PhaseManager {
           phases,
           pendingRegression.targetPhase,
           pendingRegression.reason,
-        );
+        ).catch((err) => {
+          logError(this.db, "regression_respawn_on_exit", { taskId: task.id, agentId, method: "handleSuccessfulExit" }, err);
+          try {
+            this.taskScheduler.failTask(task.id, `Failed to respawn for regression after exit: ${err instanceof Error ? err.message : String(err)}`);
+          } catch (innerErr) {
+            logError(this.db, "regression_respawn_on_exit_fail_task", { taskId: task.id, method: "handleSuccessfulExit" }, innerErr);
+          }
+        });
       }
       return;
     }
@@ -283,7 +297,14 @@ export class PhaseManager {
         logError(this.db, "task_complete", { taskId: task.id, agentId, method: "handleSuccessfulExit" }, err);
       }
     } else {
-      this.advanceAndRespawn(task, teamExec!.entrypoint_agent_id, phases);
+      this.advanceAndRespawn(task, teamExec!.entrypoint_agent_id, phases).catch((err) => {
+        logError(this.db, "advance_respawn_async", { taskId: task.id, agentId, method: "handleSuccessfulExit" }, err);
+        try {
+          this.taskScheduler.failTask(task.id, `Failed to advance and respawn: ${err instanceof Error ? err.message : String(err)}`);
+        } catch (innerErr) {
+          logError(this.db, "advance_respawn_async_fail_task", { taskId: task.id, method: "handleSuccessfulExit" }, innerErr);
+        }
+      });
     }
   }
 
