@@ -31,9 +31,9 @@ export function registerAgentRoutes(): void {
   addRoute("POST", "/api/agents", async (req) => {
     const body = await parseBody(req);
 
-    if (!body.name || !body.type) {
+    if (!body.name) {
       return Response.json(
-        { error: "name and type are required" },
+        { error: "name is required" },
         { status: 400 },
       );
     }
@@ -47,7 +47,7 @@ export function registerAgentRoutes(): void {
     try {
       manager.createAgent({
         name: body.name,
-        type: body.type,
+        type: "claude-code",
         model: body.model,
         capabilities: body.capabilities ? JSON.parse(body.capabilities) : undefined,
         instruction: body.instruction,
@@ -76,9 +76,9 @@ export function registerAgentRoutes(): void {
   addRoute("POST", "/api/agents/:id", async (req, params) => {
     const body = await parseBody(req);
 
-    if (!body.name || !body.type) {
+    if (!body.name) {
       return Response.json(
-        { error: "name and type are required" },
+        { error: "name is required" },
         { status: 400 },
       );
     }
@@ -92,7 +92,7 @@ export function registerAgentRoutes(): void {
     try {
       const updated = manager.updateAgent(params.id, {
         name: body.name,
-        type: body.type,
+        type: "claude-code",
         model: body.model,
         instruction: body.instruction,
         capabilities: body.capabilities ? JSON.parse(body.capabilities) : undefined,
