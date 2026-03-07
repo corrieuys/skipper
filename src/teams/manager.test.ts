@@ -33,7 +33,7 @@ describe("createTeam", () => {
     const team = teamManager.createTeam({ name: "Test Team" });
     expect(team.id).toBeTruthy();
     expect(team.name).toBe("Test Team");
-    expect(team.entrypoint_agent_id).toBeNull();
+    expect(team.entrypoint_agent_id).toBe("skipper");
     expect(team.phases).toEqual([]);
     expect(team.goal).toBeNull();
   });
@@ -94,7 +94,7 @@ describe("addAgent", () => {
     expect(membership.team_id).toBe(team.id);
     expect(membership.agent_id).toBe(agent.id);
     expect(membership.role).toBe("developer");
-    expect(membership.level).toBe(0);
+    expect(membership.level).toBe(1); // Workers are forced to level >= 1
     expect(membership.max_complexity).toBe(10);
   });
 
@@ -166,27 +166,22 @@ describe("addAgent", () => {
 });
 
 describe("setEntrypoint", () => {
-  it("sets entrypoint agent for team", () => {
-    const agent = agentManager.createAgent({
-      name: "Entrypoint",
-      type: "claude-code",
-    });
+  it("allows setting Skipper as entrypoint (no-op)", () => {
     const team = teamManager.createTeam({ name: "Team" });
-    teamManager.addAgent(team.id, { agent_id: agent.id });
-    teamManager.setEntrypoint(team.id, agent.id);
-
+    // Setting Skipper is a no-op (it's always the entrypoint)
+    teamManager.setEntrypoint(team.id, "skipper");
     const updated = teamManager.getTeam(team.id);
-    expect(updated!.entrypoint_agent_id).toBe(agent.id);
+    expect(updated!.entrypoint_agent_id).toBe("skipper");
   });
 
-  it("throws when agent is not a team member", () => {
+  it("throws when trying to set a non-Skipper agent as entrypoint", () => {
     const agent = agentManager.createAgent({
       name: "Outsider",
       type: "claude-code",
     });
     const team = teamManager.createTeam({ name: "Team" });
     expect(() => teamManager.setEntrypoint(team.id, agent.id)).toThrow(
-      "Agent must be a team member",
+      "Skipper is always the entrypoint agent",
     );
   });
 });
@@ -204,17 +199,20 @@ describe("getTeamAgents", () => {
     const team = teamManager.createTeam({ name: "Team" });
     teamManager.addAgent(team.id, {
       agent_id: dev.id,
-      level: 1,
+      level: 2,
     });
     teamManager.addAgent(team.id, {
       agent_id: lead.id,
-      level: 0,
+      level: 1,
     });
 
     const agents = teamManager.getTeamAgents(team.id);
-    expect(agents).toHaveLength(2);
-    expect(agents[0].level).toBe(0);
+    // Skipper at level 0 + 2 workers
+    expect(agents).toHaveLength(3);
+    expect(agents[0].level).toBe(0); // Skipper
+    expect(agents[0].agent_id).toBe("skipper");
     expect(agents[1].level).toBe(1);
+    expect(agents[2].level).toBe(2);
   });
 });
 
@@ -246,41 +244,38 @@ describe("removeAgent", () => {
     expect(teamManager.isTeamMember(team.id, agent.id)).toBe(false);
   });
 
-  it("clears entrypoint when removed member is entrypoint", () => {
-    const agent = agentManager.createAgent({ name: "Agent", type: "claude-code" });
+  it("throws when trying to remove Skipper from team", () => {
     const team = teamManager.createTeam({ name: "Team" });
-    teamManager.addAgent(team.id, { agent_id: agent.id });
-    teamManager.setEntrypoint(team.id, agent.id);
-
-    teamManager.removeAgent(team.id, agent.id);
-    const updatedTeam = teamManager.getTeam(team.id);
-    expect(updatedTeam?.entrypoint_agent_id).toBeNull();
+    expect(() => teamManager.removeAgent(team.id, "skipper")).toThrow(
+      "Skipper cannot be removed from a team",
+    );
   });
 });
 
 describe("getTeamForExecution", () => {
-  it("returns null when team has no entrypoint", () => {
+  it("always returns Skipper as entrypoint", () => {
     const team = teamManager.createTeam({ name: "Team" });
-    expect(teamManager.getTeamForExecution(team.id)).toBeNull();
+    const result = teamManager.getTeamForExecution(team.id);
+    expect(result).not.toBeNull();
+    expect(result!.entrypoint_agent_id).toBe("skipper");
   });
 
   it("returns null for nonexistent team", () => {
     expect(teamManager.getTeamForExecution("nonexistent")).toBeNull();
   });
 
-  it("returns team with entrypoint and agents", () => {
+  it("returns team with Skipper entrypoint and all agents", () => {
     const agent = agentManager.createAgent({
-      name: "Entry",
+      name: "Worker",
       type: "claude-code",
     });
     const team = teamManager.createTeam({ name: "Team", goal: "Test" });
     teamManager.addAgent(team.id, { agent_id: agent.id });
-    teamManager.setEntrypoint(team.id, agent.id);
 
     const result = teamManager.getTeamForExecution(team.id);
     expect(result).not.toBeNull();
-    expect(result!.entrypoint_agent_id).toBe(agent.id);
+    expect(result!.entrypoint_agent_id).toBe("skipper");
     expect(result!.team.goal).toBe("Test");
-    expect(result!.agents).toHaveLength(1);
+    expect(result!.agents).toHaveLength(2); // Skipper + worker
   });
 });

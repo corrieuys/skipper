@@ -2,9 +2,12 @@ import type { Database } from "bun:sqlite";
 import type { Subprocess, FileSink } from "bun";
 import { getDb } from "../db/connection";
 import { getAgentTypeDefinition } from "./types";
+import { isSkipperAgent } from "./skipper";
 import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
 import { logError } from "../logging";
+
+const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB
 
 export interface Agent {
   id: string;
@@ -29,6 +32,10 @@ export interface AgentConfig {
 
 export interface RunningAgent {
   id: string;
+  templateAgentId: string;
+  taskId: string | null;
+  parentInstanceId: string | null;
+  rootInstanceId: string | null;
   process: Subprocess<"pipe", "pipe", "pipe">;
   stdin: FileSink;
   stdoutBuffer: string;
@@ -90,11 +97,19 @@ export interface SpawnAgentOptions {
   sessionId?: string;
 }
 
+export interface SpawnAgentInstanceOptions extends SpawnAgentOptions {
+  taskId?: string | null;
+  parentInstanceId?: string | null;
+  rootInstanceId?: string | null;
+  attempt?: number;
+}
+
 // --- Signal types for output parsing ---
 
 export type SignalType =
   | "message"
   | "delegate"
+  | "delegate_batch"
   | "delegate_complete"
   | "escalate"
   | "note"
@@ -122,6 +137,11 @@ export interface JsonEvent {
   type?: string;
   session_id?: string;
   thread_id?: string;
+  usage?: {
+    input_tokens?: number;
+    cached_input_tokens?: number;
+    output_tokens?: number;
+  };
   message?: { content?: Array<{ type: string; text?: string }> };
   item?: { type?: string; text?: string; content?: Array<{ type: string; text?: string }> };
   result?: string;
@@ -129,10 +149,20 @@ export interface JsonEvent {
   [key: string]: unknown;
 }
 
+const DEFAULT_CONTEXT_COMPACT_THRESHOLD_TOKENS = 400_000;
+
+function parseContextCompactThreshold(raw: string | undefined): number {
+  if (!raw) return DEFAULT_CONTEXT_COMPACT_THRESHOLD_TOKENS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_CONTEXT_COMPACT_THRESHOLD_TOKENS;
+  return Math.floor(parsed);
+}
+
 // Signal regex patterns
 const SIGNAL_PATTERNS = {
   message: /^\[MSG:(\S+)\s+to:(\S+)\]\s*(.*)/,
-  delegate: /^\[DELEGATE\s+to:(\S+)\]\s*(.*)/,
+  delegate: /^\[DELEGATE\s+to:(.+?)\]\s*(.*)/,
+  delegateBatch: /^\[DELEGATE_BATCH\]\s*(.*)/,
   delegateComplete: /^\[DELEGATE_COMPLETE\]\s*(.*)/,
   escalate: /^\[ESCALATE\]\s*(.*)/,
   note: /^\[NOTE\]\s*(.*)/,
@@ -141,11 +171,22 @@ const SIGNAL_PATTERNS = {
   phaseRegression: /^\[PHASE_REGRESSION\s+(\d+)\]\s*(.*)/,
 } as const;
 
+function normalizeSignalTarget(target: string): string {
+  const trimmed = target.trim();
+  if ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 export class AgentManager {
   private db: Database;
   private agents: Map<string, RunningAgent> = new Map();
+  private templateToInstances: Map<string, Set<string>> = new Map();
   private respawningAgents: Set<string> = new Set();
+  private closed = false;
   private decoder = new TextDecoder();
+  private contextCompactThreshold = parseContextCompactThreshold(process.env.PLAYHIVE_CONTEXT_COMPACT_THRESHOLD);
 
   constructor(db?: Database) {
     this.db = db ?? getDb();
@@ -157,6 +198,30 @@ export class AgentManager {
 
   getRunningAgents(): Map<string, RunningAgent> {
     return this.agents;
+  }
+
+  getTemplateAgentId(runtimeId: string): string | null {
+    const running = this.agents.get(runtimeId);
+    if (running) return running.templateAgentId;
+    const row = this.db
+      .prepare("SELECT template_agent_id FROM agent_instances WHERE id = ?")
+      .get(runtimeId) as { template_agent_id: string } | null;
+    return row?.template_agent_id ?? null;
+  }
+
+  close(): void {
+    this.closed = true;
+    // Kill all running agents
+    for (const [id, agent] of this.agents) {
+      try { agent.process.kill(); } catch {}
+    }
+    this.agents.clear();
+    this.templateToInstances.clear();
+  }
+
+  getRunningInstancesForTemplate(templateAgentId: string): string[] {
+    const ids = this.templateToInstances.get(templateAgentId);
+    return ids ? Array.from(ids) : [];
   }
 
   isRespawning(agentId: string): boolean {
@@ -209,9 +274,41 @@ export class AgentManager {
   }
 
   async spawnAgent(agentId: string, options: SpawnAgentOptions): Promise<RunningAgent> {
-    const agent = this.getAgent(agentId);
+    return this.spawnRuntimeAgent(
+      agentId,
+      agentId,
+      { ...options, parentInstanceId: null, rootInstanceId: agentId, attempt: 1 },
+      true,
+    );
+  }
+
+  async spawnAgentInstance(
+    templateAgentId: string,
+    instanceId: string,
+    options: SpawnAgentInstanceOptions,
+  ): Promise<RunningAgent> {
+    return this.spawnRuntimeAgent(templateAgentId, instanceId, options, false);
+  }
+
+  private async spawnRuntimeAgent(
+    templateAgentId: string,
+    runtimeId: string,
+    options: SpawnAgentInstanceOptions,
+    isTemplateRuntime: boolean,
+  ): Promise<RunningAgent> {
+    const existingRuntime = this.agents.get(runtimeId);
+    if (existingRuntime) {
+      this.killAgent(runtimeId);
+      await this.waitForExit(runtimeId, 10000);
+
+      const stillRunning = this.agents.get(runtimeId);
+      if (stillRunning) {
+        throw new Error(`Failed to replace running runtime: ${runtimeId}`);
+      }
+    }
+    const agent = this.getAgent(templateAgentId);
     if (!agent) {
-      throw new Error(`Agent not found: ${agentId}`);
+      throw new Error(`Agent not found: ${templateAgentId}`);
     }
 
     const typeDef = getAgentTypeDefinition(agent.type, this.db);
@@ -241,7 +338,9 @@ export class AgentManager {
     if (agent.config.environment) {
       Object.assign(env, agent.config.environment);
     }
-    env.AGENT_ID = agentId;
+    env.AGENT_ID = templateAgentId;
+    env.AGENT_RUNTIME_ID = runtimeId;
+    env.AGENT_INSTANCE_ID = runtimeId;
     env.AGENT_NAME = agent.name;
     env.AGENT_TYPE = agent.type;
     delete env.CLAUDECODE;
@@ -266,13 +365,17 @@ export class AgentManager {
     try {
       this.db
         .prepare("INSERT INTO agent_sessions (id, agent_id) VALUES (?, ?)")
-        .run(spawnSessionId, agentId);
+        .run(spawnSessionId, runtimeId);
     } catch (err) {
-      logError(this.db, "agent.create_session", { agentId, spawnSessionId }, err);
+      logError(this.db, "agent.create_session", { agentId: templateAgentId, runtimeId, spawnSessionId }, err);
     }
 
     const runningAgent: RunningAgent = {
-      id: agentId,
+      id: runtimeId,
+      templateAgentId,
+      taskId: options.taskId ?? null,
+      parentInstanceId: options.parentInstanceId ?? null,
+      rootInstanceId: options.rootInstanceId ?? runtimeId,
       process: proc,
       stdin: proc.stdin,
       stdoutBuffer: "",
@@ -284,20 +387,78 @@ export class AgentManager {
     };
 
     // Track in memory
-    this.agents.set(agentId, runningAgent);
+    this.agents.set(runtimeId, runningAgent);
+    const templateInstances = this.templateToInstances.get(templateAgentId) ?? new Set<string>();
+    templateInstances.add(runtimeId);
+    this.templateToInstances.set(templateAgentId, templateInstances);
 
-    // Update DB with PID
-    this.db
-      .prepare("UPDATE agents SET process_pid = ?, status = 'busy' WHERE id = ?")
-      .run(proc.pid, agentId);
+    this.syncTemplateRuntimeState(templateAgentId);
+    if (!isTemplateRuntime && options.taskId) {
+      this.db
+        .prepare(
+          `INSERT INTO agent_instances (
+             id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, process_pid, session_id, state_metadata, attempt
+           ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, '{}', ?)
+           ON CONFLICT(id) DO UPDATE SET
+             task_id = excluded.task_id,
+             template_agent_id = excluded.template_agent_id,
+             parent_instance_id = excluded.parent_instance_id,
+             root_instance_id = excluded.root_instance_id,
+             status = 'running',
+             process_pid = excluded.process_pid,
+             session_id = excluded.session_id,
+             state_metadata = '{}',
+             attempt = excluded.attempt,
+             updated_at = datetime('now')`,
+        )
+        .run(
+          runtimeId,
+          options.taskId,
+          templateAgentId,
+          options.parentInstanceId ?? null,
+          options.rootInstanceId ?? runtimeId,
+          proc.pid,
+          options.sessionId ?? null,
+          options.attempt ?? 1,
+        );
+    } else if (isTemplateRuntime) {
+      const taskRow = this.db
+        .prepare("SELECT current_task_id FROM agents WHERE id = ?")
+        .get(templateAgentId) as { current_task_id: string | null } | null;
+      if (taskRow?.current_task_id) {
+        this.db
+          .prepare(
+            `INSERT INTO agent_instances (
+               id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, process_pid, session_id, state_metadata, attempt
+             ) VALUES (?, ?, ?, NULL, ?, 'running', ?, ?, '{}', 1)
+             ON CONFLICT(id) DO UPDATE SET
+               task_id = excluded.task_id,
+               template_agent_id = excluded.template_agent_id,
+               status = 'running',
+               process_pid = excluded.process_pid,
+               session_id = excluded.session_id,
+               state_metadata = '{}',
+               updated_at = datetime('now')`,
+          )
+          .run(
+            runtimeId,
+            taskRow.current_task_id,
+            templateAgentId,
+            runtimeId,
+            proc.pid,
+            options.sessionId ?? null,
+          );
+      }
+    }
 
     // Wire output handlers
     this.readStream(runningAgent, proc.stdout, "stdout");
     this.readStream(runningAgent, proc.stderr, "stderr");
 
     // Register exit handler
+    const processPid = proc.pid;
     proc.exited.then((code) => {
-      this.handleProcessExit(agentId, code);
+      this.handleProcessExit(runtimeId, processPid, code);
     });
 
     return runningAgent;
@@ -320,13 +481,15 @@ export class AgentManager {
         runningAgent.outputSequence++;
         const seq = runningAgent.outputSequence;
         try {
-          this.db
-            .prepare(
-              "INSERT INTO terminal_outputs (agent_id, session_id, stream, data, sequence) VALUES (?, ?, ?, ?, ?)",
-            )
-            .run(runningAgent.id, runningAgent.spawnSessionId, streamType, text, seq);
+          if (!this.closed) {
+            this.db
+              .prepare(
+                "INSERT INTO terminal_outputs (agent_id, session_id, stream, data, sequence) VALUES (?, ?, ?, ?, ?)",
+              )
+              .run(runningAgent.id, runningAgent.spawnSessionId, streamType, text, seq);
+          }
         } catch (err) {
-          logError(this.db, "agent.store_output", { agentId: runningAgent.id, streamType, seq }, err);
+          if (!this.closed) logError(this.db, "agent.store_output", { agentId: runningAgent.id, streamType, seq }, err);
         }
 
         // Emit event for real-time UI
@@ -340,6 +503,10 @@ export class AgentManager {
         // Buffer stdout for line-based parsing and signal detection
         if (streamType === "stdout") {
           runningAgent.stdoutBuffer += text;
+          if (runningAgent.stdoutBuffer.length > MAX_BUFFER_SIZE) {
+            logError(this.db, "agent.stdout_buffer_overflow", { agentId: runningAgent.id, bufferSize: runningAgent.stdoutBuffer.length }, new Error("stdout buffer exceeded max size, truncating"));
+            runningAgent.stdoutBuffer = runningAgent.stdoutBuffer.slice(-MAX_BUFFER_SIZE / 2);
+          }
           const lines = this.processStdoutBuffer(runningAgent);
           for (const line of lines) {
             const signal = this.parseAgentOutput(runningAgent.id, line);
@@ -357,6 +524,9 @@ export class AgentManager {
           }
         } else {
           runningAgent.stderrBuffer += text;
+          if (runningAgent.stderrBuffer.length > MAX_BUFFER_SIZE) {
+            runningAgent.stderrBuffer = runningAgent.stderrBuffer.slice(-MAX_BUFFER_SIZE / 2);
+          }
         }
       }
     } catch (err) {
@@ -364,7 +534,7 @@ export class AgentManager {
     } finally {
       reader.releaseLock();
       runningAgent.drainedStreams++;
-      if (runningAgent.drainedStreams >= 2) {
+      if (runningAgent.drainedStreams === 2) {
         eventBus.emit("agent:streams_drained", { agentId: runningAgent.id });
       }
     }
@@ -405,7 +575,20 @@ export class AgentManager {
     return true;
   }
 
-  private handleProcessExit(agentId: string, code: number): void {
+  private handleProcessExit(agentId: string, processPid: number, code: number): void {
+    if (this.closed) return;
+
+    const runtime = this.agents.get(agentId);
+    if (runtime && runtime.process.pid !== processPid) {
+      logError(this.db, "agent.pid_mismatch_exit", {
+        agentId,
+        exitedPid: processPid,
+        currentPid: runtime.process.pid,
+        method: "handleProcessExit",
+      }, new Error("Process exit from stale PID ignored"));
+      return;
+    }
+
     // Persist session ID before removing from memory
     this.persistSessionId(agentId);
 
@@ -417,15 +600,33 @@ export class AgentManager {
 
     // Clean up in-memory tracking
     this.agents.delete(agentId);
-
-    // Update DB status (guard against closed DB in tests)
-    try {
-      const newStatus = code === 0 ? "idle" : "error";
-      this.db
-        .prepare("UPDATE agents SET process_pid = NULL, status = ? WHERE id = ?")
-        .run(newStatus, agentId);
-    } catch (err) {
-      logError(this.db, "agent.process_exit_update", { agentId, code }, err);
+    if (runtime) {
+      const instances = this.templateToInstances.get(runtime.templateAgentId);
+      if (instances) {
+        instances.delete(agentId);
+        if (instances.size === 0) this.templateToInstances.delete(runtime.templateAgentId);
+      }
+      this.syncTemplateRuntimeState(runtime.templateAgentId, code);
+      try {
+        this.db
+          .prepare(
+            "UPDATE agent_instances SET status = ?, process_pid = NULL, state_metadata = json_set(state_metadata, '$.exit_code', ?), updated_at = datetime('now') WHERE id = ?",
+          )
+          .run(code === 0 ? "completed" : "failed", code, agentId);
+      } catch (err) {
+        if (this.closed) return;
+        logError(this.db, "agent.update_instance_on_exit", { agentId }, err);
+      }
+      if (runtime.taskId) {
+        eventBus.emit("instance:state_changed", {
+          instanceId: runtime.id,
+          templateAgentId: runtime.templateAgentId,
+          taskId: runtime.taskId,
+          parentInstanceId: runtime.parentInstanceId,
+          rootInstanceId: runtime.rootInstanceId,
+          status: code === 0 ? "completed" : "failed",
+        });
+      }
     }
 
     // Check if this agent has an active delegation as parent
@@ -450,11 +651,35 @@ export class AgentManager {
     });
   }
 
+  private syncTemplateRuntimeState(templateAgentId: string, lastExitCode: number = 0): void {
+    try {
+      const runtimeIds = this.templateToInstances.get(templateAgentId);
+      if (runtimeIds && runtimeIds.size > 0) {
+        const first = this.agents.get(Array.from(runtimeIds)[0]);
+        this.db
+          .prepare("UPDATE agents SET process_pid = ?, status = 'busy' WHERE id = ?")
+          .run(first?.process.pid ?? null, templateAgentId);
+      } else {
+        this.db
+          .prepare("UPDATE agents SET process_pid = NULL, status = ? WHERE id = ?")
+          .run(lastExitCode === 0 ? "idle" : "error", templateAgentId);
+      }
+    } catch (err) {
+      logError(this.db, "agent.sync_template_runtime_state", { templateAgentId, lastExitCode }, err);
+    }
+  }
+
   private persistSessionId(agentId: string): void {
     const runningAgent = this.agents.get(agentId);
     if (!runningAgent?.sessionId) return;
 
     try {
+      this.db
+        .prepare(
+          "UPDATE agent_instances SET session_id = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .run(runningAgent.sessionId, agentId);
+
       // Upsert into agent_states with session_id in state_metadata
       this.db
         .prepare(
@@ -464,7 +689,7 @@ export class AgentManager {
              state_metadata = json_set(state_metadata, '$.session_id', ?),
              updated_at = datetime('now')`,
         )
-        .run(agentId, runningAgent.sessionId, runningAgent.sessionId);
+        .run(runningAgent.templateAgentId || runningAgent.id, runningAgent.sessionId, runningAgent.sessionId);
     } catch (err) {
       logError(this.db, "agent.persist_session_id", { agentId }, err);
     }
@@ -479,6 +704,11 @@ export class AgentManager {
 
     // DB-fallback: check agent_states
     try {
+      const instanceRow = this.db
+        .prepare("SELECT session_id FROM agent_instances WHERE id = ?")
+        .get(agentId) as { session_id: string | null } | null;
+      if (instanceRow?.session_id) return instanceRow.session_id;
+
       const row = this.db
         .prepare(
           "SELECT json_extract(state_metadata, '$.session_id') as session_id FROM agent_states WHERE agent_id = ?",
@@ -491,8 +721,29 @@ export class AgentManager {
     }
   }
 
+  clearSessionId(agentId: string): void {
+    const runningAgent = this.agents.get(agentId);
+    if (runningAgent) {
+      runningAgent.sessionId = null;
+    }
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO agent_states (agent_id, state, state_metadata)
+           VALUES (?, 'stopped', '{}')
+           ON CONFLICT(agent_id) DO UPDATE SET
+             state_metadata = json_remove(state_metadata, '$.session_id', '$.context_compact_needed', '$.context_compact_reason', '$.context_compact_marked_at', '$.last_input_tokens'),
+             updated_at = datetime('now')`,
+        )
+        .run(this.getTemplateAgentId(agentId) ?? agentId);
+    } catch (err) {
+      logError(this.db, "agent.clear_session_id", { agentId }, err);
+    }
+  }
+
   async sendResumeMessage(agentId: string, message: string, closeStdin = false): Promise<void> {
-    const agent = this.getAgent(agentId);
+    const templateAgentId = this.getTemplateAgentId(agentId) ?? agentId;
+    const agent = this.getAgent(templateAgentId);
     if (!agent) {
       throw new Error(`Agent not found: ${agentId}`);
     }
@@ -502,10 +753,41 @@ export class AgentManager {
       throw new Error(`Agent type ${agent.type} does not support resume`);
     }
 
+    const compactState = this.getContextCompactionState(agentId);
+    if (compactState.needed) {
+      const runtimeBeforeKill = this.agents.get(agentId);
+      if (this.agents.has(agentId)) {
+        this.respawningAgents.add(agentId);
+        this.killAgent(agentId);
+        await this.waitForExit(agentId);
+      }
+
+      const workingDir = process.cwd();
+      if (runtimeBeforeKill && runtimeBeforeKill.id !== runtimeBeforeKill.templateAgentId) {
+        await this.spawnAgentInstance(runtimeBeforeKill.templateAgentId, runtimeBeforeKill.id, {
+          workingDir,
+          taskId: runtimeBeforeKill.taskId,
+          parentInstanceId: runtimeBeforeKill.parentInstanceId,
+          rootInstanceId: runtimeBeforeKill.rootInstanceId,
+        });
+      } else {
+        await this.spawnAgent(templateAgentId, { workingDir });
+      }
+
+      const snapshot = this.buildContextCompactionSnapshot(agentId);
+      const compactedMessage = `[SYSTEM] Context compaction was triggered due to large history. Continue from this compacted state.\n\n${snapshot}\n\n${message}`;
+      this.sendInput(agentId, compactedMessage, closeStdin);
+      this.writeContextCompactionCheckpoint(agentId, compactState.lastInputTokens, snapshot);
+      this.clearContextCompactionFlag(agentId);
+      return;
+    }
+
     const sessionId = this.getSessionId(agentId);
     if (!sessionId) {
       throw new Error(`No session ID available for agent: ${agentId}`);
     }
+
+    const runtimeBeforeKill = this.agents.get(agentId);
 
     // Kill current process if running (with respawn guard)
     if (this.agents.has(agentId)) {
@@ -516,7 +798,17 @@ export class AgentManager {
 
     // Spawn new process with --resume
     const workingDir = process.cwd();
-    await this.spawnAgent(agentId, { workingDir, sessionId });
+    if (runtimeBeforeKill && runtimeBeforeKill.id !== runtimeBeforeKill.templateAgentId) {
+      await this.spawnAgentInstance(runtimeBeforeKill.templateAgentId, runtimeBeforeKill.id, {
+        workingDir,
+        sessionId,
+        taskId: runtimeBeforeKill.taskId,
+        parentInstanceId: runtimeBeforeKill.parentInstanceId,
+        rootInstanceId: runtimeBeforeKill.rootInstanceId,
+      });
+    } else {
+      await this.spawnAgent(templateAgentId, { workingDir, sessionId });
+    }
 
     // Send message
     this.sendInput(agentId, message, closeStdin);
@@ -546,45 +838,51 @@ export class AgentManager {
     // 3. Delegation: [DELEGATE to:<agent-id>] prompt
     const delMatch = line.match(SIGNAL_PATTERNS.delegate);
     if (delMatch) {
-      return { ...base, type: "delegate", targetAgent: delMatch[1], content: delMatch[2] };
+      return { ...base, type: "delegate", targetAgent: normalizeSignalTarget(delMatch[1]), content: delMatch[2] };
     }
 
     // 4. Delegation complete: [DELEGATE_COMPLETE] result
+    const delBatchMatch = line.match(SIGNAL_PATTERNS.delegateBatch);
+    if (delBatchMatch) {
+      return { ...base, type: "delegate_batch", content: delBatchMatch[1] };
+    }
+
+    // 5. Delegation complete: [DELEGATE_COMPLETE] result
     const delCompleteMatch = line.match(SIGNAL_PATTERNS.delegateComplete);
     if (delCompleteMatch) {
       return { ...base, type: "delegate_complete", content: delCompleteMatch[1] };
     }
 
-    // 5. Escalation: [ESCALATE] question
+    // 6. Escalation: [ESCALATE] question
     const escMatch = line.match(SIGNAL_PATTERNS.escalate);
     if (escMatch) {
       return { ...base, type: "escalate", content: escMatch[1] };
     }
 
-    // 6. Task note: [NOTE] content
+    // 7. Task note: [NOTE] content
     const noteMatch = line.match(SIGNAL_PATTERNS.note);
     if (noteMatch) {
       return { ...base, type: "note", content: noteMatch[1] };
     }
 
-    // 7. Task complete: [TASK_COMPLETE task:<id>] result
+    // 8. Task complete: [TASK_COMPLETE task:<id>] result
     const taskMatch = line.match(SIGNAL_PATTERNS.taskComplete);
     if (taskMatch) {
       return { ...base, type: "task_complete", taskId: taskMatch[1], content: taskMatch[2] };
     }
 
-    // 8. Phase complete: [PHASE_COMPLETE]
+    // 9. Phase complete: [PHASE_COMPLETE]
     if (SIGNAL_PATTERNS.phaseComplete.test(line)) {
       return { ...base, type: "phase_complete" };
     }
 
-    // 8b. Phase regression: [PHASE_REGRESSION N] reason
+    // 9b. Phase regression: [PHASE_REGRESSION N] reason
     const regMatch = line.match(SIGNAL_PATTERNS.phaseRegression);
     if (regMatch) {
       return { ...base, type: "phase_regression", targetPhase: parseInt(regMatch[1], 10), reason: regMatch[2] };
     }
 
-    // 9. Default: plain text
+    // 10. Default: plain text
     return { ...base, type: "text" };
   }
 
@@ -619,6 +917,9 @@ export class AgentManager {
 
       case "turn.completed":
         // Codex turn completion with usage stats
+        if (typeof json.usage?.input_tokens === "number" && json.usage.input_tokens >= this.contextCompactThreshold) {
+          this.markContextCompactionNeeded(agentId, json.usage.input_tokens);
+        }
         return { ...base, content: text ?? undefined };
 
       case "message":
@@ -644,6 +945,188 @@ export class AgentManager {
       default:
         // Background events, config dumps
         return { ...base, content: text ?? undefined };
+    }
+  }
+
+  private markContextCompactionNeeded(agentId: string, inputTokens: number): void {
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO agent_states (agent_id, state, state_metadata)
+           VALUES (?, 'working', json_object(
+             'context_compact_needed', 1,
+             'context_compact_reason', 'input_tokens_threshold',
+             'last_input_tokens', ?,
+             'context_compact_marked_at', datetime('now')
+           ))
+           ON CONFLICT(agent_id) DO UPDATE SET
+             state_metadata = json_set(
+               state_metadata,
+               '$.context_compact_needed', 1,
+               '$.context_compact_reason', 'input_tokens_threshold',
+               '$.last_input_tokens', ?,
+               '$.context_compact_marked_at', datetime('now')
+             ),
+             updated_at = datetime('now')`,
+        )
+        .run(agentId, inputTokens, inputTokens);
+    } catch (err) {
+      logError(this.db, "agent.mark_context_compaction", { agentId, inputTokens }, err);
+    }
+  }
+
+  private getContextCompactionState(agentId: string): { needed: boolean; lastInputTokens: number | null } {
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT
+             COALESCE(json_extract(state_metadata, '$.context_compact_needed'), 0) as needed,
+             json_extract(state_metadata, '$.last_input_tokens') as last_input_tokens
+           FROM agent_states
+           WHERE agent_id = ?`,
+        )
+        .get(agentId) as { needed: number; last_input_tokens: number | null } | null;
+
+      return {
+        needed: !!row?.needed,
+        lastInputTokens: row?.last_input_tokens ?? null,
+      };
+    } catch (err) {
+      logError(this.db, "agent.get_context_compaction_state", { agentId }, err);
+      return { needed: false, lastInputTokens: null };
+    }
+  }
+
+  private clearContextCompactionFlag(agentId: string): void {
+    try {
+      this.db
+        .prepare(
+          `UPDATE agent_states
+           SET state_metadata = json_remove(state_metadata, '$.context_compact_needed', '$.context_compact_reason', '$.context_compact_marked_at', '$.last_input_tokens'),
+               updated_at = datetime('now')
+           WHERE agent_id = ?`,
+        )
+        .run(agentId);
+    } catch (err) {
+      logError(this.db, "agent.clear_context_compaction", { agentId }, err);
+    }
+  }
+
+  private buildContextCompactionSnapshot(agentId: string): string {
+    const agentRow = this.db
+      .prepare("SELECT name, current_task_id FROM agents WHERE id = ?")
+      .get(agentId) as { name: string; current_task_id: string | null } | null;
+
+    if (!agentRow?.current_task_id) {
+      return "COMPACTED CONTEXT\n- No active task is currently assigned.";
+    }
+
+    const task = this.db
+      .prepare(
+        "SELECT id, title, description, status, current_phase, priority FROM tasks WHERE id = ?",
+      )
+      .get(agentRow.current_task_id) as {
+        id: string;
+        title: string;
+        description: string | null;
+        status: string;
+        current_phase: number;
+        priority: number;
+      } | null;
+
+    if (!task) {
+      return "COMPACTED CONTEXT\n- Active task reference is missing.";
+    }
+
+    const notes = this.db
+      .prepare(
+        `SELECT tn.content, a.name as agent_name
+         FROM task_notes tn
+         JOIN agents a ON a.id = tn.agent_id
+         WHERE tn.task_id = ?
+         ORDER BY tn.created_at DESC
+         LIMIT 8`,
+      )
+      .all(task.id) as { content: string; agent_name: string }[];
+
+    const delegations = this.db
+      .prepare(
+        `SELECT parent_agent_id, child_agent_id, status, substr(COALESCE(result, ''), 1, 180) as result_excerpt
+         FROM delegations
+         WHERE task_id = ?
+         ORDER BY created_at DESC
+         LIMIT 5`,
+      )
+      .all(task.id) as { parent_agent_id: string; child_agent_id: string; status: string; result_excerpt: string }[];
+
+    const artifacts = this.db
+      .prepare(
+        "SELECT name, type FROM artifacts WHERE task_id = ? ORDER BY created_at DESC LIMIT 5",
+      )
+      .all(task.id) as { name: string; type: string }[];
+
+    const lines: string[] = [];
+    lines.push("COMPACTED CONTEXT");
+    lines.push(`- Agent: ${agentRow.name}`);
+    lines.push(`- Task: ${task.title} (${task.id})`);
+    lines.push(`- Status: ${task.status} | Priority: ${task.priority} | Current phase index: ${task.current_phase}`);
+    if (task.description) {
+      lines.push(`- Task description: ${task.description.slice(0, 500)}`);
+    }
+    if (notes.length > 0) {
+      lines.push("");
+      lines.push("Recent notes:");
+      for (const note of notes.reverse()) {
+        lines.push(`- [${note.agent_name}] ${note.content.slice(0, 260)}`);
+      }
+    }
+    if (delegations.length > 0) {
+      lines.push("");
+      lines.push("Recent delegations:");
+      for (const d of delegations.reverse()) {
+        const excerpt = d.result_excerpt?.trim() ? ` | result: ${d.result_excerpt}` : "";
+        lines.push(`- ${d.parent_agent_id} -> ${d.child_agent_id} (${d.status})${excerpt}`);
+      }
+    }
+    if (artifacts.length > 0) {
+      lines.push("");
+      lines.push("Recent artifacts:");
+      for (const a of artifacts.reverse()) {
+        lines.push(`- ${a.name} (${a.type})`);
+      }
+    }
+    lines.push("");
+    lines.push("Continue from this snapshot and prioritize forward progress. Do not restate prior history unless necessary.");
+    return lines.join("\n");
+  }
+
+  private writeContextCompactionCheckpoint(agentId: string, inputTokens: number | null, snapshot: string): void {
+    try {
+      const row = this.db
+        .prepare("SELECT current_task_id FROM agents WHERE id = ?")
+        .get(agentId) as { current_task_id: string | null } | null;
+      const taskId = row?.current_task_id;
+      if (!taskId) return;
+
+      const sequenceRow = this.db
+        .prepare("SELECT COALESCE(MAX(sequence), 0) + 1 as next_seq FROM task_checkpoints WHERE task_id = ?")
+        .get(taskId) as { next_seq: number };
+
+      const sessionId = this.getSessionId(agentId);
+      const snapshotJson = JSON.stringify({
+        reason: "context_compaction",
+        input_tokens: inputTokens,
+        excerpt: snapshot.slice(0, 4000),
+      });
+
+      this.db
+        .prepare(
+          `INSERT INTO task_checkpoints (task_id, sequence, checkpoint_type, session_id, context_snapshot)
+           VALUES (?, ?, 'CONTEXT_COMPACTION', ?, ?)`,
+        )
+        .run(taskId, sequenceRow.next_seq, sessionId, snapshotJson);
+    } catch (err) {
+      logError(this.db, "agent.write_context_compaction_checkpoint", { agentId }, err);
     }
   }
 
@@ -692,6 +1175,10 @@ export class AgentManager {
   }
 
   updateAgent(id: string, input: UpdateAgentInput): Agent {
+    if (isSkipperAgent(id)) {
+      throw new Error("Skipper is configured via /skipper");
+    }
+
     const agent = this.getAgent(id);
     if (!agent) {
       throw new Error(`Agent not found: ${id}`);
@@ -737,6 +1224,10 @@ export class AgentManager {
   }
 
   deleteAgent(id: string): boolean {
+    if (isSkipperAgent(id)) {
+      throw new Error("Skipper cannot be deleted");
+    }
+
     const agent = this.getAgent(id);
     if (!agent) return false;
 
@@ -803,7 +1294,12 @@ export function detectSignalsInText(agentId: string, text: string): ParsedSignal
     // Check for delegation
     const delMatch = trimmed.match(SIGNAL_PATTERNS.delegate);
     if (delMatch) {
-      return { type: "delegate", agentId, raw: trimmed, targetAgent: delMatch[1], content: delMatch[2] };
+      return { type: "delegate", agentId, raw: trimmed, targetAgent: normalizeSignalTarget(delMatch[1]), content: delMatch[2] };
+    }
+
+    const delBatchMatch = trimmed.match(SIGNAL_PATTERNS.delegateBatch);
+    if (delBatchMatch) {
+      return { type: "delegate_batch", agentId, raw: trimmed, content: delBatchMatch[1] };
     }
 
     // Check for delegation complete

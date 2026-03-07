@@ -45,11 +45,19 @@ export function registerAgentRoutes(): void {
     }
 
     try {
+      let capabilities: string[] | undefined;
+      if (body.capabilities) {
+        try {
+          capabilities = JSON.parse(body.capabilities);
+        } catch {
+          return Response.json({ error: "Invalid capabilities JSON" }, { status: 400 });
+        }
+      }
       manager.createAgent({
         name: body.name,
         type: "claude-code",
         model: body.model,
-        capabilities: body.capabilities ? JSON.parse(body.capabilities) : undefined,
+        capabilities,
         instruction: body.instruction,
       });
       const agents = manager.listAgents() as unknown as AgentData[];
@@ -90,12 +98,20 @@ export function registerAgentRoutes(): void {
     }
 
     try {
+      let capabilities: string[] | undefined;
+      if (body.capabilities) {
+        try {
+          capabilities = JSON.parse(body.capabilities);
+        } catch {
+          return Response.json({ error: "Invalid capabilities JSON" }, { status: 400 });
+        }
+      }
       const updated = manager.updateAgent(params.id, {
         name: body.name,
         type: "claude-code",
         model: body.model,
         instruction: body.instruction,
-        capabilities: body.capabilities ? JSON.parse(body.capabilities) : undefined,
+        capabilities,
       }) as unknown as AgentData;
 
       if (req.headers.get("HX-Request")) {

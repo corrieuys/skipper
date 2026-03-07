@@ -9,7 +9,9 @@ export interface OrchestrationState {
   step: TaskOrchStep;
   last_checkpoint_ts: string | null;
   session_id: string | null;
-  active_delegation_id: string | null;
+  active_delegation_group_id: string | null;
+  active_delegation_child_count: number;
+  active_delegation_settled_count: number;
   phase_guards: string[];
   pending_regression: PendingRegression | null;
   checkpoint_prompt_hash: string | null;

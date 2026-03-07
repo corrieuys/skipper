@@ -44,7 +44,6 @@ describe("dashboardPage", () => {
     const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 100 } });
     expect(html).toContain("Dashboard");
     expect(html).toContain("No active tasks");
-    expect(html).toContain("No agents configured");
   });
 
   it("renders tasks and agents", () => {
@@ -60,9 +59,7 @@ describe("dashboardPage", () => {
     });
     expect(html).toContain("Build feature");
     expect(html).toContain("1 queued behind current task");
-    expect(html).toContain("Dev Agent");
     expect(html).toContain("badge-running");
-    expect(html).toContain("badge-busy");
   });
 
   it("focuses on current active task panel instead of metric cards", () => {
@@ -85,7 +82,8 @@ describe("dashboardPage", () => {
   it("connects to SSE endpoints for real-time updates", () => {
     const html = dashboardPage({ tasks: [], agents: [], daemon: { state: "running", uptime: 100 } });
     expect(html).toContain('sse-connect="/events/tasks"');
-    expect(html).toContain('sse-connect="/events/agents"');
+    expect(html).toContain('sse-connect="/events/instances"');
+    expect(html).toContain('sse-connect="/events/logs"');
   });
 
   it("shows daemon status badge", () => {
@@ -390,9 +388,9 @@ describe("agentsPage", () => {
     expect(html).toContain("Delete");
   });
 
-  it("hides delete button for busy agents", () => {
+  it("hides delete button for agents with running instances", () => {
     const html = agentsPage([
-      { id: "a1", name: "Busy", type: "claude-code", model: "default", status: "busy", capabilities: [], config: {}, process_pid: 1234, current_task_id: "t1" },
+      { id: "a1", name: "Busy", type: "claude-code", model: "default", status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null, running_instance_count: 2 },
     ]);
     expect(html).not.toContain("Delete");
   });

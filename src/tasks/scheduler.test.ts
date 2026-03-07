@@ -72,6 +72,47 @@ describe("createTask", () => {
   });
 });
 
+describe("deleteTask", () => {
+  it("deletes a non-running task", () => {
+    const task = scheduler.createTask({ title: "Task to delete" });
+    const deleted = scheduler.deleteTask(task.id);
+    expect(deleted).toBe(true);
+    expect(scheduler.getTask(task.id)).toBeNull();
+  });
+
+  it("throws when deleting a running task", () => {
+    const teamId = createTeam(db);
+    const task = scheduler.createTask({ title: "Running task", teamId });
+    scheduler.approveTask(task.id);
+    scheduler.startTask(task.id);
+    expect(() => scheduler.deleteTask(task.id)).toThrow("Cannot delete a running task");
+  });
+
+  it("removes non-cascading dependent rows tied to the task", () => {
+    const agentId = createAgent(db);
+    const task = scheduler.createTask({ title: "Task with deps" });
+
+    db.prepare(
+      "INSERT INTO escalations (id, agent_id, task_id, type, question) VALUES (?, ?, ?, 'agent_request', 'help')",
+    ).run("esc-del", agentId, task.id);
+    db.prepare(
+      "INSERT INTO messages (id, from_agent_id, to_agent_id, task_id, type, content) VALUES (?, ?, ?, ?, 'agent', 'msg')",
+    ).run("msg-del", agentId, agentId, task.id);
+    db.prepare(
+      "INSERT INTO events (type, payload, task_id) VALUES ('task:state_changed', '{}', ?)",
+    ).run(task.id);
+
+    scheduler.deleteTask(task.id);
+
+    const escalationCount = db.prepare("SELECT COUNT(*) AS c FROM escalations WHERE task_id = ?").get(task.id) as { c: number };
+    const messageCount = db.prepare("SELECT COUNT(*) AS c FROM messages WHERE task_id = ?").get(task.id) as { c: number };
+    const eventCount = db.prepare("SELECT COUNT(*) AS c FROM events WHERE task_id = ?").get(task.id) as { c: number };
+    expect(escalationCount.c).toBe(0);
+    expect(messageCount.c).toBe(0);
+    expect(eventCount.c).toBe(0);
+  });
+});
+
 describe("approveTask", () => {
   it("approves a draft task with team", () => {
     const teamId = createTeam(db);

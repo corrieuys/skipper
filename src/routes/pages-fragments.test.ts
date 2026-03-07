@@ -44,6 +44,7 @@ function seedBaseData(): void {
     `INSERT INTO delegations (id, parent_agent_id, child_agent_id, task_id, prompt, result, status)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run("deleg-1", "agent-1", "agent-2", "task-1", "Analyze logs", "Done", "completed");
+
 }
 
 beforeAll(() => {
@@ -65,6 +66,9 @@ beforeAll(() => {
 
 beforeEach(() => {
   const db = getDb();
+  db.exec("DELETE FROM terminal_outputs");
+  db.exec("DELETE FROM agent_sessions");
+  db.exec("DELETE FROM agent_instances");
   db.exec("DELETE FROM escalations");
   db.exec("DELETE FROM delegations");
   db.exec("DELETE FROM team_agents");
@@ -109,28 +113,30 @@ describe("fragment polling routes", () => {
     expect(html).toContain("Analyst Agent");
   });
 
-  it("GET /fragments/agents/list returns status badges", async () => {
+  it("GET /fragments/agents/list returns agent names and model", async () => {
     const res = await fetch(`${baseUrl}/fragments/agents/list`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('id="agent-list"');
     expect(html).toContain("Lead Agent");
-    expect(html).toContain("badge-idle");
+    expect(html).toContain("Model");
   });
 
-  it("GET /fragments/agents/:id/summary returns task/status", async () => {
+  it("GET /fragments/agents/:id/summary returns instance count", async () => {
     const db = getDb();
-    db.prepare("UPDATE agents SET status = 'busy', current_task_id = ?, process_pid = ? WHERE id = ?").run("task-1", 4321, "agent-2");
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, status)
+       VALUES (?, ?, ?, ?)`,
+    ).run("inst-1", "task-1", "agent-2", "running");
 
     const res = await fetch(`${baseUrl}/fragments/agents/agent-2/summary`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('id="agent-summary-fragment"');
-    expect(html).toContain("badge-busy");
-    expect(html).toContain("task-1");
+    expect(html).toContain("1 running");
   });
 
-  it("GET /fragments/teams/list returns team name and phase count", async () => {
+  it("GET /fragments/teams/list returns entrypoint and phase count", async () => {
     const res = await fetch(`${baseUrl}/fragments/teams/list`);
     expect(res.status).toBe(200);
     const html = await res.text();

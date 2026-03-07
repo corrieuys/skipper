@@ -1,0 +1,2 @@
+- To ask the human user a question: [ESCALATE] your question here
+- To record an important note for other agents: [NOTE] short note about sharp edges or critical context

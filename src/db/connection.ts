@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { dirname, resolve } from "path";
 import { mkdirSync, readFileSync } from "fs";
+import { SKIPPER_AGENT_ID, SKIPPER_AGENT_NAME } from "../agents/skipper";
 
 const MONOLITH_SCHEMA_PATH = resolve(import.meta.dir, "schema.sql");
 const CONFIG_SCHEMA_PATH = resolve(import.meta.dir, "schema.config.sql");
@@ -33,6 +34,8 @@ const RUNTIME_TABLES = [
   "agent_memories",
   "events",
   "artifacts",
+  "agent_instances",
+  "delegation_groups",
   "daemon_state",
   "error_log",
   "cli_runtimes",
@@ -71,6 +74,19 @@ function migrateLegacySchema(database: Database): void {
   ensureColumn(database, "terminal_outputs", "session_id", "TEXT");
   ensureColumn(database, "task_checkpoints", "session_id", "TEXT");
   ensureColumn(database, "agent_types", "resume_args", "TEXT");
+  ensureColumn(database, "delegations", "parent_instance_id", "TEXT");
+  ensureColumn(database, "delegations", "child_instance_id", "TEXT");
+  ensureColumn(database, "delegations", "delegation_group_id", "TEXT");
+  ensureColumn(database, "agents", "model", "TEXT NOT NULL DEFAULT 'default'");
+  ensureColumn(database, "agents", "config", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(database, "agents", "status", "TEXT NOT NULL DEFAULT 'idle'");
+  ensureColumn(database, "agents", "process_pid", "INTEGER");
+  ensureColumn(database, "agents", "current_task_id", "TEXT");
+  ensureColumn(database, "agents", "created_at", "TEXT DEFAULT ''");
+  ensureColumn(database, "agents", "updated_at", "TEXT DEFAULT ''");
+  ensureColumn(database, "teams", "updated_at", "TEXT DEFAULT ''");
+  ensureColumn(database, "teams", "phases", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(database, "teams", "goal", "TEXT");
   migrateAgentConfigGoalToInstruction(database);
   migrateTeamAgentsDropSkills(database);
 }
@@ -167,8 +183,8 @@ function seedAgentTypes(database: Database): void {
     JSON.stringify(["--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"]),
     null,
     "--model",
-    JSON.stringify(["opus", "sonnet", "haiku"]),
-    JSON.stringify({ ANTHROPIC_MODEL: "$MODEL" }),
+    JSON.stringify(["claude-sonnet-4-6", "claude-opus-4-6"]),
+    JSON.stringify({}),
     0,
     1,
     "--resume"
@@ -180,7 +196,7 @@ function seedAgentTypes(database: Database): void {
     JSON.stringify(["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"]),
     JSON.stringify(["exec", "resume", "{{session_id}}", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"]),
     null,
-    JSON.stringify(["default"]),
+    JSON.stringify(["gpt-5.3-codex"]),
     JSON.stringify({}),
     0,
     1,
@@ -200,13 +216,69 @@ function seedAgentTypes(database: Database): void {
     null
   );
 
-  database.prepare("UPDATE agent_types SET resume_args = NULL WHERE name = 'claude-code'").run();
   database.prepare(
-    "UPDATE agent_types SET args = ?, resume_args = ?, supports_resume = 1, resume_flag = NULL WHERE name = 'codex'",
+    "UPDATE agent_types SET resume_args = NULL, env_vars = '{}', available_models = ? WHERE name = 'claude-code'",
+  ).run(JSON.stringify(["claude-sonnet-4-6", "claude-opus-4-6"]));
+  database.prepare(
+    "UPDATE agent_types SET args = ?, resume_args = ?, supports_resume = 1, resume_flag = NULL, available_models = ? WHERE name = 'codex'",
   ).run(
     JSON.stringify(["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"]),
     JSON.stringify(["exec", "resume", "{{session_id}}", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"]),
+    JSON.stringify(["gpt-5.3-codex"]),
   );
+}
+
+function seedSkipperAgent(database: Database): void {
+  // Seed skipper_config defaults if not present
+  database.prepare(
+    "INSERT OR IGNORE INTO skipper_config (key, value) VALUES ('agent_type', 'claude-code')",
+  ).run();
+  database.prepare(
+    "INSERT OR IGNORE INTO skipper_config (key, value) VALUES ('model', 'default')",
+  ).run();
+
+  // Read current config
+  const typeRow = database.prepare("SELECT value FROM skipper_config WHERE key = 'agent_type'").get() as { value: string } | null;
+  const modelRow = database.prepare("SELECT value FROM skipper_config WHERE key = 'model'").get() as { value: string } | null;
+  const agentType = typeRow?.value ?? "claude-code";
+  const model = modelRow?.value ?? "default";
+
+  // Upsert skipper agent row
+  database.prepare(
+    `INSERT INTO agents (id, name, type, model, config, capabilities, status)
+     VALUES (?, ?, ?, ?, '{}', '["delegation","orchestration"]', 'idle')
+     ON CONFLICT(id) DO UPDATE SET
+       type = excluded.type,
+       model = excluded.model,
+       updated_at = datetime('now')`,
+  ).run(SKIPPER_AGENT_ID, SKIPPER_AGENT_NAME, agentType, model);
+
+  // Migration: for every existing team, ensure Skipper is a member at level 0 and set as entrypoint
+  const teams = database.prepare("SELECT id FROM teams").all() as { id: string }[];
+  for (const team of teams) {
+    // Check if skipper is already a member
+    const membership = database.prepare(
+      "SELECT id FROM team_agents WHERE team_id = ? AND agent_id = ?",
+    ).get(team.id, SKIPPER_AGENT_ID) as { id: string } | null;
+
+    if (!membership) {
+      // Bump existing level-0 workers to level 1
+      database.prepare(
+        "UPDATE team_agents SET level = level + 1 WHERE team_id = ? AND level = 0",
+      ).run(team.id);
+
+      // Add Skipper at level 0
+      const id = crypto.randomUUID();
+      database.prepare(
+        `INSERT INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, ?, 'lead', 0)`,
+      ).run(id, team.id, SKIPPER_AGENT_ID);
+    }
+
+    // Set Skipper as entrypoint
+    database.prepare(
+      "UPDATE teams SET entrypoint_agent_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ).run(SKIPPER_AGENT_ID, team.id);
+  }
 }
 
 function ensureSharedAttached(runtimeDb: Database): void {
@@ -216,7 +288,7 @@ function ensureSharedAttached(runtimeDb: Database): void {
   runtimeDb.exec(`ATTACH DATABASE '${escapeSqlString(configDbPath)}' AS shared`);
 }
 
-const SHARED_TABLES = ["agent_types", "state_patterns", "agents", "teams", "team_agents"] as const;
+const SHARED_TABLES = ["agent_types", "state_patterns", "agents", "teams", "team_agents", "skipper_config"] as const;
 
 function rewriteSqlForSplit(sql: string): string {
   let rewritten = sql;
@@ -335,6 +407,7 @@ function initializeSplitDatabases(runtimeDb: Database, sharedDb: Database): void
   runSchema(sharedDb, CONFIG_SCHEMA_PATH);
   migrateLegacySchema(sharedDb);
   seedAgentTypes(sharedDb);
+  seedSkipperAgent(sharedDb);
 
   resetLegacyRuntimeSchema(runtimeDb);
   runSchema(runtimeDb, RUNTIME_SCHEMA_PATH);
@@ -350,6 +423,7 @@ function initializeSingleDatabase(database: Database): void {
   runSchema(database, MONOLITH_SCHEMA_PATH);
   migrateLegacySchema(database);
   seedAgentTypes(database);
+  seedSkipperAgent(database);
 }
 
 export function getDb(dbPath?: string): Database {

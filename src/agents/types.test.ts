@@ -36,8 +36,8 @@ describe("getAgentTypeDefinition", () => {
     expect(def!.args).toContain("--output-format");
     expect(def!.args).toContain("stream-json");
     expect(def!.model_flag).toBe("--model");
-    expect(def!.available_models).toContain("opus");
-    expect(def!.available_models).toContain("sonnet");
+    expect(def!.available_models).toContain("claude-sonnet-4-6");
+    expect(def!.available_models).toContain("claude-opus-4-6");
     expect(def!.supports_stdin).toBe(false);
     expect(def!.supports_resume).toBe(true);
     expect(def!.resume_flag).toBe("--resume");
@@ -72,6 +72,7 @@ describe("getAgentTypeDefinition", () => {
   it("caches results in memory", () => {
     const first = getAgentTypeDefinition("claude-code", db);
     // Delete from DB to prove cache is used
+    db.prepare("DELETE FROM agents WHERE type = ?").run("claude-code");
     db.prepare("DELETE FROM agent_types WHERE name = ?").run("claude-code");
     const second = getAgentTypeDefinition("claude-code", db);
     expect(second).toEqual(first);
@@ -109,6 +110,7 @@ describe("listAgentTypes", () => {
   it("populates cache for all types", () => {
     listAgentTypes(db);
     // Delete from DB to prove cache is populated
+    db.prepare("DELETE FROM agents").run();
     db.prepare("DELETE FROM agent_types").run();
     const def = getAgentTypeDefinition("codex", db);
     expect(def).not.toBeNull();
@@ -121,6 +123,6 @@ describe("listAgentTypes", () => {
     expect(Array.isArray(claudeCode.args)).toBe(true);
     expect(Array.isArray(claudeCode.available_models)).toBe(true);
     expect(typeof claudeCode.env_vars).toBe("object");
-    expect(claudeCode.env_vars.ANTHROPIC_MODEL).toBe("$MODEL");
+    expect(claudeCode.env_vars).toEqual({});
   });
 });
