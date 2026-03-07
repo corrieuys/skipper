@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
-import { AgentManager, extractTextFromJsonEvent, detectSignalsInText } from "./manager";
+import { AgentManager, extractTextFromJsonEvent, detectSignalsInText, compactResumeMessage } from "./manager";
 import type { RunningAgent, JsonEvent } from "./manager";
 import { clearAgentTypeCache } from "./types";
 import { eventBus } from "../events/bus";
@@ -1003,6 +1003,50 @@ describe("sendResumeMessage", () => {
     // Agent should still be running (respawned)
     const running = manager.getRunningAgent(agent.id);
     expect(running).toBeDefined();
+  });
+});
+
+describe("compactResumeMessage", () => {
+  it("returns message unchanged when within limit", () => {
+    const msg = "Hello, short message";
+    expect(compactResumeMessage(msg, 200_000)).toBe(msg);
+  });
+
+  it("truncates delegation result content when message exceeds limit", () => {
+    const resultContent = "x".repeat(300_000);
+    const msg = `[DELEGATION_RESULT from:child-1]\n${resultContent}\n[END_DELEGATION_RESULT]`;
+    const compacted = compactResumeMessage(msg, 200_000);
+    expect(compacted.length).toBeLessThanOrEqual(200_000);
+    expect(compacted).toContain("[DELEGATION_RESULT from:child-1]");
+    expect(compacted).toContain("[END_DELEGATION_RESULT]");
+    expect(compacted).toContain("[PROMPT TRUNCATED");
+  });
+
+  it("preserves content outside delegation result markers", () => {
+    const prefix = "Important context before.\n";
+    const resultContent = "y".repeat(300_000);
+    const suffix = "\nImportant context after.";
+    const msg = `${prefix}[DELEGATION_RESULT from:child-1]\n${resultContent}\n[END_DELEGATION_RESULT]${suffix}`;
+    const compacted = compactResumeMessage(msg, 200_000);
+    expect(compacted.length).toBeLessThanOrEqual(200_000);
+    // Note: suffix is after END marker so it's part of the preserved suffix
+    expect(compacted).toContain("[END_DELEGATION_RESULT]");
+  });
+
+  it("falls back to whole-message truncation when no delegation markers", () => {
+    const msg = "a".repeat(300_000);
+    const compacted = compactResumeMessage(msg, 200_000);
+    expect(compacted.length).toBeLessThanOrEqual(200_000);
+    expect(compacted).toContain("[PROMPT TRUNCATED");
+  });
+
+  it("falls back to whole-message truncation when delegation overhead exceeds limit", () => {
+    // Create a message where prefix + markers exceed the limit entirely
+    const hugePrefix = "z".repeat(200_100);
+    const msg = `${hugePrefix}[DELEGATION_RESULT from:child-1]\nsmall result\n[END_DELEGATION_RESULT]`;
+    const compacted = compactResumeMessage(msg, 200_000);
+    expect(compacted.length).toBeLessThanOrEqual(200_000);
+    expect(compacted).toContain("[PROMPT TRUNCATED");
   });
 });
 

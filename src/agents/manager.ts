@@ -11,13 +11,14 @@ import { logError } from "../logging";
 const MAX_PROMPT_BYTES = 100_000;
 const TRUNCATION_MARKER = "\n\n[PROMPT TRUNCATED — original exceeded size limit. Work with the information above.]\n";
 
-// Resume message size thresholds. A large delegation result sent as a resume message
-// can trigger "Prompt is too long" before any output, so we compact proactively.
-// 200K chars ≈ 50K tokens — approaching Claude CLI's context window when combined with history.
-const PROACTIVE_COMPACTION_THRESHOLD_CHARS = 200_000;
-// Target size after compaction: trim back to 150K chars to leave headroom for history.
-const COMPACTION_TARGET_CHARS = 150_000;
-const COMPACTION_MARKER = "\n\n[CONTEXT COMPACTED — resume message truncated to fit context window. Work with the information above.]\n";
+// Proactive compaction threshold for resume messages — resume messages are injected
+// into an existing conversation that already consumes context, so use a lower limit.
+// 200K chars ≈ 50K tokens, leaving room for existing conversation history.
+const RESUME_COMPACT_CHARS = 200_000;
+
+// Delegation result markers used by compactResumeMessage
+const DELEGATION_RESULT_START = /\[DELEGATION_RESULT from:[^\]]+\]\n/;
+const DELEGATION_RESULT_END = "\n[END_DELEGATION_RESULT]";
 
 export interface Agent {
   id: string;
@@ -539,30 +540,24 @@ export class AgentManager {
       await this.waitForExit(agentId);
     }
 
+    // Proactive compaction: truncate large messages before sending
+    let compactedMessage = message;
+    if (message.length > RESUME_COMPACT_CHARS) {
+      compactedMessage = compactResumeMessage(message, RESUME_COMPACT_CHARS);
+      logError(this.db, "agent.resume_proactive_compact", {
+        agentId,
+        originalChars: message.length,
+        compactedChars: compactedMessage.length,
+        method: "sendResumeMessage",
+      });
+    }
+
     // Spawn new process with --resume
     const workingDir = process.cwd();
     await this.spawnAgent(agentId, { workingDir, sessionId });
 
-    // Proactive compaction: large resume messages (e.g. delegation results) can cause
-    // "Prompt is too long" before the agent produces any output, so compaction never
-    // triggers reactively. Truncate early when the message exceeds the threshold.
-    let outgoingMessage = message;
-    if (message.length > PROACTIVE_COMPACTION_THRESHOLD_CHARS) {
-      logError(this.db, "agent.resume_message_compacted", {
-        agentId,
-        originalLength: message.length,
-        targetLength: COMPACTION_TARGET_CHARS,
-      });
-      outgoingMessage = truncateToCharLimit(message, COMPACTION_TARGET_CHARS) + COMPACTION_MARKER;
-
-      // Fallback: if still over the byte limit after char-based truncation, apply byte truncation too.
-      if (Buffer.byteLength(outgoingMessage, "utf-8") > MAX_PROMPT_BYTES) {
-        outgoingMessage = truncateToByteLimit(outgoingMessage, MAX_PROMPT_BYTES) + COMPACTION_MARKER;
-      }
-    }
-
-    // Send message
-    this.sendInput(agentId, outgoingMessage, closeStdin);
+    // Send message (sendInput applies byte-level truncation as a second safety net)
+    this.sendInput(agentId, compactedMessage, closeStdin);
   }
 
   // --- Output parsing and signal detection ---
@@ -883,20 +878,6 @@ export function detectSignalsInText(agentId: string, text: string): ParsedSignal
 }
 
 /**
- * Truncate a string to fit within a character limit.
- * Cuts at the last newline boundary before the limit to avoid mid-line truncation.
- */
-export function truncateToCharLimit(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  let truncated = text.slice(0, maxChars);
-  const lastNewline = truncated.lastIndexOf("\n");
-  if (lastNewline > truncated.length * 0.8) {
-    truncated = truncated.slice(0, lastNewline);
-  }
-  return truncated;
-}
-
-/**
  * Truncate a string to fit within a byte limit without splitting multi-byte characters.
  * Cuts at the last newline boundary before the limit to avoid mid-line truncation.
  */
@@ -932,4 +913,40 @@ export function truncateToByteLimit(text: string, maxBytes: number): string {
   }
 
   return truncated;
+}
+
+/**
+ * Compact a resume message to fit within a character limit.
+ * First tries to truncate delegation result content specifically,
+ * then falls back to truncating the entire message.
+ */
+export function compactResumeMessage(message: string, maxChars: number): string {
+  if (message.length <= maxChars) return message;
+
+  // Try to truncate just the delegation result portion
+  const startMatch = message.match(DELEGATION_RESULT_START);
+  const endIdx = message.indexOf(DELEGATION_RESULT_END);
+
+  if (startMatch && endIdx > 0) {
+    const headerEnd = startMatch.index! + startMatch[0].length;
+    const prefix = message.slice(0, headerEnd);
+    const suffix = message.slice(endIdx); // includes [END_DELEGATION_RESULT]
+    const overhead = prefix.length + suffix.length + TRUNCATION_MARKER.length;
+    const availableForResult = maxChars - overhead;
+
+    if (availableForResult > 0) {
+      const resultContent = message.slice(headerEnd, endIdx);
+      const truncatedResult = resultContent.slice(0, availableForResult);
+      // Cut at last newline to avoid mid-line truncation
+      const lastNewline = truncatedResult.lastIndexOf("\n");
+      const cleanCut = lastNewline > truncatedResult.length * 0.5
+        ? truncatedResult.slice(0, lastNewline)
+        : truncatedResult;
+      const compacted = prefix + cleanCut + TRUNCATION_MARKER + suffix;
+      if (compacted.length <= maxChars) return compacted;
+    }
+  }
+
+  // Fallback: truncate the entire message
+  return message.slice(0, maxChars - TRUNCATION_MARKER.length) + TRUNCATION_MARKER;
 }
