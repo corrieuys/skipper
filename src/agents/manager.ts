@@ -6,6 +6,11 @@ import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
 import { logError } from "../logging";
 
+// ~100KB prompt limit — leaves headroom for system prompt and conversation context
+// in Claude CLI's ~200k token window. 1 token ≈ 4 bytes, so 100KB ≈ 25k tokens.
+const MAX_PROMPT_BYTES = 100_000;
+const TRUNCATION_MARKER = "\n\n[PROMPT TRUNCATED — original exceeded size limit. Work with the information above.]\n";
+
 export interface Agent {
   id: string;
   name: string;
@@ -389,7 +394,19 @@ export class AgentManager {
       throw new Error(`No running agent found: ${agentId}`);
     }
 
-    runningAgent.stdin.write(input + "\n");
+    let prompt = input;
+    const byteLength = Buffer.byteLength(prompt, "utf-8");
+    if (byteLength > MAX_PROMPT_BYTES) {
+      logError(this.db, "agent.prompt_truncated", {
+        agentId,
+        originalBytes: byteLength,
+        maxBytes: MAX_PROMPT_BYTES,
+        method: "sendInput",
+      });
+      prompt = truncateToByteLimit(prompt, MAX_PROMPT_BYTES) + TRUNCATION_MARKER;
+    }
+
+    runningAgent.stdin.write(prompt + "\n");
     runningAgent.stdin.flush();
 
     if (closeStdin) {
@@ -837,4 +854,42 @@ export function detectSignalsInText(agentId: string, text: string): ParsedSignal
   }
 
   return null;
+}
+
+/**
+ * Truncate a string to fit within a byte limit without splitting multi-byte characters.
+ * Cuts at the last newline boundary before the limit to avoid mid-line truncation.
+ */
+export function truncateToByteLimit(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf-8") <= maxBytes) return text;
+
+  // Binary search for the character index that fits within maxBytes
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = (low + high + 1) >>> 1;
+    if (Buffer.byteLength(text.slice(0, mid), "utf-8") <= maxBytes) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  // Avoid splitting a surrogate pair: if we landed on a low surrogate, step back
+  if (low > 0 && low < text.length) {
+    const code = text.charCodeAt(low - 1);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      low--;
+    }
+  }
+
+  let truncated = text.slice(0, low);
+
+  // Try to cut at the last newline to avoid mid-line truncation
+  const lastNewline = truncated.lastIndexOf("\n");
+  if (lastNewline > truncated.length * 0.8) {
+    truncated = truncated.slice(0, lastNewline);
+  }
+
+  return truncated;
 }
