@@ -36,6 +36,10 @@ export class PhaseManager {
     return this.pendingRegressions;
   }
 
+  clearPendingRegression(agentId: string): void {
+    this.pendingRegressions.delete(agentId);
+  }
+
   handlePhaseComplete(agentId: string): void {
     const agentRow = this.db
       .prepare("SELECT current_task_id FROM agents WHERE id = ?")
@@ -47,10 +51,9 @@ export class PhaseManager {
     const task = this.taskScheduler.getTask(taskId);
     if (!task || task.status !== "running") return;
 
-    // Dedup guard
+    // Dedup guard — key is only added after successful processing so failures allow retry
     const dedupKey = `${taskId}:${task.current_phase}`;
     if (this.phaseCompleteHandled.has(dedupKey)) return;
-    this.phaseCompleteHandled.add(dedupKey);
 
     const teamExec = task.team_id
       ? this.teamManager.getTeamForExecution(task.team_id)
@@ -60,6 +63,7 @@ export class PhaseManager {
     if (phases.length === 0 || task.current_phase >= phases.length - 1) {
       try {
         this.taskScheduler.completeTask(task.id);
+        this.phaseCompleteHandled.add(dedupKey);
       } catch (err) {
         logError(this.db, "phase_complete_task", { taskId: task.id, agentId, method: "handlePhaseComplete" }, err);
       }
@@ -96,6 +100,7 @@ export class PhaseManager {
       });
 
       this.agentManager.sendInput(entrypointAgentId, prompt);
+      this.phaseCompleteHandled.add(dedupKey);
 
       this.writeCheckpoint(task.id, "PHASE_START", { phase: nextPhase });
     }

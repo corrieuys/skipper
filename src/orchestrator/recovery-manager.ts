@@ -176,6 +176,11 @@ export class RecoveryManager {
       return false;
     }
 
+    if (!this.agentManager.getRunningAgent(entrypointAgentId)) {
+      logError(this.db, "recovery_spawn_unconfirmed", { taskId, agentId: entrypointAgentId, method: "recoverTask" }, new Error("Spawn did not result in a running agent"));
+      return false;
+    }
+
     this.db
       .prepare("UPDATE agents SET current_task_id = NULL WHERE current_task_id = ? AND id != ?")
       .run(taskId, entrypointAgentId);
