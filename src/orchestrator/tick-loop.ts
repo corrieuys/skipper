@@ -4,6 +4,7 @@ import type { TaskRunner } from "./task-runner";
 import type { RecoveryManager } from "./recovery-manager";
 import type { DelegationManager } from "./delegation-manager";
 import type { HealthMonitor } from "./health-monitor";
+import type { EscalationManager } from "../escalations/manager";
 import { logError } from "../logging";
 
 const RECONCILIATION_INTERVAL_MS = 30_000;
@@ -24,6 +25,7 @@ export class ReconciliationLoop {
     private readonly recoveryManager: RecoveryManager,
     private readonly delegationManager: DelegationManager,
     private readonly healthMonitor: HealthMonitor,
+    private readonly escalationManager?: EscalationManager,
   ) {}
 
   async start(): Promise<void> {
@@ -182,6 +184,12 @@ export class ReconciliationLoop {
 
       try {
         this.delegationManager.checkStaleDelegationGroups();
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
+
+      try {
+        this.escalationManager?.reconcileOpenEscalationsForInactiveTasks();
       } catch (err) {
         errors.push(err instanceof Error ? err.message : String(err));
       }

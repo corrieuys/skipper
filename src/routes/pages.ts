@@ -921,10 +921,10 @@ function escalationCardHtml(esc: EscalationData): string {
     </div>
     <div class="escalation-question"><strong>Question:</strong> ${escapeHtml(esc.question)}</div>
     <div class="muted">Agent: ${escapeHtml(esc.agent_id.slice(0, 8))} | Task: ${escapeHtml(esc.task_id.slice(0, 8))}${taskStatus}</div>
-    <form hx-post="/api/escalations/${escapeHtml(esc.id)}/resolve" hx-target="body" hx-swap="innerHTML" class="escalation-form">
+    ${esc.status === "open" ? `<form hx-post="/api/escalations/${escapeHtml(esc.id)}/resolve" hx-target="body" hx-swap="innerHTML" class="escalation-form">
       <textarea name="response" placeholder="Type your response..." rows="3" required></textarea>
       <button type="submit">Respond</button>
-    </form>
+    </form>` : `<div class="escalation-response"><strong>Response:</strong> ${esc.response ? escapeHtml(esc.response) : "-"}</div>`}
   </div>`;
 }
 

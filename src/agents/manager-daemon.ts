@@ -172,6 +172,7 @@ export class ManagerDaemon {
       this.recoveryManager,
       this.delegationManager,
       this.healthMonitor,
+      this.escalationManager,
     );
 
     this.registerExitHandler();

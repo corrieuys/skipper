@@ -3,6 +3,7 @@ import type { AgentManager } from "../agents/manager";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { StateTracker } from "../agents/state-tracker";
 import { logError } from "../logging";
+import { eventBus } from "../events/bus";
 
 const EXIT_CODE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const EXIT_CODE_CLUSTER_THRESHOLD = 3;
@@ -310,17 +311,27 @@ export class HealthMonitor {
 
       if (agentRow?.current_task_id) {
         try {
+          const escalationId = crypto.randomUUID();
+          const question = `Repeated exit code ${code} detected ${count} times in 5 minutes. Agents affected: ${[...new Set(this.exitCodeWindow.filter((e) => e.code === code).map((e) => e.agentId))].join(", ")}`;
           this.db
             .prepare(
               `INSERT INTO escalations (id, agent_id, task_id, type, question, severity)
                VALUES (?, ?, ?, 'incident', ?, 'high')`,
             )
             .run(
-              crypto.randomUUID(),
+              escalationId,
               agentId,
               agentRow.current_task_id,
-              `Repeated exit code ${code} detected ${count} times in 5 minutes. Agents affected: ${[...new Set(this.exitCodeWindow.filter((e) => e.code === code).map((e) => e.agentId))].join(", ")}`,
+              question,
             );
+
+          eventBus.emit("escalation:created", {
+            escalationId,
+            agentId,
+            taskId: agentRow.current_task_id,
+            type: "incident",
+            question,
+          });
         } catch (err) {
           logError(this.db, "exit_code_cluster_escalation", { code, count }, err);
         }

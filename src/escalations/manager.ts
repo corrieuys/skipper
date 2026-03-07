@@ -27,15 +27,16 @@ export class EscalationManager {
     this.agentManager = agentManager ?? new AgentManager(resolvedDb);
   }
 
+  /**
+   * Handle an escalation signal from an agent.
+   * The agentId may be a runtime instance ID or a template agent ID.
+   * We resolve the task from either the agent_instances table or the agents table.
+   */
   handleEscalation(agentId: string, question: string): Escalation | null {
-    // Validate agent has an active task
-    const agentRow = this.db
-      .prepare("SELECT current_task_id FROM agents WHERE id = ?")
-      .get(agentId) as { current_task_id: string | null } | null;
+    const resolved = this.resolveAgentAndTask(agentId);
+    if (!resolved) return null;
 
-    if (!agentRow?.current_task_id) return null;
-
-    const taskId = agentRow.current_task_id;
+    const { templateAgentId, taskId } = resolved;
 
     // Verify task is running
     const task = this.db
@@ -44,21 +45,20 @@ export class EscalationManager {
 
     if (!task || task.status !== "running") return null;
 
-    // Create escalation record
+    // Store the template agent ID in the escalation so resolution works correctly
     const escalation = this.createEscalation({
-      agentId,
+      agentId: templateAgentId,
       taskId,
       type: "agent_request",
       question,
     });
 
-    // Set agent state to escalated
-    this.setAgentState(agentId, "escalated");
+    // Set agent state to escalated using the template agent ID
+    this.setAgentState(templateAgentId, "escalated");
 
-    // Emit escalation:created event
     eventBus.emit("escalation:created", {
       escalationId: escalation.id,
-      agentId,
+      agentId: templateAgentId,
       taskId,
       type: "agent_request",
       question,
@@ -138,13 +138,12 @@ export class EscalationManager {
       )
       .run(response, escalationId);
 
-    // Inject response into agent
-    await this.injectResponse(escalation.agent_id, response);
+    // Inject response into agent (try runtime instances first, then template agent)
+    await this.injectResponse(escalation.agent_id, escalation.task_id, response);
 
     // Reset agent state to working
     this.setAgentState(escalation.agent_id, "working");
 
-    // Emit escalation:resolved event
     eventBus.emit("escalation:resolved", {
       escalationId,
       agentId: escalation.agent_id,
@@ -155,14 +154,70 @@ export class EscalationManager {
     return this.getEscalation(escalationId)!;
   }
 
-  private async injectResponse(agentId: string, response: string): Promise<void> {
+  /**
+   * Resolve the template agent ID and task ID from a runtime instance ID or template agent ID.
+   */
+  private resolveAgentAndTask(agentId: string): { templateAgentId: string; taskId: string } | null {
+    // First try: runtime instance lookup via AgentManager
+    const templateId = this.agentManager.getTemplateAgentId(agentId);
+    if (templateId) {
+      const running = this.agentManager.getRunningAgent(agentId);
+      if (running?.taskId) {
+        return { templateAgentId: templateId, taskId: running.taskId };
+      }
+    }
+
+    // Second try: agent_instances table (instance may have exited but record persists)
+    const instanceRow = this.db
+      .prepare(
+        `SELECT template_agent_id, task_id FROM agent_instances WHERE id = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(agentId) as { template_agent_id: string; task_id: string } | null;
+
+    if (instanceRow) {
+      return { templateAgentId: instanceRow.template_agent_id, taskId: instanceRow.task_id };
+    }
+
+    // Third try: template agents table (for non-instance agents or legacy compatibility)
+    const agentRow = this.db
+      .prepare("SELECT id, current_task_id FROM agents WHERE id = ?")
+      .get(agentId) as { id: string; current_task_id: string | null } | null;
+
+    if (agentRow?.current_task_id) {
+      return { templateAgentId: agentRow.id, taskId: agentRow.current_task_id };
+    }
+
+    return null;
+  }
+
+  /**
+   * Inject an escalation response back to the agent.
+   * Tries: running instance for the task → resume via template agent.
+   */
+  private async injectResponse(agentId: string, taskId: string, response: string): Promise<void> {
     const message = `[USER_RESPONSE] ${response}`;
 
-    // Try stdin first if agent is still running
+    // Try to find any running instance for this template agent on this task
+    for (const [runtimeId, running] of this.agentManager.getRunningAgents()) {
+      if (running.templateAgentId === agentId && running.taskId === taskId) {
+        try {
+          this.agentManager.sendInput(runtimeId, message);
+          return;
+        } catch (err) {
+          logError(this.db, "escalation.inject_stdin", { agentId, runtimeId }, err);
+        }
+      }
+    }
+
+    // No running instance — try direct runtime ID lookup (legacy path)
     const runningAgent = this.agentManager.getRunningAgent(agentId);
     if (runningAgent) {
-      this.agentManager.sendInput(agentId, message);
-      return;
+      try {
+        this.agentManager.sendInput(agentId, message);
+        return;
+      } catch (err) {
+        logError(this.db, "escalation.inject_stdin_direct", { agentId }, err);
+      }
     }
 
     // Agent not running — try resume
