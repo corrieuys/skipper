@@ -2,6 +2,7 @@ import { addRoute } from "../server";
 import { TaskScheduler } from "../tasks/scheduler";
 import { getDb } from "../db/connection";
 import { taskDetailPage, tasksPage, taskListFragment } from "../html/components";
+import { getPollIntervalSeconds } from "./pages";
 import type {
   ArtifactData,
   DelegationData,
@@ -60,7 +61,7 @@ async function parseBody(req: Request): Promise<Record<string, string>> {
 }
 
 function tasksPageResponse(): Response {
-  return html(tasksPage(listTaskRowsForUi(), listTeamsForUi()));
+  return html(tasksPage(listTaskRowsForUi(), listTeamsForUi(), getPollIntervalSeconds(getDb())));
 }
 
 function taskDetailResponse(id: string): Response {
@@ -106,7 +107,7 @@ function taskDetailResponse(id: string): Response {
      ORDER BY ar.created_at`,
   ).all(id) as ArtifactData[];
 
-  return html(taskDetailPage(task, notes, delegations, artifacts, listTeamsForUi()));
+  return html(taskDetailPage(task, notes, delegations, artifacts, listTeamsForUi(), getPollIntervalSeconds(getDb())));
 }
 
 export function registerTaskRoutes(): void {
