@@ -354,6 +354,87 @@ describe("spawnAgent", () => {
     expect(agent!.process_pid).toBeNull();
   });
 
+  it("emits hasDelegation=true when agent has active delegation as parent", async () => {
+    const { agentId } = createTestEchoAgent('echo "done"');
+    const childId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO agents (id, name, type, config, capabilities) VALUES (?, 'Child', 'test-echo', '{}', '[]')",
+    ).run(childId);
+
+    const taskId = crypto.randomUUID();
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, 'Test Task', 'running')").run(taskId);
+
+    // Create an active delegation where our agent is the parent
+    db.prepare(
+      "INSERT INTO delegations (id, parent_agent_id, child_agent_id, task_id, prompt, status) VALUES (?, ?, ?, ?, 'do work', 'running')",
+    ).run(crypto.randomUUID(), agentId, childId, taskId);
+
+    const exitEvents: AgentExitEvent[] = [];
+    const handler = (e: AgentExitEvent) => {
+      if (e.agentId === agentId) exitEvents.push(e);
+    };
+    eventBus.on("agent:exit", handler);
+
+    const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+    await running.process.exited;
+    await new Promise((r) => setTimeout(r, 100));
+
+    eventBus.off("agent:exit", handler);
+
+    expect(exitEvents).toHaveLength(1);
+    expect(exitEvents[0].hasDelegation).toBe(true);
+  });
+
+  it("emits hasDelegation=true when agent has active delegation as child", async () => {
+    const { agentId } = createTestEchoAgent('echo "done"');
+    const parentId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO agents (id, name, type, config, capabilities) VALUES (?, 'Parent', 'test-echo', '{}', '[]')",
+    ).run(parentId);
+
+    const taskId = crypto.randomUUID();
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, 'Test Task', 'running')").run(taskId);
+
+    // Create an active delegation where our agent is the child
+    db.prepare(
+      "INSERT INTO delegations (id, parent_agent_id, child_agent_id, task_id, prompt, status) VALUES (?, ?, ?, ?, 'do work', 'pending')",
+    ).run(crypto.randomUUID(), parentId, agentId, taskId);
+
+    const exitEvents: AgentExitEvent[] = [];
+    const handler = (e: AgentExitEvent) => {
+      if (e.agentId === agentId) exitEvents.push(e);
+    };
+    eventBus.on("agent:exit", handler);
+
+    const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+    await running.process.exited;
+    await new Promise((r) => setTimeout(r, 100));
+
+    eventBus.off("agent:exit", handler);
+
+    expect(exitEvents).toHaveLength(1);
+    expect(exitEvents[0].hasDelegation).toBe(true);
+  });
+
+  it("emits hasDelegation=false when no active delegation exists", async () => {
+    const { agentId } = createTestEchoAgent('echo "done"');
+
+    const exitEvents: AgentExitEvent[] = [];
+    const handler = (e: AgentExitEvent) => {
+      if (e.agentId === agentId) exitEvents.push(e);
+    };
+    eventBus.on("agent:exit", handler);
+
+    const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+    await running.process.exited;
+    await new Promise((r) => setTimeout(r, 100));
+
+    eventBus.off("agent:exit", handler);
+
+    expect(exitEvents).toHaveLength(1);
+    expect(exitEvents[0].hasDelegation).toBe(false);
+  });
+
   it("sets error status on non-zero exit", async () => {
     const { agentId } = createTestEchoAgent("exit 1");
     const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });

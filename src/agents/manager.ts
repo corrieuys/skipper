@@ -428,12 +428,25 @@ export class AgentManager {
       logError(this.db, "agent.process_exit_update", { agentId, code }, err);
     }
 
+    // Check if agent has an active delegation (as parent or child)
+    let hasDelegation = false;
+    try {
+      const delegation = this.db
+        .prepare(
+          "SELECT id FROM delegations WHERE (parent_agent_id = ? OR child_agent_id = ?) AND status IN ('pending', 'running') LIMIT 1",
+        )
+        .get(agentId, agentId) as { id: string } | null;
+      hasDelegation = delegation !== null;
+    } catch (err) {
+      logError(this.db, "agent.check_delegation", { agentId }, err);
+    }
+
     // Emit exit event
     eventBus.emit("agent:exit", {
       agentId,
       code,
       isRespawn,
-      hasDelegation: false,
+      hasDelegation,
     });
   }
 
