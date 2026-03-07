@@ -220,7 +220,12 @@ export class RecoveryManager {
       : "[SYSTEM] Task recovered after agent restart. Resuming from current phase.\n\n";
 
     const closeStdin = !isStreaming;
-    this.agentManager.sendInput(entrypointAgentId, recoveryPrefix + prompt, closeStdin);
+    try {
+      this.agentManager.sendInput(entrypointAgentId, recoveryPrefix + prompt, closeStdin);
+    } catch (err) {
+      logError(this.db, "recovery_send_input", { taskId, agentId: entrypointAgentId, method: "recoverTask" }, err);
+      return false;
+    }
 
     this.updateOrchestrationState(taskId, {
       step: "AGENT_RUNNING",
