@@ -1,8 +1,9 @@
 import { addRoute } from "../server";
 import { AgentManager } from "../agents/manager";
-import { isSkipperAgent } from "../agents/skipper";
+import { getDb } from "../db/connection";
 import { agentDetailPage, agentListFragment, agentsPage } from "../html/components";
-import type { AgentData } from "../html/components";
+import type { AgentData, AgentSessionData } from "../html/components";
+import { getPollIntervalSeconds } from "./pages";
 
 function htmlResponse(content: string, status = 200): Response {
   return new Response(content, {
@@ -30,9 +31,9 @@ export function registerAgentRoutes(): void {
   addRoute("POST", "/api/agents", async (req) => {
     const body = await parseBody(req);
 
-    if (!body.name || !body.type) {
+    if (!body.name) {
       return Response.json(
-        { error: "name and type are required" },
+        { error: "name is required" },
         { status: 400 },
       );
     }
@@ -54,7 +55,7 @@ export function registerAgentRoutes(): void {
       }
       manager.createAgent({
         name: body.name,
-        type: body.type,
+        type: "claude-code",
         model: body.model,
         capabilities,
         instruction: body.instruction,
@@ -83,9 +84,9 @@ export function registerAgentRoutes(): void {
   addRoute("POST", "/api/agents/:id", async (req, params) => {
     const body = await parseBody(req);
 
-    if (!body.name || !body.type) {
+    if (!body.name) {
       return Response.json(
-        { error: "name and type are required" },
+        { error: "name is required" },
         { status: 400 },
       );
     }
@@ -107,14 +108,18 @@ export function registerAgentRoutes(): void {
       }
       const updated = manager.updateAgent(params.id, {
         name: body.name,
-        type: body.type,
+        type: "claude-code",
         model: body.model,
         instruction: body.instruction,
         capabilities,
       }) as unknown as AgentData;
 
       if (req.headers.get("HX-Request")) {
-        return htmlResponse(agentDetailPage(updated));
+        const db = getDb();
+        const sessions = db.prepare(
+          "SELECT id, created_at FROM agent_sessions WHERE agent_id = ? ORDER BY created_at DESC",
+        ).all(updated.id) as AgentSessionData[];
+        return htmlResponse(agentDetailPage(updated, sessions, undefined, getPollIntervalSeconds(db)));
       }
 
       return Response.json(updated);

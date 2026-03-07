@@ -340,6 +340,71 @@ describe("advancePhase", () => {
       "Can only advance phase on running tasks",
     );
   });
+
+  it("throws when already at last phase of team config", () => {
+    // Create a team with 2 phases
+    const teamId = "team-phases";
+    db.prepare(
+      "INSERT INTO teams (id, name, phases) VALUES (?, ?, ?)",
+    ).run(teamId, "Phase Team", JSON.stringify([
+      { name: "Phase 1", prompt: "p1" },
+      { name: "Phase 2", prompt: "p2" },
+    ]));
+
+    const task = scheduler.createTask({ title: "Task", teamId });
+    scheduler.approveTask(task.id);
+    scheduler.startTask(task.id);
+
+    // Advance to phase 1 (index 1, last phase for a 2-phase team)
+    db.prepare("UPDATE tasks SET current_phase = 1 WHERE id = ?").run(task.id);
+
+    expect(() => scheduler.advancePhase(task.id)).toThrow(
+      "Cannot advance phase: already at last phase",
+    );
+  });
+
+  it("allows advancing when not yet at last phase", () => {
+    const teamId = "team-multi";
+    db.prepare(
+      "INSERT INTO teams (id, name, phases) VALUES (?, ?, ?)",
+    ).run(teamId, "Multi Phase Team", JSON.stringify([
+      { name: "Phase 1", prompt: "p1" },
+      { name: "Phase 2", prompt: "p2" },
+      { name: "Phase 3", prompt: "p3" },
+    ]));
+
+    const task = scheduler.createTask({ title: "Task", teamId });
+    scheduler.approveTask(task.id);
+    scheduler.startTask(task.id);
+
+    // Should succeed: phase 0 → 1
+    const advanced = scheduler.advancePhase(task.id);
+    expect(advanced.current_phase).toBe(1);
+  });
+
+  it("does not restrict advancement for tasks without a team", () => {
+    const task = scheduler.createTask({ title: "No Team Task" });
+    // Manually set to running since startTask requires approved
+    db.prepare("UPDATE tasks SET status = 'running' WHERE id = ?").run(task.id);
+
+    const advanced = scheduler.advancePhase(task.id);
+    expect(advanced.current_phase).toBe(1);
+  });
+
+  it("does not restrict advancement for teams with empty phases", () => {
+    const teamId = "team-no-phases";
+    db.prepare(
+      "INSERT INTO teams (id, name, phases) VALUES (?, ?, '[]')",
+    ).run(teamId, "No Phase Team");
+
+    const task = scheduler.createTask({ title: "Task", teamId });
+    scheduler.approveTask(task.id);
+    scheduler.startTask(task.id);
+
+    // No restriction on empty phases array
+    const advanced = scheduler.advancePhase(task.id);
+    expect(advanced.current_phase).toBe(1);
+  });
 });
 
 describe("regressPhase", () => {

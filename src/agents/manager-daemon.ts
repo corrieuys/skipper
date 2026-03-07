@@ -578,6 +578,7 @@ export class ManagerDaemon {
       if (event.code === 0) {
         await this.phaseManager.handleSuccessfulExit(task, event.agentId);
       } else {
+        this.phaseManager.clearPendingRegression(event.agentId);
         try {
           this.taskScheduler.failTask(taskId, `Agent exited with code ${event.code}`);
         } catch (err) {

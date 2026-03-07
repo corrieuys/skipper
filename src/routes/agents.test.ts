@@ -30,7 +30,6 @@ describe("POST /api/agents/:id", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: "Editable Agent",
-        type: "codex",
         model: "default",
         instruction: "Before",
       }),
@@ -47,7 +46,6 @@ describe("POST /api/agents/:id", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: "Edited Agent",
-        type: "codex",
         model: "default",
         instruction: "After",
       }),
@@ -64,7 +62,6 @@ describe("POST /api/agents/:id", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: "HTMX Agent",
-        type: "codex",
       }),
     });
     expect(create.status).toBe(201);
@@ -76,7 +73,6 @@ describe("POST /api/agents/:id", () => {
 
     const formData = new URLSearchParams();
     formData.set("name", "HTMX Agent Edited");
-    formData.set("type", "codex");
     formData.set("model", "default");
     formData.set("instruction", "New Goal");
 
@@ -102,7 +98,6 @@ describe("POST /api/agents/:id", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: "Legacy Goal Agent",
-        type: "codex",
         goal: "Old field",
       }),
     });

@@ -115,7 +115,7 @@ export interface RecentLogEntry {
 
 export interface DashboardData {
   tasks: { id: string; title: string; status: string; priority: number }[];
-  agents: { id: string; name: string; status: string; type: string; current_task_id: string | null }[];
+  agents: { id: string; name: string; status: string; current_task_id: string | null }[];
   daemon: { state: "running" | "pausing" | "paused" | "stopped"; uptime: number };
   runningInstances?: {
     id: string;
@@ -159,7 +159,7 @@ export function dashboardActiveTaskFragment(tasks: { id: string; title: string; 
 }
 
 export function dashboardAgentStatusFragment(
-  agents: { id: string; name: string; status: string; type: string; current_task_id?: string | null }[],
+  agents: { id: string; name: string; status: string; current_task_id?: string | null }[],
 ): string {
   if (agents.length === 0) {
     return `<div class="empty-state"><div class="empty-state-icon">&#9881;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>`;
@@ -168,7 +168,6 @@ export function dashboardAgentStatusFragment(
   return agents.map((agent) => `<div class="status-row">
       <span class="badge badge-${agent.status}">${agent.status}</span>
       <a href="/agents/${escapeHtml(agent.id)}" hx-get="/agents/${escapeHtml(agent.id)}" hx-target="body" hx-push-url="true" class="status-agent">${escapeHtml(agent.name)}</a>
-      <span class="muted">${escapeHtml(agent.type)}</span>
       <span class="muted">${agent.current_task_id ? escapeHtml(agent.current_task_id.slice(0, 8)) : "-"}</span>
     </div>`).join("");
 }
@@ -470,7 +469,7 @@ export interface ForensicsData {
 export type PollIntervalSeconds = 3 | 8;
 
 function pollingRoot(id: string, endpoint: string, pollIntervalSeconds: PollIntervalSeconds, content: string): string {
-  return `<div id="${escapeHtml(id)}" class="poll-fragment" hx-get="${escapeHtml(endpoint)}" hx-trigger="every ${pollIntervalSeconds}s" hx-swap="outerHTML">${content}</div>`;
+  return `<div id="${escapeHtml(id)}" class="poll-fragment" hx-get="${escapeHtml(endpoint)}" hx-trigger="every ${pollIntervalSeconds}s" hx-swap="outerHTML" hx-on:htmx:response-error="event.detail.shouldSwap=false">${content}</div>`;
 }
 
 export interface AuditEventData {
@@ -1032,7 +1031,7 @@ function taskTableRow(task: TaskData): string {
     <td><a href="/tasks/${escapeHtml(task.id)}" hx-get="/tasks/${escapeHtml(task.id)}" hx-target="body" hx-push-url="true">${escapeHtml(task.title)}</a></td>
     <td>${task.team_name ? escapeHtml(task.team_name) : "<span class='muted'>Unassigned</span>"}</td>
     <td>P${task.priority}</td>
-    <td>${task.current_phase}</td>
+    <td>${task.phases ? `Phase ${task.current_phase + 1}/${task.phases.length}` : `Phase ${task.current_phase + 1}`}</td>
     <td>${formatTimestamp(task.created_at)}</td>
     <td>${actions.join(" ")}</td>
   </tr>`;
@@ -1172,45 +1171,6 @@ function artifactCard(a: ArtifactData): string {
 
 // --- Agents ---
 
-const AGENT_TYPE_MODELS: Record<string, string[]> = {
-  "claude-code": ["claude-sonnet-4-6", "claude-opus-4-6"],
-  "codex": ["gpt-5.3-codex"],
-  "custom": [],
-};
-
-function agentTypeAndModelFields(selectedType: string, selectedModel: string, suffix: string): string {
-  const models = AGENT_TYPE_MODELS[selectedType] ?? [];
-  const effectiveModel = selectedModel === "default" || !selectedModel ? (models[0] ?? "default") : selectedModel;
-  const modelOptions = models.length > 0
-    ? models.map((m) => `<option value="${escapeHtml(m)}"${m === effectiveModel ? " selected" : ""}>${escapeHtml(m)}</option>`).join("")
-    : `<option value="default">default</option>`;
-
-  return `<label>Type
-          <select name="type" id="agent-type-${suffix}" onchange="skipperUpdateModels('${suffix}', this.value)">
-            <option value="claude-code"${selectedType === "claude-code" ? " selected" : ""}>claude-code</option>
-            <option value="codex"${selectedType === "codex" ? " selected" : ""}>codex</option>
-            <option value="custom"${selectedType === "custom" ? " selected" : ""}>custom</option>
-          </select>
-        </label>
-        <label>Model
-          <select name="model" id="agent-model-${suffix}">
-            ${modelOptions}
-          </select>
-        </label>
-        <script>
-          window.__skipperAgentModels = ${JSON.stringify(AGENT_TYPE_MODELS)};
-          function skipperUpdateModels(suffix, type) {
-            var sel = document.getElementById('agent-model-' + suffix);
-            var models = (window.__skipperAgentModels || {})[type] || [];
-            if (models.length === 0) {
-              sel.innerHTML = '<option value="default">default</option>';
-            } else {
-              sel.innerHTML = models.map(function(m) { return '<option value="' + m + '">' + m + '</option>'; }).join('');
-            }
-          }
-        </script>`;
-}
-
 export interface AgentData {
   id: string;
   name: string;
@@ -1244,7 +1204,7 @@ export function agentsPage(agents: AgentData[], pollIntervalSeconds: PollInterva
       <h3>Create Agent</h3>
       <form hx-post="/api/agents" hx-target="#agent-list" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.reset()">
         <label>Name <input type="text" name="name" required></label>
-        ${agentTypeAndModelFields("claude-code", "", "create")}
+        <label>Model <input type="text" name="model" placeholder="default"></label>
         <label>Instruction <input type="text" name="instruction"></label>
         <button type="submit">Create</button>
       </form>
@@ -1259,7 +1219,7 @@ export function agentListFragment(agents: AgentData[]): string {
   return agents.length === 0
     ? `<div class="empty-state"><div class="empty-state-icon">&#129302;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>`
     : `<table class="data-table">
-        <thead><tr><th>Name</th><th>Type</th><th>Model</th><th>Instances</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Status</th><th>Name</th><th>Model</th><th>Task</th><th>Actions</th></tr></thead>
         <tbody>${agents.map(agentTableRow).join("")}</tbody>
       </table>`;
 }
@@ -1283,10 +1243,10 @@ function agentTableRow(agent: AgentData): string {
     : `<span class="muted">-</span>`;
 
   return `<tr>
+    <td><span class="badge badge-${agent.status}">${agent.status}</span></td>
     <td>${nameHtml}</td>
-    <td>${escapeHtml(agent.type)}</td>
     <td>${escapeHtml(agent.model)}</td>
-    <td>${instancesHtml}</td>
+    <td>${agent.current_task_id ? escapeHtml(agent.current_task_id.slice(0, 8)) : "-"}</td>
     <td>${actionsHtml}</td>
   </tr>`;
 }
@@ -1303,10 +1263,10 @@ function agentDetailSummaryContent(agent: AgentData): string {
     : `<span class="muted">None</span>`;
   return `<div class="card">
       <div class="detail-grid">
-        <div><strong>Type:</strong> ${escapeHtml(agent.type)}</div>
+        <div><strong>Status:</strong> <span class="badge badge-${agent.status}">${agent.status}</span></div>
         <div><strong>Model:</strong> ${escapeHtml(agent.model)}</div>
         <div><strong>Active Instances:</strong> ${instancesHtml}</div>
-        <div><strong>Capabilities:</strong> ${agent.capabilities.length > 0 ? agent.capabilities.map(escapeHtml).join(", ") : "None"}</div>
+        <div><strong>Task:</strong> ${agent.current_task_id ?? "None"}</div>
       </div>
       ${agent.config.instruction ? `<div class="detail-desc"><strong>Instruction:</strong><p>${escapeHtml(String(agent.config.instruction))}</p></div>` : ""}
     </div>`;
@@ -1381,7 +1341,7 @@ export function agentDetailPage(
       <h2>Edit Agent</h2>
       ${instanceCount > 0 ? `<p class="muted">Agents with running instances cannot be edited.</p>` : `<form hx-post="/api/agents/${escapeHtml(agent.id)}" hx-target="body" hx-swap="innerHTML">
         <label>Name <input type="text" name="name" value="${escapeHtml(agent.name)}" required></label>
-        ${agentTypeAndModelFields(agent.type, agent.model, "edit")}
+        <label>Model <input type="text" name="model" value="${escapeHtml(agent.model)}" placeholder="default"></label>
         <label>Instruction <input type="text" name="instruction" value="${agent.config.instruction ? escapeHtml(String(agent.config.instruction)) : ""}"></label>
         <button type="submit">Save Changes</button>
       </form>`}
@@ -1526,7 +1486,7 @@ export function teamListFragment(teams: TeamData[]): string {
   return teams.length === 0
     ? `<div class="empty-state"><div class="empty-state-icon">&#128101;</div><p>No teams configured</p><p class="muted">Create a team to organize your agents</p></div>`
     : `<table class="data-table">
-        <thead><tr><th>Name</th><th>Goal</th><th>Entrypoint</th><th>Phases</th></tr></thead>
+        <thead><tr><th>Name</th><th>Goal</th><th>Phases</th></tr></thead>
         <tbody>${teams.map(teamTableRow).join("")}</tbody>
       </table>`;
 }
@@ -1562,7 +1522,6 @@ function teamTableRow(team: TeamData): string {
   return `<tr>
     <td><a href="/teams/${escapeHtml(team.id)}" hx-get="/teams/${escapeHtml(team.id)}" hx-target="body" hx-push-url="true">${escapeHtml(team.name)}</a></td>
     <td>${team.goal ? escapeHtml(team.goal) : "-"}</td>
-    <td>${team.entrypoint_agent_name ? escapeHtml(team.entrypoint_agent_name) : "None"}</td>
     <td>${team.phases.length}</td>
   </tr>`;
 }
@@ -1631,7 +1590,6 @@ function teamDetailSummaryContent(team: TeamData, _agents: TeamAgentData[]): str
       <h1>${escapeHtml(team.name)}</h1>
       <div class="team-hero-meta">
         <span class="badge badge-phase-index">${team.phases.length} phase${team.phases.length === 1 ? "" : "s"}</span>
-        <span class="muted">Lead: <a href="/skipper" hx-get="/skipper" hx-target="body" hx-push-url="true">Skipper</a></span>
       </div>
     </div>`;
 }
@@ -1666,7 +1624,6 @@ function teamMemberCard(team: TeamData, a: TeamAgentData): string {
   return `<form hx-post="/api/teams/${escapeHtml(team.id)}/agents/${escapeHtml(a.agent_id)}" hx-target="body" hx-swap="innerHTML" class="member-card">
       <div class="member-card-head">
         <strong>${escapeHtml(a.agent_name)}</strong>
-        <span class="muted">${escapeHtml(a.agent_id.slice(0, 8))}</span>
       </div>
       <div class="member-grid">
         <label>Role <input type="text" name="role" value="${a.role ? escapeHtml(a.role) : ""}" placeholder="Role"></label>

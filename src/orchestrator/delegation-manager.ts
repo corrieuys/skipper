@@ -548,7 +548,13 @@ export class DelegationManager {
     });
 
     const closeStdin = !isStreaming;
-    this.agentManager.sendInput(input.childInstanceId, prompt, closeStdin);
+    try {
+      this.agentManager.sendInput(input.childInstanceId, prompt, closeStdin);
+    } catch (err) {
+      logError(this.db, "delegation_send_input", { delegationId: input.delegationId, childInstanceId: input.childInstanceId, method: "spawnChildInstance" }, err);
+      this.agentManager.killAgent(input.childInstanceId);
+      return false;
+    }
 
     eventBus.emit("instance:state_changed", {
       instanceId: input.childInstanceId,

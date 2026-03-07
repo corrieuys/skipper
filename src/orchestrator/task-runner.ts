@@ -6,6 +6,7 @@ import type { TeamManager } from "../teams/manager";
 import { getAgentTypeDefinition } from "../agents/types";
 import { SKIPPER_AGENT_ID } from "../agents/skipper";
 import { eventBus } from "../events/bus";
+import { logError } from "../logging";
 import type { OrchestrationState } from "./types";
 
 export class TaskRunner {
@@ -134,7 +135,16 @@ export class TaskRunner {
     });
 
     const closeStdin = !isStreaming;
-    this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+    try {
+      this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+    } catch (err) {
+      logError(this.db, "task_startup_send_input", { taskId: task.id, agentId: entrypointAgentId, method: "processTaskQueue" }, err);
+      this.taskScheduler.failTask(
+        task.id,
+        `Failed to send initial prompt: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { processed: 1 };
+    }
 
     this.updateOrchestrationState(task.id, {
       step: "AGENT_RUNNING",

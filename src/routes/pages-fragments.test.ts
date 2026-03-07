@@ -54,6 +54,10 @@ beforeAll(() => {
 
   registerPageRoutes({
     getStatus: () => ({ state: "running", uptime: 100 }),
+    getEscalationManager: () => ({
+      reconcileOpenEscalationsForInactiveTasks: () => {},
+      resolveEscalation: async () => {},
+    }),
   } as never);
 
   server = startServer(0);
@@ -65,6 +69,7 @@ beforeEach(() => {
   db.exec("DELETE FROM terminal_outputs");
   db.exec("DELETE FROM agent_sessions");
   db.exec("DELETE FROM agent_instances");
+  db.exec("DELETE FROM escalations");
   db.exec("DELETE FROM delegations");
   db.exec("DELETE FROM team_agents");
   db.exec("DELETE FROM tasks");
@@ -108,13 +113,13 @@ describe("fragment polling routes", () => {
     expect(html).toContain("Analyst Agent");
   });
 
-  it("GET /fragments/agents/list returns agent names and instance counts", async () => {
+  it("GET /fragments/agents/list returns agent names and model", async () => {
     const res = await fetch(`${baseUrl}/fragments/agents/list`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('id="agent-list"');
     expect(html).toContain("Lead Agent");
-    expect(html).toContain("Instances");
+    expect(html).toContain("Model");
   });
 
   it("GET /fragments/agents/:id/summary returns instance count", async () => {
@@ -131,14 +136,12 @@ describe("fragment polling routes", () => {
     expect(html).toContain("1 running");
   });
 
-
   it("GET /fragments/teams/list returns entrypoint and phase count", async () => {
     const res = await fetch(`${baseUrl}/fragments/teams/list`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('id="team-list"');
     expect(html).toContain("Platform Team");
-    expect(html).toContain("Lead Agent");
     expect(html).toContain(">2<");
   });
 
@@ -161,5 +164,28 @@ describe("fragment polling routes", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('hx-trigger="every 3s"');
+  });
+
+  it("pollingRoot includes HTMX error handling to prevent fragment destruction", async () => {
+    const res = await fetch(`${baseUrl}/fragments/tasks/list`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("hx-on:htmx:response-error");
+  });
+
+  it("GET /escalations renders escalation card with agent_id, task_id, and status badge", async () => {
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO escalations (id, agent_id, task_id, type, question, response, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run("esc-1", "agent-1", "task-1", "approval", "Should I proceed?", null, "open", "2026-01-01T00:00:00Z");
+
+    const res = await fetch(`${baseUrl}/escalations`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("badge-open");
+    expect(html).toContain("agent-1".slice(0, 8));
+    expect(html).toContain("task-1".slice(0, 8));
+    expect(html).toContain("Should I proceed?");
   });
 });

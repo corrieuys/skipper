@@ -5,6 +5,7 @@ import { getDb } from "../db/connection";
 import { isSkipperAgent } from "../agents/skipper";
 import { teamListFragment, teamDetailPage } from "../html/components";
 import type { TeamData, TeamAgentData } from "../html/components";
+import { getPollIntervalSeconds } from "./pages";
 
 function html(content: string): Response {
   return new Response(content, {
@@ -83,7 +84,7 @@ function renderTeamDetailPage(db: Database, teamId: string): Response {
   if (!team) return new Response("<p>Team not found</p>", { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
   const agents = getTeamAgentsWithNames(db, teamId);
   const availableAgents = getAvailableAgentsForTeam(db, teamId);
-  return html(teamDetailPage(team, agents, availableAgents));
+  return html(teamDetailPage(team, agents, availableAgents, getPollIntervalSeconds(db)));
 }
 
 function normalizeSkills(value: unknown): string[] {

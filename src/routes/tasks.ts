@@ -2,6 +2,7 @@ import { addRoute } from "../server";
 import { TaskScheduler } from "../tasks/scheduler";
 import { getDb } from "../db/connection";
 import { taskDetailPage, tasksPage, taskListFragment, diagnosticCard } from "../html/components";
+import { getPollIntervalSeconds } from "./pages";
 import type {
   ArtifactData,
   DelegationData,
@@ -69,7 +70,7 @@ async function parseBody(req: Request): Promise<Record<string, string>> {
 }
 
 function tasksPageResponse(errorMessage?: string): Response {
-  return html(tasksPage(listTaskRowsForUi(), listTeamsForUi(), 8, errorMessage));
+  return html(tasksPage(listTaskRowsForUi(), listTeamsForUi(), getPollIntervalSeconds(getDb()), errorMessage));
 }
 
 function taskDetailResponse(id: string): Response {
@@ -120,7 +121,7 @@ function taskDetailResponse(id: string): Response {
     task.healthSummary = fetchTaskHealthSummary(id, db);
   }
 
-  return html(taskDetailPage(task, notes, delegations, artifacts, listTeamsForUi()));
+  return html(taskDetailPage(task, notes, delegations, artifacts, listTeamsForUi(), getPollIntervalSeconds(getDb())));
 }
 
 function fetchTaskHealthSummary(taskId: string, db: ReturnType<typeof getDb>): TaskHealthSummary {
