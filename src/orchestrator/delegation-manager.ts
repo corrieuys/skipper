@@ -17,6 +17,13 @@ const GROUP_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 const GROUP_TIMEOUT_SECONDS = Math.floor(GROUP_TIMEOUT_MS / 1000);
 const CHILD_FAILURE_ESCALATION_THRESHOLD = 2;
 
+export const MAX_DELEGATION_RESULT_CHARS = 50_000;
+
+export function truncateResult(text: string, limit: number = MAX_DELEGATION_RESULT_CHARS): string {
+  if (text.length <= limit) return text;
+  return text.slice(0, limit) + "\n\n[truncated — result exceeded " + limit + " characters]";
+}
+
 export interface Delegation {
   id: string;
   parent_agent_id: string;
@@ -281,7 +288,7 @@ export class DelegationManager {
   handleChildExit(delegation: Delegation, event: { agentId: string; code: number | null }): void {
     try {
       if (event.code === 0) {
-        const result = this.gatherTerminalOutput(event.agentId);
+        const result = truncateResult(this.gatherTerminalOutput(event.agentId));
         this.db
           .prepare(
             "UPDATE delegations SET status = 'completed', result = ?, completed_at = datetime('now') WHERE id = ?",

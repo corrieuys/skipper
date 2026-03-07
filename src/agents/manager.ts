@@ -9,6 +9,17 @@ import { logError } from "../logging";
 
 const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB
 
+// ~100KB prompt limit — leaves headroom for system prompt and conversation context
+const MAX_PROMPT_BYTES = 100_000;
+const TRUNCATION_MARKER = "\n\n[PROMPT TRUNCATED — original exceeded size limit. Work with the information above.]\n";
+
+// Proactive compaction threshold for resume messages
+const RESUME_COMPACT_CHARS = 200_000;
+
+// Delegation result markers used by compactResumeMessage
+const DELEGATION_RESULT_START = /\[DELEGATION_RESULT from:[^\]]+\]\n/;
+const DELEGATION_RESULT_END = "\n[END_DELEGATION_RESULT]";
+
 export interface Agent {
   id: string;
   name: string;
