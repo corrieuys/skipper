@@ -305,6 +305,18 @@ export class TaskScheduler {
       throw new Error(`Can only advance phase on running tasks`);
     }
 
+    if (task.team_id) {
+      const teamRow = this.db
+        .prepare("SELECT phases FROM teams WHERE id = ?")
+        .get(task.team_id) as { phases: string } | null;
+      if (teamRow) {
+        const phases = JSON.parse(teamRow.phases) as unknown[];
+        if (phases.length > 0 && task.current_phase >= phases.length - 1) {
+          throw new Error(`Cannot advance phase: already at last phase (${task.current_phase})`);
+        }
+      }
+    }
+
     this.db
       .prepare(
         `UPDATE tasks SET current_phase = current_phase + 1, updated_at = datetime('now')
