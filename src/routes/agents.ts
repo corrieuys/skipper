@@ -1,7 +1,9 @@
 import { addRoute } from "../server";
 import { AgentManager } from "../agents/manager";
+import { getDb } from "../db/connection";
 import { agentDetailPage, agentListFragment, agentsPage } from "../html/components";
-import type { AgentData } from "../html/components";
+import type { AgentData, AgentSessionData } from "../html/components";
+import { getPollIntervalSeconds } from "./pages";
 
 function htmlResponse(content: string, status = 200): Response {
   return new Response(content, {
@@ -97,7 +99,11 @@ export function registerAgentRoutes(): void {
       }) as unknown as AgentData;
 
       if (req.headers.get("HX-Request")) {
-        return htmlResponse(agentDetailPage(updated));
+        const db = getDb();
+        const sessions = db.prepare(
+          "SELECT id, created_at FROM agent_sessions WHERE agent_id = ? ORDER BY created_at DESC",
+        ).all(updated.id) as AgentSessionData[];
+        return htmlResponse(agentDetailPage(updated, sessions, undefined, getPollIntervalSeconds(db)));
       }
 
       return Response.json(updated);

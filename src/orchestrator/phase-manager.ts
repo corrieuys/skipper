@@ -36,6 +36,10 @@ export class PhaseManager {
     return this.pendingRegressions;
   }
 
+  clearPendingRegression(agentId: string): void {
+    this.pendingRegressions.delete(agentId);
+  }
+
   handlePhaseComplete(agentId: string): void {
     const agentRow = this.db
       .prepare("SELECT current_task_id FROM agents WHERE id = ?")
@@ -47,10 +51,9 @@ export class PhaseManager {
     const task = this.taskScheduler.getTask(taskId);
     if (!task || task.status !== "running") return;
 
-    // Dedup guard
+    // Dedup guard — key is only added after successful processing so failures allow retry
     const dedupKey = `${taskId}:${task.current_phase}`;
     if (this.phaseCompleteHandled.has(dedupKey)) return;
-    this.phaseCompleteHandled.add(dedupKey);
 
     const teamExec = task.team_id
       ? this.teamManager.getTeamForExecution(task.team_id)
@@ -60,6 +63,7 @@ export class PhaseManager {
     if (phases.length === 0 || task.current_phase >= phases.length - 1) {
       try {
         this.taskScheduler.completeTask(task.id);
+        this.phaseCompleteHandled.add(dedupKey);
       } catch (err) {
         logError(this.db, "phase_complete_task", { taskId: task.id, agentId, method: "handlePhaseComplete" }, err);
       }
@@ -95,7 +99,18 @@ export class PhaseManager {
         isStreaming,
       });
 
-      this.agentManager.sendInput(entrypointAgentId, prompt);
+      try {
+        this.agentManager.sendInput(entrypointAgentId, prompt);
+        this.phaseCompleteHandled.add(dedupKey);
+      } catch (err) {
+        logError(this.db, "phase_advance_send_input", { taskId: task.id, agentId: entrypointAgentId, phase: nextPhase, method: "handlePhaseComplete" }, err);
+        try {
+          this.taskScheduler.failTask(task.id, `Failed to send phase ${nextPhase} prompt: ${err instanceof Error ? err.message : String(err)}`);
+        } catch (innerErr) {
+          logError(this.db, "phase_advance_fail_task", { taskId: task.id, method: "handlePhaseComplete" }, innerErr);
+        }
+        return;
+      }
 
       this.writeCheckpoint(task.id, "PHASE_START", { phase: nextPhase });
     }
@@ -158,7 +173,14 @@ export class PhaseManager {
     const isStreaming = typeDef?.supports_stdin ?? false;
 
     if (isStreaming) {
-      this.respawnForRegression(task, teamExec.entrypoint_agent_id, phases, targetPhase, reason);
+      this.respawnForRegression(task, teamExec.entrypoint_agent_id, phases, targetPhase, reason).catch((err) => {
+        logError(this.db, "regression_respawn_async", { taskId: task.id, agentId, targetPhase, method: "handlePhaseRegression" }, err);
+        try {
+          this.taskScheduler.failTask(task.id, `Failed to respawn for regression: ${err instanceof Error ? err.message : String(err)}`);
+        } catch (innerErr) {
+          logError(this.db, "regression_respawn_async_fail_task", { taskId: task.id, method: "handlePhaseRegression" }, innerErr);
+        }
+      });
     } else {
       this.pendingRegressions.set(agentId, { targetPhase, reason });
     }
@@ -224,7 +246,16 @@ export class PhaseManager {
     });
 
     const closeStdin = !isStreaming;
-    this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+    try {
+      this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+    } catch (err) {
+      logError(this.db, "regression_send_input", { taskId: task.id, agentId: entrypointAgentId, targetPhase, method: "respawnForRegression" }, err);
+      try {
+        this.taskScheduler.failTask(task.id, `Failed to send regression prompt: ${err instanceof Error ? err.message : String(err)}`);
+      } catch (innerErr) {
+        logError(this.db, "regression_send_input_fail_task", { taskId: task.id, method: "respawnForRegression" }, innerErr);
+      }
+    }
   }
 
   handleSuccessfulExit(task: Task, agentId: string): void {
@@ -242,7 +273,14 @@ export class PhaseManager {
           phases,
           pendingRegression.targetPhase,
           pendingRegression.reason,
-        );
+        ).catch((err) => {
+          logError(this.db, "regression_respawn_on_exit", { taskId: task.id, agentId, method: "handleSuccessfulExit" }, err);
+          try {
+            this.taskScheduler.failTask(task.id, `Failed to respawn for regression after exit: ${err instanceof Error ? err.message : String(err)}`);
+          } catch (innerErr) {
+            logError(this.db, "regression_respawn_on_exit_fail_task", { taskId: task.id, method: "handleSuccessfulExit" }, innerErr);
+          }
+        });
       }
       return;
     }
@@ -259,7 +297,14 @@ export class PhaseManager {
         logError(this.db, "task_complete", { taskId: task.id, agentId, method: "handleSuccessfulExit" }, err);
       }
     } else {
-      this.advanceAndRespawn(task, teamExec!.entrypoint_agent_id, phases);
+      this.advanceAndRespawn(task, teamExec!.entrypoint_agent_id, phases).catch((err) => {
+        logError(this.db, "advance_respawn_async", { taskId: task.id, agentId, method: "handleSuccessfulExit" }, err);
+        try {
+          this.taskScheduler.failTask(task.id, `Failed to advance and respawn: ${err instanceof Error ? err.message : String(err)}`);
+        } catch (innerErr) {
+          logError(this.db, "advance_respawn_async_fail_task", { taskId: task.id, method: "handleSuccessfulExit" }, innerErr);
+        }
+      });
     }
   }
 
@@ -315,7 +360,17 @@ export class PhaseManager {
     });
 
     const closeStdin = !isStreaming;
-    this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+    try {
+      this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+    } catch (err) {
+      logError(this.db, "advance_respawn_send_input", { taskId: task.id, agentId: entrypointAgentId, phase: nextPhase, method: "advanceAndRespawn" }, err);
+      try {
+        this.taskScheduler.failTask(task.id, `Failed to send next phase prompt: ${err instanceof Error ? err.message : String(err)}`);
+      } catch (innerErr) {
+        logError(this.db, "advance_respawn_fail_task", { taskId: task.id, method: "advanceAndRespawn" }, innerErr);
+      }
+      return;
+    }
 
     const phaseGuards = Array.from(this.phaseCompleteHandled)
       .filter((k) => k.startsWith(`${task.id}:`));
