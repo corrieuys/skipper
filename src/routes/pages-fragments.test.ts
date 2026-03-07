@@ -118,7 +118,7 @@ describe("fragment polling routes", () => {
     expect(html).toContain("badge-idle");
   });
 
-  it("GET /fragments/agents/:id/summary returns pid/task/status", async () => {
+  it("GET /fragments/agents/:id/summary returns task/status", async () => {
     const db = getDb();
     db.prepare("UPDATE agents SET status = 'busy', current_task_id = ?, process_pid = ? WHERE id = ?").run("task-1", 4321, "agent-2");
 
@@ -127,7 +127,6 @@ describe("fragment polling routes", () => {
     const html = await res.text();
     expect(html).toContain('id="agent-summary-fragment"');
     expect(html).toContain("badge-busy");
-    expect(html).toContain("4321");
     expect(html).toContain("task-1");
   });
 

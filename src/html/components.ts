@@ -108,7 +108,7 @@ export interface RecentLogEntry {
 
 export interface DashboardData {
   tasks: { id: string; title: string; status: string; priority: number }[];
-  agents: { id: string; name: string; status: string; type: string; current_task_id: string | null }[];
+  agents: { id: string; name: string; status: string; current_task_id: string | null }[];
   daemon: { state: "running" | "pausing" | "paused" | "stopped"; uptime: number };
   recentLogs?: RecentLogEntry[];
 }
@@ -130,7 +130,7 @@ export function dashboardActiveTaskFragment(tasks: { id: string; title: string; 
 }
 
 export function dashboardAgentStatusFragment(
-  agents: { id: string; name: string; status: string; type: string; current_task_id?: string | null }[],
+  agents: { id: string; name: string; status: string; current_task_id?: string | null }[],
 ): string {
   if (agents.length === 0) {
     return `<div class="empty-state"><div class="empty-state-icon">&#9881;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>`;
@@ -139,7 +139,6 @@ export function dashboardAgentStatusFragment(
   return agents.map((agent) => `<div class="status-row">
       <span class="badge badge-${agent.status}">${agent.status}</span>
       <a href="/agents/${escapeHtml(agent.id)}" hx-get="/agents/${escapeHtml(agent.id)}" hx-target="body" hx-push-url="true" class="status-agent">${escapeHtml(agent.name)}</a>
-      <span class="muted">${escapeHtml(agent.type)}</span>
       <span class="muted">${agent.current_task_id ? escapeHtml(agent.current_task_id.slice(0, 8)) : "-"}</span>
     </div>`).join("");
 }
@@ -573,13 +572,6 @@ export function agentsPage(agents: AgentData[], pollIntervalSeconds: PollInterva
       <h3>Create Agent</h3>
       <form hx-post="/api/agents" hx-target="#agent-list" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.reset()">
         <label>Name <input type="text" name="name" required></label>
-        <label>Type
-          <select name="type">
-            <option value="claude-code">claude-code</option>
-            <option value="codex">codex</option>
-            <option value="custom">custom</option>
-          </select>
-        </label>
         <label>Model <input type="text" name="model" placeholder="default"></label>
         <label>Instruction <input type="text" name="instruction"></label>
         <button type="submit">Create</button>
@@ -595,7 +587,7 @@ export function agentListFragment(agents: AgentData[]): string {
   return agents.length === 0
     ? `<div class="empty-state"><div class="empty-state-icon">&#129302;</div><p>No agents configured</p><p class="muted">Create an agent to begin orchestrating</p></div>`
     : `<table class="data-table">
-        <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>PID</th><th>Task</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Status</th><th>Name</th><th>Model</th><th>Task</th><th>Actions</th></tr></thead>
         <tbody>${agents.map(agentTableRow).join("")}</tbody>
       </table>`;
 }
@@ -608,9 +600,7 @@ function agentTableRow(agent: AgentData): string {
   return `<tr>
     <td><span class="badge badge-${agent.status}">${agent.status}</span></td>
     <td><a href="/agents/${escapeHtml(agent.id)}" hx-get="/agents/${escapeHtml(agent.id)}" hx-target="body" hx-push-url="true">${escapeHtml(agent.name)}</a></td>
-    <td>${escapeHtml(agent.type)}</td>
     <td>${escapeHtml(agent.model)}</td>
-    <td>${agent.process_pid ?? "-"}</td>
     <td>${agent.current_task_id ? escapeHtml(agent.current_task_id.slice(0, 8)) : "-"}</td>
     <td>${agent.status !== "busy" ? `<button hx-delete="/api/agents/${escapeHtml(agent.id)}" hx-target="body" hx-swap="innerHTML" hx-confirm="Delete this agent?" class="btn-sm btn-danger">Delete</button>` : ""}</td>
   </tr>`;
@@ -625,11 +615,8 @@ function agentDetailSummaryContent(agent: AgentData): string {
   return `<div class="card">
       <div class="detail-grid">
         <div><strong>Status:</strong> <span class="badge badge-${agent.status}">${agent.status}</span></div>
-        <div><strong>Type:</strong> ${escapeHtml(agent.type)}</div>
         <div><strong>Model:</strong> ${escapeHtml(agent.model)}</div>
-        <div><strong>PID:</strong> ${agent.process_pid ?? "None"}</div>
         <div><strong>Task:</strong> ${agent.current_task_id ?? "None"}</div>
-        <div><strong>Capabilities:</strong> ${agent.capabilities.length > 0 ? agent.capabilities.map(escapeHtml).join(", ") : "None"}</div>
       </div>
       ${agent.config.instruction ? `<div class="detail-desc"><strong>Instruction:</strong><p>${escapeHtml(String(agent.config.instruction))}</p></div>` : ""}
     </div>`;
@@ -686,13 +673,6 @@ export function agentDetailPage(
       <h2>Edit Agent</h2>
       ${agent.status === "busy" ? `<p class="muted">Busy agents cannot be edited.</p>` : `<form hx-post="/api/agents/${escapeHtml(agent.id)}" hx-target="body" hx-swap="innerHTML">
         <label>Name <input type="text" name="name" value="${escapeHtml(agent.name)}" required></label>
-        <label>Type
-          <select name="type">
-            <option value="claude-code"${agent.type === "claude-code" ? " selected" : ""}>claude-code</option>
-            <option value="codex"${agent.type === "codex" ? " selected" : ""}>codex</option>
-            <option value="custom"${agent.type === "custom" ? " selected" : ""}>custom</option>
-          </select>
-        </label>
         <label>Model <input type="text" name="model" value="${escapeHtml(agent.model)}" placeholder="default"></label>
         <label>Instruction <input type="text" name="instruction" value="${agent.config.instruction ? escapeHtml(String(agent.config.instruction)) : ""}"></label>
         <button type="submit">Save Changes</button>

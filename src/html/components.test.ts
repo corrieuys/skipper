@@ -54,7 +54,7 @@ describe("dashboardPage", () => {
         { id: "t2", title: "Fix bug", status: "approved", priority: 1 },
       ],
       agents: [
-        { id: "a1", name: "Dev Agent", status: "busy", type: "claude-code", current_task_id: "t1" },
+        { id: "a1", name: "Dev Agent", status: "busy", current_task_id: "t1" },
       ],
       daemon: { state: "running", uptime: 100 },
     });
@@ -72,8 +72,8 @@ describe("dashboardPage", () => {
         { id: "t2", title: "B", status: "completed", priority: 5 },
       ],
       agents: [
-        { id: "a1", name: "X", status: "busy", type: "claude-code", current_task_id: "t1" },
-        { id: "a2", name: "Y", status: "idle", type: "codex", current_task_id: null },
+        { id: "a1", name: "X", status: "busy", current_task_id: "t1" },
+        { id: "a2", name: "Y", status: "idle", current_task_id: null },
       ],
       daemon: { state: "running", uptime: 100 },
     });
@@ -386,7 +386,6 @@ describe("agentsPage", () => {
       { id: "a1", name: "Agent One", type: "claude-code", model: "opus", status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null },
     ]);
     expect(html).toContain("Agent One");
-    expect(html).toContain("claude-code");
     expect(html).toContain("opus");
     expect(html).toContain("Delete");
   });
@@ -412,7 +411,6 @@ describe("agentListFragment", () => {
       { id: "a1", name: "Agent One", type: "claude-code", model: "opus", status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null },
     ]);
     expect(html).toContain("Agent One");
-    expect(html).toContain("claude-code");
     expect(html).not.toContain("<html");
   });
 });
@@ -434,7 +432,6 @@ describe("agentDetailPage", () => {
     expect(html).toContain("Terminal Output");
     expect(html).toContain('sse-connect="/events/agent/a1/output"');
     expect(html).toContain("Build features");
-    expect(html).toContain("coding, testing");
   });
 
   it("renders editable form for non-busy agents", () => {
