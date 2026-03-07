@@ -12,6 +12,7 @@ export interface AgentExitEvent {
   code: number;
   isRespawn: boolean;
   hasDelegation: boolean;
+  stderrSnippet: string;
 }
 
 export interface EscalationCreatedEvent {

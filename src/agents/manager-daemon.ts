@@ -9,6 +9,7 @@ import { EscalationManager } from "../escalations/manager";
 import { eventBus } from "../events/bus";
 import type { AgentExitEvent, AgentSignalEvent } from "../events/bus";
 import { logError } from "../logging";
+import { getAgentTypeDefinition } from "./types";
 
 import { DaemonLoop } from "../orchestrator/tick-loop";
 import { TaskRunner } from "../orchestrator/task-runner";
@@ -23,6 +24,8 @@ export type { Delegation };
 export type { OrchestrationState, TaskCheckpoint };
 
 const STREAMS_DRAIN_TIMEOUT_MS = 5_000;
+const PROMPT_TOO_LONG_PATTERN = /prompt.*(too long|too large)|context.*(too long|exceeded|overflow)|token.*limit.*exceeded/i;
+const MAX_PROMPT_TOO_LONG_RETRIES = 1;
 
 /**
  * Thin facade that wires together the focused orchestrator modules
@@ -481,6 +484,15 @@ export class ManagerDaemon {
 
       if (event.code === 0) {
         this.phaseManager.handleSuccessfulExit(task, event.agentId);
+      } else if (this.isPromptTooLongError(event.stderrSnippet)) {
+        this.handlePromptTooLong(event.agentId, taskId, task).catch((err) => {
+          logError(this.db, "prompt_too_long_recovery", { agentId: event.agentId, taskId, method: "handleAgentExit" }, err);
+          try {
+            this.taskScheduler.failTask(taskId, `Prompt too long recovery failed: ${err instanceof Error ? err.message : String(err)}`);
+          } catch (innerErr) {
+            logError(this.db, "prompt_too_long_fail_task", { taskId, method: "handleAgentExit" }, innerErr);
+          }
+        });
       } else {
         this.phaseManager.clearPendingRegression(event.agentId);
         try {
@@ -496,5 +508,84 @@ export class ManagerDaemon {
     } catch (err) {
       logError(this.db, "agent_exit_handler", { agentId: event.agentId, method: "handleAgentExit" }, err);
     }
+  }
+
+  private isPromptTooLongError(stderrSnippet: string): boolean {
+    return PROMPT_TOO_LONG_PATTERN.test(stderrSnippet);
+  }
+
+  private async handlePromptTooLong(
+    agentId: string,
+    taskId: string,
+    task: import("../tasks/scheduler").Task,
+  ): Promise<void> {
+    // Check retry count to avoid infinite loops
+    const retryKey = `prompt_too_long:${taskId}`;
+    const retryRow = this.db
+      .prepare("SELECT COUNT(*) as count FROM error_log WHERE category = ? AND context LIKE ?")
+      .get("agent.prompt_too_long_retry", `%"taskId":"${taskId}"%`) as { count: number };
+
+    if (retryRow.count >= MAX_PROMPT_TOO_LONG_RETRIES) {
+      logError(this.db, "agent.prompt_too_long_max_retries", {
+        agentId, taskId, retries: retryRow.count, method: "handlePromptTooLong",
+      });
+      this.phaseManager.clearPendingRegression(agentId);
+      this.taskScheduler.failTask(
+        taskId,
+        `Prompt too long after ${retryRow.count} retry attempt(s). Task context exceeds CLI limits.`,
+      );
+      return;
+    }
+
+    logError(this.db, "agent.prompt_too_long_retry", {
+      agentId, taskId, attempt: retryRow.count + 1, method: "handlePromptTooLong",
+    });
+
+    // Respawn with a minimal prompt (no enrichment, truncated description)
+    const teamExec = task.team_id
+      ? this.teamManager.getTeamForExecution(task.team_id)
+      : null;
+
+    const entrypointAgentId = teamExec?.entrypoint_agent_id ?? agentId;
+    const agent = this.agentManager.getAgent(entrypointAgentId);
+    if (!agent) {
+      this.taskScheduler.failTask(taskId, "Agent not found for prompt-too-long recovery");
+      return;
+    }
+
+    // Kill any running instance and respawn
+    if (this.agentManager.getRunningAgent(entrypointAgentId)) {
+      this.agentManager.killAgent(entrypointAgentId);
+      await this.agentManager.waitForExit(entrypointAgentId);
+    }
+
+    const workingDir = process.cwd();
+    await this.agentManager.spawnAgent(entrypointAgentId, { workingDir });
+
+    this.db
+      .prepare("UPDATE agents SET current_task_id = ? WHERE id = ?")
+      .run(taskId, entrypointAgentId);
+
+    // Build a minimal recovery prompt without enrichment
+    const description = task.description
+      ? task.description.slice(0, 2000)
+      : "";
+    const recoveryPrompt = [
+      "EXECUTION CONTEXT:",
+      "- You are running inside Skipper, a multi-agent orchestration system.",
+      "- Previous attempt failed: prompt was too long for the CLI context window.",
+      "- This is a retry with reduced context. Complete the task with the information below.",
+      "",
+      `TASK: ${task.title}`,
+      description,
+      "",
+      "Complete the assigned work. Output [PHASE_COMPLETE] when done.",
+    ].join("\n");
+
+    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    const isStreaming = typeDef?.supports_stdin ?? false;
+    const closeStdin = !isStreaming;
+
+    this.agentManager.sendInput(entrypointAgentId, recoveryPrompt, closeStdin);
   }
 }

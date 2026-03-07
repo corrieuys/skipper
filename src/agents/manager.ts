@@ -435,6 +435,12 @@ export class AgentManager {
     // Persist session ID before removing from memory
     this.persistSessionId(agentId);
 
+    // Capture stderr snippet before cleanup (last 1KB for error detection)
+    const runningAgent = this.agents.get(agentId);
+    const stderrSnippet = runningAgent?.stderrBuffer
+      ? runningAgent.stderrBuffer.slice(-1024)
+      : "";
+
     // Check if this is a respawn exit
     const isRespawn = this.respawningAgents.has(agentId);
     if (isRespawn) {
@@ -473,6 +479,7 @@ export class AgentManager {
       code,
       isRespawn,
       hasDelegation,
+      stderrSnippet,
     });
   }
 
