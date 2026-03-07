@@ -415,7 +415,7 @@ function taskTableRow(task: TaskData): string {
     <td><a href="/tasks/${escapeHtml(task.id)}" hx-get="/tasks/${escapeHtml(task.id)}" hx-target="body" hx-push-url="true">${escapeHtml(task.title)}</a></td>
     <td>${task.team_name ? escapeHtml(task.team_name) : "<span class='muted'>Unassigned</span>"}</td>
     <td>P${task.priority}</td>
-    <td>${task.current_phase}</td>
+    <td>${task.phases ? `Phase ${task.current_phase + 1}/${task.phases.length}` : `Phase ${task.current_phase + 1}`}</td>
     <td>${formatTimestamp(task.created_at)}</td>
     <td>${actions.join(" ")}</td>
   </tr>`;
@@ -782,7 +782,7 @@ export function teamListFragment(teams: TeamData[]): string {
   return teams.length === 0
     ? `<div class="empty-state"><div class="empty-state-icon">&#128101;</div><p>No teams configured</p><p class="muted">Create a team to organize your agents</p></div>`
     : `<table class="data-table">
-        <thead><tr><th>Name</th><th>Goal</th><th>Entrypoint</th><th>Phases</th></tr></thead>
+        <thead><tr><th>Name</th><th>Goal</th><th>Phases</th></tr></thead>
         <tbody>${teams.map(teamTableRow).join("")}</tbody>
       </table>`;
 }
@@ -817,7 +817,6 @@ function teamTableRow(team: TeamData): string {
   return `<tr>
     <td><a href="/teams/${escapeHtml(team.id)}" hx-get="/teams/${escapeHtml(team.id)}" hx-target="body" hx-push-url="true">${escapeHtml(team.name)}</a></td>
     <td>${team.goal ? escapeHtml(team.goal) : "-"}</td>
-    <td>${team.entrypoint_agent_name ? escapeHtml(team.entrypoint_agent_name) : "None"}</td>
     <td>${team.phases.length}</td>
   </tr>`;
 }
@@ -885,20 +884,8 @@ function teamDetailSummaryContent(team: TeamData, agents: TeamAgentData[]): stri
       <h1>${escapeHtml(team.name)}</h1>
       <div class="team-hero-meta">
         <span class="badge badge-phase-index">${team.phases.length} phase${team.phases.length === 1 ? "" : "s"}</span>
-        <span class="muted">Entrypoint: ${team.entrypoint_agent_name ? escapeHtml(team.entrypoint_agent_name) : "None"}</span>
       </div>
-    </div>
-    <section class="card team-section">
-      <h2>Entrypoint</h2>
-      <p class="muted" style="margin-bottom:0.6rem">Pick which team member receives tasks first.</p>
-      <form hx-post="/api/teams/${escapeHtml(team.id)}/entrypoint" hx-target="body" hx-swap="innerHTML" class="inline-form">
-        <select name="agent_id" required>
-          <option value="">Select team member</option>
-          ${agents.map((agent) => `<option value="${escapeHtml(agent.agent_id)}"${team.entrypoint_agent_id === agent.agent_id ? " selected" : ""}>${escapeHtml(agent.agent_name)}</option>`).join("")}
-        </select>
-        <button type="submit">Save Entrypoint</button>
-      </form>
-    </section>`;
+    </div>`;
 }
 
 export function teamDetailSummaryFragment(
@@ -924,7 +911,6 @@ function teamMembersContent(team: TeamData, agents: TeamAgentData[], availableAg
         ${agents.map((a) => `<form hx-post="/api/teams/${escapeHtml(team.id)}/agents/${escapeHtml(a.agent_id)}" hx-target="body" hx-swap="innerHTML" class="member-card">
           <div class="member-card-head">
             <strong>${escapeHtml(a.agent_name)}</strong>
-            <span class="muted">${escapeHtml(a.agent_id.slice(0, 8))}</span>
           </div>
           <div class="member-grid">
             <label>Role <input type="text" name="role" value="${a.role ? escapeHtml(a.role) : ""}" placeholder="Role"></label>

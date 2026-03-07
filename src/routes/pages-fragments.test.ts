@@ -130,13 +130,12 @@ describe("fragment polling routes", () => {
     expect(html).toContain("task-1");
   });
 
-  it("GET /fragments/teams/list returns entrypoint and phase count", async () => {
+  it("GET /fragments/teams/list returns team name and phase count", async () => {
     const res = await fetch(`${baseUrl}/fragments/teams/list`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('id="team-list"');
     expect(html).toContain("Platform Team");
-    expect(html).toContain("Lead Agent");
     expect(html).toContain(">2<");
   });
 
