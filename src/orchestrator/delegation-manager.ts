@@ -10,6 +10,12 @@ const MAX_DELEGATION_DEPTH = 3;
 const MAX_DELEGATIONS_PER_PARENT = 20;
 const DELEGATION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const DELEGATION_TIMEOUT_SECONDS = Math.floor(DELEGATION_TIMEOUT_MS / 1000);
+export const MAX_DELEGATION_RESULT_CHARS = 50_000;
+
+export function truncateResult(text: string, limit: number = MAX_DELEGATION_RESULT_CHARS): string {
+  if (text.length <= limit) return text;
+  return text.slice(0, limit) + "\n\n[truncated — result exceeded " + limit + " characters]";
+}
 
 export interface Delegation {
   id: string;
@@ -197,11 +203,13 @@ export class DelegationManager {
       const delegation = this.getActiveDelegationForChild(childAgentId);
       if (!delegation) return;
 
+      const truncatedResult = truncateResult(result);
+
       this.db
         .prepare(
           "UPDATE delegations SET status = 'completed', result = ?, completed_at = datetime('now') WHERE id = ?",
         )
-        .run(result, delegation.id);
+        .run(truncatedResult, delegation.id);
 
       this.agentManager.killAgent(childAgentId);
 
@@ -209,7 +217,7 @@ export class DelegationManager {
         .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
         .run(childAgentId);
 
-      this.routeResultToParent(delegation.parent_agent_id, childAgentId, result, delegation.task_id);
+      this.routeResultToParent(delegation.parent_agent_id, childAgentId, truncatedResult, delegation.task_id);
 
       this.setAgentState(delegation.parent_agent_id, "working");
 
@@ -235,18 +243,19 @@ export class DelegationManager {
     try {
       if (event.code === 0) {
         const result = this.gatherTerminalOutput(event.agentId);
+        const truncatedResult = truncateResult(result);
 
         this.db
           .prepare(
             "UPDATE delegations SET status = 'completed', result = ?, completed_at = datetime('now') WHERE id = ?",
           )
-          .run(result, delegation.id);
+          .run(truncatedResult, delegation.id);
 
         this.db
           .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
           .run(event.agentId);
 
-        this.routeResultToParent(delegation.parent_agent_id, event.agentId, result, delegation.task_id);
+        this.routeResultToParent(delegation.parent_agent_id, event.agentId, truncatedResult, delegation.task_id);
 
         this.setAgentState(delegation.parent_agent_id, "working");
 
@@ -337,7 +346,8 @@ export class DelegationManager {
     result: string,
     taskId?: string,
   ): void {
-    const message = `[DELEGATION_RESULT from:${childAgentId}]\n${result}\n[END_DELEGATION_RESULT]`;
+    const safeResult = truncateResult(result);
+    const message = `[DELEGATION_RESULT from:${childAgentId}]\n${safeResult}\n[END_DELEGATION_RESULT]`;
 
     const runningParent = this.agentManager.getRunningAgent(parentAgentId);
     if (runningParent) {
@@ -475,7 +485,14 @@ export class DelegationManager {
           "SELECT data FROM terminal_outputs WHERE agent_id = ? AND stream = 'stdout' ORDER BY sequence",
         )
         .all(agentId) as { data: string }[];
-      return rows.map((r) => r.data).join("");
+      let output = "";
+      for (const r of rows) {
+        output += r.data;
+        if (output.length > MAX_DELEGATION_RESULT_CHARS) {
+          return truncateResult(output);
+        }
+      }
+      return output;
     } catch (err) {
       logError(this.db, "gather_terminal_output", { agentId, method: "gatherTerminalOutput" }, err);
       return "";
