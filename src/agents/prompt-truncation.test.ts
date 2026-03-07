@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
-import { AgentManager, truncateToByteLimit } from "./manager";
+import { AgentManager, truncateToByteLimit, truncateToCharLimit } from "./manager";
 import { clearAgentTypeCache } from "./types";
 import { unlinkSync } from "fs";
 
@@ -47,6 +47,33 @@ describe("truncateToByteLimit", () => {
     const text = "Hello, world!";
     const result = truncateToByteLimit(text, 5);
     expect(Buffer.byteLength(result, "utf-8")).toBeLessThanOrEqual(5);
+  });
+});
+
+describe("truncateToCharLimit", () => {
+  it("returns original string when within limit", () => {
+    const text = "Hello, world!";
+    expect(truncateToCharLimit(text, 100)).toBe(text);
+  });
+
+  it("truncates string exceeding char limit", () => {
+    const text = "a".repeat(300);
+    const result = truncateToCharLimit(text, 200);
+    expect(result.length).toBeLessThanOrEqual(200);
+  });
+
+  it("prefers cutting at newline boundary when near end", () => {
+    const line = "x".repeat(80);
+    const text = `${line}\n${line}\n${line}`;
+    // limit falls inside the last line
+    const result = truncateToCharLimit(text, line.length + 1 + line.length + 10);
+    expect(result).toBe(`${line}\n${line}`);
+  });
+
+  it("returns up to maxChars when no suitable newline exists", () => {
+    const text = "a".repeat(500);
+    const result = truncateToCharLimit(text, 200);
+    expect(result.length).toBe(200);
   });
 });
 
@@ -105,6 +132,88 @@ describe("sendInput prompt truncation", () => {
 
     const logEntry = db.prepare(
       "SELECT * FROM error_log WHERE category = 'agent.prompt_truncated'",
+    ).get();
+
+    expect(logEntry).toBeNull();
+  });
+});
+
+describe("sendResumeMessage proactive compaction", () => {
+  let db: Database;
+  let manager: AgentManager;
+
+  const RESUME_TEST_DB = "test-resume-compaction.db";
+
+  beforeEach(() => {
+    clearAgentTypeCache();
+    db = new Database(RESUME_TEST_DB);
+    db.exec("PRAGMA foreign_keys = ON");
+    initializeDatabase(db);
+    manager = new AgentManager(db);
+
+    // Register a resumable agent type (bash sleep accepts extra args without error)
+    db.prepare(
+      `INSERT OR REPLACE INTO agent_types (name, command, args, model_flag, available_models, env_vars, supports_stdin, supports_resume, resume_flag)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "resumable-cat",
+      "bash",
+      JSON.stringify(["-c", "cat > /dev/null"]),
+      null,
+      JSON.stringify([]),
+      JSON.stringify({}),
+      1,
+      1,
+      "--resume",
+    );
+  });
+
+  afterEach(() => {
+    for (const [id] of manager.getRunningAgents()) {
+      try { manager.killAgent(id); } catch {}
+    }
+    manager.getRunningAgents().clear();
+    db.close();
+    try { unlinkSync(RESUME_TEST_DB); } catch {}
+  });
+
+  it("logs compaction when resume message exceeds 200K chars", async () => {
+    const agent = manager.createAgent({ name: "Resume Test", type: "resumable-cat" });
+
+    // Insert session ID so sendResumeMessage can proceed
+    db.prepare(
+      "INSERT INTO agent_states (agent_id, state, state_metadata) VALUES (?, 'stopped', ?)",
+    ).run(agent.id, JSON.stringify({ session_id: "sess-compaction-test" }));
+
+    // Build a message larger than the 200K char threshold
+    const largeMessage = "delegation result: " + "x".repeat(205_000);
+
+    await manager.sendResumeMessage(agent.id, largeMessage);
+
+    const logEntry = db.prepare(
+      "SELECT * FROM error_log WHERE category = 'agent.resume_message_compacted' ORDER BY created_at DESC LIMIT 1",
+    ).get() as any;
+
+    expect(logEntry).toBeTruthy();
+    const context = JSON.parse(logEntry.context);
+    expect(context.agentId).toBe(agent.id);
+    expect(context.originalLength).toBeGreaterThan(200_000);
+    expect(context.targetLength).toBe(150_000);
+  });
+
+  it("does not compact resume messages within the threshold", async () => {
+    const agent = manager.createAgent({ name: "Resume Small", type: "resumable-cat" });
+
+    db.prepare(
+      "INSERT INTO agent_states (agent_id, state, state_metadata) VALUES (?, 'stopped', ?)",
+    ).run(agent.id, JSON.stringify({ session_id: "sess-small-msg" }));
+
+    const smallMessage = "Short delegation result.";
+
+    await manager.sendResumeMessage(agent.id, smallMessage);
+
+    const logEntry = db.prepare(
+      "SELECT * FROM error_log WHERE category = 'agent.resume_message_compacted'",
     ).get();
 
     expect(logEntry).toBeNull();
