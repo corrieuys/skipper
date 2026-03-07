@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { addRoute } from "../server";
 import { TeamManager } from "../teams/manager";
 import { getDb } from "../db/connection";
+import { isSkipperAgent } from "../agents/skipper";
 import { teamListFragment, teamDetailPage } from "../html/components";
 import type { TeamData, TeamAgentData } from "../html/components";
 
@@ -79,7 +80,7 @@ function getTeamsWithEntrypointName(db: Database): TeamData[] {
 
 function renderTeamDetailPage(db: Database, teamId: string): Response {
   const team = getTeamWithEntrypointName(db, teamId);
-  if (!team) return html("<p>Team not found</p>");
+  if (!team) return new Response("<p>Team not found</p>", { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
   const agents = getTeamAgentsWithNames(db, teamId);
   const availableAgents = getAvailableAgentsForTeam(db, teamId);
   return html(teamDetailPage(team, agents, availableAgents));
@@ -144,10 +145,18 @@ export function registerTeamRoutes(database?: Database): void {
       );
     }
 
+    let phases: unknown;
+    if (typeof body.phases === "string") {
+      try {
+        phases = JSON.parse(body.phases);
+      } catch {
+        return Response.json({ error: "Invalid phases JSON" }, { status: 400 });
+      }
+    }
     const team = manager.createTeam({
       name: body.name,
       goal: typeof body.goal === "string" ? body.goal : undefined,
-      phases: typeof body.phases === "string" ? JSON.parse(body.phases) : undefined,
+      phases: phases as { name: string; prompt: string }[] | undefined,
     });
 
     if (req.headers.get("HX-Request")) {
@@ -367,26 +376,10 @@ export function registerTeamRoutes(database?: Database): void {
     return Response.json(updatedTeam);
   });
 
-  addRoute("POST", "/api/teams/:id/entrypoint", async (req, params) => {
-    const body = await parseBody(req);
-
-    if (typeof body.agent_id !== "string" || !body.agent_id.trim()) {
-      return Response.json(
-        { error: "agent_id is required" },
-        { status: 400 },
-      );
-    }
-
-    try {
-      manager.setEntrypoint(params.id, body.agent_id.trim());
-      if (req.headers.get("HX-Request")) {
-        return renderTeamDetailPage(db, params.id);
-      }
-      const team = manager.getTeam(params.id);
-      return Response.json(team);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Internal error";
-      return Response.json({ error: message }, { status: 400 });
-    }
+  addRoute("POST", "/api/teams/:id/entrypoint", async (_req, _params) => {
+    return Response.json(
+      { error: "Skipper is always the entrypoint agent. Configure it at /skipper" },
+      { status: 400 },
+    );
   });
 }

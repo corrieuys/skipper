@@ -325,7 +325,7 @@ describe("DELETE /api/teams/:id/agents/:agent_id", () => {
     expect(body.ok).toBe(true);
   });
 
-  it("clears entrypoint when removing that member", async () => {
+  it("keeps Skipper as entrypoint after removing a worker", async () => {
     const teamRes = await fetch(`${baseUrl}/api/teams`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -344,12 +344,6 @@ describe("DELETE /api/teams/:id/agents/:agent_id", () => {
       body: JSON.stringify({ agent_id: "delete-agent-b" }),
     });
 
-    await fetch(`${baseUrl}/api/teams/${team.id}/entrypoint`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agent_id: "delete-agent-b" }),
-    });
-
     const res = await fetch(`${baseUrl}/api/teams/${team.id}/agents/delete-agent-b`, {
       method: "DELETE",
     });
@@ -357,7 +351,7 @@ describe("DELETE /api/teams/:id/agents/:agent_id", () => {
 
     const teamDetails = await fetch(`${baseUrl}/api/teams/${team.id}`);
     const updated = await teamDetails.json();
-    expect(updated.entrypoint_agent_id).toBeNull();
+    expect(updated.entrypoint_agent_id).toBe("skipper");
   });
 
   it("returns full HTML for HTMX requests", async () => {
@@ -508,7 +502,7 @@ describe("POST /api/teams/:id", () => {
 });
 
 describe("POST /api/teams/:id/entrypoint", () => {
-  it("returns full HTML team detail for HTMX requests", async () => {
+  it("returns 400 because Skipper is always entrypoint", async () => {
     const teamRes = await fetch(`${baseUrl}/api/teams`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -516,35 +510,18 @@ describe("POST /api/teams/:id/entrypoint", () => {
     });
     const team = await teamRes.json();
 
-    db.prepare(
-      `INSERT INTO agents (id, name, type, model, status, config, capabilities)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run("entry-agent-01", "Entrypoint Agent", "codex", "default", "idle", "{}", "[]");
-
-    await fetch(`${baseUrl}/api/teams/${team.id}/agents`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agent_id: "entry-agent-01" }),
-    });
-
     const formData = new URLSearchParams();
-    formData.set("agent_id", "entry-agent-01");
+    formData.set("agent_id", "some-agent");
 
     const res = await fetch(`${baseUrl}/api/teams/${team.id}/entrypoint`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "HX-Request": "true",
-      },
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: formData.toString(),
     });
 
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    const body = await res.text();
-    expect(body).toContain("<!DOCTYPE html");
-    expect(body).toContain("Entrypoint Team");
-    expect(body).toContain("Entrypoint Agent");
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("Skipper");
   });
 });
 

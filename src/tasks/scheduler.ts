@@ -106,7 +106,7 @@ export class TaskScheduler {
 
   listTasks(): Task[] {
     const rows = this.db
-      .prepare("SELECT * FROM tasks ORDER BY priority ASC, created_at ASC")
+      .prepare("SELECT * FROM tasks ORDER BY priority ASC, created_at ASC, rowid ASC")
       .all() as TaskRow[];
     return rows.map(rowToTask);
   }
@@ -150,12 +150,16 @@ export class TaskScheduler {
       throw new Error("Task must have a team assigned before approval");
     }
 
-    this.db
+    const changes = this.db
       .prepare(
         `UPDATE tasks SET status = 'approved', approved_at = datetime('now'), updated_at = datetime('now')
-         WHERE id = ?`,
+         WHERE id = ? AND status = 'draft'`,
       )
-      .run(id);
+      .run(id).changes;
+
+    if (changes === 0) {
+      throw new Error(`Task ${id} was concurrently modified`);
+    }
 
     const updated = this.getTask(id)!;
     eventBus.emit("task:state_changed", {
@@ -166,6 +170,30 @@ export class TaskScheduler {
     return updated;
   }
 
+  deleteTask(id: string): boolean {
+    const task = this.getTask(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    if (task.status === "running") {
+      throw new Error("Cannot delete a running task");
+    }
+
+    this.db.transaction(() => {
+      // Remove non-cascading task references first.
+      this.db.prepare("DELETE FROM delegations WHERE task_id = ?").run(id);
+      this.db.prepare("DELETE FROM escalations WHERE task_id = ?").run(id);
+      this.db.prepare("DELETE FROM messages WHERE task_id = ?").run(id);
+      this.db.prepare("DELETE FROM events WHERE task_id = ?").run(id);
+
+      // Clear any stale pointer from agents table.
+      this.db.prepare("UPDATE agents SET current_task_id = NULL WHERE current_task_id = ?").run(id);
+
+      // Delete task (cascades to checkpoints/instances/groups/notes/artifacts/etc).
+      this.db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
+    })();
+
+    return true;
+  }
+
   startTask(id: string): Task {
     const task = this.getTask(id);
     if (!task) throw new Error(`Task not found: ${id}`);
@@ -173,12 +201,16 @@ export class TaskScheduler {
       throw new Error(`Can only start approved tasks, current status: ${task.status}`);
     }
 
-    this.db
+    const changes = this.db
       .prepare(
         `UPDATE tasks SET status = 'running', started_at = datetime('now'), updated_at = datetime('now')
-         WHERE id = ?`,
+         WHERE id = ? AND status = 'approved'`,
       )
-      .run(id);
+      .run(id).changes;
+
+    if (changes === 0) {
+      throw new Error(`Task ${id} was concurrently modified`);
+    }
 
     const updated = this.getTask(id)!;
     eventBus.emit("task:state_changed", {
@@ -196,15 +228,42 @@ export class TaskScheduler {
       throw new Error(`Can only complete running tasks, current status: ${task.status}`);
     }
 
-    this.db
-      .prepare(
-        `UPDATE tasks SET status = 'completed', result = ?, completed_at = datetime('now'), updated_at = datetime('now')
-         WHERE id = ?`,
-      )
-      .run(result ? JSON.stringify(result) : null, id);
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE tasks SET status = 'completed', result = ?, completed_at = datetime('now'), updated_at = datetime('now')
+           WHERE id = ?`,
+        )
+        .run(result ? JSON.stringify(result) : null, id);
+      this.db
+        .prepare(
+          `UPDATE agent_instances
+           SET status = CASE WHEN status IN ('running', 'waiting_delegation', 'pending') THEN 'completed' ELSE status END,
+               updated_at = datetime('now')
+           WHERE task_id = ?`,
+        )
+        .run(id);
+      this.db
+        .prepare(
+          `UPDATE delegations
+           SET status = CASE WHEN status IN ('running', 'waiting_delegation', 'pending') THEN 'completed' ELSE status END,
+               completed_at = COALESCE(completed_at, datetime('now')),
+               result = COALESCE(result, '(auto-closed: task completed before delegation settled)')
+           WHERE task_id = ?`,
+        )
+        .run(id);
+      this.db
+        .prepare(
+          "UPDATE delegation_groups SET status = 'completed', completed_at = datetime('now') WHERE task_id = ? AND status = 'running'",
+        )
+        .run(id);
+      this.db
+        .prepare("UPDATE agents SET current_task_id = NULL WHERE current_task_id = ?")
+        .run(id);
+      this.resolveOpenEscalationsForTask(id, "Auto-resolved: task completed.");
+    })();
 
     const updated = this.getTask(id)!;
-    this.resolveOpenEscalationsForTask(id, "Auto-resolved: task completed.");
     eventBus.emit("task:state_changed", {
       taskId: id,
       previousStatus: "running",
@@ -222,15 +281,42 @@ export class TaskScheduler {
 
     const result = error ? JSON.stringify({ error }) : null;
 
-    this.db
-      .prepare(
-        `UPDATE tasks SET status = 'failed', result = ?, completed_at = datetime('now'), updated_at = datetime('now')
-         WHERE id = ?`,
-      )
-      .run(result, id);
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE tasks SET status = 'failed', result = ?, completed_at = datetime('now'), updated_at = datetime('now')
+           WHERE id = ?`,
+        )
+        .run(result, id);
+      this.db
+        .prepare(
+          `UPDATE agent_instances
+           SET status = CASE WHEN status IN ('running', 'waiting_delegation', 'pending') THEN 'failed' ELSE status END,
+               updated_at = datetime('now')
+           WHERE task_id = ?`,
+        )
+        .run(id);
+      this.db
+        .prepare(
+          `UPDATE delegations
+           SET status = CASE WHEN status IN ('pending', 'running') THEN 'failed' ELSE status END,
+               completed_at = COALESCE(completed_at, datetime('now')),
+               result = COALESCE(result, 'Task cancelled before delegation settled')
+           WHERE task_id = ?`,
+        )
+        .run(id);
+      this.db
+        .prepare(
+          "UPDATE delegation_groups SET status = 'completed', completed_at = datetime('now') WHERE task_id = ? AND status = 'running'",
+        )
+        .run(id);
+      this.db
+        .prepare("UPDATE agents SET current_task_id = NULL WHERE current_task_id = ?")
+        .run(id);
+      this.resolveOpenEscalationsForTask(id, "Auto-resolved: task failed.");
+    })();
 
     const updated = this.getTask(id)!;
-    this.resolveOpenEscalationsForTask(id, "Auto-resolved: task failed.");
     eventBus.emit("task:state_changed", {
       taskId: id,
       previousStatus: "running",
@@ -245,6 +331,7 @@ export class TaskScheduler {
     if (task.status !== "failed") {
       throw new Error(`Can only retry failed tasks, current status: ${task.status}`);
     }
+    this.resetTaskRuntimeArtifacts(id);
 
     this.db
       .prepare(
@@ -272,15 +359,39 @@ export class TaskScheduler {
 
     const previousStatus = task.status;
 
-    this.db
-      .prepare(
-        `UPDATE tasks SET status = 'failed', result = ?, completed_at = datetime('now'), updated_at = datetime('now')
-         WHERE id = ?`,
-      )
-      .run(JSON.stringify({ error: "Cancelled by user" }), id);
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE tasks SET status = 'failed', result = ?, completed_at = datetime('now'), updated_at = datetime('now')
+           WHERE id = ?`,
+        )
+        .run(JSON.stringify({ error: "Cancelled by user" }), id);
+      this.db
+        .prepare(
+          `UPDATE agent_instances
+           SET status = CASE WHEN status IN ('running', 'waiting_delegation', 'pending') THEN 'failed' ELSE status END,
+               updated_at = datetime('now')
+           WHERE task_id = ?`,
+        )
+        .run(id);
+      this.db
+        .prepare(
+          `UPDATE delegations
+           SET status = CASE WHEN status IN ('pending', 'running') THEN 'failed' ELSE status END,
+               completed_at = COALESCE(completed_at, datetime('now')),
+               result = COALESCE(result, 'Task failed before delegation settled')
+           WHERE task_id = ?`,
+        )
+        .run(id);
+      this.db
+        .prepare(
+          "UPDATE delegation_groups SET status = 'completed', completed_at = datetime('now') WHERE task_id = ? AND status = 'running'",
+        )
+        .run(id);
+      this.resolveOpenEscalationsForTask(id, "Auto-resolved: task cancelled.");
+    })();
 
     const updated = this.getTask(id)!;
-    this.resolveOpenEscalationsForTask(id, "Auto-resolved: task cancelled.");
     eventBus.emit("task:state_changed", {
       taskId: id,
       previousStatus,
@@ -347,6 +458,44 @@ export class TaskScheduler {
          WHERE id = ?`,
       )
       .run(JSON.stringify(state), id);
+  }
+
+  private resetTaskRuntimeArtifacts(taskId: string): void {
+    this.db.transaction(() => {
+      this.db
+        .prepare("DELETE FROM delegations WHERE task_id = ?")
+        .run(taskId);
+      this.db
+        .prepare("DELETE FROM delegation_groups WHERE task_id = ?")
+        .run(taskId);
+      this.db
+        .prepare("DELETE FROM task_checkpoints WHERE task_id = ?")
+        .run(taskId);
+      this.db
+        .prepare("DELETE FROM phase_regressions WHERE task_id = ?")
+        .run(taskId);
+      this.db
+        .prepare("DELETE FROM task_notes WHERE task_id = ?")
+        .run(taskId);
+      this.db
+        .prepare("DELETE FROM artifacts WHERE task_id = ?")
+        .run(taskId);
+      this.db
+        .prepare("DELETE FROM escalations WHERE task_id = ?")
+        .run(taskId);
+      this.db
+        .prepare("DELETE FROM messages WHERE task_id = ?")
+        .run(taskId);
+      this.db
+        .prepare("DELETE FROM events WHERE task_id = ?")
+        .run(taskId);
+      this.db
+        .prepare("DELETE FROM agent_instances WHERE task_id = ?")
+        .run(taskId);
+      this.db
+        .prepare("UPDATE agents SET current_task_id = NULL WHERE current_task_id = ?")
+        .run(taskId);
+    })();
   }
 
   cleanupStaleState(): void {

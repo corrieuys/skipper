@@ -255,6 +255,37 @@ describe("buildPromptEnrichment", () => {
     expect(enrichment).not.toContain("TEAM ROSTER");
     expect(enrichment).toContain("AVAILABLE COMMANDS:");
   });
+
+  it("scopes skipper roster to the current task team", () => {
+    const skipperId = "skipper";
+    const analystA = createAgent("Analyst A", "claude-code");
+    const analystB = createAgent("Analyst B", "claude-code");
+    const taskId = "task-scope-1";
+
+    // Team A with Skipper + Analyst A
+    const teamA = crypto.randomUUID();
+    db.prepare("INSERT INTO teams (id, name) VALUES (?, ?)").run(teamA, "Team A");
+    db.prepare("INSERT INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, ?, ?, ?)")
+      .run(crypto.randomUUID(), teamA, skipperId, "lead", 0);
+    db.prepare("INSERT INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, ?, ?, ?)")
+      .run(crypto.randomUUID(), teamA, analystA, "analyst", 1);
+
+    // Team B with Skipper + Analyst B
+    const teamB = crypto.randomUUID();
+    db.prepare("INSERT INTO teams (id, name) VALUES (?, ?)").run(teamB, "Team B");
+    db.prepare("INSERT INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, ?, ?, ?)")
+      .run(crypto.randomUUID(), teamB, skipperId, "lead", 0);
+    db.prepare("INSERT INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, ?, ?, ?)")
+      .run(crypto.randomUUID(), teamB, analystB, "analyst", 1);
+
+    // Task belongs to Team A
+    db.prepare("INSERT INTO tasks (id, title, team_id) VALUES (?, ?, ?)")
+      .run(taskId, "Scoped Team Task", teamA);
+
+    const enrichment = builder.buildPromptEnrichment(skipperId, taskId);
+    expect(enrichment).toContain("Analyst A");
+    expect(enrichment).not.toContain("Analyst B");
+  });
 });
 
 describe("buildDelegationPrompt", () => {
@@ -262,16 +293,13 @@ describe("buildDelegationPrompt", () => {
     const parentId = createAgent("Lead Dev", "claude-code", "Lead the project");
     const childId = createAgent("QA Agent", "claude-code", "Ensure quality");
     const taskId = "task-1";
-
-    db.prepare("INSERT INTO teams (id, name) VALUES ('t1', 'Team')").run();
-    db.prepare(
-      "INSERT INTO tasks (id, title, description, team_id) VALUES (?, 'Build Auth', 'Implement OAuth2', 't1')",
-    ).run(taskId);
-
-    createTeamWithAgents([
+    const teamId = createTeamWithAgents([
       { id: parentId, role: "lead", capabilities: ["coding"] },
       { id: childId, role: "qa", capabilities: ["testing"] },
     ]);
+    db.prepare(
+      "INSERT INTO tasks (id, title, description, team_id) VALUES (?, 'Build Auth', 'Implement OAuth2', ?)",
+    ).run(taskId, teamId);
 
     addTaskNote(taskId, parentId, "Using OAuth2 with PKCE");
 

@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
+import { SKIPPER_AGENT_ID, isSkipperAgent } from "../agents/skipper";
 
 export interface Team {
   id: string;
@@ -116,10 +117,18 @@ export class TeamManager {
 
     this.db
       .prepare(
-        `INSERT INTO teams (id, name, goal, phases)
-         VALUES (?, ?, ?, ?)`,
+        `INSERT INTO teams (id, name, goal, phases, entrypoint_agent_id)
+         VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(id, input.name, input.goal ?? null, JSON.stringify(input.phases ?? []));
+      .run(id, input.name, input.goal ?? null, JSON.stringify(input.phases ?? []), SKIPPER_AGENT_ID);
+
+    // Auto-add Skipper at level 0
+    const membershipId = crypto.randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, ?, 'lead', 0)`,
+      )
+      .run(membershipId, id, SKIPPER_AGENT_ID);
 
     return this.getTeam(id)!;
   }
@@ -167,25 +176,17 @@ export class TeamManager {
   }
 
   setEntrypoint(teamId: string, agentId: string): void {
-    // Validate agent is a member of the team
-    const membership = this.db
-      .prepare(
-        "SELECT id FROM team_agents WHERE team_id = ? AND agent_id = ?",
-      )
-      .get(teamId, agentId);
-
-    if (!membership) {
-      throw new Error("Agent must be a team member to be set as entrypoint");
+    if (!isSkipperAgent(agentId)) {
+      throw new Error("Skipper is always the entrypoint agent");
     }
-
-    this.db
-      .prepare(
-        "UPDATE teams SET entrypoint_agent_id = ?, updated_at = datetime('now') WHERE id = ?",
-      )
-      .run(agentId, teamId);
+    // No-op: Skipper is always entrypoint
   }
 
   addAgent(teamId: string, input: AddTeamAgentInput): TeamAgent {
+    if (isSkipperAgent(input.agent_id)) {
+      throw new Error("Skipper is automatically added to every team");
+    }
+
     const team = this.getTeam(teamId);
     if (!team) throw new Error(`Team not found: ${teamId}`);
 
@@ -194,6 +195,11 @@ export class TeamManager {
       .prepare("SELECT id FROM agents WHERE id = ?")
       .get(input.agent_id);
     if (!agent) throw new Error(`Agent not found: ${input.agent_id}`);
+
+    // Force workers to level >= 1 (level 0 is reserved for Skipper)
+    if ((input.level ?? 0) < 1) {
+      input.level = 1;
+    }
 
     // Validate parent agent if specified
     if (input.parent_agent_id) {
@@ -259,6 +265,10 @@ export class TeamManager {
   }
 
   removeAgent(teamId: string, agentId: string): void {
+    if (isSkipperAgent(agentId)) {
+      throw new Error("Skipper cannot be removed from a team");
+    }
+
     const membership = this.db
       .prepare("SELECT id FROM team_agents WHERE team_id = ? AND agent_id = ?")
       .get(teamId, agentId) as { id: string } | null;
@@ -288,12 +298,12 @@ export class TeamManager {
 
   getTeamForExecution(teamId: string): TeamForExecution | null {
     const team = this.getTeam(teamId);
-    if (!team || !team.entrypoint_agent_id) return null;
+    if (!team) return null;
 
     const agents = this.getTeamAgents(teamId);
     return {
       team,
-      entrypoint_agent_id: team.entrypoint_agent_id,
+      entrypoint_agent_id: SKIPPER_AGENT_ID,
       agents,
     };
   }

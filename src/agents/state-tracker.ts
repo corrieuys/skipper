@@ -4,6 +4,7 @@ import { eventBus } from "../events/bus";
 import { logError } from "../logging";
 
 const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+const STUCK_THRESHOLD_SECONDS = Math.floor(STUCK_THRESHOLD_MS / 1000);
 const MAX_NUDGES = 3;
 const FINGERPRINT_CHARS = 500;
 
@@ -70,17 +71,16 @@ export class StateTracker {
    * and whose state is not one of the states that should be skipped.
    */
   getStuckCandidates(): string[] {
-    const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS).toISOString();
     const rows = this.db
       .prepare(
         `SELECT as_.agent_id
          FROM agent_states as_
          JOIN agents a ON a.id = as_.agent_id
          WHERE a.process_pid IS NOT NULL
-           AND as_.heartbeat_at < ?
+           AND unixepoch(as_.heartbeat_at) < (unixepoch('now') - ?)
            AND as_.state NOT IN ('waiting_delegation', 'escalated', 'stopped')`,
       )
-      .all(cutoff) as { agent_id: string }[];
+      .all(STUCK_THRESHOLD_SECONDS) as { agent_id: string }[];
     return rows.map((r) => r.agent_id);
   }
 

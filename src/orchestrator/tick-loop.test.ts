@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
-import { DaemonLoop } from "./tick-loop";
+import { ReconciliationLoop } from "./tick-loop";
 import { unlinkSync } from "fs";
 
 const TEST_DB = "test-tick-loop.db";
 
-// Minimal mock implementations for DaemonLoop dependencies
-function createMockDaemonLoop(db: Database): DaemonLoop {
+// Minimal mock implementations for ReconciliationLoop dependencies
+function createMockReconciliationLoop(db: Database): ReconciliationLoop {
   const mockAgentManager = {
     getRunningAgents: () => new Map(),
   } as any;
@@ -15,6 +15,7 @@ function createMockDaemonLoop(db: Database): DaemonLoop {
     processTaskQueue: async () => ({ processed: 0 }),
   } as any;
   const mockRecoveryManager = {
+    cleanupStaleState: () => {},
     recoverAllStaleTasks: async () => {},
     persistCheckpoints: () => {},
   } as any;
@@ -27,7 +28,7 @@ function createMockDaemonLoop(db: Database): DaemonLoop {
     runStuckDetection: () => {},
   } as any;
 
-  return new DaemonLoop(
+  return new ReconciliationLoop(
     db,
     mockAgentManager,
     mockTaskRunner,
@@ -39,7 +40,7 @@ function createMockDaemonLoop(db: Database): DaemonLoop {
 
 describe("cleanupOldTerminalOutputs", () => {
   let db: Database;
-  let loop: DaemonLoop;
+  let loop: ReconciliationLoop;
 
   beforeEach(() => {
     db = new Database(TEST_DB);
@@ -51,7 +52,7 @@ describe("cleanupOldTerminalOutputs", () => {
       "INSERT INTO agents (id, name, type, model, config, capabilities) VALUES (?, ?, ?, ?, ?, ?)",
     ).run("agent-1", "Test Agent", "claude-code", "default", "{}", "[]");
 
-    loop = createMockDaemonLoop(db);
+    loop = createMockReconciliationLoop(db);
   });
 
   afterEach(() => {
@@ -110,5 +111,55 @@ describe("cleanupOldTerminalOutputs", () => {
 
     const rows = db.prepare("SELECT * FROM terminal_outputs WHERE data = 'keep this'").all();
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe("daemon owner pid coordination", () => {
+  let db: Database;
+  let loop: ReconciliationLoop;
+
+  beforeEach(() => {
+    db = new Database(TEST_DB);
+    db.exec("PRAGMA foreign_keys = ON");
+    initializeDatabase(db);
+    loop = createMockReconciliationLoop(db);
+  });
+
+  afterEach(() => {
+    loop.stop();
+    db.close();
+    try { unlinkSync(TEST_DB); } catch {}
+  });
+
+  it("claims owner pid on start", async () => {
+    await loop.start();
+
+    const row = db
+      .prepare("SELECT value FROM daemon_state WHERE key = 'owner_pid'")
+      .get() as { value: string } | null;
+    expect(row?.value).toBe(String(process.pid));
+  });
+
+  it("releases owner pid on stop when owned by current process", async () => {
+    await loop.start();
+    loop.stop();
+
+    const row = db
+      .prepare("SELECT value FROM daemon_state WHERE key = 'owner_pid'")
+      .get() as { value: string } | null;
+    expect(row).toBeNull();
+  });
+
+  it("does not release owner pid on stop when owned by another process", () => {
+    db
+      .prepare("INSERT OR REPLACE INTO daemon_state (key, value) VALUES ('owner_pid', '424242')")
+      .run();
+
+    loop.stop();
+
+    const row = db
+      .prepare("SELECT value FROM daemon_state WHERE key = 'owner_pid'")
+      .get() as { value: string } | null;
+    expect(row?.value).toBe("424242");
   });
 });

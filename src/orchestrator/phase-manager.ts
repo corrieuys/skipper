@@ -101,7 +101,7 @@ export class PhaseManager {
     }
   }
 
-  handlePhaseRegression(agentId: string, targetPhaseOneIndexed: number, reason: string): void {
+  async handlePhaseRegression(agentId: string, targetPhaseOneIndexed: number, reason: string): Promise<void> {
     const agentRow = this.db
       .prepare("SELECT current_task_id FROM agents WHERE id = ?")
       .get(agentId) as { current_task_id: string | null } | null;
@@ -158,7 +158,7 @@ export class PhaseManager {
     const isStreaming = typeDef?.supports_stdin ?? false;
 
     if (isStreaming) {
-      this.respawnForRegression(task, teamExec.entrypoint_agent_id, phases, targetPhase, reason);
+      await this.respawnForRegression(task, teamExec.entrypoint_agent_id, phases, targetPhase, reason);
     } else {
       this.pendingRegressions.set(agentId, { targetPhase, reason });
     }
@@ -227,7 +227,7 @@ export class PhaseManager {
     this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
   }
 
-  handleSuccessfulExit(task: Task, agentId: string): void {
+  async handleSuccessfulExit(task: Task, agentId: string): Promise<void> {
     const pendingRegression = this.pendingRegressions.get(agentId);
     if (pendingRegression) {
       this.pendingRegressions.delete(agentId);
@@ -236,7 +236,7 @@ export class PhaseManager {
         : null;
       if (teamExec) {
         const phases = (teamExec.team.phases as { name: string; prompt: string }[]) ?? [];
-        this.respawnForRegression(
+        await this.respawnForRegression(
           task,
           teamExec.entrypoint_agent_id,
           phases,
@@ -259,7 +259,7 @@ export class PhaseManager {
         logError(this.db, "task_complete", { taskId: task.id, agentId, method: "handleSuccessfulExit" }, err);
       }
     } else {
-      this.advanceAndRespawn(task, teamExec!.entrypoint_agent_id, phases);
+      await this.advanceAndRespawn(task, teamExec!.entrypoint_agent_id, phases);
     }
   }
 
@@ -279,6 +279,11 @@ export class PhaseManager {
 
     const runningAgent = this.agentManager.getRunningAgent(entrypointAgentId);
     const sessionId = runningAgent?.sessionId ?? undefined;
+
+    if (runningAgent) {
+      this.agentManager.killAgent(entrypointAgentId);
+      await this.agentManager.waitForExit(entrypointAgentId);
+    }
 
     try {
       const workingDir = process.cwd();
@@ -323,7 +328,9 @@ export class PhaseManager {
       step: "AGENT_RUNNING",
       last_checkpoint_ts: new Date().toISOString(),
       session_id: sessionId ?? null,
-      active_delegation_id: null,
+      active_delegation_group_id: null,
+      active_delegation_child_count: 0,
+      active_delegation_settled_count: 0,
       phase_guards: phaseGuards,
       pending_regression: null,
       checkpoint_prompt_hash: null,

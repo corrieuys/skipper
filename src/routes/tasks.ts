@@ -1,19 +1,28 @@
 import { addRoute } from "../server";
 import { TaskScheduler } from "../tasks/scheduler";
 import { getDb } from "../db/connection";
-import { taskDetailPage, tasksPage, taskListFragment } from "../html/components";
+import { taskDetailPage, tasksPage, taskListFragment, diagnosticCard } from "../html/components";
 import type {
   ArtifactData,
   DelegationData,
   TaskData,
   TaskNoteData,
   TeamOptionData,
+  TaskHealthSummary,
 } from "../html/components";
 
 function html(content: string): Response {
   return new Response(content, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function parseTaskRow(row: Record<string, unknown>): TaskData {
@@ -36,7 +45,7 @@ function listTaskRowsForUi(): TaskData[] {
     `SELECT t.*, tm.name AS team_name
      FROM tasks t
      LEFT JOIN teams tm ON tm.id = t.team_id
-     ORDER BY t.priority, t.created_at DESC`,
+     ORDER BY t.priority, t.created_at DESC, t.rowid DESC`,
   ).all() as Record<string, unknown>[];
   return rows.map(parseTaskRow);
 }
@@ -59,8 +68,8 @@ async function parseBody(req: Request): Promise<Record<string, string>> {
   return req.json();
 }
 
-function tasksPageResponse(): Response {
-  return html(tasksPage(listTaskRowsForUi(), listTeamsForUi()));
+function tasksPageResponse(errorMessage?: string): Response {
+  return html(tasksPage(listTaskRowsForUi(), listTeamsForUi(), 8, errorMessage));
 }
 
 function taskDetailResponse(id: string): Response {
@@ -71,7 +80,7 @@ function taskDetailResponse(id: string): Response {
      LEFT JOIN teams tm ON tm.id = t.team_id
      WHERE t.id = ?`,
   ).get(id) as Record<string, unknown> | null;
-  if (!row) return html("<p>Task not found</p>");
+  if (!row) return new Response("<p>Task not found</p>", { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
   const task = parseTaskRow(row);
 
   if (task.team_id) {
@@ -106,7 +115,37 @@ function taskDetailResponse(id: string): Response {
      ORDER BY ar.created_at`,
   ).all(id) as ArtifactData[];
 
+  // Fetch health summary for running tasks
+  if (task.status === "running") {
+    task.healthSummary = fetchTaskHealthSummary(id, db);
+  }
+
   return html(taskDetailPage(task, notes, delegations, artifacts, listTeamsForUi()));
+}
+
+function fetchTaskHealthSummary(taskId: string, db: ReturnType<typeof getDb>): TaskHealthSummary {
+  const row = db.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM agent_instances WHERE task_id = ? AND status IN ('running', 'waiting_delegation')) AS live_runtime_count,
+       (SELECT COUNT(*) FROM delegations WHERE task_id = ? AND status IN ('pending', 'running')) AS active_delegation_count,
+       (SELECT COUNT(*) FROM escalations WHERE task_id = ? AND status = 'open') AS open_escalation_count,
+       (SELECT MAX(created_at) FROM task_checkpoints WHERE task_id = ?) AS last_progress,
+       (SELECT COUNT(*) FROM events WHERE task_id = ? AND type LIKE 'remediation:%') AS remediation_event_count`,
+  ).get(taskId, taskId, taskId, taskId, taskId) as {
+    live_runtime_count: number;
+    active_delegation_count: number;
+    open_escalation_count: number;
+    last_progress: string | null;
+    remediation_event_count: number;
+  };
+
+  return {
+    liveRuntimeCount: row.live_runtime_count,
+    activeDelegationCount: row.active_delegation_count,
+    openEscalationCount: row.open_escalation_count,
+    lastProgressAt: row.last_progress,
+    remediationEventCount: row.remediation_event_count,
+  };
 }
 
 export function registerTaskRoutes(): void {
@@ -133,7 +172,7 @@ export function registerTaskRoutes(): void {
       return html(taskListFragment(listTaskRowsForUi()));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Internal error";
-      return html(`<p class='error'>${message}</p>`);
+      return html(`<p class='error'>${escapeHtml(message)}</p>`);
     }
   });
 
@@ -185,6 +224,9 @@ export function registerTaskRoutes(): void {
       return tasksPageResponse();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Internal error";
+      if (_req.headers.get("HX-Request")) {
+        return tasksPageResponse(message);
+      }
       return Response.json({ error: message }, { status: 400 });
     }
   });
@@ -203,6 +245,36 @@ export function registerTaskRoutes(): void {
     try {
       scheduler.retryTask(params.id);
       return tasksPageResponse();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      return Response.json({ error: message }, { status: 400 });
+    }
+  });
+
+  addRoute("POST", "/api/tasks/:id/delete", (_req, params) => {
+    try {
+      scheduler.deleteTask(params.id);
+      return tasksPageResponse();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      return Response.json({ error: message }, { status: 400 });
+    }
+  });
+
+  addRoute("POST", "/api/tasks/:id/clear-stale", (_req, params) => {
+    try {
+      const db = getDb();
+      // Clear stale agent assignments for this task
+      db.prepare("UPDATE agents SET current_task_id = NULL, process_pid = NULL WHERE current_task_id = ?").run(params.id);
+      // Fail active instances
+      db.prepare(
+        "UPDATE agent_instances SET status = 'failed', process_pid = NULL, updated_at = datetime('now') WHERE task_id = ? AND status IN ('running', 'waiting_delegation', 'pending')",
+      ).run(params.id);
+
+      if (_req.headers.get("HX-Request")) {
+        return taskDetailResponse(params.id);
+      }
+      return Response.json({ ok: true });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Internal error";
       return Response.json({ error: message }, { status: 400 });
