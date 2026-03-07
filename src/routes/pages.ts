@@ -29,6 +29,7 @@ import {
   logsPage,
   helpPage,
   recentActivityFragment,
+  formatTimestamp,
 } from "../html/components";
 import type {
   DashboardData,
@@ -534,26 +535,29 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
 }
 
 function escalationCardHtml(esc: EscalationData): string {
+  const taskStatus = esc.task_status ? ` (${escapeHtml(esc.task_status)})` : "";
   return `<div class="card escalation-card">
     <div class="escalation-header">
-      <span class="badge badge-open">open</span>
-      <span class="badge">${escapeForHtml(esc.type)}</span>
-      <span class="muted">${escapeForHtml(esc.created_at)}</span>
+      <span class="badge badge-${escapeHtml(esc.status)}">${escapeHtml(esc.status)}</span>
+      <span class="badge">${escapeHtml(esc.type)}</span>
+      <span class="muted">${formatTimestamp(esc.created_at)}</span>
     </div>
-    <div class="escalation-question"><strong>Question:</strong> ${escapeForHtml(esc.question)}</div>
-    <form hx-post="/api/escalations/${escapeForHtml(esc.id)}/resolve" hx-target="body" hx-swap="innerHTML" class="escalation-form">
+    <div class="escalation-question"><strong>Question:</strong> ${escapeHtml(esc.question)}</div>
+    <div class="muted">Agent: ${escapeHtml(esc.agent_id.slice(0, 8))} | Task: ${escapeHtml(esc.task_id.slice(0, 8))}${taskStatus}</div>
+    <form hx-post="/api/escalations/${escapeHtml(esc.id)}/resolve" hx-target="body" hx-swap="innerHTML" class="escalation-form">
       <textarea name="response" placeholder="Type your response..." rows="3" required></textarea>
       <button type="submit">Respond</button>
     </form>
   </div>`;
 }
 
-function escapeForHtml(str: string): string {
+function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function createSSEStream(setup: (send: (event: string, data: string) => void) => () => void): Response {
