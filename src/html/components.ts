@@ -279,7 +279,7 @@ export interface TeamOptionData {
 export type PollIntervalSeconds = 3 | 8;
 
 function pollingRoot(id: string, endpoint: string, pollIntervalSeconds: PollIntervalSeconds, content: string): string {
-  return `<div id="${escapeHtml(id)}" class="poll-fragment" hx-get="${escapeHtml(endpoint)}" hx-trigger="every ${pollIntervalSeconds}s" hx-swap="outerHTML">${content}</div>`;
+  return `<div id="${escapeHtml(id)}" class="poll-fragment" hx-get="${escapeHtml(endpoint)}" hx-trigger="every ${pollIntervalSeconds}s" hx-swap="outerHTML" hx-on:htmx:response-error="event.detail.shouldSwap=false">${content}</div>`;
 }
 
 export interface AuditEventData {

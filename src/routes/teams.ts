@@ -4,6 +4,7 @@ import { TeamManager } from "../teams/manager";
 import { getDb } from "../db/connection";
 import { teamListFragment, teamDetailPage } from "../html/components";
 import type { TeamData, TeamAgentData } from "../html/components";
+import { getPollIntervalSeconds } from "./pages";
 
 function html(content: string): Response {
   return new Response(content, {
@@ -82,7 +83,7 @@ function renderTeamDetailPage(db: Database, teamId: string): Response {
   if (!team) return html("<p>Team not found</p>");
   const agents = getTeamAgentsWithNames(db, teamId);
   const availableAgents = getAvailableAgentsForTeam(db, teamId);
-  return html(teamDetailPage(team, agents, availableAgents));
+  return html(teamDetailPage(team, agents, availableAgents, getPollIntervalSeconds(db)));
 }
 
 function normalizeSkills(value: unknown): string[] {
