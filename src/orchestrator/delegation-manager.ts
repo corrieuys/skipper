@@ -103,6 +103,16 @@ export class DelegationManager {
       this.db
         .prepare("UPDATE delegations SET status = 'failed', completed_at = datetime('now') WHERE id = ?")
         .run(delegationId);
+      this.setAgentState(parentAgentId, "working");
+      this.updateOrchestrationState(taskId, {
+        step: "AGENT_RUNNING",
+        last_checkpoint_ts: new Date().toISOString(),
+        session_id: this.agentManager.getSessionId(parentAgentId),
+        active_delegation_id: null,
+        phase_guards: Array.from(this.getPhaseCompleteHandled()).filter((k) => k.startsWith(`${taskId}:`)),
+        pending_regression: null,
+        checkpoint_prompt_hash: null,
+      });
       return null;
     }
 
@@ -127,7 +137,19 @@ export class DelegationManager {
     });
 
     const closeStdin = !isStreaming;
-    this.agentManager.sendInput(childAgentId, prompt, closeStdin);
+    try {
+      this.agentManager.sendInput(childAgentId, prompt, closeStdin);
+    } catch (err) {
+      logError(this.db, "delegation_send_input", { delegationId, childAgentId, method: "handleDelegation" }, err);
+      this.db
+        .prepare("UPDATE delegations SET status = 'failed', completed_at = datetime('now') WHERE id = ?")
+        .run(delegationId);
+      this.agentManager.killAgent(childAgentId);
+      this.db
+        .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
+        .run(childAgentId);
+      return null;
+    }
 
     this.db
       .prepare("UPDATE delegations SET status = 'running' WHERE id = ?")
@@ -144,15 +166,28 @@ export class DelegationManager {
 
     this.setAgentState(parentAgentId, "waiting_delegation", { delegation_id: delegationId });
 
-    this.updateOrchestrationState(taskId, {
-      step: "WAITING_DELEGATION",
-      last_checkpoint_ts: new Date().toISOString(),
-      session_id: this.agentManager.getSessionId(parentAgentId),
-      active_delegation_id: delegationId,
-      phase_guards: Array.from(this.getPhaseCompleteHandled()).filter((k) => k.startsWith(`${taskId}:`)),
-      pending_regression: null,
-      checkpoint_prompt_hash: null,
-    });
+    try {
+      this.updateOrchestrationState(taskId, {
+        step: "WAITING_DELEGATION",
+        last_checkpoint_ts: new Date().toISOString(),
+        session_id: this.agentManager.getSessionId(parentAgentId),
+        active_delegation_id: delegationId,
+        phase_guards: Array.from(this.getPhaseCompleteHandled()).filter((k) => k.startsWith(`${taskId}:`)),
+        pending_regression: null,
+        checkpoint_prompt_hash: null,
+      });
+    } catch (err) {
+      logError(this.db, "delegation_orchestration_state", { delegationId, taskId, method: "handleDelegation" }, err);
+      this.db
+        .prepare("UPDATE delegations SET status = 'failed', completed_at = datetime('now') WHERE id = ?")
+        .run(delegationId);
+      this.agentManager.killAgent(childAgentId);
+      this.db
+        .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
+        .run(childAgentId);
+      this.setAgentState(parentAgentId, "working");
+      return null;
+    }
 
     return this.getDelegation(delegationId);
   }
@@ -214,6 +249,16 @@ export class DelegationManager {
         this.routeResultToParent(delegation.parent_agent_id, event.agentId, result, delegation.task_id);
 
         this.setAgentState(delegation.parent_agent_id, "working");
+
+        this.updateOrchestrationState(delegation.task_id, {
+          step: "AGENT_RUNNING",
+          last_checkpoint_ts: new Date().toISOString(),
+          session_id: this.agentManager.getSessionId(delegation.parent_agent_id),
+          active_delegation_id: null,
+          phase_guards: Array.from(this.getPhaseCompleteHandled()).filter((k) => k.startsWith(`${delegation.task_id}:`)),
+          pending_regression: null,
+          checkpoint_prompt_hash: null,
+        });
       } else {
         this.db
           .prepare(
@@ -233,6 +278,16 @@ export class DelegationManager {
         );
 
         this.setAgentState(delegation.parent_agent_id, "working");
+
+        this.updateOrchestrationState(delegation.task_id, {
+          step: "AGENT_RUNNING",
+          last_checkpoint_ts: new Date().toISOString(),
+          session_id: this.agentManager.getSessionId(delegation.parent_agent_id),
+          active_delegation_id: null,
+          phase_guards: Array.from(this.getPhaseCompleteHandled()).filter((k) => k.startsWith(`${delegation.task_id}:`)),
+          pending_regression: null,
+          checkpoint_prompt_hash: null,
+        });
       }
     } catch (err) {
       logError(this.db, "child_exit_handler", { delegationId: delegation.id, childAgentId: event.agentId, exitCode: event.code, method: "handleChildExit" }, err);
@@ -314,7 +369,10 @@ export class DelegationManager {
         );
         if (taskId) {
           try {
-            this.taskScheduler.failTask(taskId, `Failed to route delegation result to parent agent: ${String(err)}`);
+            const task = this.taskScheduler.getTask(taskId);
+            if (task && task.status === "running") {
+              this.taskScheduler.failTask(taskId, `Failed to route delegation result to parent agent: ${String(err)}`);
+            }
           } catch (failErr) {
             logError(
               this.db,
