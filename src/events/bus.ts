@@ -63,12 +63,33 @@ export interface AgentSignalEvent {
   reason?: string;
 }
 
+export interface InstanceStateChangedEvent {
+  instanceId: string;
+  templateAgentId: string;
+  taskId: string;
+  parentInstanceId: string | null;
+  rootInstanceId: string | null;
+  status: string;
+}
+
+export interface DelegationGroupProgressEvent {
+  groupId: string;
+  taskId: string;
+  parentInstanceId: string;
+  settledCount: number;
+  expectedCount: number;
+  failedCount: number;
+  status: string;
+}
+
 export interface EventMap {
   "agent:output": [AgentOutputEvent];
   "agent:exit": [AgentExitEvent];
   "agent:streams_drained": [AgentStreamsDrainedEvent];
   "agent:signal": [AgentSignalEvent];
   "agent:state_changed": [AgentStateChangedEvent];
+  "instance:state_changed": [InstanceStateChangedEvent];
+  "delegation_group:progress": [DelegationGroupProgressEvent];
   "escalation:created": [EscalationCreatedEvent];
   "escalation:resolved": [EscalationResolvedEvent];
   "task:note_added": [TaskNoteAddedEvent];

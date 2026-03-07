@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS teams (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Skipper (lead agent) configuration
+CREATE TABLE IF NOT EXISTS skipper_config (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 -- Agent-team membership with hierarchy
 CREATE TABLE IF NOT EXISTS team_agents (
   id TEXT PRIMARY KEY,

@@ -120,6 +120,8 @@ describe("sendInput error handling", () => {
           getRunningAgent: () => null,
           spawnAgent: async () => {},
           sendInput: throwingSendInput,
+          clearSessionId: () => {},
+          getSessionId: () => null,
         } as any,
         { buildInitialPrompt: () => "prompt" } as any,
         {

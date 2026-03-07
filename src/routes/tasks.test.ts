@@ -112,6 +112,30 @@ describe("POST /api/tasks/:id/approve", () => {
     const body = await res.json();
     expect(body.error).toBeDefined();
   });
+
+  it("returns HTML tasks page with error for HTMX approve failure", async () => {
+    const createBody = new URLSearchParams({ title: "Unassigned draft task" });
+    await fetch(`${baseUrl}/api/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: createBody.toString(),
+    });
+
+    const db = getDb();
+    const tasks = db.prepare("SELECT id FROM tasks WHERE title = ?").all("Unassigned draft task") as { id: string }[];
+    const taskId = tasks[tasks.length - 1].id;
+
+    const res = await fetch(`${baseUrl}/api/tasks/${taskId}/approve`, {
+      method: "POST",
+      headers: { "HX-Request": "true" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("Task must have a team assigned before approval");
+    expect(html).toContain("Unassigned draft task");
+  });
 });
 
 describe("POST /api/tasks/:id/cancel", () => {
@@ -159,6 +183,37 @@ describe("POST /api/tasks/:id/retry", () => {
 
   it("returns JSON error for unknown task id", async () => {
     const res = await fetch(`${baseUrl}/api/tasks/nonexistent/retry`, { method: "POST" });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBeDefined();
+  });
+});
+
+describe("POST /api/tasks/:id/delete", () => {
+  it("returns HTML tasks page after deleting a non-running task", async () => {
+    const body = new URLSearchParams({ title: "Task to delete via route" });
+    await fetch(`${baseUrl}/api/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+
+    const db = getDb();
+    const tasks = db.prepare("SELECT id FROM tasks WHERE title = ?").all("Task to delete via route") as { id: string }[];
+    const taskId = tasks[tasks.length - 1].id;
+
+    const res = await fetch(`${baseUrl}/api/tasks/${taskId}/delete`, { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("Tasks");
+
+    const deleted = db.prepare("SELECT id FROM tasks WHERE id = ?").get(taskId) as { id: string } | null;
+    expect(deleted).toBeNull();
+  });
+
+  it("returns JSON error for unknown task id", async () => {
+    const res = await fetch(`${baseUrl}/api/tasks/nonexistent/delete`, { method: "POST" });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBeDefined();

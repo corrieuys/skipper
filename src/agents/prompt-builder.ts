@@ -1,6 +1,23 @@
 import type { Database } from "bun:sqlite";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { getDb } from "../db/connection";
 import { getAgentTypeDefinition } from "./types";
+import { isSkipperAgent } from "./skipper";
+
+const PROMPTS_DIR = join(import.meta.dir, "../../prompts");
+
+function loadPrompt(filename: string): string {
+  return readFileSync(join(PROMPTS_DIR, filename), "utf-8").trimEnd();
+}
+
+const EXECUTION_CONTEXT = loadPrompt("execution-context.md");
+const PHASE_REGRESSION_TEMPLATE = loadPrompt("phase-regression.md");
+const PHASE_COMPLETE_PHASE = loadPrompt("phase-complete-phase.md");
+const PHASE_COMPLETE_TASK = loadPrompt("phase-complete-task.md");
+const COMMANDS_DELEGATION = loadPrompt("commands-delegation.md");
+const COMMANDS_ALWAYS = loadPrompt("commands-always.md");
+const SKIPPER_PROMPT = loadPrompt("skipper.md");
 
 export interface TaskInfo {
   id: string;
@@ -59,11 +76,14 @@ export class PromptBuilder {
   buildInitialPrompt(options: PromptOptions): string {
     const parts: string[] = [];
 
-    parts.push(this.buildBaseExecutionContext());
+    parts.push(EXECUTION_CONTEXT);
     parts.push("");
 
-    // Agent instruction
-    if (options.agent.instruction) {
+    // Agent instruction (Skipper uses hardcoded prompt)
+    if (isSkipperAgent(options.agent.id)) {
+      parts.push(SKIPPER_PROMPT);
+      parts.push("");
+    } else if (options.agent.instruction) {
       parts.push(`INSTRUCTION: ${options.agent.instruction}`);
       parts.push("");
     }
@@ -86,21 +106,13 @@ export class PromptBuilder {
 
     // Phase regression notice
     if (options.regressionReason) {
-      parts.push("--- PHASE REGRESSION NOTICE ---");
-      parts.push("This phase is being RE-RUN. A later phase rejected the work.");
-      parts.push(`Reason: ${options.regressionReason}`);
-      parts.push("Address the issues described above before completing this phase.");
-      parts.push("--- END REGRESSION NOTICE ---");
+      parts.push(PHASE_REGRESSION_TEMPLATE.replace("{{reason}}", options.regressionReason));
       parts.push("");
     }
 
     // Phase complete instruction (streaming agents only)
     if (options.isStreaming) {
-      if (options.phase) {
-        parts.push("When you have completed this phase, output [PHASE_COMPLETE] on its own line.");
-      } else {
-        parts.push("When you have completed this task, output [PHASE_COMPLETE] on its own line.");
-      }
+      parts.push(options.phase ? PHASE_COMPLETE_PHASE : PHASE_COMPLETE_TASK);
       parts.push("");
     }
 
@@ -117,7 +129,7 @@ export class PromptBuilder {
     const parts: string[] = [];
 
     // Team roster
-    const roster = this.getTeamRoster(agentId);
+    const roster = this.getTeamRoster(agentId, taskId);
     if (roster.length > 0) {
       parts.push("TEAM ROSTER (use agent IDs for delegation):");
       for (const member of roster) {
@@ -145,21 +157,10 @@ export class PromptBuilder {
     // Delegation: only shown if there are other team members AND agent supports it
     const otherMembers = roster.filter((m) => m.id !== agentId);
     if (otherMembers.length > 0 && this.agentSupportsDelegation(agentId)) {
-      parts.push(
-        "- To delegate work to a team member: [DELEGATE to:<agent-id>] description of work",
-      );
-      parts.push(
-        "- After delegating, stop active implementation and hand off. Do not claim task completion until a [DELEGATION_RESULT ...] is received.",
-      );
-      parts.push(
-        "- Do not busy-wait or sleep-loop. End this run after delegation; the orchestrator will resume you with the child result.",
-      );
+      parts.push(COMMANDS_DELEGATION);
     }
 
-    parts.push("- To ask the human user a question: [ESCALATE] your question here");
-    parts.push(
-      "- To record an important note for other agents: [NOTE] short note about sharp edges or critical context",
-    );
+    parts.push(COMMANDS_ALWAYS);
 
     return parts.join("\n");
   }
@@ -167,7 +168,7 @@ export class PromptBuilder {
   buildDelegationPrompt(options: DelegationPromptOptions): string {
     const parts: string[] = [];
 
-    parts.push(this.buildBaseExecutionContext());
+    parts.push(EXECUTION_CONTEXT);
     parts.push("");
 
     // Child agent role
@@ -199,7 +200,7 @@ export class PromptBuilder {
     parts.push("");
 
     // Team roster
-    const roster = this.getTeamRoster(options.childAgent.id);
+    const roster = this.getTeamRoster(options.childAgent.id, options.task.id);
     if (roster.length > 0) {
       parts.push("TEAM ROSTER (use agent IDs for delegation):");
       for (const member of roster) {
@@ -215,47 +216,41 @@ export class PromptBuilder {
     parts.push("AVAILABLE COMMANDS:");
     const otherMembers = roster.filter((m) => m.id !== options.childAgent.id);
     if (otherMembers.length > 0 && this.agentSupportsDelegation(options.childAgent.id)) {
-      parts.push(
-        "- To delegate work to a team member: [DELEGATE to:<agent-id>] description of work",
-      );
-      parts.push(
-        "- After delegating, stop active implementation and hand off. Do not claim task completion until a [DELEGATION_RESULT ...] is received.",
-      );
-      parts.push(
-        "- Do not busy-wait or sleep-loop. End this run after delegation; the orchestrator will resume you with the child result.",
-      );
+      parts.push(COMMANDS_DELEGATION);
     }
-    parts.push("- To ask the human user a question: [ESCALATE] your question here");
-    parts.push(
-      "- To record an important note for other agents: [NOTE] short note about sharp edges or critical context",
-    );
+    parts.push(COMMANDS_ALWAYS);
 
     return parts.join("\n");
   }
 
-  private buildBaseExecutionContext(): string {
-    return [
-      "EXECUTION CONTEXT:",
-      "- You are running inside Skipper, a multi-agent orchestration system.",
-      "- This is a non-interactive, single-action run for your current assignment.",
-      "- Complete the assigned work and provide output in this run; do not wait for back-and-forth chat.",
-      "- If you delegate, treat this run as a handoff and wait for orchestrator resume rather than continuing in parallel.",
-      "- If human input is required, use [ESCALATE] with a clear question.",
-    ].join("\n");
-  }
+  private getTeamRoster(agentId: string, taskId?: string): TeamMember[] {
+    const taskTeam = taskId
+      ? this.db
+        .prepare("SELECT team_id FROM tasks WHERE id = ?")
+        .get(taskId) as { team_id: string | null } | null
+      : null;
 
-  private getTeamRoster(agentId: string): TeamMember[] {
-    const rows = this.db
-      .prepare(
-        `SELECT a.id, a.name, ta.role, ta.level, a.capabilities
-         FROM team_agents ta
-         JOIN agents a ON ta.agent_id = a.id
-         WHERE ta.team_id IN (
-           SELECT team_id FROM team_agents WHERE agent_id = ?
-         )
-         ORDER BY ta.level, a.name`,
-      )
-      .all(agentId) as { id: string; name: string; role: string | null; level: number; capabilities: string }[];
+    const rows = taskTeam?.team_id
+      ? this.db
+        .prepare(
+          `SELECT a.id, a.name, ta.role, ta.level, a.capabilities
+           FROM team_agents ta
+           JOIN agents a ON ta.agent_id = a.id
+           WHERE ta.team_id = ?
+           ORDER BY ta.level, a.name`,
+        )
+        .all(taskTeam.team_id) as { id: string; name: string; role: string | null; level: number; capabilities: string }[]
+      : this.db
+        .prepare(
+          `SELECT a.id, a.name, ta.role, ta.level, a.capabilities
+           FROM team_agents ta
+           JOIN agents a ON ta.agent_id = a.id
+           WHERE ta.team_id IN (
+             SELECT team_id FROM team_agents WHERE agent_id = ?
+           )
+           ORDER BY ta.level, a.name`,
+        )
+        .all(agentId) as { id: string; name: string; role: string | null; level: number; capabilities: string }[];
 
     return rows.map((r) => ({
       id: r.id,

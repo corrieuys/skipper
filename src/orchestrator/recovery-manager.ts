@@ -8,6 +8,8 @@ import { TaskStateMachine } from "./state";
 import { logError } from "../logging";
 import type { OrchestrationState, TaskCheckpoint, PendingRegression } from "./types";
 
+const RECOVERY_ATTEMPT_KEY_PREFIX = "recovery_attempt:";
+
 export class RecoveryManager {
   constructor(
     private readonly db: Database,
@@ -23,8 +25,7 @@ export class RecoveryManager {
 
   /**
    * Clean up stale agent process state on startup.
-   * Only clears PID/status — does NOT fail running tasks or clear task assignments.
-   * Task recovery is handled separately by recoverAllStaleTasks().
+   * Also checks agent_instances with non-null PIDs.
    */
   cleanupStaleState(): void {
     try {
@@ -45,6 +46,8 @@ export class RecoveryManager {
           this.db
             .prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?")
             .run(row.id);
+
+          this.emitRemediationEvent("startup_agent_cleanup", row.id, null, { pid: row.process_pid });
         }
       }
 
@@ -57,6 +60,32 @@ export class RecoveryManager {
           this.db
             .prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?")
             .run(agentId);
+        }
+      }
+
+      // Startup reconciliation: check agent_instances with PIDs not tracked in memory
+      const instancesWithPids = this.db
+        .prepare(
+          "SELECT id, template_agent_id, process_pid, task_id FROM agent_instances WHERE process_pid IS NOT NULL AND status IN ('running', 'waiting_delegation')",
+        )
+        .all() as Array<{ id: string; template_agent_id: string; process_pid: number; task_id: string }>;
+
+      for (const inst of instancesWithPids) {
+        const tracked = this.agentManager.getRunningAgent(inst.id);
+        if (!tracked) {
+          try {
+            process.kill(inst.process_pid, 0);
+            process.kill(inst.process_pid, 9);
+          } catch { /* already dead */ }
+
+          this.db
+            .prepare("UPDATE agent_instances SET status = 'failed', process_pid = NULL, updated_at = datetime('now') WHERE id = ?")
+            .run(inst.id);
+
+          this.emitRemediationEvent("startup_instance_cleanup", inst.template_agent_id, inst.task_id, {
+            instanceId: inst.id,
+            pid: inst.process_pid,
+          });
         }
       }
     } catch (err) {
@@ -101,12 +130,16 @@ export class RecoveryManager {
 
         const activeDelegation = this.getActiveDelegationForParent(assignedAgent.id);
         if (activeDelegation) {
-          const childRunning = this.agentManager.getRunningAgent(activeDelegation.child_agent_id);
+          const childRuntimeId = activeDelegation.child_instance_id ?? activeDelegation.child_agent_id;
+          const childRunning = this.agentManager.getRunningAgent(childRuntimeId);
           if (childRunning) continue;
         }
 
         const didRecover = await this.recoverTask(taskId);
-        if (didRecover) recovered++;
+        if (didRecover) {
+          this.emitRemediationEvent("task_recovered", assignedAgent.id, taskId, { method: "recoverAllStaleTasks" });
+          recovered++;
+        }
       }
     } catch (err) {
       logError(this.db, "recovery_error", { method: "recoverAllStaleTasks" }, err);
@@ -120,6 +153,30 @@ export class RecoveryManager {
     if (!task || task.status !== "running") return false;
     if (!task.team_id) return false;
 
+    // One-shot recovery policy: check if we've already tried to recover this task
+    const recoveryKey = `${RECOVERY_ATTEMPT_KEY_PREFIX}${taskId}`;
+    const existingAttempt = this.db
+      .prepare("SELECT value FROM daemon_state WHERE key = ?")
+      .get(recoveryKey) as { value: string } | null;
+
+    if (existingAttempt) {
+      // Already recovered once — fail the task
+      try {
+        this.taskScheduler.failTask(taskId, "Recovery failed: task already recovered once and agent died again");
+      } catch (err) {
+        logError(this.db, "one_shot_recovery_fail", { taskId, method: "recoverTask" }, err);
+      }
+      this.emitRemediationEvent("one_shot_recovery_exhausted", null, taskId, { previousAttempt: existingAttempt.value });
+      // Clean up the recovery key
+      this.db.prepare("DELETE FROM daemon_state WHERE key = ?").run(recoveryKey);
+      return false;
+    }
+
+    // Record recovery attempt
+    this.db
+      .prepare("INSERT OR REPLACE INTO daemon_state (key, value) VALUES (?, ?)")
+      .run(recoveryKey, new Date().toISOString());
+
     const teamExec = this.teamManager.getTeamForExecution(task.team_id);
     if (!teamExec) return false;
 
@@ -130,7 +187,8 @@ export class RecoveryManager {
     const typeDef = getAgentTypeDefinition(agent.type, this.db);
     if (!typeDef) return false;
 
-    const orchState = task.orchestration_state as Partial<OrchestrationState>;
+    const orchState = (task.orchestration_state ?? {}) as Partial<OrchestrationState>;
+    if (!orchState || typeof orchState !== "object") return false;
 
     const checkpoint = this.getLatestCheckpoint(taskId);
 
@@ -143,11 +201,14 @@ export class RecoveryManager {
       this.getPendingRegressions().set(entrypointAgentId, orchState.pending_regression);
     }
 
-    if (orchState.active_delegation_id) {
-      const delegation = this.getDelegation(orchState.active_delegation_id);
-      if (delegation && (delegation.status === "pending" || delegation.status === "running")) {
+    const activeGroupId = orchState.active_delegation_group_id;
+    if (activeGroupId) {
+      const group = this.db
+        .prepare("SELECT status FROM delegation_groups WHERE id = ?")
+        .get(activeGroupId) as { status: string } | null;
+      if (group && group.status === "running") {
         this.setAgentState(entrypointAgentId, "waiting_delegation", {
-          delegation_id: orchState.active_delegation_id,
+          delegation_id: activeGroupId,
         });
         return true;
       }
@@ -232,17 +293,66 @@ export class RecoveryManager {
       return false;
     }
 
+    this.emitRemediationEvent("task_recovery_spawned", entrypointAgentId, taskId, {
+      canResume,
+      sessionId: canResume ? sessionId : null,
+    });
+
     this.updateOrchestrationState(taskId, {
       step: "AGENT_RUNNING",
       last_checkpoint_ts: new Date().toISOString(),
       session_id: canResume ? sessionId : null,
-      active_delegation_id: null,
+      active_delegation_group_id: null,
+      active_delegation_child_count: 0,
+      active_delegation_settled_count: 0,
       phase_guards: Array.from(this.getPhaseCompleteHandled()).filter((k) => k.startsWith(`${taskId}:`)),
       pending_regression: pendingReg ?? null,
       checkpoint_prompt_hash: null,
     });
 
     return true;
+  }
+
+  /**
+   * Clean up all runtime state when a task reaches a terminal state.
+   * Clears agent assignments, fails active instances, kills live processes.
+   */
+  cleanupTerminalTaskState(taskId: string): void {
+    try {
+      // Clear agent assignments for this task
+      this.db
+        .prepare("UPDATE agents SET current_task_id = NULL, process_pid = NULL WHERE current_task_id = ?")
+        .run(taskId);
+
+      // Fail any non-terminal instances
+      const activeInstances = this.db
+        .prepare(
+          "SELECT id, process_pid FROM agent_instances WHERE task_id = ? AND status IN ('running', 'waiting_delegation', 'pending')",
+        )
+        .all(taskId) as Array<{ id: string; process_pid: number | null }>;
+
+      for (const inst of activeInstances) {
+        if (inst.process_pid) {
+          try {
+            process.kill(inst.process_pid, 9);
+          } catch { /* already dead */ }
+        }
+        this.agentManager.killAgent(inst.id);
+      }
+
+      this.db
+        .prepare(
+          "UPDATE agent_instances SET status = 'failed', process_pid = NULL, updated_at = datetime('now') WHERE task_id = ? AND status IN ('running', 'waiting_delegation', 'pending')",
+        )
+        .run(taskId);
+
+      // Clean up the recovery attempt key
+      this.db
+        .prepare("DELETE FROM daemon_state WHERE key = ?")
+        .run(`${RECOVERY_ATTEMPT_KEY_PREFIX}${taskId}`);
+    } catch (err) {
+      logError(this.db, "terminal_task_cleanup", { taskId, method: "cleanupTerminalTaskState" }, err);
+    }
   }
 
   updateOrchestrationState(taskId: string, state: OrchestrationState): void {
@@ -368,7 +478,9 @@ export class RecoveryManager {
       step: activeDelegation ? "WAITING_DELEGATION" : "AGENT_RUNNING",
       last_checkpoint_ts: new Date().toISOString(),
       session_id: sessionId,
-      active_delegation_id: activeDelegation?.id ?? null,
+      active_delegation_group_id: activeDelegation?.delegation_group_id ?? null,
+      active_delegation_child_count: activeDelegation?.expected_count ?? 0,
+      active_delegation_settled_count: activeDelegation?.settled_count ?? 0,
       phase_guards: Array.from(this.getPhaseCompleteHandled()).filter((k) =>
         k.startsWith(`${runningTask.id}:`),
       ),
@@ -377,6 +489,18 @@ export class RecoveryManager {
     };
 
     this.updateOrchestrationState(runningTask.id, state);
+  }
+
+  private emitRemediationEvent(type: string, agentId: string | null, taskId: string | null, details: Record<string, unknown>): void {
+    try {
+      this.db
+        .prepare(
+          "INSERT INTO events (type, payload, source_agent_id, task_id) VALUES (?, ?, ?, ?)",
+        )
+        .run(`remediation:${type}`, JSON.stringify(details), agentId, taskId);
+    } catch (err) {
+      logError(this.db, "remediation_event_emit", { type, agentId, taskId }, err);
+    }
   }
 
   private getRunningTask(): import("../tasks/scheduler").Task | null {
@@ -388,13 +512,33 @@ export class RecoveryManager {
     return this.taskScheduler.getTask(row.id as string);
   }
 
-  private getActiveDelegationForParent(parentAgentId: string): { child_agent_id: string } | null {
+  private getActiveDelegationForParent(parentAgentId: string): {
+    child_agent_id: string;
+    child_instance_id: string | null;
+    delegation_group_id: string | null;
+    expected_count: number | null;
+    settled_count: number | null;
+  } | null {
     try {
       const row = this.db
         .prepare(
-          "SELECT * FROM delegations WHERE parent_agent_id = ? AND status IN ('pending', 'running') LIMIT 1",
+          `SELECT d.child_agent_id,
+                  d.child_instance_id,
+                  d.delegation_group_id,
+                  dg.expected_count,
+                  dg.settled_count
+           FROM delegations d
+           LEFT JOIN delegation_groups dg ON dg.id = d.delegation_group_id
+           WHERE d.parent_instance_id = ? AND d.status IN ('pending', 'running')
+           LIMIT 1`,
         )
-        .get(parentAgentId) as { child_agent_id: string } | null;
+        .get(parentAgentId) as {
+        child_agent_id: string;
+        child_instance_id: string | null;
+        delegation_group_id: string | null;
+        expected_count: number | null;
+        settled_count: number | null;
+      } | null;
       return row ?? null;
     } catch (err) {
       logError(this.db, "get_active_delegation_parent", { parentAgentId, method: "getActiveDelegationForParent" }, err);

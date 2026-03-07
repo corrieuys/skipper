@@ -180,6 +180,23 @@ describe("getStuckCandidates", () => {
     expect(candidates).not.toContain(agentId);
   });
 
+  it("does not return agent with SQL datetime heartbeat", () => {
+    const agentId = createAgent("SQL Time Agent");
+    setAgentPid(agentId, 99999);
+    db.prepare(
+      `INSERT INTO agent_states (agent_id, state, heartbeat_at, screen_fingerprint, nudge_count)
+       VALUES (?, 'working', datetime('now'), NULL, 0)
+       ON CONFLICT(agent_id) DO UPDATE SET
+         state = 'working',
+         heartbeat_at = datetime('now'),
+         screen_fingerprint = NULL,
+         nudge_count = 0`,
+    ).run(agentId);
+
+    const candidates = tracker.getStuckCandidates();
+    expect(candidates).not.toContain(agentId);
+  });
+
   it("skips agents in waiting_delegation state", () => {
     const agentId = createAgent("Delegating Agent");
     setAgentPid(agentId, 99999);

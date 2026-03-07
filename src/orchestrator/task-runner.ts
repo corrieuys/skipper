@@ -4,6 +4,8 @@ import type { PromptBuilder, AgentInfo, PhaseInfo } from "../agents/prompt-build
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { TeamManager } from "../teams/manager";
 import { getAgentTypeDefinition } from "../agents/types";
+import { SKIPPER_AGENT_ID } from "../agents/skipper";
+import { eventBus } from "../events/bus";
 import { logError } from "../logging";
 import type { OrchestrationState } from "./types";
 
@@ -42,12 +44,16 @@ export class TaskRunner {
       return { processed: 1 };
     }
 
-    const entrypointAgentId = teamExec.entrypoint_agent_id;
+    // Always use Skipper as the entrypoint agent
+    const entrypointAgentId = SKIPPER_AGENT_ID;
     const agent = this.agentManager.getAgent(entrypointAgentId);
     if (!agent) {
       this.taskScheduler.failTask(task.id, `Entrypoint agent not found: ${entrypointAgentId}`);
       return { processed: 1 };
     }
+
+    // New task runs must start fresh; do not carry previous session history across tasks.
+    this.agentManager.clearSessionId(entrypointAgentId);
 
     if (this.agentManager.getRunningAgent(entrypointAgentId)) {
       this.agentManager.killAgent(entrypointAgentId);
@@ -68,6 +74,37 @@ export class TaskRunner {
     this.db
       .prepare("UPDATE agents SET current_task_id = ? WHERE id = ?")
       .run(task.id, entrypointAgentId);
+
+    this.db
+      .prepare(
+        `INSERT INTO agent_instances (
+           id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, process_pid, session_id, state_metadata, attempt
+         ) VALUES (?, ?, ?, NULL, ?, 'running', ?, ?, '{}', 1)
+         ON CONFLICT(id) DO UPDATE SET
+           task_id = excluded.task_id,
+           template_agent_id = excluded.template_agent_id,
+           status = 'running',
+           process_pid = excluded.process_pid,
+           session_id = excluded.session_id,
+           state_metadata = '{}',
+           updated_at = datetime('now')`,
+      )
+      .run(
+        entrypointAgentId,
+        task.id,
+        entrypointAgentId,
+        entrypointAgentId,
+        this.agentManager.getRunningAgent(entrypointAgentId)?.process.pid ?? null,
+        this.agentManager.getSessionId(entrypointAgentId),
+      );
+    eventBus.emit("instance:state_changed", {
+      instanceId: entrypointAgentId,
+      templateAgentId: entrypointAgentId,
+      taskId: task.id,
+      parentInstanceId: null,
+      rootInstanceId: entrypointAgentId,
+      status: "running",
+    });
 
     const typeDef = getAgentTypeDefinition(agent.type, this.db);
     const isStreaming = typeDef?.supports_stdin ?? false;
@@ -113,7 +150,9 @@ export class TaskRunner {
       step: "AGENT_RUNNING",
       last_checkpoint_ts: new Date().toISOString(),
       session_id: null,
-      active_delegation_id: null,
+      active_delegation_group_id: null,
+      active_delegation_child_count: 0,
+      active_delegation_settled_count: 0,
       phase_guards: [],
       pending_regression: null,
       checkpoint_prompt_hash: null,

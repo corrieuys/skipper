@@ -83,6 +83,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE INDEX IF NOT EXISTS idx_tasks_status_priority ON tasks(status, priority, created_at);
+
 -- Task checkpoints for long-running tasks
 CREATE TABLE IF NOT EXISTS task_checkpoints (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,6 +140,9 @@ CREATE TABLE IF NOT EXISTS delegations (
   id TEXT PRIMARY KEY,
   parent_agent_id TEXT NOT NULL REFERENCES agents(id),
   child_agent_id TEXT NOT NULL REFERENCES agents(id),
+  parent_instance_id TEXT,
+  child_instance_id TEXT,
+  delegation_group_id TEXT,
   task_id TEXT NOT NULL REFERENCES tasks(id),
   prompt TEXT NOT NULL,
   result TEXT,
@@ -145,6 +150,42 @@ CREATE TABLE IF NOT EXISTS delegations (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   completed_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_delegations_task_status ON delegations(task_id, status);
+CREATE INDEX IF NOT EXISTS idx_delegations_parent_instance ON delegations(parent_instance_id, status);
+CREATE INDEX IF NOT EXISTS idx_delegations_child_instance ON delegations(child_instance_id, status);
+
+CREATE TABLE IF NOT EXISTS agent_instances (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  template_agent_id TEXT NOT NULL REFERENCES agents(id),
+  parent_instance_id TEXT,
+  root_instance_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'waiting_delegation', 'completed', 'failed', 'stopped')),
+  process_pid INTEGER,
+  session_id TEXT,
+  state_metadata TEXT NOT NULL DEFAULT '{}',
+  attempt INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_instances_task ON agent_instances(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_instances_template ON agent_instances(template_agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_instances_status ON agent_instances(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS delegation_groups (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  parent_instance_id TEXT NOT NULL REFERENCES agent_instances(id),
+  policy TEXT NOT NULL DEFAULT 'wait_all_mixed',
+  expected_count INTEGER NOT NULL,
+  settled_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'completed')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_delegation_groups_task ON delegation_groups(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_delegation_groups_status ON delegation_groups(status, created_at);
 
 -- Phase regression audit log
 CREATE TABLE IF NOT EXISTS phase_regressions (
@@ -166,6 +207,8 @@ CREATE TABLE IF NOT EXISTS task_notes (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE INDEX IF NOT EXISTS idx_task_notes_task ON task_notes(task_id, created_at);
+
 -- Escalation records
 CREATE TABLE IF NOT EXISTS escalations (
   id TEXT PRIMARY KEY,
@@ -179,6 +222,7 @@ CREATE TABLE IF NOT EXISTS escalations (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   resolved_at TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_escalations_task_status ON escalations(task_id, status);
 
 -- Agent-to-agent message audit trail
 CREATE TABLE IF NOT EXISTS messages (
@@ -249,6 +293,12 @@ CREATE TABLE IF NOT EXISTS artifacts (
 
 -- Daemon state persistence (survives restarts)
 CREATE TABLE IF NOT EXISTS daemon_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+-- Skipper (lead agent) configuration
+CREATE TABLE IF NOT EXISTS skipper_config (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );

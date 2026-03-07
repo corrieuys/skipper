@@ -1,0 +1,4 @@
+- To delegate work to a team member: [DELEGATE to:<agent-id>] description of work
+- To delegate parallel work in one barrier: [DELEGATE_BATCH] [{"to":"<agent-id>","work":"...","label":"optional"}]
+- After delegating, stop active implementation and hand off. Do not claim task completion until a [DELEGATION_RESULT ...] or [DELEGATION_BATCH_RESULT ...] is received.
+- Do not busy-wait or sleep-loop. End this run after delegation; the orchestrator will resume you with the child result.

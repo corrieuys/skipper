@@ -66,10 +66,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // Kill any running agents
-  for (const [id] of agentManager.getRunningAgents()) {
-    agentManager.killAgent(id);
-  }
+  agentManager.close();
   eventBus.removeAllListeners();
   db.close();
   try { unlinkSync(TEST_DB); } catch {}

@@ -47,15 +47,32 @@ function createTeamWithEntrypoint(
 ): string {
   const teamId = crypto.randomUUID();
   db.prepare(
-    "INSERT INTO teams (id, name, entrypoint_agent_id, phases) VALUES (?, ?, ?, ?)",
-  ).run(teamId, "Test Team", agentId, JSON.stringify(phases));
+    "INSERT INTO teams (id, name, entrypoint_agent_id, phases) VALUES (?, ?, 'skipper', ?)",
+  ).run(teamId, "Test Team", JSON.stringify(phases));
 
-  const taId = crypto.randomUUID();
+  // Add Skipper at level 0
+  const skipperTaId = crypto.randomUUID();
   db.prepare(
-    "INSERT INTO team_agents (id, team_id, agent_id, role) VALUES (?, ?, ?, 'worker')",
-  ).run(taId, teamId, agentId);
+    "INSERT INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, 'skipper', 'lead', 0)",
+  ).run(skipperTaId, teamId);
+
+  // Add the worker agent at level 1
+  if (agentId !== "skipper") {
+    const taId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, ?, 'worker', 1)",
+    ).run(taId, teamId, agentId);
+  }
 
   return teamId;
+}
+
+function addAgentToTeam(teamId: string, agentId: string): void {
+  if (agentId === "skipper") return; // Already added
+  const taId = crypto.randomUUID();
+  db.prepare(
+    "INSERT OR IGNORE INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, ?, 'worker', 1)",
+  ).run(taId, teamId, agentId);
 }
 
 function createApprovedTask(teamId: string, title = "Test Task", priority = 5): string {
@@ -82,6 +99,8 @@ beforeEach(() => {
   db.exec("PRAGMA foreign_keys = ON");
   initializeDatabase(db);
   setupAgentType();
+  // Update Skipper to use the test-echo agent type so it can be spawned in tests
+  db.prepare("UPDATE agents SET type = 'test-echo' WHERE id = 'skipper'").run();
   daemon = new ManagerDaemon(db);
   scheduler = new TaskScheduler(db);
   teamManager = new TeamManager(db);
@@ -89,19 +108,9 @@ beforeEach(() => {
 
 afterEach(() => {
   daemon.stop();
-  // Kill any running agents
-  const agentManager = daemon.getAgentManager();
-  for (const [id, agent] of agentManager.getRunningAgents()) {
-    if (agent.process) {
-      try {
-        agentManager.killAgent(id);
-      } catch {}
-    }
-  }
-  agentManager.getRunningAgents().clear();
+  daemon.getAgentManager().close();
   // Remove all event listeners to avoid cross-test leaks
-  eventBus.removeAllListeners("agent:exit");
-  eventBus.removeAllListeners("agent:signal");
+  eventBus.removeAllListeners();
   db.close();
   try {
     unlinkSync(TEST_DB);
@@ -243,8 +252,8 @@ describe("processTaskQueue", () => {
     expect(task?.status).toBe("failed");
   });
 
-  it("fails task when team has no entrypoint", async () => {
-    // Create team without entrypoint
+  it("uses Skipper even when team has no explicit entrypoint", async () => {
+    // Create team without explicit entrypoint_agent_id
     const agentId = createAgent("Agent", "test-echo");
     const teamId = crypto.randomUUID();
     db.prepare(
@@ -255,27 +264,55 @@ describe("processTaskQueue", () => {
       "INSERT INTO team_agents (id, team_id, agent_id) VALUES (?, ?, ?)",
     ).run(taId, teamId, agentId);
 
-    createApprovedTask(teamId);
+    const taskId = createApprovedTask(teamId);
 
     const result = await daemon.processTaskQueue();
     expect(result.processed).toBe(1);
 
-    // The task should have failed
-    const tasks = db
-      .prepare("SELECT * FROM tasks WHERE status = 'failed'")
-      .all() as { id: string }[];
-    expect(tasks.length).toBe(1);
+    // Task should be running because Skipper is always the entrypoint
+    const task = scheduler.getTask(taskId);
+    expect(task?.status).toBe("running");
   });
 
-  it("fails task when entrypoint agent is deleted after team setup", async () => {
-    // Create agent, set up team, then delete agent from DB
+  it("does not treat delegated child PID on template row as orphaned", async () => {
+    const workerId = createAgent("Worker Agent");
+    const childId = createAgent("Child Agent");
+    const teamId = createTeamWithEntrypoint(workerId);
+    addAgentToTeam(teamId, childId);
+    const taskId = createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    const delegation = await daemon.handleDelegation("skipper", childId, "do work");
+    expect(delegation).not.toBeNull();
+    const childInstanceId = delegation!.child_instance_id!;
+    const childRuntime = daemon.getAgentManager().getRunningAgent(childInstanceId);
+    expect(childRuntime).toBeDefined();
+
+    const before = db
+      .prepare("SELECT process_pid FROM agents WHERE id = ?")
+      .get(childId) as { process_pid: number | null };
+    expect(before.process_pid).toBe(childRuntime!.process.pid);
+
+    daemon.checkProcessHealth();
+
+    const after = db
+      .prepare("SELECT process_pid FROM agents WHERE id = ?")
+      .get(childId) as { process_pid: number | null };
+    expect(after.process_pid).toBe(childRuntime!.process.pid);
+
+    const task = scheduler.getTask(taskId);
+    expect(task?.status).toBe("running");
+  });
+
+  it("fails task when skipper agent is deleted", async () => {
+    // Create agent, set up team, then delete Skipper from DB
     const agentId = createAgent("Temp Agent", "test-echo");
     const teamId = createTeamWithEntrypoint(agentId);
     const taskId = createApprovedTask(teamId);
 
-    // Remove the agent (disable FK temporarily to simulate orphaned reference)
+    // Remove Skipper (disable FK temporarily to simulate orphaned reference)
     db.exec("PRAGMA foreign_keys = OFF");
-    db.prepare("DELETE FROM agents WHERE id = ?").run(agentId);
+    db.prepare("DELETE FROM agents WHERE id = 'skipper'").run();
     db.exec("PRAGMA foreign_keys = ON");
 
     const result = await daemon.processTaskQueue();
@@ -297,20 +334,22 @@ describe("processTaskQueue", () => {
     const task = scheduler.getTask(taskId);
     expect(task?.status).toBe("running");
 
-    // Agent should have current_task_id set
+    // Skipper (the entrypoint) should have current_task_id set
     const agentRow = db
       .prepare("SELECT current_task_id FROM agents WHERE id = ?")
-      .get(agentId) as { current_task_id: string | null };
+      .get("skipper") as { current_task_id: string | null };
     expect(agentRow.current_task_id).toBe(taskId);
   });
 
   it("handles spawn failure gracefully", async () => {
-    // Create agent with bad type that will fail to spawn
+    // Set Skipper to a bad type that will fail to spawn
     setupAgentType("bad-type");
     db.prepare(
       "UPDATE agent_types SET command = 'nonexistent-binary-12345' WHERE name = 'bad-type'",
     ).run();
-    const agentId = createAgent("Bad Agent", "bad-type");
+    db.prepare("UPDATE agents SET type = 'bad-type' WHERE id = 'skipper'").run();
+    clearAgentTypeCache();
+    const agentId = createAgent("Worker Agent", "test-echo");
     const teamId = createTeamWithEntrypoint(agentId);
     const taskId = createApprovedTask(teamId);
 
@@ -368,7 +407,10 @@ describe("processTaskQueue", () => {
 
   it("closes stdin for non-streaming agents", async () => {
     setupAgentType("exec-agent", false);
-    const agentId = createAgent("Exec Agent", "exec-agent");
+    // Update Skipper to use exec-agent type (non-streaming)
+    db.prepare("UPDATE agents SET type = 'exec-agent' WHERE id = 'skipper'").run();
+    clearAgentTypeCache();
+    const agentId = createAgent("Worker Agent", "exec-agent");
     const teamId = createTeamWithEntrypoint(agentId);
     createApprovedTask(teamId);
 
@@ -397,9 +439,9 @@ describe("handleAgentExit", () => {
     // Process the task to start it
     await daemon.processTaskQueue();
 
-    // Simulate agent exit with code 0
+    // Simulate Skipper (the entrypoint) exit with code 0
     const exitEvent: AgentExitEvent = {
-      agentId,
+      agentId: "skipper",
       code: 0,
       isRespawn: false,
       hasDelegation: false,
@@ -413,10 +455,10 @@ describe("handleAgentExit", () => {
     const task = scheduler.getTask(taskId);
     expect(task?.status).toBe("completed");
 
-    // Agent should have task cleared
+    // Skipper should have task cleared
     const agentRow = db
       .prepare("SELECT current_task_id FROM agents WHERE id = ?")
-      .get(agentId) as { current_task_id: string | null };
+      .get("skipper") as { current_task_id: string | null };
     expect(agentRow.current_task_id).toBeNull();
   });
 
@@ -428,7 +470,7 @@ describe("handleAgentExit", () => {
     await daemon.processTaskQueue();
 
     const exitEvent: AgentExitEvent = {
-      agentId,
+      agentId: "skipper",
       code: 1,
       isRespawn: false,
       hasDelegation: false,
@@ -450,7 +492,7 @@ describe("handleAgentExit", () => {
     await daemon.processTaskQueue();
 
     const exitEvent: AgentExitEvent = {
-      agentId,
+      agentId: "skipper",
       code: 0,
       isRespawn: true,
       hasDelegation: false,
@@ -473,7 +515,7 @@ describe("handleAgentExit", () => {
     await daemon.processTaskQueue();
 
     const exitEvent: AgentExitEvent = {
-      agentId,
+      agentId: "skipper",
       code: 0,
       isRespawn: false,
       hasDelegation: true,
@@ -521,7 +563,7 @@ describe("handleAgentExit", () => {
     expect(task?.current_phase).toBe(0);
 
     const exitEvent: AgentExitEvent = {
-      agentId,
+      agentId: "skipper",
       code: 0,
       isRespawn: false,
       hasDelegation: false,
@@ -551,7 +593,7 @@ describe("handleAgentExit", () => {
     db.prepare("UPDATE tasks SET current_phase = 1 WHERE id = ?").run(taskId);
 
     const exitEvent: AgentExitEvent = {
-      agentId,
+      agentId: "skipper",
       code: 0,
       isRespawn: false,
       hasDelegation: false,
@@ -600,11 +642,13 @@ describe("daemon run recording", () => {
 async function setupRunningTask(
   phases: { name: string; prompt: string }[] = [],
 ): Promise<{ agentId: string; taskId: string; teamId: string }> {
-  const agentId = createAgent("Dev Agent", "test-echo", "Build software");
-  const teamId = createTeamWithEntrypoint(agentId, phases);
+  // Create a worker agent but Skipper is always the entrypoint
+  const workerId = createAgent("Dev Agent", "test-echo", "Build software");
+  const teamId = createTeamWithEntrypoint(workerId, phases);
   const taskId = createApprovedTask(teamId);
   await daemon.processTaskQueue();
-  return { agentId, taskId, teamId };
+  // Return "skipper" as the agentId since that's the actual entrypoint
+  return { agentId: "skipper", taskId, teamId };
 }
 
 describe("handlePhaseComplete (streaming)", () => {
@@ -767,7 +811,10 @@ describe("handlePhaseRegression", () => {
 
   it("stores pending regression for exec-mode agents", async () => {
     setupAgentType("exec-agent", false);
-    const agentId = createAgent("Exec Agent", "exec-agent", "Build software");
+    // Update Skipper to exec-agent type (non-streaming)
+    db.prepare("UPDATE agents SET type = 'exec-agent' WHERE id = 'skipper'").run();
+    clearAgentTypeCache();
+    const agentId = createAgent("Worker Agent", "exec-agent", "Build software");
     const phases = [
       { name: "Planning", prompt: "Plan" },
       { name: "Implementation", prompt: "Implement" },
@@ -778,9 +825,9 @@ describe("handlePhaseRegression", () => {
 
     db.prepare("UPDATE tasks SET current_phase = 1 WHERE id = ?").run(taskId);
 
-    daemon.handlePhaseRegression(agentId, 1, "Needs rework");
+    daemon.handlePhaseRegression("skipper", 1, "Needs rework");
 
-    const pending = daemon.getPendingRegression(agentId);
+    const pending = daemon.getPendingRegression("skipper");
     expect(pending).toBeDefined();
     expect(pending!.targetPhase).toBe(0);
     expect(pending!.reason).toBe("Needs rework");
@@ -841,7 +888,10 @@ describe("handlePhaseRegression", () => {
 describe("pending regression in exit handler", () => {
   it("processes pending regression on exec-mode agent exit", async () => {
     setupAgentType("exec-agent", false);
-    const agentId = createAgent("Exec Agent", "exec-agent", "Build software");
+    // Update Skipper to exec-agent type (non-streaming)
+    db.prepare("UPDATE agents SET type = 'exec-agent' WHERE id = 'skipper'").run();
+    clearAgentTypeCache();
+    const agentId = createAgent("Worker Agent", "exec-agent", "Build software");
     const phases = [
       { name: "Planning", prompt: "Plan" },
       { name: "Implementation", prompt: "Implement" },
@@ -855,7 +905,7 @@ describe("pending regression in exit handler", () => {
     db.prepare("UPDATE tasks SET current_phase = 2 WHERE id = ?").run(taskId);
 
     // Trigger regression (stores pending for exec-mode)
-    daemon.handlePhaseRegression(agentId, 1, "Bugs in planning");
+    daemon.handlePhaseRegression("skipper", 1, "Bugs in planning");
 
     // Verify phase was regressed synchronously by handlePhaseRegression
     let task = scheduler.getTask(taskId);
@@ -863,11 +913,11 @@ describe("pending regression in exit handler", () => {
     expect(task?.regression_count).toBe(1);
 
     // Verify pending regression exists (for respawn on exit)
-    expect(daemon.getPendingRegression(agentId)).toBeDefined();
+    expect(daemon.getPendingRegression("skipper")).toBeDefined();
 
-    // Simulate agent exit — should consume the pending regression
+    // Simulate Skipper exit — should consume the pending regression
     const exitEvent: AgentExitEvent = {
-      agentId,
+      agentId: "skipper",
       code: 0,
       isRespawn: false,
       hasDelegation: false,
@@ -878,31 +928,24 @@ describe("pending regression in exit handler", () => {
     await new Promise((r) => setTimeout(r, 100));
 
     // Pending regression should be consumed
-    expect(daemon.getPendingRegression(agentId)).toBeUndefined();
+    expect(daemon.getPendingRegression("skipper")).toBeUndefined();
   });
 });
 
 // Helper: create a second agent in the same team
-function addAgentToTeam(teamId: string, agentId: string): void {
-  const taId = crypto.randomUUID();
-  db.prepare(
-    "INSERT INTO team_agents (id, team_id, agent_id, role) VALUES (?, ?, ?, 'worker')",
-  ).run(taId, teamId, agentId);
-}
-
 describe("handleDelegation", () => {
   it("creates delegation and spawns child agent", async () => {
-    const parentId = createAgent("Parent", "test-echo", "Lead dev");
+    const workerId = createAgent("Worker", "test-echo", "Lead dev");
     const childId = createAgent("Child", "test-echo", "Reviewer");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, childId);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
-    const delegation = await daemon.handleDelegation(parentId, childId, "Review the code");
+    const delegation = await daemon.handleDelegation("skipper", childId, "Review the code");
 
     expect(delegation).not.toBeNull();
-    expect(delegation!.parent_agent_id).toBe(parentId);
+    expect(delegation!.parent_agent_id).toBe("skipper");
     expect(delegation!.child_agent_id).toBe(childId);
     expect(delegation!.task_id).toBe(taskId);
     expect(delegation!.prompt).toBe("Review the code");
@@ -912,90 +955,120 @@ describe("handleDelegation", () => {
     const childRow = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(childId) as { current_task_id: string | null };
     expect(childRow.current_task_id).toBe(taskId);
 
-    // Parent state should be waiting_delegation
-    const parentState = db.prepare("SELECT state, state_metadata FROM agent_states WHERE agent_id = ?").get(parentId) as { state: string; state_metadata: string } | null;
+    // Skipper state should be waiting_delegation
+    const parentState = db.prepare("SELECT state, state_metadata FROM agent_states WHERE agent_id = ?").get("skipper") as { state: string; state_metadata: string } | null;
     expect(parentState?.state).toBe("waiting_delegation");
   });
 
   it("returns null when parent has no task", async () => {
-    const parentId = createAgent("Parent", "test-echo");
+    const workerId = createAgent("Worker", "test-echo");
     const childId = createAgent("Child", "test-echo");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, childId);
 
-    const result = await daemon.handleDelegation(parentId, childId, "Do work");
+    // Skipper has no task assigned (no processTaskQueue called)
+    const result = await daemon.handleDelegation("skipper", childId, "Do work");
     expect(result).toBeNull();
   });
 
   it("returns null when child does not exist", async () => {
-    const parentId = createAgent("Parent", "test-echo");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const workerId = createAgent("Worker", "test-echo");
+    const teamId = createTeamWithEntrypoint(workerId);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
-    const result = await daemon.handleDelegation(parentId, "nonexistent", "Do work");
+    const result = await daemon.handleDelegation("skipper", "nonexistent", "Do work");
     expect(result).toBeNull();
   });
 
+  it("resolves delegate signal target by agent name", async () => {
+    const workerId = createAgent("Worker", "test-echo");
+    const investigatorId = createAgent("Investigator Agent", "test-echo");
+    const teamId = createTeamWithEntrypoint(workerId);
+    addAgentToTeam(teamId, investigatorId);
+    createApprovedTask(teamId);
+    await daemon.processTaskQueue();
+
+    eventBus.emit("agent:signal", {
+      agentId: "skipper",
+      signalType: "delegate",
+      targetAgent: "Investigator Agent",
+      content: "Investigate production failure",
+    });
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    const rows = db
+      .prepare("SELECT child_agent_id, prompt, status FROM delegations ORDER BY created_at DESC LIMIT 1")
+      .all() as { child_agent_id: string; prompt: string; status: string }[];
+    expect(rows.length).toBe(1);
+    expect(rows[0].child_agent_id).toBe(investigatorId);
+    expect(rows[0].prompt).toBe("Investigate production failure");
+    expect(rows[0].status).toBe("running");
+  });
+
   it("returns null when agents are not in same team", async () => {
-    const parentId = createAgent("Parent", "test-echo");
+    const workerId = createAgent("Worker", "test-echo");
     const childId = createAgent("Child", "test-echo");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const teamId = createTeamWithEntrypoint(workerId);
     // Child is NOT added to team
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
-    const result = await daemon.handleDelegation(parentId, childId, "Do work");
+    const result = await daemon.handleDelegation("skipper", childId, "Do work");
     expect(result).toBeNull();
   });
 
   it("returns null when parent already has active delegation", async () => {
-    const parentId = createAgent("Parent", "test-echo");
+    const workerId = createAgent("Worker", "test-echo");
     const child1Id = createAgent("Child 1", "test-echo");
     const child2Id = createAgent("Child 2", "test-echo");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, child1Id);
     addAgentToTeam(teamId, child2Id);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
     // First delegation succeeds
-    const d1 = await daemon.handleDelegation(parentId, child1Id, "First task");
+    const d1 = await daemon.handleDelegation("skipper", child1Id, "First task");
     expect(d1).not.toBeNull();
 
     // Second delegation should fail (concurrent limit 1)
-    const d2 = await daemon.handleDelegation(parentId, child2Id, "Second task");
+    const d2 = await daemon.handleDelegation("skipper", child2Id, "Second task");
     expect(d2).toBeNull();
   });
 
   it("returns null when parent type does not support result receipt", async () => {
     // custom type with no stdin and no resume
     setupAgentType("no-io", false, false);
-    const parentId = createAgent("Parent", "no-io");
+    // Update Skipper to no-io type
+    db.prepare("UPDATE agents SET type = 'no-io' WHERE id = 'skipper'").run();
+    clearAgentTypeCache();
     const childId = createAgent("Child", "test-echo");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const workerId = createAgent("Worker", "test-echo");
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, childId);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
-    const result = await daemon.handleDelegation(parentId, childId, "Do work");
+    const result = await daemon.handleDelegation("skipper", childId, "Do work");
     expect(result).toBeNull();
   });
 
   it("enforces max delegation depth of 3", async () => {
-    const a1 = createAgent("Agent 1", "test-echo", "Top");
     const a2 = createAgent("Agent 2", "test-echo", "Mid 1");
     const a3 = createAgent("Agent 3", "test-echo", "Mid 2");
     const a4 = createAgent("Agent 4", "test-echo", "Bottom");
-    const teamId = createTeamWithEntrypoint(a1);
+    const workerId = createAgent("Worker", "test-echo", "Top");
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, a2);
     addAgentToTeam(teamId, a3);
     addAgentToTeam(teamId, a4);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
-    // Create chain: a1 -> a2 -> a3 (depth 3 from a4's perspective)
-    const d1 = await daemon.handleDelegation(a1, a2, "Level 1");
+    // Create chain: skipper -> a2 -> a3 -> a4 (depth 3 from a4's perspective)
+    const d1 = await daemon.handleDelegation("skipper", a2, "Level 1");
     expect(d1).not.toBeNull();
     const d2 = await daemon.handleDelegation(a2, a3, "Level 2");
     expect(d2).not.toBeNull();
@@ -1012,14 +1085,14 @@ describe("handleDelegation", () => {
 
 describe("handleDelegateComplete", () => {
   it("completes delegation and routes result to parent", async () => {
-    const parentId = createAgent("Parent", "test-echo", "Lead");
+    const workerId = createAgent("Worker", "test-echo", "Lead");
     const childId = createAgent("Child", "test-echo", "Worker");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, childId);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
-    await daemon.handleDelegation(parentId, childId, "Review code");
+    await daemon.handleDelegation("skipper", childId, "Review code");
 
     // Spy on sendInput to verify result routing
     const agentManager = daemon.getAgentManager();
@@ -1027,7 +1100,7 @@ describe("handleDelegateComplete", () => {
     const origSendInput = agentManager.sendInput.bind(agentManager);
     spyOn(agentManager, "sendInput").mockImplementation(
       (id: string, input: string, close?: boolean) => {
-        if (id === parentId) capturedInput = input;
+        if (id === "skipper") capturedInput = input;
         origSendInput(id, input, close);
       },
     );
@@ -1038,13 +1111,13 @@ describe("handleDelegateComplete", () => {
     const delegation = daemon.getActiveDelegationForChild(childId);
     expect(delegation).toBeNull();
 
-    // Result should have been routed to parent
+    // Result should have been routed to parent (Skipper)
     expect(capturedInput).toContain("[DELEGATION_RESULT from:");
     expect(capturedInput).toContain("Code looks good, approved");
     expect(capturedInput).toContain("[END_DELEGATION_RESULT]");
 
-    // Parent state should be working
-    const parentState = db.prepare("SELECT state FROM agent_states WHERE agent_id = ?").get(parentId) as { state: string } | null;
+    // Skipper state should be working
+    const parentState = db.prepare("SELECT state FROM agent_states WHERE agent_id = ?").get("skipper") as { state: string } | null;
     expect(parentState?.state).toBe("working");
 
     // Child task assignment cleared
@@ -1061,14 +1134,14 @@ describe("handleDelegateComplete", () => {
 
 describe("child exit handling for delegations", () => {
   it("completes delegation on child exit code 0", async () => {
-    const parentId = createAgent("Parent", "test-echo", "Lead");
+    const workerId = createAgent("Worker", "test-echo", "Lead");
     const childId = createAgent("Child", "test-echo", "Worker");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, childId);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
-    await daemon.handleDelegation(parentId, childId, "Do task");
+    await daemon.handleDelegation("skipper", childId, "Do task");
 
     // Simulate child exit with code 0
     const exitEvent: AgentExitEvent = {
@@ -1086,23 +1159,28 @@ describe("child exit handling for delegations", () => {
     const delegation = daemon.getActiveDelegationForChild(childId);
     expect(delegation).toBeNull();
 
-    // Parent state should be working
-    const parentState = db.prepare("SELECT state FROM agent_states WHERE agent_id = ?").get(parentId) as { state: string } | null;
+    // Skipper state should be working
+    const parentState = db.prepare("SELECT state FROM agent_states WHERE agent_id = ?").get("skipper") as { state: string } | null;
     expect(parentState?.state).toBe("working");
   });
 
   it("fails delegation on child non-zero exit", async () => {
-    const parentId = createAgent("Parent", "test-echo", "Lead");
+    const workerId = createAgent("Worker", "test-echo", "Lead");
     const childId = createAgent("Child", "test-echo", "Worker");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, childId);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
-    await daemon.handleDelegation(parentId, childId, "Do task");
+    const delegation = await daemon.handleDelegation("skipper", childId, "Do task");
+    expect(delegation).not.toBeNull();
+    const childInstanceId = delegation!.child_instance_id;
+
+    // Exhaust retry limit so the delegation won't be retried on failure
+    db.prepare("UPDATE agent_instances SET attempt = 2 WHERE id = ?").run(childInstanceId);
 
     const exitEvent: AgentExitEvent = {
-      agentId: childId,
+      agentId: childInstanceId,
       code: 1,
       isRespawn: false,
       hasDelegation: false,
@@ -1110,7 +1188,7 @@ describe("child exit handling for delegations", () => {
 
     eventBus.emit("agent:exit", exitEvent);
     eventBus.emit("agent:streams_drained", { agentId: exitEvent.agentId });
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     // Delegation should be failed
     const allDelegations = db.prepare("SELECT * FROM delegations WHERE child_agent_id = ?").all(childId) as { status: string; result: string }[];
@@ -1122,30 +1200,37 @@ describe("child exit handling for delegations", () => {
 
 describe("checkStaleDelegations", () => {
   it("times out delegations older than 10 minutes", async () => {
-    const parentId = createAgent("Parent", "test-echo", "Lead");
+    const workerId = createAgent("Worker", "test-echo", "Lead");
     const childId = createAgent("Child", "test-echo", "Worker");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, childId);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
-    await daemon.handleDelegation(parentId, childId, "Long task");
+    const deleg = await daemon.handleDelegation("skipper", childId, "Long task");
+    expect(deleg).not.toBeNull();
 
-    // Backdate the delegation to 15 minutes ago
+    // Exhaust retry limit so the delegation won't be retried
+    const childInstanceId = deleg!.child_instance_id;
     db.prepare(
-      "UPDATE delegations SET created_at = datetime('now', '-15 minutes') WHERE child_agent_id = ?",
-    ).run(childId);
+      "UPDATE agent_instances SET attempt = 2 WHERE id = ?",
+    ).run(childInstanceId);
+
+    // Backdate the delegation to 15 minutes ago and ensure status is running
+    db.prepare(
+      "UPDATE delegations SET created_at = datetime('now', '-15 minutes'), status = 'running' WHERE id = ?",
+    ).run(deleg!.id);
 
     const timedOut = daemon.checkStaleDelegations();
     expect(timedOut).toBe(1);
 
     // Delegation should be failed
-    const delegations = db.prepare("SELECT * FROM delegations WHERE child_agent_id = ?").all(childId) as { status: string; result: string }[];
+    const delegations = db.prepare("SELECT * FROM delegations WHERE id = ?").all(deleg!.id) as { status: string; result: string }[];
     expect(delegations[0].status).toBe("failed");
     expect(delegations[0].result).toContain("timed out");
 
-    // Parent state reset
-    const parentState = db.prepare("SELECT state FROM agent_states WHERE agent_id = ?").get(parentId) as { state: string } | null;
+    // Skipper state reset
+    const parentState = db.prepare("SELECT state FROM agent_states WHERE agent_id = ?").get("skipper") as { state: string } | null;
     expect(parentState?.state).toBe("working");
   });
 
@@ -1229,9 +1314,9 @@ describe("checkProcessHealth", () => {
   });
 
   it("does not fail task when dead agent has an active child delegation", async () => {
-    const parentId = createAgent("Parent Agent");
+    const workerId = createAgent("Worker Agent");
     const childId = createAgent("Child Agent");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, childId);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
@@ -1241,7 +1326,7 @@ describe("checkProcessHealth", () => {
     db.prepare(
       `INSERT INTO delegations (id, parent_agent_id, child_agent_id, task_id, prompt, status)
        VALUES (?, ?, ?, ?, 'do work', 'running')`,
-    ).run(delegId, parentId, childId, taskId);
+    ).run(delegId, "skipper", childId, taskId);
 
     // Simulate childId having a dead PID (not tracked in memory, non-existent OS process)
     db.prepare("UPDATE agents SET process_pid = 99999999, current_task_id = ? WHERE id = ?").run(
@@ -1313,7 +1398,7 @@ describe("orchestration state persistence", () => {
     expect(state).not.toBeNull();
     expect(state!.step).toBe("AGENT_RUNNING");
     expect(state!.last_checkpoint_ts).toBeTruthy();
-    expect(state!.active_delegation_id).toBeNull();
+    expect(state!.active_delegation_group_id).toBeNull();
   });
 
   it("writes PHASE_START checkpoint when task starts", async () => {
@@ -1331,30 +1416,30 @@ describe("orchestration state persistence", () => {
   });
 
   it("updates orchestration state on delegation", async () => {
-    const parentId = createAgent("Parent", "test-echo", "Lead dev");
+    const workerId = createAgent("Worker", "test-echo", "Lead dev");
     const childId = createAgent("Child", "test-echo", "Reviewer");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, childId);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
-    await daemon.handleDelegation(parentId, childId, "Review the code");
+    await daemon.handleDelegation("skipper", childId, "Review the code");
 
     const state = daemon.getOrchestrationState(taskId);
     expect(state).not.toBeNull();
     expect(state!.step).toBe("WAITING_DELEGATION");
-    expect(state!.active_delegation_id).toBeTruthy();
+    expect(state!.active_delegation_group_id).toBeTruthy();
   });
 
   it("writes DELEGATION_COMPLETE checkpoint on delegation completion", async () => {
-    const parentId = createAgent("Parent", "test-echo", "Lead");
+    const workerId = createAgent("Worker", "test-echo", "Lead");
     const childId = createAgent("Child", "test-echo", "Worker");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, childId);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
-    await daemon.handleDelegation(parentId, childId, "Do work");
+    await daemon.handleDelegation("skipper", childId, "Do work");
     daemon.handleDelegateComplete(childId, "Done");
 
     // Find DELEGATION_COMPLETE checkpoint
@@ -1367,7 +1452,7 @@ describe("orchestration state persistence", () => {
 
     const state = daemon.getOrchestrationState(taskId);
     expect(state!.step).toBe("AGENT_RUNNING");
-    expect(state!.active_delegation_id).toBeNull();
+    expect(state!.active_delegation_group_id).toBeNull();
   });
 
   it("writes REGRESSION checkpoint on phase regression", async () => {
@@ -1464,9 +1549,9 @@ describe("cleanupStaleState", () => {
 
     // Start task normally, then simulate crash
     await daemon.processTaskQueue();
-    daemon.getAgentManager().killAgent(agentId);
-    daemon.getAgentManager().getRunningAgents().delete(agentId);
-    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?").run(agentId);
+    daemon.getAgentManager().killAgent("skipper");
+    daemon.getAgentManager().getRunningAgents().delete("skipper");
+    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = 'skipper'").run();
     daemon.stop();
 
     // Create a fresh daemon (simulates restart)
@@ -1477,15 +1562,15 @@ describe("cleanupStaleState", () => {
     const task = scheduler.getTask(taskId);
     expect(task?.status).toBe("running");
 
-    // Agent should have task assigned
-    const agentRow = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as {
+    // Skipper should have task assigned
+    const agentRow = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get("skipper") as {
       current_task_id: string | null;
     };
     expect(agentRow.current_task_id).toBe(taskId);
 
     daemon2.stop();
     // Kill recovered agent
-    try { daemon2.getAgentManager().killAgent(agentId); } catch {}
+    try { daemon2.getAgentManager().killAgent("skipper"); } catch {}
     daemon2.getAgentManager().getRunningAgents().clear();
   });
 });
@@ -1499,17 +1584,17 @@ describe("recoverTask", () => {
     // Start the task normally
     await daemon.processTaskQueue();
 
-    // Kill the agent to simulate crash
-    daemon.getAgentManager().killAgent(agentId);
-    daemon.getAgentManager().getRunningAgents().delete(agentId);
-    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?").run(agentId);
+    // Kill Skipper (the entrypoint) to simulate crash
+    daemon.getAgentManager().killAgent("skipper");
+    daemon.getAgentManager().getRunningAgents().delete("skipper");
+    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = 'skipper'").run();
 
     // Recover the task
     const recovered = await daemon.recoverTask(taskId);
     expect(recovered).toBe(true);
 
-    // Agent should be running again with task assigned
-    const agentRow = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as {
+    // Skipper should be running again with task assigned
+    const agentRow = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get("skipper") as {
       current_task_id: string | null;
     };
     expect(agentRow.current_task_id).toBe(taskId);
@@ -1541,10 +1626,10 @@ describe("recoverTask", () => {
     // Clear in-memory state to simulate restart
     daemon.getPhaseCompleteHandled().clear();
 
-    // Kill agent
-    daemon.getAgentManager().killAgent(agentId);
-    daemon.getAgentManager().getRunningAgents().delete(agentId);
-    db.prepare("UPDATE agents SET process_pid = NULL WHERE id = ?").run(agentId);
+    // Kill Skipper
+    daemon.getAgentManager().killAgent("skipper");
+    daemon.getAgentManager().getRunningAgents().delete("skipper");
+    db.prepare("UPDATE agents SET process_pid = NULL WHERE id = 'skipper'").run();
 
     await daemon.recoverTask(taskId);
 
@@ -1572,25 +1657,27 @@ describe("recoverTask", () => {
   });
 
   it("skips respawn if active delegation exists", async () => {
-    const parentId = createAgent("Parent", "test-echo", "Lead");
+    const workerId = createAgent("Worker", "test-echo", "Lead");
     const childId = createAgent("Child", "test-echo", "Worker");
-    const teamId = createTeamWithEntrypoint(parentId);
+    const teamId = createTeamWithEntrypoint(workerId);
     addAgentToTeam(teamId, childId);
     const taskId = createApprovedTask(teamId);
     await daemon.processTaskQueue();
 
-    const delegation = await daemon.handleDelegation(parentId, childId, "Do work");
+    const delegation = await daemon.handleDelegation("skipper", childId, "Do work");
     expect(delegation).not.toBeNull();
 
-    // Simulate parent crash but child still alive
-    db.prepare("UPDATE agents SET process_pid = NULL WHERE id = ?").run(parentId);
+    // Simulate Skipper crash but child still alive
+    db.prepare("UPDATE agents SET process_pid = NULL WHERE id = 'skipper'").run();
 
     // Set orchestration state with active delegation
     daemon.updateOrchestrationState(taskId, {
       step: "WAITING_DELEGATION",
       last_checkpoint_ts: new Date().toISOString(),
       session_id: null,
-      active_delegation_id: delegation!.id,
+      active_delegation_group_id: delegation!.delegation_group_id ?? null,
+      active_delegation_child_count: 1,
+      active_delegation_settled_count: 0,
       phase_guards: [],
       pending_regression: null,
       checkpoint_prompt_hash: null,
@@ -1599,10 +1686,10 @@ describe("recoverTask", () => {
     const recovered = await daemon.recoverTask(taskId);
     expect(recovered).toBe(true);
 
-    // Parent should be in waiting_delegation state, not respawned with task prompt
+    // Skipper should be in waiting_delegation state, not respawned with task prompt
     const parentState = db
       .prepare("SELECT state FROM agent_states WHERE agent_id = ?")
-      .get(parentId) as { state: string } | null;
+      .get("skipper") as { state: string } | null;
     expect(parentState?.state).toBe("waiting_delegation");
   });
 });
@@ -1615,10 +1702,10 @@ describe("recoverAllStaleTasks", () => {
 
     await daemon.processTaskQueue();
 
-    // Kill agent without proper cleanup
-    daemon.getAgentManager().killAgent(agentId);
-    daemon.getAgentManager().getRunningAgents().delete(agentId);
-    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?").run(agentId);
+    // Kill Skipper without proper cleanup
+    daemon.getAgentManager().killAgent("skipper");
+    daemon.getAgentManager().getRunningAgents().delete("skipper");
+    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = 'skipper'").run();
 
     const recovered = await daemon.recoverAllStaleTasks();
     expect(recovered).toBe(1);
@@ -1705,10 +1792,10 @@ describe("tick with recovery loop", () => {
     // Start task
     await daemon.processTaskQueue();
 
-    // Kill agent to create stale state
-    daemon.getAgentManager().killAgent(agentId);
-    daemon.getAgentManager().getRunningAgents().delete(agentId);
-    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?").run(agentId);
+    // Kill Skipper to create stale state
+    daemon.getAgentManager().killAgent("skipper");
+    daemon.getAgentManager().getRunningAgents().delete("skipper");
+    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = 'skipper'").run();
 
     // Tick should recover
     await daemon.tick();
@@ -1717,8 +1804,8 @@ describe("tick with recovery loop", () => {
     const task = scheduler.getTask(taskId);
     expect(task?.status).toBe("running");
 
-    // Agent should have been respawned
-    const agentRow = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as {
+    // Skipper should have been respawned
+    const agentRow = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get("skipper") as {
       current_task_id: string | null;
     };
     expect(agentRow.current_task_id).toBe(taskId);

@@ -22,14 +22,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // Kill any running agents (only those with real processes)
-  for (const [id, agent] of manager.getRunningAgents()) {
-    if (agent.process) {
-      try { manager.killAgent(id); } catch {}
-    }
-  }
-  // Clear the map to prevent stale entries from test mocks
-  manager.getRunningAgents().clear();
+  manager.close();
   db.close();
   try {
     unlinkSync(TEST_DB);
@@ -120,15 +113,17 @@ describe("getAgent", () => {
 });
 
 describe("listAgents", () => {
-  it("returns empty array when no agents exist", () => {
-    expect(manager.listAgents()).toEqual([]);
+  it("returns only the seeded Skipper agent when no others exist", () => {
+    const agents = manager.listAgents();
+    expect(agents).toHaveLength(1);
+    expect(agents[0].id).toBe("skipper");
   });
 
-  it("returns all created agents", () => {
+  it("returns all created agents plus Skipper", () => {
     manager.createAgent({ name: "Agent 1", type: "claude-code" });
     manager.createAgent({ name: "Agent 2", type: "codex" });
     const agents = manager.listAgents();
-    expect(agents).toHaveLength(2);
+    expect(agents).toHaveLength(3); // Skipper + 2 created
   });
 });
 
@@ -364,6 +359,22 @@ describe("spawnAgent", () => {
     expect(agent!.status).toBe("error");
   });
 
+  it("replaces an existing runtime when spawning the same agent twice", async () => {
+    const { agentId } = createTestEchoAgent("sleep 10");
+    const first = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+    const firstPid = first.process.pid;
+
+    const second = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+    const secondPid = second.process.pid;
+
+    expect(secondPid).not.toBe(firstPid);
+    expect(manager.getRunningAgent(agentId)?.process.pid).toBe(secondPid);
+    expect(manager.getRunningAgents().size).toBe(1);
+
+    manager.killAgent(agentId);
+    await manager.waitForExit(agentId, 10000);
+  });
+
   it("uses working directory for spawned process", async () => {
     // Use a real, resolved path (avoids macOS /var -> /private/var symlink issues)
     const workDir = import.meta.dir;
@@ -571,6 +582,20 @@ describe("parseAgentOutput", () => {
     expect(result.content).toBe("Review the changes");
   });
 
+  it("detects delegation signals with spaced target names", () => {
+    const result = manager.parseAgentOutput(agentId, "[DELEGATE to:Software Analyst] Investigate root cause");
+    expect(result.type).toBe("delegate");
+    expect(result.targetAgent).toBe("Software Analyst");
+    expect(result.content).toBe("Investigate root cause");
+  });
+
+  it("detects delegation signals with quoted target names", () => {
+    const result = manager.parseAgentOutput(agentId, "[DELEGATE to:\"Software Analyst\"] Investigate root cause");
+    expect(result.type).toBe("delegate");
+    expect(result.targetAgent).toBe("Software Analyst");
+    expect(result.content).toBe("Investigate root cause");
+  });
+
   it("detects delegation complete signals", () => {
     const result = manager.parseAgentOutput(agentId, "[DELEGATE_COMPLETE] All tests pass");
     expect(result.type).toBe("delegate_complete");
@@ -755,6 +780,28 @@ describe("handleJsonOutput", () => {
     expect(result.type).toBe("json");
     expect(result.content).toBe("Rate limited");
   });
+
+  it("marks context compaction needed when turn input tokens are very large", () => {
+    const agent = manager.createAgent({ name: "Big Context", type: "codex" });
+    manager.handleJsonOutput(
+      agent.id,
+      { type: "turn.completed", usage: { input_tokens: 500_000, cached_input_tokens: 120_000, output_tokens: 1000 } },
+      "{}",
+    );
+
+    const row = db
+      .prepare(
+        `SELECT
+          json_extract(state_metadata, '$.context_compact_needed') as needed,
+          json_extract(state_metadata, '$.last_input_tokens') as last_input_tokens
+         FROM agent_states
+         WHERE agent_id = ?`,
+      )
+      .get(agent.id) as { needed: number | null; last_input_tokens: number | null } | null;
+    expect(row).not.toBeNull();
+    expect(row!.needed).toBe(1);
+    expect(row!.last_input_tokens).toBe(500000);
+  });
 });
 
 describe("extractTextFromJsonEvent", () => {
@@ -915,6 +962,28 @@ describe("getSessionId", () => {
     const result = manager.getSessionId("nonexistent");
     expect(result).toBeNull();
   });
+
+  it("clearSessionId removes persisted session metadata", () => {
+    const agent = manager.createAgent({ name: "Clear Session", type: "codex" });
+    db.prepare(
+      "INSERT INTO agent_states (agent_id, state, state_metadata) VALUES (?, 'working', ?)",
+    ).run(agent.id, JSON.stringify({ session_id: "sess-old", context_compact_needed: 1, last_input_tokens: 123 }));
+
+    manager.clearSessionId(agent.id);
+
+    const row = db
+      .prepare(
+        `SELECT
+          json_extract(state_metadata, '$.session_id') as session_id,
+          json_extract(state_metadata, '$.context_compact_needed') as compact_needed
+         FROM agent_states
+         WHERE agent_id = ?`,
+      )
+      .get(agent.id) as { session_id: string | null; compact_needed: number | null } | null;
+    expect(row).not.toBeNull();
+    expect(row!.session_id).toBeNull();
+    expect(row!.compact_needed).toBeNull();
+  });
 });
 
 describe("sendResumeMessage", () => {
@@ -1004,6 +1073,29 @@ describe("sendResumeMessage", () => {
     const running = manager.getRunningAgent(agent.id);
     expect(running).toBeDefined();
   });
+
+  it("starts a fresh session when context compaction is marked", async () => {
+    registerResumableType();
+    const agent = manager.createAgent({ name: "Compaction Agent", type: "resumable-agent" });
+    db.prepare(
+      "INSERT INTO agent_states (agent_id, state, state_metadata) VALUES (?, 'working', ?)",
+    ).run(agent.id, JSON.stringify({ context_compact_needed: 1, last_input_tokens: 900000 }));
+
+    await manager.sendResumeMessage(agent.id, "Continue after delegation");
+
+    const running = manager.getRunningAgent(agent.id);
+    expect(running).toBeDefined();
+
+    const row = db
+      .prepare(
+        "SELECT json_extract(state_metadata, '$.context_compact_needed') as compact_needed FROM agent_states WHERE agent_id = ?",
+      )
+      .get(agent.id) as { compact_needed: number | null } | null;
+    expect(row).not.toBeNull();
+    expect(row!.compact_needed).toBeNull();
+
+    manager.killAgent(agent.id);
+  });
 });
 
 describe("compactResumeMessage", () => {
@@ -1058,6 +1150,14 @@ describe("detectSignalsInText", () => {
     expect(result).not.toBeNull();
     expect(result!.type).toBe("delegate");
     expect(result!.targetAgent).toBe("child-1");
+    expect(result!.content).toBe("Do the work");
+  });
+
+  it("detects DELEGATE signal with spaced target in text", () => {
+    const result = detectSignalsInText(agentId, "Some preamble\n[DELEGATE to:Software Analyst] Do the work");
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("delegate");
+    expect(result!.targetAgent).toBe("Software Analyst");
     expect(result!.content).toBe("Do the work");
   });
 
