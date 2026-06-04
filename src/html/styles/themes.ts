@@ -257,7 +257,7 @@ export function themesCss(): string {
  * Returns the JS body only; the caller wraps it in a `<script>` tag.
  */
 export function themeBootScript(): string {
-  return `(function(){try{var t=localStorage.getItem('skipper.theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();`;
+  return `(function(){try{var t=localStorage.getItem('skipper.theme');if(t===null){t='artemis';localStorage.setItem('skipper.theme',t);}if(t&&t!=='default')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();`;
 }
 
 /**
