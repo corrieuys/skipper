@@ -4,6 +4,7 @@ import { escapeHtml } from "../atoms/escape-html";
 import { formatTimestamp } from "../atoms/format-timestamp";
 import { taskRowFragment, taskDeleteButton, type TaskRowData } from "../fragments/task-row.fragment";
 import { escalationBarPanel } from "../panels/escalation-bar.panel";
+import { isExperimental } from "../../config/feature-flags";
 
 export interface ScheduledTaskListItem {
   id: string;
@@ -59,7 +60,7 @@ export function taskListPage(vm: TaskListViewModel): string {
         </div>
       </div>
 
-      ${scheduled.length > 0 ? `
+      ${isExperimental() && scheduled.length > 0 ? `
       <div class="sk-page-header" style="margin-top:var(--sk-space-6);">
         <h2 class="sk-page-header__title" style="font-size:1.1rem;">Scheduled Tasks</h2>
       </div>
@@ -84,7 +85,7 @@ export function taskListPage(vm: TaskListViewModel): string {
       </div>
       ` : ""}
 
-      ${scheduledRuns.length > 0 ? `
+      ${isExperimental() && scheduledRuns.length > 0 ? `
       <div class="sk-page-header" style="margin-top:var(--sk-space-6);">
         <h2 class="sk-page-header__title" style="font-size:1.1rem;">Scheduled Task Runs</h2>
       </div>

@@ -1,7 +1,7 @@
 import { addRoute } from "../server";
 import { getDb } from "../db/connection";
 import { getRealtimeTeamId, listTeamsForStandardTasks } from "../config/teams";
-import { isAgentVisible, isTeamVisible } from "../config/feature-flags";
+import { isAgentVisible, isTeamVisible, isExperimental } from "../config/feature-flags";
 import { listPreferences, setPreference } from "../notifications/store";
 import { NOTIFICATION_EVENTS, type NotificationEventKey } from "../notifications/types";
 import { readFileSync } from "fs";
@@ -1034,7 +1034,7 @@ function registerV2PageRoutes(): void {
     const scheduledId = url.searchParams.get("scheduled");
     const vm = buildCommandCenterViewModel(db);
 
-    if (scheduledId) {
+    if (scheduledId && isExperimental()) {
       const override = fetchScheduledOverride(scheduledId);
       if (override) return html(commandCenterPage(vm, undefined, override));
     }
@@ -1244,6 +1244,7 @@ function registerV2PageRoutes(): void {
 
   // Scheduled task workspace fragment (sidebar click loads into #mc-main)
   addRoute("GET", "/workspace/scheduled/:id", (_req, params) => {
+    if (!isExperimental()) return html(`<div style="padding:1rem; color:var(--sk-text-subtle);">Scheduled tasks require --experimental</div>`);
     const override = fetchScheduledOverride(params.id);
     if (!override) return html(`<div style="padding:1rem; color:var(--sk-text-subtle);">Scheduled task not found</div>`);
     return html(renderScheduledTaskDetail(override.scheduledTask, override.teams, override.runs));
@@ -1251,6 +1252,7 @@ function registerV2PageRoutes(): void {
 
   // Scheduled task runs fragment (lazy-loaded inside the detail panel)
   addRoute("GET", "/workspace/scheduled/:id/runs", (_req, params) => {
+    if (!isExperimental()) return html("");
     const runs = db.prepare(
       `SELECT id, title, status, started_at, completed_at, result, created_at FROM tasks WHERE source_scheduled_task_id = ? ORDER BY created_at DESC LIMIT 20`
     ).all(params.id) as Array<{ id: string; title: string; status: string; started_at: string | null; completed_at: string | null; result: string | null; created_at: string }>;
@@ -1259,6 +1261,7 @@ function registerV2PageRoutes(): void {
 
   // Task Creation — must be before /tasks/:id to avoid matching "new" as an ID
   addRoute("GET", "/tasks/scheduled/new", () => {
+    if (!isExperimental()) return new Response("Not Found", { status: 404 });
     const teams = (db.prepare("SELECT id, name FROM teams ORDER BY name").all() as Array<{ id: string; name: string }>)
       .filter(t => isTeamVisible(t.id));
     const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;

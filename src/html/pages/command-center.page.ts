@@ -122,7 +122,7 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
       ${drafts.map(t => sidebarItem(t, activeId)).join("")}
     ` : ""}
 
-    ${vm.scheduledTasks.length > 0 ? `
+    ${isExperimental() && vm.scheduledTasks.length > 0 ? `
       <div class="mc-sidebar__group-label">Scheduled</div>
       ${vm.scheduledTasks.map(st => sidebarScheduledItem(st, activeId)).join("")}
     ` : ""}

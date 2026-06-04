@@ -26,7 +26,7 @@ export function taskCreatePage(vm: TaskCreateViewModel): string {
       <div class="sk-page-header">
         <a href="/" class="sk-page-header__back">&larr; Dashboard</a>
         <h1 class="sk-page-header__title">Create Task</h1>
-        <a href="/tasks/scheduled/new" class="sk-btn sk-btn--sm" style="margin-left:auto;">Create Scheduled Task &rarr;</a>
+        ${isExperimental() ? `<a href="/tasks/scheduled/new" class="sk-btn sk-btn--sm" style="margin-left:auto;">Create Scheduled Task &rarr;</a>` : ""}
       </div>
 
       <div class="sk-panel">

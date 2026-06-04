@@ -2,12 +2,15 @@ import { addRoute } from "../server";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import type { ScheduleUnit } from "../tasks/scheduled-scheduler";
 import type { ManagerDaemon } from "../agents/manager-daemon";
+import { isExperimental } from "../config/feature-flags";
 
+const EXPERIMENTAL_REQUIRED = Response.json({ error: "scheduled tasks require --experimental" }, { status: 403 });
 
 export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   const getScheduler = () => daemon?.getScheduledTaskScheduler() ?? new ScheduledTaskScheduler();
 
   addRoute("POST", "/api/scheduled-tasks", async (req) => {
+    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
 
 
     const formData = await req.formData();
@@ -65,7 +68,7 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/update", async (req, params) => {
-
+    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 
@@ -121,7 +124,7 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/approve", async (_req, params) => {
-
+    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 
@@ -139,7 +142,7 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/unapprove", async (_req, params) => {
-
+    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 
@@ -157,7 +160,7 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/run-now", async (_req, params) => {
-
+    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 
@@ -201,7 +204,7 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   });
 
   addRoute("DELETE", "/api/scheduled-tasks/:id", async (_req, params) => {
-
+    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 

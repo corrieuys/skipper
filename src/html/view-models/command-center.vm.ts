@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { isTeamVisible } from "../../config/feature-flags";
+import { isTeamVisible, isExperimental } from "../../config/feature-flags";
 import { getBoolSetting, SETTING_PARALLEL_TASKS } from "../../config/app-settings";
 import type { ActiveMissionData } from "../panels/active-mission.panel";
 import type { MetricsData } from "../panels/metrics-bar.panel";
@@ -254,15 +254,17 @@ export function buildCommandCenterViewModel(db: Database): CommandCenterViewMode
   });
 
   let scheduledTasks: ScheduledTaskSummary[] = [];
-  try {
-    scheduledTasks = db.prepare(
-      `SELECT st.id, st.title, st.description, st.team_id, st.schedule_unit, st.schedule_amount,
-              st.status, st.next_run_at, st.last_run_at, st.created_at,
-              tm.name AS team_name
-       FROM scheduled_tasks st LEFT JOIN teams tm ON tm.id = st.team_id
-       ORDER BY CASE st.status WHEN 'approved' THEN 0 ELSE 1 END, st.created_at DESC`
-    ).all() as ScheduledTaskSummary[];
-  } catch { /* table may not exist yet */ }
+  if (isExperimental()) {
+    try {
+      scheduledTasks = db.prepare(
+        `SELECT st.id, st.title, st.description, st.team_id, st.schedule_unit, st.schedule_amount,
+                st.status, st.next_run_at, st.last_run_at, st.created_at,
+                tm.name AS team_name
+         FROM scheduled_tasks st LEFT JOIN teams tm ON tm.id = st.team_id
+         ORDER BY CASE st.status WHEN 'approved' THEN 0 ELSE 1 END, st.created_at DESC`
+      ).all() as ScheduledTaskSummary[];
+    } catch { /* table may not exist yet */ }
+  }
 
   const realtimeSessionActive = new Map<string, boolean>();
   const rtRunning = allTasks.filter(t => t.task_type === "real_time" && t.status === "running");
