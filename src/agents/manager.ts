@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { Subprocess, FileSink } from "bun";
 import { getDb } from "../db/connection";
+import { agentSpawnPath } from "../paths";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "./types";
 import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
@@ -514,6 +515,9 @@ export class AgentManager {
 
     // Prepare environment
     const env: Record<string, string> = { ...process.env as Record<string, string> };
+    // Ensure agent CLIs in ~/.local/bin resolve regardless of launch context.
+    // Set before agent.config.environment so an explicit user PATH still wins.
+    env.PATH = agentSpawnPath();
     if (agent.config.environment) {
       Object.assign(env, agent.config.environment);
     }

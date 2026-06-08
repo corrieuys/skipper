@@ -4,6 +4,29 @@ import { existsSync, mkdirSync, copyFileSync, statSync } from "node:fs";
 
 const LEGACY_CWD_DB = "skipper-runtime.db";
 
+/**
+ * PATH for spawning external agent CLIs (claude, codex, opencode, oz).
+ *
+ * The native Linux installers drop these binaries in `~/.local/bin`, which is
+ * only added to PATH by interactive *login* shells (via ~/.profile / ~/.bashrc).
+ * When Skipper is launched from any other context — a systemd unit, an IDE run
+ * config, nohup, cron — that dir is absent and child spawns fail with ENOENT
+ * "Executable not found in $PATH". (On macOS the installers use a dir already on
+ * the default PATH, so this only bites Linux.) We prepend `~/.local/bin` so the
+ * agent CLIs resolve regardless of launch context.
+ *
+ * Idempotent: if the dir is already present we return PATH unchanged, so this is
+ * a no-op for login-shell launches and for macOS. A non-existent dir on PATH is
+ * silently skipped by the OS, so prepending is harmless when ~/.local/bin is unused.
+ */
+export function agentSpawnPath(): string {
+  const localBin = join(homedir(), ".local", "bin");
+  const current = process.env.PATH ?? "";
+  const entries = current.split(":");
+  if (entries.includes(localBin)) return current;
+  return current ? `${localBin}:${current}` : localBin;
+}
+
 export function getDataDir(): string {
   if (process.env.SKIPPER_DATA_DIR) return process.env.SKIPPER_DATA_DIR;
   const xdg = process.env.XDG_DATA_HOME;

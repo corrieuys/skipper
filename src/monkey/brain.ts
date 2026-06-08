@@ -1,6 +1,7 @@
 import type { MonkeyAction, MonkeyState, Perch, UserEvent, TaskDetail, DOMSection } from "./types";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { agentSpawnPath } from "../paths";
 
 const HAIKU_MODEL = "claude-haiku-4-5";
 const MAX_RESPONSE_TIMEOUT = 20_000;
@@ -19,7 +20,7 @@ const ISOLATION_ARGS = [
 // ~$0.017) per tick before emitting a one-line quip — blowing the timeout. With
 // thinking off, ticks finish in ~4s for ~50 output tokens. Greg never needs to
 // "reason"; he just fires a fast JSON action.
-const SPAWN_ENV = { ...process.env, MAX_THINKING_TOKENS: "0" };
+const SPAWN_ENV = { ...process.env, PATH: agentSpawnPath(), MAX_THINKING_TOKENS: "0" };
 const COMPACT_EVERY_N_TICKS = 20;
 
 const PROMPT_PATH = join(import.meta.dir, "../../prompts/greg.md");
