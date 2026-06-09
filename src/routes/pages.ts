@@ -1520,6 +1520,22 @@ function registerV2PageRoutes(): void {
   const { templateListPage } = require("../html/pages/template-list.page");
   const { templateFormPage, phaseInputsFragment } = require("../html/pages/template-form.page");
 
+  // Map a raw task_template_phases DB row into the shape phaseInputsFragment expects.
+  // DB stores override_prompt as INTEGER (0/1) and review_override/consensus_override as JSON TEXT.
+  const parseTemplatePhaseRow = (r: { phase_name: string; prompt: string; override_prompt: number; review_override: string | null; consensus_override: string | null }) => {
+    let review_override: boolean | null = null;
+    if (r.review_override != null) { try { review_override = JSON.parse(r.review_override); } catch { /* ignore */ } }
+    let consensus_override: unknown = null;
+    if (r.consensus_override != null) { try { consensus_override = JSON.parse(r.consensus_override); } catch { /* ignore */ } }
+    return {
+      phase_name: r.phase_name,
+      prompt: r.prompt,
+      override_prompt: r.override_prompt === 1,
+      review_override,
+      consensus_override,
+    };
+  };
+
   addRoute("GET", "/templates", () => {
     const templates = db.prepare(
       `SELECT tt.id, tt.template_name, tt.team_id, tt.created_at, tm.name AS team_name
@@ -1565,9 +1581,10 @@ function registerV2PageRoutes(): void {
     try { hooks = JSON.parse((rawTemplate as any).hooks ?? "[]"); } catch { /* ignore */ }
     const template = { ...rawTemplate, hooks };
 
-    const existingPhases = db.prepare(
-      "SELECT phase_name, prompt FROM task_template_phases WHERE task_template_id = ? ORDER BY phase_name"
-    ).all(params.id) as Array<{ phase_name: string; prompt: string }>;
+    const existingPhases = (db.prepare(
+      "SELECT phase_name, prompt, override_prompt, review_override, consensus_override FROM task_template_phases WHERE task_template_id = ? ORDER BY phase_name"
+    ).all(params.id) as Array<{ phase_name: string; prompt: string; override_prompt: number; review_override: string | null; consensus_override: string | null }>)
+      .map(parseTemplatePhaseRow);
 
     const teamRow = db.prepare("SELECT phases FROM teams WHERE id = ?").get(template.team_id) as { phases: string } | null;
     let teamPhases: Array<{ name: string }> = [];
@@ -1603,11 +1620,12 @@ function registerV2PageRoutes(): void {
     let teamPhases: Array<{ name: string }> = [];
     try { teamPhases = JSON.parse(teamRow.phases ?? "[]"); } catch { /* ignore */ }
 
-    let existingPhases: Array<{ phase_name: string; prompt: string }> = [];
+    let existingPhases: ReturnType<typeof parseTemplatePhaseRow>[] = [];
     if (templateId) {
-      existingPhases = db.prepare(
-        "SELECT phase_name, prompt FROM task_template_phases WHERE task_template_id = ?"
-      ).all(templateId) as Array<{ phase_name: string; prompt: string }>;
+      existingPhases = (db.prepare(
+        "SELECT phase_name, prompt, override_prompt, review_override, consensus_override FROM task_template_phases WHERE task_template_id = ?"
+      ).all(templateId) as Array<{ phase_name: string; prompt: string; override_prompt: number; review_override: string | null; consensus_override: string | null }>)
+        .map(parseTemplatePhaseRow);
     }
 
     return html(phaseInputsFragment(teamPhases, existingPhases));
