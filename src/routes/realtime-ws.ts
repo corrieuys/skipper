@@ -201,14 +201,13 @@ export const realtimeWsHandlers = {
         }
 
         case "recording.stopped": {
-          // Client finished recording. Transcribe any pending segments now (while
-          // whisper is still alive), then stop whisper.
+          // Wait for in-flight ingests + cadence ticks to finish, then transcribe
+          // remaining segments — ensures whisper stays alive until all audio is done.
           try {
-            await realtimeSessionManager.transcribePendingForTask(taskId);
+            await realtimeSessionManager.drainAndTranscribe(taskId);
           } catch (err) {
             logError(getDb(), "realtime_ws.recording_stopped_transcribe", { taskId }, err);
           }
-          // Now safe to stop whisper — all audio has been transcribed
           fetch(`http://127.0.0.1:${process.env.PORT || 3000}/api/whisper/stop`, { method: "POST" }).catch(() => {});
           ws.send(JSON.stringify({ type: "ack", ref: "recording.stopped" }));
           return;

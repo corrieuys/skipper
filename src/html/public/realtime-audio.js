@@ -96,7 +96,9 @@
    * words at boundaries are not cut off.
    */
   function flushAudioChunks() {
-    if (audioChunks.length === 0 || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (audioChunks.length === 0 || !ws || ws.readyState !== WebSocket.OPEN) {
+      return Promise.resolve();
+    }
 
     flushCount++;
     var allChunks = audioChunks.splice(0); // take all, reset accumulator
@@ -134,19 +136,22 @@
       'blob size:', blob.size, 'bytes, overlap:', sentOverlap + 's',
       'timestamp:', chunkTimestamp);
 
-    var reader = new FileReader();
-    reader.onloadend = function() {
-      var base64 = reader.result.split(',')[1];
-      console.log('[realtime-audio] → WS input.audio_chunk — base64 length:', base64.length);
-      ws.send(JSON.stringify({
-        type: 'input.audio_chunk',
-        data: base64,
-        format: 'webm',
-        timestamp: chunkTimestamp,
-        overlap_seconds: sentOverlap
-      }));
-    };
-    reader.readAsDataURL(blob);
+    return new Promise(function(resolve) {
+      var reader = new FileReader();
+      reader.onloadend = function() {
+        var base64 = reader.result.split(',')[1];
+        console.log('[realtime-audio] → WS input.audio_chunk — base64 length:', base64.length);
+        ws.send(JSON.stringify({
+          type: 'input.audio_chunk',
+          data: base64,
+          format: 'webm',
+          timestamp: chunkTimestamp,
+          overlap_seconds: sentOverlap
+        }));
+        resolve();
+      };
+      reader.readAsDataURL(blob);
+    });
   }
 
   function ensureWhisper() {
@@ -287,28 +292,29 @@
       syncUi();
     }
 
+    function sendStoppedAndCleanup() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'recording.stopped' }));
+      }
+      cleanupAfterStop();
+    }
+
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       // .stop() triggers one final ondataavailable with the remaining audio,
       // then fires onstop. Flush the complete accumulated blob from onstop.
       mediaRecorder.onstop = function() {
         console.log('[realtime-audio] MediaRecorder stopped — flushing final chunk');
-        flushAudioChunks();
-        mediaRecorder = null;
-        // Tell the server recording is done — it will transcribe remaining audio
-        // then stop whisper. We wait for the ack before cleaning up locally.
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'recording.stopped' }));
-        }
-        cleanupAfterStop();
+        flushAudioChunks().then(function() {
+          mediaRecorder = null;
+          sendStoppedAndCleanup();
+        });
       };
       mediaRecorder.stop();
     } else {
-      flushAudioChunks();
-      mediaRecorder = null;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'recording.stopped' }));
-      }
-      cleanupAfterStop();
+      flushAudioChunks().then(function() {
+        mediaRecorder = null;
+        sendStoppedAndCleanup();
+      });
     }
   }
 

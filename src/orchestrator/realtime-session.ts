@@ -28,6 +28,7 @@ interface ActiveSession {
   sequenceCounter: number;
   stopped: boolean;
   tickInProgress: boolean;
+  ingestInProgress: number;
 }
 
 interface SummarizerRun {
@@ -113,6 +114,7 @@ export class RealtimeSessionManager {
       sequenceCounter: this.getMaxSequence(taskId),
       stopped: false,
       tickInProgress: false,
+      ingestInProgress: 0,
     };
     this.sessions.set(taskId, session);
 
@@ -134,63 +136,68 @@ export class RealtimeSessionManager {
       throw new Error("No active session for this task");
     }
 
-    session.sequenceCounter++;
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
+    session.ingestInProgress++;
+    try {
+      session.sequenceCounter++;
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
 
-    // Determine transcription status based on source type
-    const transcriptionStatus =
-      input.sourceType === "text" ? "not_applicable" : "pending";
+      // Determine transcription status based on source type
+      const transcriptionStatus =
+        input.sourceType === "text" ? "not_applicable" : "pending";
 
-    console.log(`[realtime-session] ingestInput: task=${taskId} type=${input.sourceType} seq=${session.sequenceCounter} status=${transcriptionStatus} size=${input.contentBody.length}`);
+      console.log(`[realtime-session] ingestInput: task=${taskId} type=${input.sourceType} seq=${session.sequenceCounter} status=${transcriptionStatus} size=${input.contentBody.length}`);
 
-    this.db
-      .prepare(
-        `INSERT INTO task_input_streams (id, task_id, source_type, source_ref, content_type, content_body, chunk_start_at, chunk_end_at, sequence, metadata, transcription_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        taskId,
-        input.sourceType,
-        input.sourceRef ?? null,
-        input.contentType ?? "text/plain",
-        input.contentBody,
-        input.chunkStartAt ?? now,
-        input.chunkEndAt ?? now,
-        session.sequenceCounter,
-        input.metadata ? JSON.stringify(input.metadata) : "{}",
-        transcriptionStatus,
-      );
-
-    // For text inputs: immediately create a timeline entry
-    if (input.sourceType === "text") {
-      const timelineId = crypto.randomUUID();
       this.db
         .prepare(
-          `INSERT INTO realtime_timeline (id, task_id, entry_type, content, source_segment_ids, priority)
-           VALUES (?, ?, 'text', ?, ?, 'high')`,
+          `INSERT INTO task_input_streams (id, task_id, source_type, source_ref, content_type, content_body, chunk_start_at, chunk_end_at, sequence, metadata, transcription_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(timelineId, taskId, input.contentBody, JSON.stringify([id]));
-      this.emitTimelineUpdated(taskId, timelineId, "text");
-    }
+        .run(
+          id,
+          taskId,
+          input.sourceType,
+          input.sourceRef ?? null,
+          input.contentType ?? "text/plain",
+          input.contentBody,
+          input.chunkStartAt ?? now,
+          input.chunkEndAt ?? now,
+          session.sequenceCounter,
+          input.metadata ? JSON.stringify(input.metadata) : "{}",
+          transcriptionStatus,
+        );
 
-    eventBus.emit("realtime:window_ready", {
-      windowId: id,
-      taskId,
-      artifactName: input.sourceType === "text" ? "text-input" : "audio-input",
-      version: session.sequenceCounter,
-      windowStartAt: input.chunkStartAt ?? now,
-      windowEndAt: input.chunkEndAt ?? now,
-    });
+      // For text inputs: immediately create a timeline entry
+      if (input.sourceType === "text") {
+        const timelineId = crypto.randomUUID();
+        this.db
+          .prepare(
+            `INSERT INTO realtime_timeline (id, task_id, entry_type, content, source_segment_ids, priority)
+             VALUES (?, ?, 'text', ?, ?, 'high')`,
+          )
+          .run(timelineId, taskId, input.contentBody, JSON.stringify([id]));
+        this.emitTimelineUpdated(taskId, timelineId, "text");
+      }
 
-    // For manual text input, don't wait for cadence when the pipeline is idle.
-    // This keeps realtime tasks responsive for note/message-style interactions.
-    if (input.sourceType === "text" && this.shouldForceImmediateTick(taskId)) {
-      console.log(`[realtime-session] ingestInput: task=${taskId} forcing immediate tick after text input`);
-      this.processCadenceTick(taskId).catch((err) => {
-        logError(this.db, "realtime.immediate_tick", { taskId, sourceType: "text" }, err);
+      eventBus.emit("realtime:window_ready", {
+        windowId: id,
+        taskId,
+        artifactName: input.sourceType === "text" ? "text-input" : "audio-input",
+        version: session.sequenceCounter,
+        windowStartAt: input.chunkStartAt ?? now,
+        windowEndAt: input.chunkEndAt ?? now,
       });
+
+      // For manual text input, don't wait for cadence when the pipeline is idle.
+      // This keeps realtime tasks responsive for note/message-style interactions.
+      if (input.sourceType === "text" && this.shouldForceImmediateTick(taskId)) {
+        console.log(`[realtime-session] ingestInput: task=${taskId} forcing immediate tick after text input`);
+        this.processCadenceTick(taskId).catch((err) => {
+          logError(this.db, "realtime.immediate_tick", { taskId, sourceType: "text" }, err);
+        });
+      }
+    } finally {
+      session.ingestInProgress--;
     }
   }
 
@@ -343,6 +350,37 @@ export class RealtimeSessionManager {
 
   async transcribePendingForTask(taskId: string): Promise<void> {
     return this.transcribePendingSegments(taskId);
+  }
+
+  async drainAndTranscribe(taskId: string): Promise<void> {
+    const session = this.sessions.get(taskId);
+    if (!session) {
+      await this.transcribePendingSegments(taskId);
+      return;
+    }
+
+    // Wait for in-flight ingestInput calls (last audio chunk being inserted)
+    if (session.ingestInProgress > 0) {
+      console.log(`[realtime-session] drainAndTranscribe: task=${taskId} waiting for ${session.ingestInProgress} in-flight ingests`);
+      await new Promise<void>((resolve) => {
+        const check = setInterval(() => {
+          if (session.ingestInProgress <= 0) { clearInterval(check); resolve(); }
+        }, 50);
+      });
+    }
+
+    // Wait for in-flight cadence tick (may be mid-transcription)
+    if (session.tickInProgress) {
+      console.log(`[realtime-session] drainAndTranscribe: task=${taskId} waiting for cadence tick to finish`);
+      await new Promise<void>((resolve) => {
+        const check = setInterval(() => {
+          if (!session.tickInProgress) { clearInterval(check); resolve(); }
+        }, 100);
+      });
+    }
+
+    // Transcribe any remaining pending segments
+    await this.transcribePendingSegments(taskId);
   }
 
   private async transcribePendingSegments(taskId: string): Promise<void> {
@@ -1113,6 +1151,7 @@ export class RealtimeSessionManager {
       sequenceCounter: this.getMaxSequence(taskId),
       stopped: false,
       tickInProgress: false,
+      ingestInProgress: 0,
     };
     this.sessions.set(taskId, session);
 
