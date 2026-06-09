@@ -307,12 +307,12 @@ export function realtimeTaskContent(task: TaskSummary, isSessionActive?: boolean
   } else if (task.status === "completed") {
     headerButtons = `
           <button class="sk-btn sk-btn--sm"
-                  hx-post="/api/tasks/${eid}/iterate" hx-swap="none"
+                  hx-post="/api/realtime-tasks/${eid}/unarchive" hx-swap="none"
                   hx-on::after-request="if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}">Reopen</button>`;
   } else if (task.status === "failed") {
     headerButtons = `
           <button class="sk-btn sk-btn--sm"
-                  hx-post="/api/tasks/${eid}/iterate" hx-swap="none"
+                  hx-post="/api/realtime-tasks/${eid}/unarchive" hx-swap="none"
                   hx-on::after-request="if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}">Retry</button>`;
   }
 
@@ -370,17 +370,22 @@ export function realtimeTaskContent(task: TaskSummary, isSessionActive?: boolean
       <button class="mc-tab" onclick="Skipper.tabs.show('details')">Details</button>
     </div>
 
-    <!-- Outputs tab — Timeline | Notes | Artifacts side-by-side -->
+    <!-- Outputs tab — Timeline+Activity | Notes | Artifacts side-by-side -->
     <div class="mc-tab-panel mc-tab-panel--active" id="mc-tab-outputs">
       <div class="mc-outputs" id="mc-outputs">
-        <!-- Timeline column (mirrors Activity in regular tasks) -->
+        <!-- Unified feed column (timeline entries + agent activity merged) -->
         <div class="mc-outputs__col" data-outputs-col="activity">
           <div class="mc-outputs__col-header">Timeline</div>
+          <div class="mc-activity__controls">
+            <button class="mc-activity__filter mc-activity__filter--active" data-sk-activity-filter="all">All</button>
+            <button class="mc-activity__filter" data-sk-activity-filter="timeline">Timeline</button>
+            <button class="mc-activity__filter" data-sk-activity-filter="activity">Activity</button>
+          </div>
           <div class="mc-outputs__col-body">
-            <div class="mc-activity__feed" id="mc-activity-feed-${eid}"
-                 hx-get="/fragments/dashboard/realtime-timeline?task_id=${eid}"
+            <div class="mc-activity__feed" id="mc-rt-feed-${eid}" data-activity-filter="all"
+                 hx-get="/workspace/task/${eid}/realtime-activity"
                  hx-trigger="load" hx-swap="innerHTML">
-              <span class="sk-muted">Loading timeline...</span>
+              <span class="sk-muted">Loading...</span>
             </div>
           </div>
         </div>
@@ -741,6 +746,111 @@ export function parseTerminalActivity(lines: Array<{ stream: string; data: strin
         data-sk-activity-pid="${line.process_pid ?? ""}"
         data-sk-activity-time="${escapeHtml(line.created_at ?? "")}"
         data-sk-activity-kind="${kind}">
+      <span class="mc-activity__kind mc-activity__kind--${kind}">${kindLabel}</span>
+      ${agentLabel}
+      ${pidLabel}
+      <span class="mc-activity__text">${escapeHtml(summary)}</span>
+    </div>`;
+  }).filter(Boolean).join("");
+}
+
+export interface RealtimeActivityRow {
+  source: "timeline" | "terminal";
+  // timeline fields
+  entry_type?: string;
+  content?: string;
+  priority?: string;
+  // terminal fields
+  stream?: string;
+  data?: string;
+  agent_name?: string;
+  process_pid?: number | null;
+  // shared
+  created_at: string;
+}
+
+export function parseRealtimeActivity(rows: RealtimeActivityRow[]): string {
+  if (rows.length === 0) return `<div class="mc-activity__empty">No activity yet</div>`;
+
+  return rows.map(row => {
+    if (row.source === "timeline") {
+      const entryType = row.entry_type ?? "text";
+      const content = row.content ?? "";
+      const kind = entryType === "error" ? "event" : entryType === "summary" ? "tool" : "message";
+      const kindLabel = entryType === "summary" ? "sum" : entryType === "error" ? "err" : "txt";
+      const preview = content.length > 200 ? content.slice(0, 200) + "…" : content;
+      const priorityTag = row.priority === "high"
+        ? ` <span class="mc-activity__kind" style="color:var(--sk-accent-warning);background:rgba(255,208,128,0.12);font-size:8px;">HIGH</span>`
+        : "";
+      const timeLabel = row.created_at ? `<span class="mc-activity__pid">${formatTimestamp(row.created_at)}</span>` : "";
+
+      return `<div class="mc-activity__item mc-activity__item--${kind} mc-activity__item--timeline" data-activity-kind="timeline"
+          data-sk-activity-row
+          data-sk-activity-data="${escapeHtml(content)}"
+          data-sk-activity-time="${escapeHtml(row.created_at ?? "")}"
+          data-sk-activity-kind="timeline">
+        <span class="mc-activity__kind mc-activity__kind--${kind}">${kindLabel}</span>${priorityTag}
+        ${timeLabel}
+        <span class="mc-activity__text">${escapeHtml(preview)}</span>
+      </div>`;
+    }
+
+    // terminal output row — reuse existing parsing logic
+    const data = (row.data ?? "").trim();
+    let kind: "message" | "tool" | "event" = "event";
+    let summary = "";
+
+    if (data.startsWith("{")) {
+      let parsed: Record<string, unknown> | null = null;
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        const firstLine = data.split("\n").find(l => l.trim().startsWith("{"));
+        if (firstLine) {
+          try { parsed = JSON.parse(firstLine.trim()); } catch { /* give up */ }
+        }
+      }
+
+      if (parsed) {
+        summary = terminalJsonSummary(parsed);
+        const type = typeof parsed.type === "string" ? parsed.type : "";
+        const item = parsed.item && typeof parsed.item === "object" ? parsed.item as Record<string, unknown> : null;
+        const itemType = item && typeof item.type === "string" ? item.type : "";
+        const message = parsed.message && typeof parsed.message === "object" ? parsed.message as Record<string, unknown> : null;
+        const content = message?.content;
+
+        if (itemType === "command_execution" || itemType === "tool_call" || itemType === "tool_result" || itemType === "tool_use" || type.includes("tool")) {
+          kind = "tool";
+        } else if (Array.isArray(content)) {
+          const hasToolBlock = content.some((b: any) => b?.type === "tool_use" || b?.type === "tool_result");
+          kind = hasToolBlock ? "tool" : "message";
+        } else if (type === "assistant" || type === "user" || type === "message" || typeof parsed.result === "string") {
+          kind = "message";
+        }
+      } else {
+        summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
+        kind = row.stream === "stderr" ? "event" : "message";
+      }
+    } else {
+      summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
+      kind = row.stream === "stderr" ? "event" : "message";
+    }
+
+    if (!summary) return "";
+
+    const kindLabel = kind === "tool" ? "tool" : kind === "message" ? "msg" : "sys";
+    const agentLabel = row.agent_name ? `<span class="mc-activity__agent">${escapeHtml(row.agent_name)}</span>` : "";
+    const pidLabel = row.process_pid != null
+      ? `<span class="mc-activity__pid" title="Process ID">PID ${row.process_pid}</span>`
+      : "";
+
+    return `<div class="mc-activity__item mc-activity__item--${kind} mc-activity__item--activity" data-activity-kind="activity"
+        data-sk-activity-row
+        data-sk-activity-data="${escapeHtml(row.data ?? "")}"
+        data-sk-activity-agent="${escapeHtml(row.agent_name ?? "")}"
+        data-sk-activity-pid="${row.process_pid ?? ""}"
+        data-sk-activity-time="${escapeHtml(row.created_at ?? "")}"
+        data-sk-activity-kind="activity">
       <span class="mc-activity__kind mc-activity__kind--${kind}">${kindLabel}</span>
       ${agentLabel}
       ${pidLabel}

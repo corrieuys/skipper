@@ -1,6 +1,7 @@
 import { addRoute } from "../server";
 import { TaskScheduler } from "../tasks/scheduler";
 import { getDb } from "../db/connection";
+import { eventBus } from "../events/bus";
 import { getRealtimeTeamId } from "../config/teams";
 import { getRealtimeConfig, updateRealtimeConfig } from "../realtime/config";
 import type { RealtimeConfig } from "../realtime/config";
@@ -483,10 +484,18 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
         return Response.json({ error: "Only archived or failed tasks can be unarchived" }, { status: 400 });
       }
 
+      const previousStatus = task.status;
+
       // Move back to running and restart the session
       db.prepare(
         "UPDATE tasks SET status = 'running', result = NULL, completed_at = NULL, updated_at = datetime('now') WHERE id = ?",
       ).run(params.id);
+
+      eventBus.emit("task:state_changed", {
+        taskId: params.id,
+        previousStatus,
+        newStatus: "running",
+      });
 
       if (daemon) {
         const rtMgr = daemon.getRealtimeSessionManager();
@@ -498,10 +507,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       if (_req.headers.get("HX-Request")) {
         return new Response("", {
           status: 200,
-          headers: {
-            "HX-Redirect": `/realtime/${params.id}`,
-            "Content-Type": "text/html; charset=utf-8",
-          },
+          headers: { "Content-Type": "text/html; charset=utf-8" },
         });
       }
       return Response.json({ ok: true });

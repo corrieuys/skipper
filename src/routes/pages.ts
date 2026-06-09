@@ -1145,6 +1145,36 @@ function registerV2PageRoutes(): void {
     return html(parseTerminalActivity(rows));
   });
 
+  // Unified realtime activity feed: timeline entries + agent terminal outputs merged
+  addRoute("GET", "/workspace/task/:id/realtime-activity", (_req, params) => {
+    const { parseRealtimeActivity } = require("../html/pages/command-center.page");
+    type Row = import("../html/pages/command-center.page").RealtimeActivityRow;
+
+    const timelineRows = db.prepare(
+      `SELECT entry_type, content, priority, created_at
+       FROM realtime_timeline WHERE task_id = ?
+       ORDER BY created_at DESC LIMIT 250`
+    ).all(params.id) as Array<{ entry_type: string; content: string; priority: string; created_at: string }>;
+
+    const terminalRows = db.prepare(
+      `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name, t.created_at
+       FROM terminal_outputs t
+       JOIN agent_instances ai ON ai.id = t.agent_id
+       LEFT JOIN agents a ON a.id = ai.template_agent_id
+       WHERE ai.task_id = ?
+       ORDER BY t.id DESC LIMIT 200`
+    ).all(params.id) as Array<{ stream: string; data: string; agent_name: string; created_at: string }>;
+
+    const merged: Row[] = [
+      ...timelineRows.map(r => ({ source: "timeline" as const, entry_type: r.entry_type, content: r.content, priority: r.priority, created_at: r.created_at })),
+      ...terminalRows.map(r => ({ source: "terminal" as const, stream: r.stream, data: r.data, agent_name: r.agent_name, created_at: r.created_at })),
+    ];
+    merged.sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
+    const limited = merged.slice(0, 300);
+
+    return html(parseRealtimeActivity(limited));
+  });
+
   // Terminal output by task ID (finds the root agent instance)
   addRoute("GET", "/workspace/task/:id/terminal", (_req, params) => {
     // Find agent instances for this task, prefer root/entrypoint

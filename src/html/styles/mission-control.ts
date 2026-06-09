@@ -693,6 +693,8 @@ export function missionControlStyles(): string {
     .mc-activity__feed[data-activity-filter="messages"] .mc-activity__item--event { display: none; }
     .mc-activity__feed[data-activity-filter="tools"] .mc-activity__item--message,
     .mc-activity__feed[data-activity-filter="tools"] .mc-activity__item--event { display: none; }
+    .mc-activity__feed[data-activity-filter="timeline"] .mc-activity__item--activity { display: none; }
+    .mc-activity__feed[data-activity-filter="activity"] .mc-activity__item--timeline { display: none; }
     .mc-node__indicator {
       width: 8px;
       height: 8px;

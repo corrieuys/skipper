@@ -48,7 +48,8 @@ import { escalationCardPanel, type EscalationCardData } from "../html/panels/esc
 import { dashboardSteerListFragment, steerCardInfoMarkup, type SteeringOption } from "../html/dashboardLatestSteerFragment";
 import { dashboardNotesFragment } from "../html/dashboardNotesFragment";
 import type { TaskNoteData } from "../html/components";
-import { renderPhaseStripFragment, parseTerminalActivity } from "../html/pages/command-center.page";
+import { renderPhaseStripFragment, parseTerminalActivity, parseRealtimeActivity } from "../html/pages/command-center.page";
+import type { RealtimeActivityRow } from "../html/pages/command-center.page";
 import {
   fetchTasksWithTeams,
   fetchTaskById,
@@ -334,9 +335,13 @@ export class UIWebSocketManager {
         `<div id="terminal-lines" hx-swap-oob="beforeend">${chunk}</div>`,
         ["dashboard", `agent:${event.agentId}`],
       );
-      const taskRow = this.db.prepare("SELECT task_id FROM agent_instances WHERE id = ?").get(event.agentId) as { task_id: string } | null;
+      const taskRow = this.db.prepare("SELECT task_id, task_type FROM agent_instances ai JOIN tasks t ON t.id = ai.task_id WHERE ai.id = ?").get(event.agentId) as { task_id: string; task_type: string | null } | null;
       if (taskRow?.task_id) {
-        this.debounced(`v2-activity-${taskRow.task_id}`, () => this.pushV2ActivityFeed(taskRow!.task_id));
+        if (taskRow.task_type === "real_time") {
+          this.debounced(`v2-rt-feed-${taskRow.task_id}`, () => this.pushRealtimeUnifiedFeed(taskRow!.task_id));
+        } else {
+          this.debounced(`v2-activity-${taskRow.task_id}`, () => this.pushV2ActivityFeed(taskRow!.task_id));
+        }
         this.debounced(`v2-steer-${taskRow.task_id}`, () => this.pushV2SteerPanel(taskRow!.task_id));
       }
     });
@@ -414,11 +419,13 @@ export class UIWebSocketManager {
     eventBus.on("realtime:window_ready", (event) => {
       this.pushRtTimeline(event.taskId);
       this.pushDashboardRealtimeTimeline();
+      this.pushRealtimeUnifiedFeed(event.taskId);
     });
 
     eventBus.on("realtime:timeline_updated", (event) => {
       this.pushRtTimeline(event.taskId);
       this.pushDashboardRealtimeTimeline();
+      this.pushRealtimeUnifiedFeed(event.taskId);
     });
 
     // --- Realtime session state ---
@@ -428,6 +435,7 @@ export class UIWebSocketManager {
       this.pushRtRunningAgents(event.taskId);
       this.pushRtTimeline(event.taskId);
       this.pushDashboardRealtimeTimeline();
+      this.pushRealtimeUnifiedFeed(event.taskId);
     });
 
     // --- Escalation ---
@@ -1013,6 +1021,36 @@ export class UIWebSocketManager {
       ? `<div class="mc-activity__empty">No activity yet</div>`
       : parseTerminalActivity(rows);
     this.broadcastRaw(`<div id="mc-activity-feed-${esc(taskId)}" hx-swap-oob="innerHTML">${content}</div>`, [`dashboard`, `task:${taskId}`]);
+  }
+
+  private pushRealtimeUnifiedFeed(taskId: string): void {
+    const timelineRows = this.db.prepare(
+      `SELECT entry_type, content, priority, created_at
+       FROM realtime_timeline WHERE task_id = ?
+       ORDER BY created_at DESC LIMIT 250`,
+    ).all(taskId) as Array<{ entry_type: string; content: string; priority: string; created_at: string }>;
+
+    const terminalRows = this.db.prepare(
+      `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name, t.created_at
+       FROM terminal_outputs t
+       JOIN agent_instances ai ON ai.id = t.agent_id
+       LEFT JOIN agents a ON a.id = ai.template_agent_id
+       WHERE ai.task_id = ?
+       ORDER BY t.id DESC LIMIT 200`,
+    ).all(taskId) as Array<{ stream: string; data: string; agent_name: string; created_at: string }>;
+
+    const merged: RealtimeActivityRow[] = [
+      ...timelineRows.map(r => ({ source: "timeline" as const, entry_type: r.entry_type, content: r.content, priority: r.priority, created_at: r.created_at })),
+      ...terminalRows.map(r => ({ source: "terminal" as const, stream: r.stream, data: r.data, agent_name: r.agent_name, created_at: r.created_at })),
+    ];
+    merged.sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
+    const limited = merged.slice(0, 300);
+
+    const content = parseRealtimeActivity(limited);
+    this.broadcastRaw(
+      `<div id="mc-rt-feed-${esc(taskId)}" hx-swap-oob="innerHTML">${content}</div>`,
+      [`dashboard`, `task:${taskId}`],
+    );
   }
 
   private pushV2Notes(taskId: string): void {
