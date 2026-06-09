@@ -233,6 +233,60 @@ export const THEMES: Theme[] = [
       "--glow-cyan": "0 0 0.6rem rgba(144, 212, 240, 0.2), 0 0 1.2rem rgba(144, 212, 240, 0.1)",
     },
   },
+  {
+    id: "win95",
+    label: "Windows 95",
+    vars: {
+      "--sk-surface-0": "#001820",
+      "--sk-surface-1": "#002830",
+      "--sk-surface-2": "#003040",
+      "--sk-surface-3": "#004050",
+      "--sk-surface-4": "#005868",
+      "--sk-panel-bg": "#002830",
+      "--sk-panel-elevated-bg": "#004050",
+      "--sk-text": "#ffffff",
+      "--sk-text-muted": "#c0c0c0",
+      "--sk-text-subtle": "rgba(192, 192, 192, 0.6)",
+      "--sk-accent-primary": "#0078d4",
+      "--sk-accent-primary-container": "#005a9e",
+      "--sk-accent-primary-dim": "rgba(0, 120, 212, 0.3)",
+      "--sk-accent-secondary": "#c0c0c0",
+      "--sk-accent-secondary-container": "#1a1a2e",
+      "--sk-accent-secondary-dim": "rgba(192, 192, 192, 0.2)",
+      "--sk-accent-tertiary": "#00a86b",
+      "--sk-accent-tertiary-dim": "rgba(0, 168, 107, 0.2)",
+      "--sk-accent-warning": "#ffcc00",
+      "--sk-accent-danger": "#ff4444",
+      "--sk-border": "rgba(192, 192, 192, 0.2)",
+      "--sk-border-subtle": "rgba(192, 192, 192, 0.3)",
+      "--sk-border-active": "rgba(0, 120, 212, 0.5)",
+      "--sk-glow-primary": "0 0 0 transparent",
+      "--sk-glow-secondary": "0 0 0 transparent",
+      "--sk-font-body": "'MS Sans Serif', Tahoma, Arial, sans-serif",
+      "--sk-font-heading": "'MS Sans Serif', Tahoma, Arial, sans-serif",
+      "--sk-radius-xs": "0px",
+      "--sk-radius-sm": "0px",
+      "--sk-radius-md": "1px",
+      "--sk-radius-lg": "1px",
+      "--sk-panel-radius": "0px",
+      "--on-primary": "#ffffff",
+      "--void": "#001820",
+      "--surface-low": "#002830",
+      "--surface-mid": "#003040",
+      "--surface-high": "#004050",
+      "--surface-bright": "#005868",
+      "--panel": "rgba(0, 40, 48, 0.95)",
+      "--panel-alt": "rgba(0, 24, 32, 0.95)",
+      "--text": "#ffffff",
+      "--muted": "#c0c0c0",
+      "--border": "rgba(192, 192, 192, 0.2)",
+      "--accent-cyan": "#c0c0c0",
+      "--accent-magenta": "#0078d4",
+      "--accent-yellow": "#ffcc00",
+      "--glow": "0 0 0 transparent",
+      "--glow-cyan": "0 0 0 transparent",
+    },
+  },
 ];
 
 /**
@@ -312,7 +366,483 @@ export function themePickerFragment(): string {
   </label>${script}`;
 }
 
-export function themeOverridesCss(): string { return ""; }
+export function themeOverridesCss(): string { return win95OverridesCss(); }
+
+function win95OverridesCss(): string {
+  const W = '[data-theme="win95"]';
+  return `
+    /* ══ Windows 95 Dark — beveled borders & flat chrome ══ */
+
+    /* ── V1 legacy buttons (button, .btn, .btn-sm, .btn-link, variants) ── */
+    ${W} button,
+    ${W} .btn,
+    ${W} .btn-sm,
+    ${W} .btn-link {
+      background: #004050;
+      border: none;
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+      border-radius: 0;
+      box-shadow: none;
+      transition: none;
+    }
+    ${W} button:hover,
+    ${W} .btn:hover,
+    ${W} .btn-link:hover {
+      background: #005060;
+      box-shadow: none;
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+    }
+    ${W} button:active,
+    ${W} .btn:active {
+      opacity: 1;
+      border-top: 2px solid #001010;
+      border-left: 2px solid #001010;
+      border-bottom: 2px solid #a0a0a0;
+      border-right: 2px solid #a0a0a0;
+    }
+    ${W} .btn-secondary,
+    ${W} .btn-danger,
+    ${W} .btn-warning {
+      background: #003040;
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+      box-shadow: none;
+    }
+    ${W} .btn-secondary:hover,
+    ${W} .btn-danger:hover,
+    ${W} .btn-warning:hover {
+      background: #004050;
+      box-shadow: none;
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+    }
+    ${W} .btn-danger { color: var(--sk-accent-danger); }
+    ${W} .toggle-btn {
+      border-radius: 0;
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+    }
+    ${W} .daemon-kill-btn {
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+      border-radius: 0;
+    }
+    ${W} .conv-action-btn {
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+      border-radius: 0;
+    }
+
+    /* ── Chat panel buttons ── */
+    ${W} .mc-chat-panel .btn-sm,
+    ${W} .mc-chat-panel button[type="submit"] {
+      background: #004050;
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+      border-radius: 0;
+      box-shadow: none;
+    }
+    ${W} .mc-chat-panel .btn-sm:hover,
+    ${W} .mc-chat-panel button[type="submit"]:hover {
+      background: #005060;
+      box-shadow: none;
+    }
+    ${W} .mc-chat-panel .chat-input-row button[type="submit"] {
+      background: #0078d4;
+      color: #ffffff;
+    }
+
+    /* ── Sidebar create button ── */
+    ${W} .mc-sidebar__create {
+      background: #0078d4;
+      color: #ffffff;
+      border: none;
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+      border-radius: 0;
+    }
+    ${W} .mc-sidebar__create:hover { opacity: 1; background: #005a9e; }
+    ${W} .mc-sidebar__create:active {
+      border-top: 2px solid #001010;
+      border-left: 2px solid #001010;
+      border-bottom: 2px solid #a0a0a0;
+      border-right: 2px solid #a0a0a0;
+    }
+
+    /* ── Remove all glass/blur ── */
+    ${W} .sk-navbar,
+    ${W} .sk-btn,
+    ${W} .sk-panel,
+    ${W} .sk-modal__content,
+    ${W} .mc-sidebar,
+    ${W} .mc-terminal,
+    ${W} .mc-steer-card,
+    ${W} .mc-stat-card,
+    ${W} .mc-chat-panel,
+    ${W} .mc-task-header,
+    ${W} .card,
+    ${W} .stat-card,
+    ${W} .panel {
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      box-shadow: none;
+    }
+
+    /* ── V1 cards/panels — raised look ── */
+    ${W} .card,
+    ${W} .stat-card,
+    ${W} .active-task-card,
+    ${W} .phase-stepper,
+    ${W} .team-hero,
+    ${W} .phase-card,
+    ${W} .member-card,
+    ${W} .activity-feed {
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+      border-radius: 0;
+    }
+
+    /* ── V1 inputs/textareas — sunken ── */
+    ${W} input[type="text"],
+    ${W} input[type="number"],
+    ${W} input[type="password"],
+    ${W} input[type="email"],
+    ${W} input[type="url"],
+    ${W} input[type="search"],
+    ${W} textarea,
+    ${W} select {
+      border: none;
+      border-top: 2px solid #001010;
+      border-left: 2px solid #001010;
+      border-bottom: 2px solid #a0a0a0;
+      border-right: 2px solid #a0a0a0;
+      border-radius: 0;
+      background: #001820;
+    }
+
+    /* ── Navbar — flat menu bar ── */
+    ${W} .sk-navbar {
+      background: #003040;
+      border-top: 1px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+    }
+
+    /* ── Raised elements (buttons, panels, cards, dropdowns) ── */
+    ${W} .sk-btn {
+      border: none;
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+      background: #004050;
+      transition: none;
+    }
+    ${W} .sk-btn:hover {
+      background: #005060;
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+    }
+    ${W} .sk-btn:active {
+      border-top: 2px solid #001010;
+      border-left: 2px solid #001010;
+      border-bottom: 2px solid #a0a0a0;
+      border-right: 2px solid #a0a0a0;
+    }
+    ${W} .sk-btn--primary {
+      background: #0078d4;
+      color: #ffffff;
+    }
+    ${W} .sk-btn--primary:hover { background: #005a9e; }
+    ${W} .sk-btn--danger {
+      border-top-color: #a0a0a0;
+      border-left-color: #a0a0a0;
+      border-bottom-color: #001010;
+      border-right-color: #001010;
+    }
+
+    ${W} .sk-panel {
+      border: none;
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+    }
+
+    /* ── Panel title bars — Win95 window chrome ── */
+    ${W} .sk-panel__header {
+      background: linear-gradient(90deg, #00007b, #0078d4);
+      color: #ffffff;
+      border-bottom: none;
+      font-weight: 700;
+    }
+    ${W} .sk-panel__header * { color: #ffffff; }
+
+    ${W} .sk-modal__header {
+      background: linear-gradient(90deg, #00007b, #0078d4);
+      color: #ffffff;
+      font-weight: 700;
+    }
+    ${W} .sk-modal__header * { color: #ffffff; }
+
+    /* ── Sunken elements (inputs, selects, textareas) ── */
+    ${W} .sk-input,
+    ${W} .sk-select,
+    ${W} .sk-textarea {
+      border: none;
+      border-top: 2px solid #001010;
+      border-left: 2px solid #001010;
+      border-bottom: 2px solid #a0a0a0;
+      border-right: 2px solid #a0a0a0;
+      background: #001820;
+      border-radius: 0;
+    }
+
+    /* ── Tables — sunken data area ── */
+    ${W} .sk-table {
+      border-top: 2px solid #001010;
+      border-left: 2px solid #001010;
+      border-bottom: 2px solid #a0a0a0;
+      border-right: 2px solid #a0a0a0;
+    }
+    ${W} .sk-table thead th {
+      background: #003040;
+      border-bottom: 2px solid #a0a0a0;
+    }
+
+    /* ── Dropdown — raised with hard shadow ── */
+    ${W} .sk-dropdown__menu {
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+      background: #003040;
+      box-shadow: 2px 2px 0 #000000;
+    }
+
+    /* ── Checkbox — square Win95 style ── */
+    ${W} .sk-checkbox__toggle {
+      width: 16px;
+      height: 16px;
+      border-radius: 0;
+      background: #001820;
+      border-top: 2px solid #001010;
+      border-left: 2px solid #001010;
+      border-bottom: 2px solid #a0a0a0;
+      border-right: 2px solid #a0a0a0;
+    }
+    ${W} .sk-checkbox__toggle::after {
+      display: none;
+      width: auto;
+      height: auto;
+      background: transparent;
+      border-radius: 0;
+      transform: none;
+    }
+    ${W} .sk-checkbox input:checked + .sk-checkbox__toggle {
+      background: #001820;
+    }
+    ${W} .sk-checkbox input:checked + .sk-checkbox__toggle::after {
+      display: block;
+      content: "\\2713";
+      position: absolute;
+      top: -2px;
+      left: 1px;
+      color: #ffffff;
+      font-size: 12px;
+      font-weight: bold;
+      background: transparent;
+      border-radius: 0;
+      transform: none;
+    }
+
+    /* ── Badges — flat, no glow ── */
+    ${W} .sk-badge { border-radius: 0; }
+
+    /* ── Phase card numbers — square ── */
+    ${W} .sk-phase-card__number,
+    ${W} .sk-phase-edit__number { border-radius: 0; }
+
+    /* ══ Mission Control ══ */
+
+    /* Workspace */
+    ${W} .mc-workspace { background: #001820; }
+
+    /* Sidebar */
+    ${W} .mc-sidebar {
+      background: #002830;
+      border-right: 2px solid #001010;
+    }
+    ${W} .mc-sidebar__item:hover {
+      background: #00007b;
+      color: #ffffff;
+    }
+    ${W} .mc-sidebar__item--active {
+      background: #0078d4;
+      color: #ffffff;
+    }
+
+    /* Task header */
+    ${W} .mc-task-header {
+      background: #003040;
+      border-bottom: 2px solid #001010;
+    }
+
+    /* Steer card — raised */
+    ${W} .mc-steer-card {
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+      background: #003040;
+      border-radius: 0;
+    }
+    ${W} .mc-steer-card:hover { background: #004050; }
+    ${W} .mc-steer-card__input {
+      background: #001820;
+      border-top: 2px solid #001010;
+      border-left: 2px solid #001010;
+      border-bottom: 2px solid #a0a0a0;
+      border-right: 2px solid #a0a0a0;
+      border-radius: 0;
+    }
+
+    /* Tabs — flat, no pill */
+    ${W} .mc-tab { border-radius: 0; }
+    ${W} .mc-tab--active {
+      background: #003040;
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-right: 2px solid #001010;
+      border-bottom: 2px solid #003040;
+      border-radius: 0;
+    }
+    ${W} .mc-tabs { background: #002830; }
+
+    /* Activity feed */
+    ${W} .mc-outputs__col-body {
+      background: #002830;
+      border-radius: 0;
+    }
+    ${W} .mc-activity__controls { background: #003040; }
+    ${W} .mc-activity__filter { border-radius: 0; }
+    ${W} .mc-activity__filter--active { border-radius: 0; }
+    ${W} .mc-activity__kind { border-radius: 0; }
+
+    /* Notes */
+    ${W} .note-item {
+      background: #003040;
+      border-radius: 0;
+      border: 1px solid rgba(192, 192, 192, 0.15);
+    }
+    ${W} .note-item-user {
+      background: rgba(0, 120, 212, 0.1);
+      border-radius: 0;
+    }
+
+    /* Agent row */
+    ${W} .mc-agent-row {
+      background: #003040;
+      border-radius: 0;
+      border: 1px solid rgba(192, 192, 192, 0.15);
+    }
+
+    /* Terminal — sunken */
+    ${W} .mc-terminal {
+      border-top: 2px solid #001010;
+      border-left: 2px solid #001010;
+      border-bottom: 2px solid #a0a0a0;
+      border-right: 2px solid #a0a0a0;
+      background: #001820;
+      border-radius: 0;
+    }
+    ${W} .mc-terminal__header {
+      background: linear-gradient(90deg, #00007b, #0078d4);
+      color: #ffffff;
+      border-radius: 0;
+      font-weight: 700;
+    }
+    ${W} .mc-terminal__header * { color: #ffffff; }
+
+    /* Phase stepper */
+    ${W} .mc-phase-stepper { background: #002830; }
+
+    /* Stat cards — raised */
+    ${W} .mc-stat-card {
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+      background: #003040;
+      border-radius: 0;
+    }
+
+    /* Idle dashboard */
+    ${W} .mc-idle { background: #001820; }
+    ${W} .mc-idle__input,
+    ${W} .mc-idle__desc {
+      background: #001820;
+      border-top: 2px solid #001010;
+      border-left: 2px solid #001010;
+      border-bottom: 2px solid #a0a0a0;
+      border-right: 2px solid #a0a0a0;
+      border-radius: 0;
+    }
+    ${W} .mc-idle__feed-item {
+      background: #003040;
+      border-radius: 0;
+      margin-bottom: 2px;
+    }
+    ${W} .mc-idle__feed-item:hover { background: #004050; }
+
+    /* Chat panel */
+    ${W} .mc-chat-panel {
+      background: #002830;
+      border-left: 2px solid #a0a0a0;
+    }
+    ${W} .mc-chat-panel__header {
+      background: linear-gradient(90deg, #00007b, #0078d4);
+      color: #ffffff;
+      font-weight: 700;
+    }
+    ${W} .mc-chat-panel__header * { color: #ffffff; }
+
+    /* Escalation bar */
+    ${W} .sk-escalation-bar { border-radius: 0; }
+
+    /* Mission/create cards */
+    ${W} .sk-mission,
+    ${W} .sk-create-card {
+      border-top: 2px solid #a0a0a0;
+      border-left: 2px solid #a0a0a0;
+      border-bottom: 2px solid #001010;
+      border-right: 2px solid #001010;
+    }
+  `;
+}
 
 export function glassOverridesCss(): string {
   const G = "[data-theme=\"artemis\"]";
