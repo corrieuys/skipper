@@ -14,6 +14,13 @@ const DELEGATION_TIMEOUT_SECONDS = Math.floor(DELEGATION_TIMEOUT_MS / 1000);
 const GROUP_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 const GROUP_TIMEOUT_SECONDS = Math.floor(GROUP_TIMEOUT_MS / 1000);
 const CHILD_FAILURE_ESCALATION_THRESHOLD = 2;
+// Sent as the prompt when a timed-out child is retried via session resume
+// (instead of a fresh restart). Pushes it to wrap up rather than start over.
+const RETRY_NUDGE_PROMPT = [
+  "[SYSTEM] [RETRY_NUDGE] Your delegation has been running past its timeout and was resumed.",
+  "Review what you have already done and finish: wrap up the remaining work and report your result with [DELEGATE_COMPLETE] <result>.",
+  "If you are blocked, report that via [DELEGATE_COMPLETE] with the blocker. Do not restart work already completed.",
+].join("\n");
 
 export const MAX_DELEGATION_RESULT_CHARS = 50_000;
 
@@ -1042,16 +1049,24 @@ export class DelegationManager {
     if (!childInstanceId) return false;
 
     const row = this.db
-      .prepare("SELECT attempt, parent_instance_id, root_instance_id, task_id, template_agent_id FROM agent_instances WHERE id = ?")
+      .prepare("SELECT attempt, parent_instance_id, root_instance_id, task_id, template_agent_id, session_id FROM agent_instances WHERE id = ?")
       .get(childInstanceId) as {
         attempt: number;
         parent_instance_id: string | null;
         root_instance_id: string | null;
         task_id: string;
         template_agent_id: string;
+        session_id: string | null;
       } | null;
     if (!row) return false;
     if (row.attempt >= CHILD_RETRY_LIMIT + 1) return false;
+
+    // Kill the old child process before respawning. The stale-timeout caller
+    // (checkStaleDelegations) retries delegations that are still 'running', so the
+    // old process may be alive — without this it leaks as an untracked orphan
+    // (replacement gets a new instance id, old row is marked failed). No-op when
+    // the old process already exited (handleChildExit caller).
+    this.agentManager.killAgent(childInstanceId);
 
     this.db
       .prepare("UPDATE agent_instances SET status = 'failed', updated_at = datetime('now') WHERE id = ?")
@@ -1066,7 +1081,16 @@ export class DelegationManager {
       )
       .run(nextInstanceId, delegation.id);
 
-    const retryTask = this.taskScheduler.getTask(row.task_id);
+    // Prefer resuming the child's existing session with a nudge over a fresh
+    // restart: the timeout clock runs from instance creation, not last activity,
+    // so a long-but-healthy child trips it — resuming preserves its work instead
+    // of discarding it. Falls back to a fresh respawn (original prompt, no
+    // session) when the type can't resume or no session was captured.
+    const childAgent = this.agentManager.getAgent(row.template_agent_id);
+    const childTypeDef = childAgent ? getAgentTypeDefinition(childAgent.type, this.db) : null;
+    const canResume = !!row.session_id && !!childTypeDef?.supports_resume;
+    const work = canResume ? RETRY_NUDGE_PROMPT : delegation.prompt;
+
     this.spawnChildInstance({
       taskId: row.task_id,
       delegationId: delegation.id,
@@ -1074,9 +1098,10 @@ export class DelegationManager {
       rootInstanceId: row.root_instance_id ?? delegation.parent_instance_id ?? delegation.parent_agent_id,
       childTemplateId: row.template_agent_id,
       childInstanceId: nextInstanceId,
-      work: delegation.prompt,
+      work,
       attempt: nextAttempt,
       workingDir: undefined, // Agents spawn in orchestrator cwd
+      resumeSessionId: canResume ? row.session_id! : undefined,
     }).catch((err) => {
       logError(this.db, "delegation_retry_spawn", { delegationId: delegation.id, nextInstanceId }, err);
       this.settleDelegationFailure(
