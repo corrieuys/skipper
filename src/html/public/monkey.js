@@ -10,7 +10,7 @@
   // Each is a 16x16 grid + palette. All share the same silhouette footprint
   // (feet on row 14) so perch / jump / slide positioning is identical.
   const S = 16;
-  const SCALE = 4.8;
+  const SCALE = 5;
   const RENDERED_SIZE = S * SCALE;
 
   function spriteFromGrid(grid, palette) {
@@ -354,12 +354,10 @@
         pointer-events: none;
         z-index: 9999;
       `;
-      this.canvas.width = window.innerWidth;
-      this.canvas.height = window.innerHeight;
       document.body.appendChild(this.canvas);
 
       this.ctx = this.canvas.getContext("2d");
-      this.ctx.imageSmoothingEnabled = false;
+      this.resizeCanvas();
 
       // Spawn bottom-left, in the sidebar area at the bottom of the window.
       this.state = {
@@ -497,11 +495,22 @@
       });
 
       window.addEventListener("resize", () => {
-        this.canvas.width = window.innerWidth;
-        this.canvas.height = window.innerHeight;
+        this.resizeCanvas();
       });
 
       this.animate();
+    }
+
+    // Single source of truth for canvas sizing. Sizes the backing store in
+    // device pixels (HiDPI-correct) and re-asserts context state — assigning
+    // canvas.width/height wipes the 2D context, including imageSmoothingEnabled,
+    // which would otherwise revert to true and blur the pixel art after a resize.
+    resizeCanvas() {
+      const dpr = window.devicePixelRatio || 1;
+      this.canvas.width = Math.round(window.innerWidth * dpr);
+      this.canvas.height = Math.round(window.innerHeight * dpr);
+      this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      this.ctx.imageSmoothingEnabled = false;
     }
 
     animate() {
@@ -624,9 +633,9 @@
       // Clamp position so monkey stays fully visible
       const half = RENDERED_SIZE / 2;
       const minY = half + 52; // below navbar (~48px + margin)
-      const maxY = this.canvas.height - half;
+      const maxY = window.innerHeight - half;
       const minX = half;
-      const maxX = this.canvas.width - half;
+      const maxX = window.innerWidth - half;
       this.state.x = Math.max(minX, Math.min(maxX, this.state.x));
       this.state.y = Math.max(minY, Math.min(maxY, this.state.y));
 
@@ -635,7 +644,7 @@
     }
 
     render() {
-      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      this.ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
 
       const frames = this.frames[this.state.animation] || this.frames.idle;
       const frame = frames[this.frameIndex % frames.length];
@@ -690,8 +699,8 @@
       const textWidth = Math.max(...lines.map((l) => this.ctx.measureText(l).width));
       const bw = textWidth + padding * 2;
       const bh = lines.length * lineHeight + padding * 2;
-      const cw = this.canvas.width;
-      const ch = this.canvas.height;
+      const cw = window.innerWidth;
+      const ch = window.innerHeight;
 
       // Collect rects of active input fields to avoid covering them
       const avoidRects = [];

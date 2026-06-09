@@ -686,10 +686,20 @@ export function parseTerminalActivity(lines: Array<{ stream: string; data: strin
     let kind: "message" | "tool" | "event" = "event";
     let summary = "";
 
-    // Try JSON parse
+    // Try JSON parse (data may contain newline-delimited JSON objects)
     if (data.startsWith("{")) {
+      let parsed: Record<string, unknown> | null = null;
       try {
-        const parsed = JSON.parse(data);
+        parsed = JSON.parse(data);
+      } catch {
+        // Multi-object line: parse the first JSON object only
+        const firstLine = data.split("\n").find(l => l.trim().startsWith("{"));
+        if (firstLine) {
+          try { parsed = JSON.parse(firstLine.trim()); } catch { /* give up */ }
+        }
+      }
+
+      if (parsed) {
         summary = terminalJsonSummary(parsed);
 
         // Classify
@@ -707,7 +717,7 @@ export function parseTerminalActivity(lines: Array<{ stream: string; data: strin
         } else if (type === "assistant" || type === "user" || type === "message" || typeof parsed.result === "string") {
           kind = "message";
         }
-      } catch {
+      } else {
         summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
         kind = line.stream === "stderr" ? "event" : "message";
       }

@@ -8,6 +8,74 @@
 
   var Skipper = {};
 
+  // ── Activity Detail Formatter ──
+  function formatActivityDetail(parsed) {
+    // "result" event — show the result string prominently
+    if (parsed.type === "result" && typeof parsed.result === "string") {
+      var lines = [parsed.result, ""];
+      if (parsed.stop_reason) lines.push("Stop reason: " + parsed.stop_reason);
+      if (parsed.duration_ms) lines.push("Duration: " + (parsed.duration_ms / 1000).toFixed(1) + "s");
+      if (parsed.num_turns) lines.push("Turns: " + parsed.num_turns);
+      return lines.join("\n");
+    }
+
+    // assistant message — extract text and tool_use blocks
+    if (parsed.type === "assistant" && parsed.message && Array.isArray(parsed.message.content)) {
+      var sections = [];
+      parsed.message.content.forEach(function (block) {
+        if (!block) return;
+        if (block.type === "text" && block.text) {
+          sections.push(block.text);
+        } else if (block.type === "thinking" && block.thinking) {
+          sections.push("<thinking>\n" + block.thinking + "\n</thinking>");
+        } else if (block.type === "tool_use") {
+          var toolLine = "Tool: " + (block.name || "unknown");
+          if (block.input && typeof block.input === "object") {
+            var keys = Object.keys(block.input);
+            if (keys.length <= 6) {
+              keys.forEach(function (k) {
+                var val = block.input[k];
+                var display = typeof val === "string" ? val : JSON.stringify(val);
+                if (display && display.length > 300) display = display.slice(0, 300) + "…";
+                toolLine += "\n  " + k + ": " + display;
+              });
+            } else {
+              toolLine += "\n" + JSON.stringify(block.input, null, 2);
+            }
+          }
+          sections.push(toolLine);
+        }
+      });
+      if (sections.length > 0) return sections.join("\n\n");
+    }
+
+    // user message — tool_result responses
+    if (parsed.type === "user" && parsed.message && Array.isArray(parsed.message.content)) {
+      var results = [];
+      parsed.message.content.forEach(function (block) {
+        if (!block) return;
+        if (block.type === "tool_result") {
+          var inner = block.content;
+          var text = "";
+          if (typeof inner === "string") {
+            text = inner;
+          } else if (Array.isArray(inner)) {
+            text = inner.map(function (c) { return c && c.text ? c.text : ""; }).join("\n");
+          }
+          // Try to pretty-print if the text is JSON
+          if (text.trim().charAt(0) === "{" || text.trim().charAt(0) === "[") {
+            try { text = JSON.stringify(JSON.parse(text), null, 2); } catch (e) { /* keep raw */ }
+          }
+          results.push(text);
+        }
+      });
+      if (results.length > 0) return results.join("\n\n---\n\n");
+    }
+
+    // Fallback: pretty-print the full JSON
+    return JSON.stringify(parsed, null, 2);
+  }
+
   // ── Modal System ──
   Skipper.modal = {
     open: function (id) {
@@ -586,7 +654,16 @@
       var pretty = raw;
       var trimmed = raw.trim();
       if (trimmed.charAt(0) === "{" || trimmed.charAt(0) === "[") {
-        try { pretty = JSON.stringify(JSON.parse(trimmed), null, 2); } catch (err) { /* leave raw */ }
+        var toParse = trimmed;
+        // Handle newline-delimited JSON: parse the first object only
+        if (trimmed.indexOf("\n") !== -1) {
+          var firstLine = trimmed.split("\n").find(function(l) { return l.trim().charAt(0) === "{"; });
+          if (firstLine) toParse = firstLine.trim();
+        }
+        try {
+          var parsed = JSON.parse(toParse);
+          pretty = formatActivityDetail(parsed);
+        } catch (err) { /* leave raw */ }
       }
       var titleEl = document.getElementById("activity-detail-modal-title");
       if (titleEl) titleEl.textContent = kind ? (kind.charAt(0).toUpperCase() + kind.slice(1)) : "Activity";
