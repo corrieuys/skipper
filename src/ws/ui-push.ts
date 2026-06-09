@@ -1024,7 +1024,7 @@ export class UIWebSocketManager {
        ORDER BY n.created_at DESC
        LIMIT 30`,
     ).all(taskId) as TaskNoteData[];
-    this.broadcast(`<div id="mc-notes-${esc(taskId)}" data-sk-output-panel="notes" style="padding:var(--sk-space-2);">${dashboardNotesFragment(notes, taskId)}</div>`, [`dashboard`, `task:${taskId}`]);
+    this.broadcastRaw(`<div hx-swap-oob="innerHTML:#mc-notes-${esc(taskId)}">${dashboardNotesFragment(notes, taskId)}</div>`, [`dashboard`, `task:${taskId}`]);
   }
 
   private pushV2Artifacts(taskId: string): void {
@@ -1059,7 +1059,7 @@ export class UIWebSocketManager {
         <tbody>${tableRows}</tbody>
       </table>`;
     }
-    this.broadcast(`<div id="mc-artifacts-${esc(taskId)}" data-sk-output-panel="artifacts" style="padding:var(--sk-space-2);display:none;">${content}</div>`, [`dashboard`, `task:${taskId}`]);
+    this.broadcastRaw(`<div hx-swap-oob="innerHTML:#mc-artifacts-${esc(taskId)}">${content}</div>`, [`dashboard`, `task:${taskId}`]);
   }
 }
 
