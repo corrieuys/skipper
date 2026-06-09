@@ -234,8 +234,9 @@ export function missionControlStyles(): string {
       gap: var(--sk-space-2);
       background: var(--sk-surface-1);
       backdrop-filter: blur(16px) saturate(1.3);
-      border-bottom: 1px solid var(--sk-border);
       padding: var(--sk-space-2) var(--sk-space-3);
+      margin-top: var(--sk-space-4);
+      margin-bottom: 0;
     }
     .mc-tab {
       padding: 6px 14px;

@@ -253,8 +253,8 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
           hx-target="this"
           hx-swap="innerHTML"></div>
         <div style="display:flex; gap:var(--sk-space-3); margin-top:var(--sk-space-4);">
-          <button type="submit" class="sk-btn sk-btn--primary">Save Changes</button>
-          <button type="submit" class="sk-btn sk-btn--sm" formaction="/api/tasks/${eid}/approve" formmethod="POST">Save &amp; Approve</button>
+          <button type="submit" class="sk-btn sk-btn--sm">Save Changes</button>
+          <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm" name="approve" value="1">Save &amp; Approve</button>
         </div>
       </form>
     </div>

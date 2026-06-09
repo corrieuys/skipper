@@ -570,6 +570,18 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         db.prepare(`UPDATE tasks SET ${updates.join(", ")} WHERE id = ?`).run(...values);
       }
 
+      const shouldApprove = formData.get("approve") === "1";
+      if (shouldApprove && task.status === "draft") {
+        scheduler.approveTask(params.id);
+        const updated = scheduler.getTask(params.id);
+        if (updated && updated.task_type === "real_time") {
+          scheduler.startTask(params.id);
+          if (daemon) {
+            try { daemon.getRealtimeSessionManager().startSession(params.id); } catch { /* non-fatal */ }
+          }
+        }
+      }
+
       if (req.headers.get("HX-Request")) {
         return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
       }

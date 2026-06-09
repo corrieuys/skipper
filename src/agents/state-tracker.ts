@@ -113,6 +113,23 @@ export class StateTracker {
     const currentFingerprint = this.computeFingerprint(agentId);
 
     if (currentFingerprint === state.screen_fingerprint) {
+      // Before confirming stuck, check if the agent process has active child
+      // processes (e.g. a test suite, build, or other long-running command).
+      // A quiet parent with busy children is waiting, not stuck.
+      if (this.hasActiveChildProcesses(agentId)) {
+        this.db
+          .prepare(
+            `UPDATE agent_states
+             SET heartbeat_at = datetime('now'), nudge_count = 0, updated_at = datetime('now')
+             WHERE agent_id = ?`,
+          )
+          .run(agentId);
+        this.logStuckDetection(agentId, "skipped_active_children", currentFingerprint, {
+          heartbeat_at: state.heartbeat_at,
+        });
+        return false;
+      }
+
       // Screen unchanged → confirmed stuck
       this.logStuckDetection(agentId, "stuck", currentFingerprint, {
         heartbeat_at: state.heartbeat_at,
@@ -403,5 +420,47 @@ export class StateTracker {
     }
 
     return false;
+  }
+
+  /**
+   * Check whether the agent's OS process has active child processes.
+   * When an agent spawns a long-running subprocess (test suite, build, etc.)
+   * the agent's stdout goes quiet while the child runs. This prevents false
+   * stuck detection for agents legitimately waiting on subprocesses.
+   */
+  private hasActiveChildProcesses(agentId: string): boolean {
+    const row = this.db
+      .prepare("SELECT process_pid FROM agents WHERE id = ?")
+      .get(agentId) as { process_pid: number | null } | null;
+
+    if (!row?.process_pid) {
+      // Also check agent_instances for the PID
+      const instanceRow = this.db
+        .prepare(
+          `SELECT process_pid FROM agent_instances
+           WHERE template_agent_id = ? AND status = 'running' AND process_pid IS NOT NULL
+           ORDER BY created_at DESC LIMIT 1`,
+        )
+        .get(agentId) as { process_pid: number | null } | null;
+
+      if (!instanceRow?.process_pid) return false;
+      return this.pidHasChildren(instanceRow.process_pid);
+    }
+
+    return this.pidHasChildren(row.process_pid);
+  }
+
+  private pidHasChildren(pid: number): boolean {
+    try {
+      const result = Bun.spawnSync({
+        cmd: ["pgrep", "-P", String(pid)],
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      // pgrep exits 0 if matches found, 1 if none
+      return result.exitCode === 0;
+    } catch {
+      return false;
+    }
   }
 }
