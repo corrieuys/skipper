@@ -142,14 +142,17 @@ export function phaseInputsFragment(teamPhases: TeamPhase[], existingPhases: Exi
     }
 
     let consensusModeValue = "inherit";
-    if (consensusOverride !== undefined && consensusOverride !== null) {
-      consensusModeValue = "override";
-    } else if (consensusOverride === null) {
-      consensusModeValue = "disabled";
+    let consensusConfig: ConsensusConfig | null = null;
+    if (consensusOverride && typeof consensusOverride === "object") {
+      if ((consensusOverride as { disabled?: boolean }).disabled) {
+        consensusModeValue = "disabled";
+      } else {
+        consensusModeValue = "override";
+        consensusConfig = consensusOverride as ConsensusConfig;
+      }
     }
 
     const showConsensusConfig = consensusModeValue === "override";
-    const consensusConfig = (consensusOverride !== undefined && consensusOverride !== null) ? consensusOverride : null;
 
     const safeName = escapeHtml(phase.name);
 
@@ -214,7 +217,7 @@ export function phaseInputsFragment(teamPhases: TeamPhase[], existingPhases: Exi
             </label>
           </div>
           <label style="display:flex;align-items:center;gap:var(--sk-space-2);margin-bottom:var(--sk-space-2);cursor:pointer;">
-            <input type="checkbox" name="phaseConsensusWorktree" data-phase="${safeName}"
+            <input type="checkbox" name="phaseConsensusWorktree" value="${safeName}" data-phase="${safeName}"
                    ${consensusConfig?.worktree ? "checked" : ""}>
             Use worktree
           </label>

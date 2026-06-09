@@ -32,6 +32,57 @@ interface PhaseToInsert {
   consensus_override: string | null;
 }
 
+// Parse per-phase override fields out of an HTML form submission into insertable rows.
+// Form layout (see template-form.page.ts): one block per phase, fields rendered in phase
+// order so getAll() arrays align positionally with `phaseName`. Two fields are checkboxes
+// that only submit when checked — those carry the phase name as their value and are read
+// via a Set keyed by phase name instead of by position.
+export function parsePhaseRowsFromForm(formData: { getAll(name: string): unknown[] }): PhaseToInsert[] {
+  const phaseNames = formData.getAll("phaseName") as string[];
+  const phasePrompts = formData.getAll("phasePrompt") as string[];
+  const phasePromptOverrides = formData.getAll("phasePromptOverride") as string[];
+  const overrideSet = new Set(formData.getAll("phaseOverridePrompt") as string[]);
+  const phaseReviewOverrides = formData.getAll("phaseReviewOverride") as string[];
+  const phaseConsensusModes = formData.getAll("phaseConsensusMode") as string[];
+  const phaseConsensusAgentCounts = formData.getAll("phaseConsensusAgentCount") as string[];
+  const phaseConsensusStrategies = formData.getAll("phaseConsensusStrategy") as string[];
+  const worktreeSet = new Set(formData.getAll("phaseConsensusWorktree") as string[]);
+  const phaseConsensusReviewers = formData.getAll("phaseConsensusReviewerAgentId") as string[];
+
+  const rows: PhaseToInsert[] = [];
+  phaseNames.forEach((rawName, i) => {
+    const pname = (rawName ?? "").trim();
+    if (!pname) return;
+
+    const overridePrompt = overrideSet.has(pname) ? 1 : 0;
+    const prompt = (overridePrompt
+      ? (phasePromptOverrides[i] ?? "")
+      : (phasePrompts[i] ?? "")).trim();
+
+    const reviewVal = phaseReviewOverrides[i] ?? "inherit";
+    const reviewOverride = reviewVal === "enabled" ? "true" : reviewVal === "disabled" ? "false" : null;
+
+    const consensusMode = phaseConsensusModes[i] ?? "inherit";
+    let consensusOverride: string | null = null;
+    if (consensusMode === "disabled") {
+      consensusOverride = JSON.stringify({ disabled: true });
+    } else if (consensusMode === "override") {
+      const agentCount = Math.max(1, parseInt(phaseConsensusAgentCounts[i] ?? "2", 10) || 2);
+      const strategy = phaseConsensusStrategies[i] === "merge" ? "merge" : "best_of";
+      const reviewer = (phaseConsensusReviewers[i] ?? "").trim();
+      consensusOverride = JSON.stringify({
+        agent_count: agentCount,
+        strategy,
+        worktree: worktreeSet.has(pname),
+        ...(reviewer ? { reviewer_agent_id: reviewer } : {}),
+      });
+    }
+
+    rows.push({ phase_name: pname, prompt, override_prompt: overridePrompt, review_override: reviewOverride, consensus_override: consensusOverride });
+  });
+  return rows;
+}
+
 export function registerTemplateRoutes(): void {
   const db = getDb();
 
@@ -265,12 +316,6 @@ export function registerTemplateRoutes(): void {
     const templateName = (formData.get("templateName") as string | null)?.trim();
     const teamId = (formData.get("teamId") as string | null)?.trim();
     const skipperPrompt = ((formData.get("skipperPrompt") as string | null) ?? "").trim();
-    const phaseNames = formData.getAll("phaseName") as string[];
-    const phasePrompts = formData.getAll("phasePrompt") as string[];
-    const phaseOverridePrompts = formData.getAll("phaseOverridePrompt") as string[];
-    const phaseReviewOverrides = formData.getAll("phaseReviewOverride") as string[];
-    const phaseConsensusOverrides = formData.getAll("phaseConsensusOverride") as string[];
-
     if (!templateName) {
       return new Response("", { status: 302, headers: { Location: "/templates/new?error=name+required" } });
     }
@@ -288,20 +333,11 @@ export function registerTemplateRoutes(): void {
       "INSERT INTO task_templates (id, template_name, team_id, skipper_prompt) VALUES (?, ?, ?, ?)",
     ).run(id, templateName, teamId, skipperPrompt);
 
-    phaseNames.forEach((name, i) => {
-      const pname = name.trim();
-      const prompt = ((phasePrompts[i] as string | undefined) ?? "").trim();
-      if (pname) {
-        const overridePrompt = phaseOverridePrompts[i] === "1" ? 1 : 0;
-        const reviewVal = (phaseReviewOverrides[i] as string | undefined) ?? "inherit";
-        const reviewOverride = reviewVal === "enabled" ? "true" : reviewVal === "disabled" ? "false" : null;
-        const consensusVal = (phaseConsensusOverrides[i] as string | undefined) ?? "inherit";
-        const consensusOverride = consensusVal === "inherit" ? null : consensusVal === "disabled" ? '{"disabled":true}' : consensusVal;
-        db.prepare(
-          "INSERT INTO task_template_phases (id, task_template_id, phase_name, prompt, override_prompt, review_override, consensus_override) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ).run(crypto.randomUUID(), id, pname, prompt, overridePrompt, reviewOverride, consensusOverride);
-      }
-    });
+    for (const p of parsePhaseRowsFromForm(formData)) {
+      db.prepare(
+        "INSERT INTO task_template_phases (id, task_template_id, phase_name, prompt, override_prompt, review_override, consensus_override) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).run(crypto.randomUUID(), id, p.phase_name, p.prompt, p.override_prompt, p.review_override, p.consensus_override);
+    }
 
     if (req.headers.get("HX-Request")) {
       return new Response("", { status: 200, headers: { "HX-Redirect": "/templates" } });
@@ -321,31 +357,17 @@ export function registerTemplateRoutes(): void {
     const formData = await req.formData();
     const templateName = ((formData.get("templateName") as string | null) ?? "").trim() || template.template_name;
     const skipperPrompt = ((formData.get("skipperPrompt") as string | null) ?? "").trim();
-    const phaseNames = formData.getAll("phaseName") as string[];
-    const phasePrompts = formData.getAll("phasePrompt") as string[];
-    const phaseOverridePrompts = formData.getAll("phaseOverridePrompt") as string[];
-    const phaseReviewOverrides = formData.getAll("phaseReviewOverride") as string[];
-    const phaseConsensusOverrides = formData.getAll("phaseConsensusOverride") as string[];
 
     db.prepare(
       "UPDATE task_templates SET template_name = ?, skipper_prompt = ?, updated_at = datetime('now') WHERE id = ?",
     ).run(templateName, skipperPrompt, params.id);
 
     db.prepare("DELETE FROM task_template_phases WHERE task_template_id = ?").run(params.id);
-    phaseNames.forEach((name, i) => {
-      const pname = name.trim();
-      const prompt = ((phasePrompts[i] as string | undefined) ?? "").trim();
-      if (pname) {
-        const overridePrompt = phaseOverridePrompts[i] === "1" ? 1 : 0;
-        const reviewVal = (phaseReviewOverrides[i] as string | undefined) ?? "inherit";
-        const reviewOverride = reviewVal === "enabled" ? "true" : reviewVal === "disabled" ? "false" : null;
-        const consensusVal = (phaseConsensusOverrides[i] as string | undefined) ?? "inherit";
-        const consensusOverride = consensusVal === "inherit" ? null : consensusVal === "disabled" ? '{"disabled":true}' : consensusVal;
-        db.prepare(
-          "INSERT INTO task_template_phases (id, task_template_id, phase_name, prompt, override_prompt, review_override, consensus_override) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ).run(crypto.randomUUID(), params.id, pname, prompt, overridePrompt, reviewOverride, consensusOverride);
-      }
-    });
+    for (const p of parsePhaseRowsFromForm(formData)) {
+      db.prepare(
+        "INSERT INTO task_template_phases (id, task_template_id, phase_name, prompt, override_prompt, review_override, consensus_override) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).run(crypto.randomUUID(), params.id, p.phase_name, p.prompt, p.override_prompt, p.review_override, p.consensus_override);
+    }
 
     if (req.headers.get("HX-Request")) {
       return new Response("", { status: 200, headers: { "HX-Redirect": "/templates" } });

@@ -1831,7 +1831,18 @@ function registerV2PageRoutes(): void {
         </label>
       </div>`);
     }
-    // full
+    // full — pre-populate the template wrapper when a team is already selected
+    // (e.g. editing an existing draft) so the dropdown surfaces on load, not only
+    // after the user changes the team select.
+    const stdTemplates = selectedTeamId ? templatesForTeam(selectedTeamId) : [];
+    const templateWrapper = stdTemplates.length > 0
+      ? `<div id="template-field-wrapper" class="sk-form-group" style="flex:1;">
+          <label class="sk-label">Template</label>
+          <select name="templateId" class="sk-select">
+            <option value="">None</option>${templateOptions(stdTemplates, selectedTemplateId)}
+          </select>
+        </div>`
+      : `<div id="template-field-wrapper"></div>`;
     return html(`<div ${stdSlotAttrs("full")}>
       <div class="sk-form-group" style="flex:1;">
         <label class="sk-label">Team</label>
@@ -1844,7 +1855,7 @@ function registerV2PageRoutes(): void {
           <option value=""${selectedTeamId === "" ? " selected" : ""}>Unassigned</option>${teamOptions}
         </select>
       </div>
-      <div id="template-field-wrapper"></div>
+      ${templateWrapper}
     </div>`);
   });
 
