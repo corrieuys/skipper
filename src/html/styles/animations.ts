@@ -101,7 +101,7 @@ export function animationStyles(): string {
 
     .zen-orb--inactive {
       filter: grayscale(0.8) brightness(0.6); opacity: 0.5;
-      animation: zen-float 6s ease-in-out infinite;
+      animation: none;
       border-color: rgba(255,255,255,0.06);
     }
 
