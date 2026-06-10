@@ -164,6 +164,7 @@
       { sel: ".sk-btn, button", type: "button" },
       { sel: "input, textarea", type: "input" },
       { sel: ".sk-panel, .sk-card, .mc-task-header, .mc-outputs, #dashboard-latest-steer", type: "container" },
+      { sel: ".zen-orb", type: "orb" },
     ];
 
     let idx = 0;
