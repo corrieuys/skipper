@@ -3,7 +3,7 @@ import { TaskScheduler } from "../tasks/scheduler";
 import type { TaskType, RealtimeTaskConfig } from "../tasks/scheduler";
 import { getTemplateSkipperPrompt } from "../templates/helpers";
 import { getDb } from "../db/connection";
-import { setBoolSetting, SETTING_PARALLEL_TASKS } from "../config/app-settings";
+import { setBoolSetting, SETTING_PARALLEL_TASKS, SETTING_ZEN_MODE } from "../config/app-settings";
 import { buildSkillsPromptAddition as _buildSkillsPromptAddition } from "../config-readers/skills";
 import { getPollIntervalSeconds } from "./pages";
 import type {
@@ -166,6 +166,13 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     const enabled = body.enabled === "on" || body.enabled === "true" || body.enabled === "1";
     setBoolSetting(getDb(), SETTING_PARALLEL_TASKS, enabled);
     return Response.json({ parallel: enabled });
+  });
+
+  addRoute("POST", "/api/settings/zen-mode", async (req) => {
+    const body = await parseRequestBody<Record<string, string>>(req);
+    const enabled = body.enabled === "on" || body.enabled === "true" || body.enabled === "1";
+    setBoolSetting(getDb(), SETTING_ZEN_MODE, enabled);
+    return Response.json({ zenMode: enabled });
   });
 
   addRoute("POST", "/api/tasks", async (req) => {

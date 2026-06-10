@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { isTeamVisible, isExperimental } from "../../config/feature-flags";
-import { getBoolSetting, SETTING_PARALLEL_TASKS } from "../../config/app-settings";
+import { getBoolSetting, SETTING_PARALLEL_TASKS, SETTING_ZEN_MODE } from "../../config/app-settings";
 import type { ActiveMissionData } from "../panels/active-mission.panel";
 import type { MetricsData } from "../panels/metrics-bar.panel";
 import type { QueuedTask } from "../panels/task-queue.panel";
@@ -61,6 +61,7 @@ export interface CommandCenterViewModel {
   daemonState: string;
   daemonUptime: number;
   parallelExecution: boolean;
+  zenModeEnabled: boolean;
   realtimeSessionActive: Map<string, boolean>;
 }
 
@@ -302,6 +303,7 @@ export function buildCommandCenterViewModel(db: Database): CommandCenterViewMode
     daemonState,
     daemonUptime: process.uptime(),
     parallelExecution: getBoolSetting(db, SETTING_PARALLEL_TASKS, true),
+    zenModeEnabled: isExperimental() && getBoolSetting(db, SETTING_ZEN_MODE, false),
     realtimeSessionActive,
   };
 }

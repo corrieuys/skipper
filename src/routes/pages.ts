@@ -1059,6 +1059,10 @@ function registerV2PageRoutes(): void {
     if (!task) return Response.json({ error: "Not found" }, { status: 404 });
     const { taskMainContent, renderDraftEdit, realtimeTaskContent } = require("../html/pages/command-center.page");
     if (task.status === "draft") return html(renderDraftEdit(task, vm.teams));
+    if (vm.zenModeEnabled && task.status !== "draft") {
+      const { zenModeContent } = require("../html/pages/command-center.page");
+      return html(zenModeContent(vm, task));
+    }
     if ((task as any).task_type === "real_time") {
       const isSessionActive = vm.realtimeSessionActive?.get(task.id);
       return html(realtimeTaskContent(task, isSessionActive));
@@ -1173,6 +1177,62 @@ function registerV2PageRoutes(): void {
     const limited = merged.slice(0, 300);
 
     return html(parseRealtimeActivity(limited));
+  });
+
+  // Zen mode: team member orbs with active status
+  addRoute("GET", "/workspace/task/:id/zen-agents", (_req, params) => {
+    const { renderZenAgents } = require("../html/pages/command-center.page");
+    const task = db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(params.id) as { team_id: string | null } | null;
+    if (!task?.team_id) return html(renderZenAgents([]));
+
+    const agents = db.prepare(
+      `SELECT a.name,
+              CASE WHEN EXISTS(
+                SELECT 1 FROM agent_instances ai
+                WHERE ai.template_agent_id = ta.agent_id AND ai.task_id = ?
+                  AND ai.status IN ('running', 'waiting_delegation', 'pending')
+              ) THEN 1 ELSE 0 END AS is_active
+       FROM team_agents ta
+       JOIN agents a ON a.id = ta.agent_id
+       WHERE ta.team_id = ?
+       ORDER BY ta.level, ta.created_at`
+    ).all(params.id, task.team_id) as Array<{ name: string; is_active: number }>;
+    return html(renderZenAgents(agents));
+  });
+
+  // Zen mode: agent active states as JSON (class-toggle polling, no DOM replace)
+  addRoute("GET", "/api/tasks/:id/zen-agent-states", (_req, params) => {
+    const task = db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(params.id) as { team_id: string | null } | null;
+    if (!task?.team_id) return Response.json([]);
+    const agents = db.prepare(
+      `SELECT a.name,
+              CASE WHEN EXISTS(
+                SELECT 1 FROM agent_instances ai
+                WHERE ai.template_agent_id = ta.agent_id AND ai.task_id = ?
+                  AND ai.status IN ('running', 'waiting_delegation', 'pending')
+              ) THEN 1 ELSE 0 END AS is_active
+       FROM team_agents ta
+       JOIN agents a ON a.id = ta.agent_id
+       WHERE ta.team_id = ?
+       ORDER BY ta.level, ta.created_at`
+    ).all(params.id, task.team_id) as Array<{ name: string; is_active: number }>;
+    return Response.json(agents);
+  });
+
+  // Zen mode: notes/artifacts summary
+  addRoute("GET", "/workspace/task/:id/zen-summary", (_req, params) => {
+    const { renderZenSummary } = require("../html/pages/command-center.page");
+    const noteCount = (db.prepare("SELECT COUNT(*) AS c FROM task_notes WHERE task_id = ?").get(params.id) as { c: number }).c;
+    const artifactCount = (db.prepare("SELECT COUNT(DISTINCT name) AS c FROM task_artifacts WHERE task_id = ?").get(params.id) as { c: number }).c;
+    const latestNote = db.prepare("SELECT content FROM task_notes WHERE task_id = ? ORDER BY created_at DESC, id DESC LIMIT 1").get(params.id) as { content: string } | null;
+    const latestArtifact = db.prepare("SELECT name FROM task_artifacts WHERE task_id = ? ORDER BY created_at DESC LIMIT 1").get(params.id) as { name: string } | null;
+    return html(renderZenSummary({
+      taskId: params.id,
+      noteCount,
+      artifactCount,
+      latestNote: latestNote?.content ?? null,
+      latestArtifactName: latestArtifact?.name ?? null,
+    }));
   });
 
   // Terminal output by task ID (finds the root agent instance)

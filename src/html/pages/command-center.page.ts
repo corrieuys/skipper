@@ -22,6 +22,7 @@ export function commandCenterPage(vm: CommandCenterViewModel, selectedTaskId?: s
     daemonUptime: vm.daemonUptime,
     escalationCount: vm.escalationCount,
     showChatToggle: experimental,
+    zenModeEnabled: experimental ? vm.zenModeEnabled : undefined,
   });
 
   // Determine what to show in main area
@@ -192,6 +193,10 @@ function renderTaskView(vm: CommandCenterViewModel, task: TaskSummary): string {
   // Draft tasks — show edit form
   if (task.status === "draft") {
     return renderDraftEdit(task, vm.teams);
+  }
+  // Zen mode overrides all task views (except draft)
+  if (vm.zenModeEnabled) {
+    return zenModeContent(vm, task);
   }
   // Check if this is a real-time task — render different UI
   const taskRow = vm.allTasks.find(t => t.id === task.id);
@@ -1052,4 +1057,150 @@ export function renderScheduledRuns(runs: Array<{ id: string; title: string; sta
   }).join("")}
     </tbody>
   </table>`;
+}
+
+/** Zen mode — centered mystical view with crystal ball orbs per team member */
+export function zenModeContent(vm: CommandCenterViewModel, task: TaskSummary): string {
+  const eid = escapeHtml(task.id);
+  const mission = vm.missionsByTask.get(task.id) ?? (vm.mission?.taskId === task.id ? vm.mission : null);
+  const needsReview = mission?.needsReview ?? false;
+  const phaseStepper = mission && mission.phases.length > 0
+    ? renderPhaseStepper(mission.phases, task.id, true)
+    : "";
+
+  const banner = task.status === "failed" && task.needs_review
+    ? renderRecoveryPausedBanner(task)
+    : needsReview ? renderReviewBanner(task) : "";
+
+  const isRT = task.task_type === "real_time";
+  const sessionActive = isRT && task.status === "running" && vm.realtimeSessionActive.get(task.id) !== false;
+  const composer = sessionActive ? renderZenComposer(eid) : "";
+
+  return `
+    <div class="zen-view__outer">
+      ${banner}
+      <div class="zen-view">
+        <div class="zen-view__header">
+        <span class="sk-badge sk-badge--${task.status}" style="font-size:10px;">${escapeHtml(task.status)}</span>
+        <h2 class="zen-view__title">${escapeHtml(task.title)}</h2>
+        ${task.team_name ? `<span class="zen-view__team">${escapeHtml(task.team_name)}</span>` : ""}
+      </div>
+
+      ${phaseStepper ? `<div class="zen-view__phase">${phaseStepper}</div>` : ""}
+
+      ${composer}
+
+      <div class="zen-view__orbs"
+           id="zen-agents-${eid}"
+           hx-get="/workspace/task/${eid}/zen-agents"
+           hx-trigger="load"
+           hx-swap="innerHTML">
+        <span class="sk-muted">Loading agents...</span>
+      </div>
+      <script>
+        (function(){
+          var container = document.getElementById('zen-agents-${eid}');
+          if (!container) return;
+          var tid = setInterval(function(){
+            if (!document.contains(container)) { clearInterval(tid); return; }
+            fetch('/api/tasks/${eid}/zen-agent-states').then(function(r){ return r.json(); }).then(function(states){
+              states.forEach(function(s){
+                var orb = container.querySelector('[data-zen-agent="'+CSS.escape(s.name)+'"]');
+                if (!orb) return;
+                var want = s.is_active ? 'zen-orb--active' : 'zen-orb--inactive';
+                var drop = s.is_active ? 'zen-orb--inactive' : 'zen-orb--active';
+                if (!orb.classList.contains(want)) { orb.classList.remove(drop); orb.classList.add(want); }
+              });
+            }).catch(function(){});
+          }, 5000);
+        })();
+      </script>
+
+      <div class="zen-view__summary"
+           id="zen-summary-${eid}"
+           hx-get="/workspace/task/${eid}/zen-summary"
+           hx-trigger="load, every 10s"
+           hx-swap="innerHTML">
+        <span class="sk-muted">Loading summary...</span>
+      </div>
+    </div>
+
+    <!-- Artifact modal (shared with standard view) -->
+    <div id="task-artifact-modal" class="sk-modal" data-sk-modal-backdrop style="padding:0.5rem;">
+      <div class="sk-modal__content" style="width:99vw;height:99vh;max-width:none;max-height:none;display:flex;flex-direction:column;overflow:hidden;">
+        <div class="sk-modal__header" style="padding:0.4rem 0.85rem;">
+          <span>Artifact</span>
+          <button class="sk-btn sk-btn--sm" data-sk-modal-close="task-artifact-modal">Close</button>
+        </div>
+        <div class="sk-modal__body" id="task-artifact-modal-body" style="flex:1;min-height:0;overflow:auto;padding:0.75rem 1rem;">
+          <span class="sk-muted">Loading...</span>
+        </div>
+      </div>
+    </div>
+    </div>
+  `;
+}
+
+export function renderZenComposer(eid: string): string {
+  return `
+    <div class="zen-view__composer">
+      <form hx-post="/api/realtime-tasks/${eid}/input" hx-swap="none"
+            hx-on::after-request="if(event.detail.successful){this.querySelector('input[name=text]').value='';}"
+            class="zen-view__composer-form">
+        <input type="text" name="text" placeholder="Type a message or cue..." required autocomplete="off"
+               class="zen-view__composer-input" />
+        <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Send</button>
+      </form>
+      <div id="rt-audio-controls" class="zen-view__composer-audio">
+        <button id="btn-start-recording" onclick="startRealtimeAudio('${eid}', 60, 5)" class="sk-btn sk-btn--sm" title="Start audio recording (auto-starts whisper)" style="display:inline-flex;align-items:center;gap:0.35rem;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          Record
+        </button>
+        <button id="btn-stop-recording" onclick="stopRealtimeAudio()" class="sk-btn sk-btn--sm sk-btn--danger sk-animate-pulse" title="Stop recording and whisper" style="display:none;align-items:center;gap:0.35rem;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+          Stop
+        </button>
+        <span id="audio-status" class="sk-muted sk-text-xs"></span>
+      </div>
+      <div id="audio-visualizer-wrap" class="zen-view__composer-viz" style="display:none;">
+        <canvas id="audio-visualizer" width="600" height="80" style="width:100%;height:72px;display:block;"></canvas>
+      </div>
+    </div>
+    <script src="/realtime-audio.js"></script>
+  `;
+}
+
+export function renderZenAgents(agents: Array<{ name: string; is_active: number }>): string {
+  if (agents.length === 0) return `<div class="sk-muted" style="text-align:center;">No team members</div>`;
+
+  return agents.map(a => {
+    const cls = a.is_active ? "zen-orb--active" : "zen-orb--inactive";
+    return `<div class="zen-view__orb-wrapper">
+      <div class="zen-orb ${cls}" data-zen-agent="${escapeHtml(a.name)}">
+        <div class="zen-orb__shine"></div>
+      </div>
+      <span class="zen-view__orb-label">${escapeHtml(a.name)}</span>
+    </div>`;
+  }).join("");
+}
+
+export function renderZenSummary(data: { taskId: string; noteCount: number; artifactCount: number; latestNote: string | null; latestArtifactName: string | null }): string {
+  const parts: string[] = [];
+  parts.push(`<span>${data.noteCount} note${data.noteCount !== 1 ? "s" : ""} · ${data.artifactCount} artifact${data.artifactCount !== 1 ? "s" : ""}</span>`);
+
+  if (data.latestNote) {
+    const truncated = data.latestNote.length > 150 ? data.latestNote.slice(0, 147) + "..." : data.latestNote;
+    parts.push(`<div class="zen-view__latest-note"><span class="zen-view__summary-label">Latest note</span><p>${escapeHtml(truncated)}</p></div>`);
+  }
+
+  if (data.latestArtifactName) {
+    const eid = escapeHtml(data.taskId);
+    const ename = encodeURIComponent(data.latestArtifactName);
+    parts.push(`<div class="zen-view__latest-artifact"><span class="zen-view__summary-label">Latest artifact</span><a href="#" onclick="openTaskArtifactModal(); return false;"
+      hx-get="/fragments/tasks/${eid}/artifacts/${ename}"
+      hx-target="#task-artifact-modal-body"
+      hx-swap="innerHTML">${escapeHtml(data.latestArtifactName)}</a></div>`);
+  }
+
+  return parts.join("");
 }
