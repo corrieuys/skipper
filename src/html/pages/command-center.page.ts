@@ -650,7 +650,9 @@ function renderReviewBanner(task: TaskSummary): string {
 
 function renderPhaseStepper(phases: Array<{ name: string; status: string }>, taskId?: string, isRunning?: boolean): string {
   if (phases.length === 0) return "";
-  const pollAttrs = "";
+  const pollAttrs = taskId && isRunning
+    ? ` hx-get="/workspace/task/${escapeHtml(taskId)}/phase-strip" hx-trigger="every 5s" hx-swap="outerHTML"`
+    : "";
   const idAttr = taskId ? ` id="mc-phase-stepper-${escapeHtml(taskId)}"` : "";
   return `<div${idAttr} class="mc-phase-stepper"${pollAttrs}>
     ${phases.map((p, i) => {
