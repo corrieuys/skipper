@@ -1,10 +1,10 @@
-<h1 align="center">
-  <img src="src/html/public/icon2.png" alt="" height="40" valign="text-bottom"> Skipper
-</h1>
+<p align="center">
+  <img src="src/html/public/icon2.png" alt="" height="40" valign="middle"><span style="font-size:2em; font-weight:600; vertical-align:middle;">&nbsp;Skipper</span>
+</p>
 
 Skipper is a multi-agent orchestration platform for coordinating teams of AI agents.
 
-It manages task lifecycles, team hierarchies, phase-based execution, delegation, artifacts, and human escalations.
+Why Skipper? Skipper is an experiment in optimizing token usage by selecting a preconfigured phased based approach to accomplishing a task, instead of allowing agents to self discover and converge on a goal. The required context for large tasks are commonly known beforehand, and Skipper allows you to optimize context management across multiple agents, depending on their role. It manages task lifecycles, team hierarchies, phase-based execution, delegation, artifacts, and human escalations.
 
 ## Feature Overview
 
@@ -61,62 +61,6 @@ bun run start
 
 The server starts on port 3000 by default (override with `PORT`).
 
-## Data layout
-
-Skipper separates code/config (shipped, replaceable on upgrade) from runtime data (lives on your machine, must survive upgrades).
-
-### What ships with the package
-
-| Path | Purpose |
-|---|---|
-| `src/` | Source code |
-| `prompts/` | Prompt templates loaded at runtime |
-| `config/*.json` | Default agents, teams, agent types, skipper config |
-| `src/db/schema.*.sql` | SQLite schemas |
-| `src/db/migrations/*.sql` | Numbered, additive schema migrations |
-| `bin/skipper.js` | CLI entry shim |
-
-The default `config/*.json` is part of the product. Defaults may shift between releases. To customise without forking, use task templates (per-task instructions and per-phase overrides created via the UI) — they persist in your runtime DB and are unaffected by upgrades.
-
-### What lives on your machine
-
-By default, runtime data is stored in:
-
-- `$SKIPPER_DATA_DIR` if set, else
-- `$XDG_DATA_HOME/skipper` if set, else
-- `~/.skipper`
-
-Inside the data dir:
-
-- `skipper-runtime.db` — SQLite database (tasks, notes, artifacts, conversations, templates, escalations, agent instances, terminal outputs, MCP overrides, error log, …)
-
-Worktrees for parallel-consensus agents live alongside the target repo at `<task working dir>/.skipper-worktrees/`. MCP temp configs go to `/tmp/skipper-mcp-*`. Neither is in the install dir.
-
-### Environment overrides
-
-| Variable | Purpose |
-|---|---|
-| `SKIPPER_DATA_DIR` | Override data dir entirely |
-| `XDG_DATA_HOME` | Standard XDG base dir (used if `SKIPPER_DATA_DIR` not set) |
-| `SKIPPER_RUNTIME_DB_PATH` | Pin the DB file to an explicit path |
-| `PORT` | HTTP server port (default 3000) |
-
-## Schema migrations
-
-Schema changes are tracked in `src/db/migrations/` as numbered SQL files (`NNNN_<name>.sql`). On each boot, Skipper applies any migrations whose version is not yet recorded in the `schema_version` table, inside a transaction. Older databases auto-upgrade on first launch with a new release.
-
-When adding a schema change, drop a new file in `src/db/migrations/` rather than editing the base `schema.*.sql` files.
-
-## Local Whisper Setup (Optional)
-
-The upcoming real-time tasks can use local transcription via [whisper.cpp](https://github.com/ggerganov/whisper.cpp).
-
-```bash
-bash scripts/setup-whisper.sh
-```
-
-Whisper will be auto started and stopped when recording audio in a real time task.
-
 ## MCP And Skills Configuration
 
 Skipper discovers MCP servers and skills from provider-specific config files for the current server working directory (`process.cwd()`).
@@ -152,10 +96,3 @@ Codex skills:
 - `./.agents/skills/<name>/SKILL.md` (project)
 
 After adding skills, open `/skills` and the relevant agent detail page to verify availability/toggles.
-
-## Tests
-
-```bash
-bun test          # scoped to src/ via bunfig.toml
-bun run test      # same, with cleanup of any test-leftover DBs
-```
