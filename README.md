@@ -2,16 +2,15 @@
 
 Skipper is a multi-agent orchestration platform for coordinating teams of AI agents.
 
-It manages task lifecycles, team hierarchies, phase-based execution, delegation (including parallel fan-out), artifacts, and human escalations. It also supports real-time workflows with continuous audio/text ingestion, transcription, summarization, and continuous agent invocation based on incoming context.
+It manages task lifecycles, team hierarchies, phase-based execution, delegation, artifacts, and human escalations.
 
 ## Feature Overview
 
 - **Structured task orchestration** with retry, resume, cancel, and iterate loops.
 - **Team-based, phased execution model.** Role-aware delegation, phased-based team configuration.
-- **Delegation engine** for single-subtask and parallel batch fan-out.
+- **Delegation engine** for single-subtask hand-off.
 - **Human-in-the-loop escalations** for uncertain/blocked execution.
 - **Versioned artifacts** (`transcript`, `summary`, `plan`, `other`) with immutable history.
-- **Real-time pipeline** for audio/text ingestion, STT, summarization, and timeline updates.
 - **Health monitoring** (stuck detection, nudges, process liveness, incident clustering).
 - **MCP-based agent protocol** — agents call typed tools on Skipper's daemon MCP server (delegation, notes, artifacts, escalations) instead of brittle stdout parsing.
 - **Task templates** with per-phase overrides, persisted in your runtime DB.
@@ -37,7 +36,11 @@ If a provider is missing or not logged in, agent spawn/resume calls will fail an
 | Mode | Best For | Examples | Execution Style |
 |---|---|---|---|
 | **Regular Tasks** | Planned, goal-driven delivery | Feature implementation, PR reviews, documentation writing | Draft -> approved -> running -> completed, with retry/resume/iterate |
-| **Real-Time Tasks** | Live collaboration with Skipper in the loop | Brainstorming sessions, meetings, event storming | Continuous input -> transcription -> summarization -> timeline -> agent action |
+
+## Coming Soon
+
+- **Real-Time Tasks** — live collaboration with Skipper in the loop (brainstorming, meetings, event storming) via continuous audio/text ingestion, transcription, summarization, and timeline-driven agent action.
+- **Scheduled Tasks** — cron-style recurring task creation.
 
 ## Quick Start
 
@@ -104,7 +107,7 @@ When adding a schema change, drop a new file in `src/db/migrations/` rather than
 
 ## Local Whisper Setup (Optional)
 
-Real-time tasks can use local transcription via [whisper.cpp](https://github.com/ggerganov/whisper.cpp).
+The upcoming real-time tasks can use local transcription via [whisper.cpp](https://github.com/ggerganov/whisper.cpp).
 
 ```bash
 bash scripts/setup-whisper.sh
