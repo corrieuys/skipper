@@ -23,6 +23,14 @@ Delegation:
 - `mcp__skipper-daemon__delegate_resume({ child_instance_id, prompt })` — resume a PRIOR sub-agent with a new instruction, keeping its full prior conversation context. Strongly preferred for the second+ turn with the same role on the same task (e.g. asking developer to fix a Tester finding, or asking the analyst to refine the plan). The child resumes its own claude/codex session — no re-priming needed.
 - `mcp__skipper-daemon__list_delegations({ template_agent_id?, limit? })` — list prior delegations on this task. Each row includes `child_instance_id` and a `resumable` flag. Use this to find the right id to pass to `delegate_resume`.
 
+Global store — cross-task shared state (use ONLY when explicitly instructed):
+- `mcp__skipper-daemon__set_global_value({ name, type?, data?, status? })` — create or update a globally-shared record keyed by `name`. Visible to agents on ANY task. You choose what type/data/status mean (e.g. a checklist, a process log). Partial updates preserve fields you omit.
+- `mcp__skipper-daemon__get_global_value({ name })` — fetch one record by name (`{status:"not_found"}` if absent).
+- `mcp__skipper-daemon__query_global_store({ name?, type?, status?, data_contains?, limit? })` — filter records by any field.
+- `mcp__skipper-daemon__delete_global_value({ name })` — remove a record by name.
+
+CRITICAL: Only call global-store tools when the task description, task phase, or task template explicitly directs it. Do NOT use them as an informal agent-to-agent message channel or to bypass delegation — for task-local coordination use notes/artifacts instead.
+
 Lifecycle discipline:
 - Do NOT call `complete_task` to short-circuit out of an intermediate phase. Use `complete_phase` for phase transitions and `complete_task` only for true end-of-task.
 - Do NOT call `complete_phase` and `complete_task` in the same response.

@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { registerDaemonTools, registerExternalTools, type DaemonDeps } from "./tools";
 import { hashApiKey, resolveAgentFromToken } from "./auth";
+import { GlobalStoreManager } from "../global-store/manager";
 
 let db: Database;
 const TEST_DB = "test-mcp-tools-registration.db";
@@ -29,6 +30,7 @@ function makeDeps(): DaemonDeps {
     escalationManager: {} as DaemonDeps["escalationManager"],
     artifactManager: {} as DaemonDeps["artifactManager"],
     consensusManager: {} as DaemonDeps["consensusManager"],
+    globalStoreManager: new GlobalStoreManager(db),
   };
 }
 
@@ -70,6 +72,30 @@ describe("registerDaemonTools — role-based registration", () => {
     expect(registeredNames).toContain("delegate");
     expect(registeredNames).toContain("escalate");
     expect(registeredNames).toContain("create_artifact");
+  });
+
+  it("registers global-store tools (experimental) for both root and delegated sessions", () => {
+    const gsTools = ["set_global_value", "get_global_value", "query_global_store", "delete_global_value"];
+    process.argv.push("--experimental");
+    try {
+      const root = makeFakeMcpServer();
+      registerDaemonTools(root.server as any, makeDeps(), () => null);
+      const child = makeFakeMcpServer();
+      registerDaemonTools(child.server as any, makeDeps(), () => null, { isDelegated: true });
+      for (const tool of gsTools) {
+        expect(root.registeredNames).toContain(tool);
+        expect(child.registeredNames).toContain(tool);
+      }
+    } finally {
+      const i = process.argv.indexOf("--experimental");
+      if (i !== -1) process.argv.splice(i, 1);
+    }
+  });
+
+  it("omits global-store tools when not experimental", () => {
+    const { server, registeredNames } = makeFakeMcpServer();
+    registerDaemonTools(server as any, makeDeps(), () => null);
+    expect(registeredNames).not.toContain("set_global_value");
   });
 
   it("explicit isDelegated:false behaves identically to default", () => {

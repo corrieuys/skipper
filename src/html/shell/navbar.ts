@@ -2,6 +2,7 @@
 // import { escapeHtml } from "../atoms/escape-html";
 import { escalationCountFragment } from "../fragments/escalation-count.fragment";
 import { themePickerFragment } from "../styles/themes";
+import { isExperimental } from "../../config/feature-flags";
 
 export interface NavbarData {
   currentPath: string;
@@ -22,6 +23,7 @@ export function navbar(data: NavbarData): string {
     { href: "/tasks", label: "Tasks", match: "/tasks" },
     { href: "/escalations", label: "Escalations", match: "/escalations" },
     { href: "/config", label: "Config", match: "/config" },
+    ...(isExperimental() ? [{ href: "/global-store", label: "Store", match: "/global-store" }] : []),
     { href: "/templates", label: "Templates", match: "/templates" },
     { href: "/analytics/tokens", label: "Analytics", match: "/analytics" },
     { href: "/logs", label: "Logs", match: "/logs" },

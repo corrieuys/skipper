@@ -20,6 +20,7 @@ import { WhisperManager } from "./src/whisper/manager";
 import { DaemonMcpServer } from "./src/mcp/server";
 import { MonkeyEngine } from "./src/monkey/tick";
 import { getGregDb, closeGregDb } from "./src/monkey/db";
+import { GlobalStoreManager } from "./src/global-store/manager";
 
 const experimental = process.argv.includes("--experimental");
 if (experimental) {
@@ -45,6 +46,7 @@ const mcpServer = new DaemonMcpServer(getDb(), {
   escalationManager: daemon.getEscalationManager(),
   artifactManager: daemon.getArtifactManager(),
   consensusManager: daemon.getConsensusManager(),
+  globalStoreManager: new GlobalStoreManager(getDb()),
 });
 const whisperManager = new WhisperManager();
 

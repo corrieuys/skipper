@@ -7,11 +7,13 @@ import type { TaskScheduler } from "../tasks/scheduler";
 import type { EscalationManager } from "../escalations/manager";
 import type { ArtifactManager, ArtifactKind } from "../orchestrator/artifact-manager";
 import type { ConsensusManager } from "../orchestrator/consensus-manager";
+import type { GlobalStoreManager } from "../global-store/manager";
 import type { AgentIdentity, InternalAgentIdentity } from "./auth";
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
 import { z } from "zod";
 import { signalBridge } from "./signal-bridge";
+import { isExperimental } from "../config/feature-flags";
 
 export interface DaemonDeps {
   db: Database;
@@ -22,6 +24,7 @@ export interface DaemonDeps {
   escalationManager: EscalationManager;
   artifactManager: ArtifactManager;
   consensusManager: ConsensusManager;
+  globalStoreManager: GlobalStoreManager;
 }
 
 export interface RegisterDaemonToolsOptions {
@@ -49,7 +52,7 @@ export function registerDaemonTools(
   getIdentity: () => AgentIdentity | null,
   options?: RegisterDaemonToolsOptions,
 ): void {
-  const { db, agentManager, delegationManager, phaseManager, taskScheduler, escalationManager, artifactManager, consensusManager } = deps;
+  const { db, agentManager, delegationManager, phaseManager, taskScheduler, escalationManager, artifactManager, consensusManager, globalStoreManager } = deps;
 
   function getInternalIdentity(): InternalAgentIdentity | null {
     const id = getIdentity();
@@ -199,6 +202,75 @@ export function registerDaemonTools(
       return { content: [{ type: "text" as const, text: JSON.stringify(items) }] };
     },
   );
+
+  // ── Global store (cross-task shared values) — experimental ──
+  if (isExperimental()) {
+  server.tool(
+    "set_global_value",
+    "Create or update a globally-shared value keyed by name (visible to agents on any task). Only use when the task, phase, or template explicitly instructs it.",
+    {
+      name: z.string().describe("Unique key for this value"),
+      type: z.string().optional().describe("Caller-defined category (e.g. 'checklist', 'log')"),
+      data: z.string().optional().describe("The value payload (caller-defined; often JSON or text)"),
+      status: z.string().optional().describe("Caller-defined status (e.g. 'open', 'done')"),
+    },
+    async ({ name, type, data, status }) => {
+      const identity = getInternalIdentity();
+      if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
+      const row = globalStoreManager.set({
+        name,
+        type,
+        data,
+        status,
+        updatedByAgentId: identity.runtimeId,
+        taskId: identity.taskId,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(row) }] };
+    },
+  );
+
+  server.tool(
+    "get_global_value",
+    "Fetch one global value by name. Only use when the task, phase, or template explicitly instructs it.",
+    { name: z.string().describe("The key to fetch") },
+    async ({ name }) => {
+      const identity = getInternalIdentity();
+      if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
+      const row = globalStoreManager.get(name);
+      return { content: [{ type: "text" as const, text: row ? JSON.stringify(row) : JSON.stringify({ status: "not_found" }) }] };
+    },
+  );
+
+  server.tool(
+    "query_global_store",
+    "Filter global values by any field. Only use when the task, phase, or template explicitly instructs it.",
+    {
+      name: z.string().optional().describe("Exact name match"),
+      type: z.string().optional().describe("Exact type match"),
+      status: z.string().optional().describe("Exact status match"),
+      data_contains: z.string().optional().describe("Substring match on data"),
+      limit: z.number().optional().describe("Max results (default 100)"),
+    },
+    async ({ name, type, status, data_contains, limit }) => {
+      const identity = getInternalIdentity();
+      if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
+      const rows = globalStoreManager.query({ name, type, status, data_contains, limit });
+      return { content: [{ type: "text" as const, text: JSON.stringify(rows) }] };
+    },
+  );
+
+  server.tool(
+    "delete_global_value",
+    "Delete a global value by name. Only use when the task, phase, or template explicitly instructs it.",
+    { name: z.string().describe("The key to delete") },
+    async ({ name }) => {
+      const identity = getInternalIdentity();
+      if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
+      const deleted = globalStoreManager.delete(name);
+      return { content: [{ type: "text" as const, text: JSON.stringify({ status: deleted ? "deleted" : "not_found" }) }] };
+    },
+  );
+  }
 
   // ── Delegation ───────────────────────────────────────────
   server.tool(

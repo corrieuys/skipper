@@ -500,5 +500,18 @@ CREATE TABLE IF NOT EXISTS api_keys (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Generic global key/value store shared across all task instances.
+CREATE TABLE IF NOT EXISTS global_store (
+  name                TEXT PRIMARY KEY,
+  type                TEXT,
+  data                TEXT,
+  status              TEXT,
+  updated_by_agent_id TEXT,
+  task_id             TEXT,
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_global_store_type   ON global_store(type);
+CREATE INDEX IF NOT EXISTS idx_global_store_status ON global_store(status);
+
 -- monkey_usage table moved to greg.db (see src/monkey/db.ts)
 

@@ -1606,6 +1606,57 @@ function registerV2PageRoutes(): void {
     return new Response("OK", { status: 200 });
   });
 
+  // ── Global store routes (experimental) ───────────────────────────────────
+  if (isExperimental()) {
+  const { globalStorePage } = require("../html/pages/global-store.page");
+  const { globalStoreEditFragment, globalStoreRowFragment } = require("../html/fragments/global-store-edit.fragment");
+  const { GlobalStoreManager } = require("../global-store/manager");
+  const globalStore = new GlobalStoreManager(db);
+
+  addRoute("GET", "/global-store", () => {
+    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+    const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
+    return html(globalStorePage({
+      rows: globalStore.query({}),
+      daemonState: pausedRow?.value === "true" ? "paused" : "running",
+      daemonUptime: process.uptime(),
+      escalationCount,
+    }));
+  });
+
+  addRoute("GET", "/fragments/global-store/new", () => {
+    return html(globalStoreEditFragment());
+  });
+
+  addRoute("GET", "/fragments/global-store/edit", (req) => {
+    const name = new URL(req.url).searchParams.get("name");
+    if (!name) return new Response("Missing name", { status: 400 });
+    const row = globalStore.get(name);
+    if (!row) return new Response("Value not found", { status: 404 });
+    return html(globalStoreEditFragment(row));
+  });
+
+  addRoute("POST", "/api/global-store", async (req) => {
+    const formData = await req.formData();
+    const name = formData.get("name")?.toString().trim();
+    if (!name) return new Response("Missing name", { status: 400 });
+    const row = globalStore.set({
+      name,
+      type: formData.get("type")?.toString() || null,
+      data: formData.get("data")?.toString() ?? null,
+      status: formData.get("status")?.toString() || null,
+    });
+    return html(globalStoreRowFragment(row));
+  });
+
+  addRoute("DELETE", "/api/global-store", (req) => {
+    const name = new URL(req.url).searchParams.get("name");
+    if (!name) return new Response("Missing name", { status: 400 });
+    globalStore.delete(name);
+    return new Response("", { status: 200 });
+  });
+  }
+
   // ── Template routes ──────────────────────────────────────────────────────
   const { templateListPage } = require("../html/pages/template-list.page");
   const { templateFormPage, phaseInputsFragment } = require("../html/pages/template-form.page");

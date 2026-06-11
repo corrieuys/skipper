@@ -10,6 +10,14 @@ ALLOWED:
 - `mcp__skipper-daemon__get_artifact({ name, version? })` — read a specific artifact.
 - `mcp__skipper-daemon__create_escalation({ question })` — surface a question to the human user. Call this DIRECTLY when you need operator input. The orchestrator queues your escalation, pauses the task, and resumes your run with `[USER_RESPONSE] ...` once the operator answers.
 
+Global store — cross-task shared state (use ONLY when explicitly instructed):
+- `mcp__skipper-daemon__set_global_value({ name, type?, data?, status? })` — create or update a globally-shared record keyed by `name`, visible to agents on ANY task. Partial updates preserve omitted fields.
+- `mcp__skipper-daemon__get_global_value({ name })` — fetch one record by name.
+- `mcp__skipper-daemon__query_global_store({ name?, type?, status?, data_contains?, limit? })` — filter records by any field.
+- `mcp__skipper-daemon__delete_global_value({ name })` — remove a record by name.
+
+CRITICAL: Only call global-store tools when the task description, task phase, or task template explicitly directs it. Do NOT use them as an informal agent-to-agent message channel or to bypass delegation — for task-local coordination use notes/artifacts instead.
+
 FORBIDDEN (the server will reject these for delegated agents — do NOT call them):
 - `mcp__skipper-daemon__complete_task` — only Skipper may close the task.
 - `mcp__skipper-daemon__complete_phase` — only Skipper may advance phases.

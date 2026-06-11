@@ -49,6 +49,7 @@ No build. Bun runs TS direct.
 | chat conversations w/ skipper | [src/conversations/CLAUDE.md](src/conversations/CLAUDE.md) |
 | greg/grug heckler bot | [src/monkey/CLAUDE.md](src/monkey/CLAUDE.md) |
 | query helpers for HTML view-models | [src/data/CLAUDE.md](src/data/CLAUDE.md) |
+| global cross-task shared key/value store | [src/global-store/CLAUDE.md](src/global-store/CLAUDE.md) |
 | task template helpers | [src/templates/CLAUDE.md](src/templates/CLAUDE.md) |
 | external config file readers (MCP, skills) | [src/config-readers/CLAUDE.md](src/config-readers/CLAUDE.md) |
 | prompt templates loaded at runtime | [prompts/CLAUDE.md](prompts/CLAUDE.md) |
@@ -61,7 +62,7 @@ No build. Bun runs TS direct.
 Two paths feed `agent:signal` on the bus:
 
 **1. MCP tools** (primary). Agents call typed tools on the daemon MCP server at `/mcp` (Bearer = `runtimeId`). Definitions in `src/mcp/tools.ts`. Includes:
-`delegate`, `delegate_batch`, `complete_phase`, `regress_phase`, `complete_task`, `escalate`, `create_note`, `create_artifact`, `get_artifact`, `list_artifacts`, plus `send_message`. Phase-lifecycle tools (`complete_phase`, `regress_phase`, `complete_task`) are root-Skipper only — delegated children get a refusal message.
+`delegate`, `delegate_batch`, `complete_phase`, `regress_phase`, `complete_task`, `escalate`, `create_note`, `create_artifact`, `get_artifact`, `list_artifacts`, `set_global_value`, `get_global_value`, `query_global_store`, `delete_global_value`, plus `send_message`. Phase-lifecycle tools (`complete_phase`, `regress_phase`, `complete_task`) are root-Skipper only — delegated children get a refusal message. Global-store tools (`set_global_value`/`get_global_value`/`query_global_store`/`delete_global_value`) write a cross-task shared table — agents use them only when a task/phase/template explicitly instructs it.
 
 **2. Stdout marker parse** (legacy, narrow). `src/agents/manager.ts:SIGNAL_PATTERNS` scans each line. Surviving markers:
 
