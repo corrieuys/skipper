@@ -1,4 +1,6 @@
-# Skipper
+<h1 align="center">
+  <img src="src/html/public/icon2.png" alt="" height="40" valign="text-bottom"> Skipper
+</h1>
 
 Skipper is a multi-agent orchestration platform for coordinating teams of AI agents.
 
