@@ -13,6 +13,8 @@ It manages task lifecycles, team hierarchies, phase-based execution, delegation 
 - **Versioned artifacts** (`transcript`, `summary`, `plan`, `other`) with immutable history.
 - **Real-time pipeline** for audio/text ingestion, STT, summarization, and timeline updates.
 - **Health monitoring** (stuck detection, nudges, process liveness, incident clustering).
+- **MCP-based agent protocol** — agents call typed tools on Skipper's daemon MCP server (delegation, notes, artifacts, escalations) instead of brittle stdout parsing.
+- **Task templates** with per-phase overrides, persisted in your runtime DB.
 
 ## Supported AI Model Providers
 
