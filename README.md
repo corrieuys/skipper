@@ -150,3 +150,7 @@ Codex skills:
 - `./.agents/skills/<name>/SKILL.md` (project)
 
 After adding skills, open `/skills` and the relevant agent detail page to verify availability/toggles.
+
+## Meet Greg
+
+Greg is the dashboard mascot. He brings zero productivity and is proud of it. Toggle him on or off with the 🐒 button in the navbar. He watches your tasks and agents work, then chimes in with short, playful one-liners: ribbing the robots for thinking too long, teasing the operator for backspacing twenty times, and taking credit for nothing. Greg jumps around the UI, and slides down the sidebar when he is happy.
