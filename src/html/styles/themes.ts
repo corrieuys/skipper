@@ -12,11 +12,20 @@
  * page paints to avoid FOUC.
  */
 
+import { isExperimental } from "../../config/feature-flags";
+
 export interface Theme {
   id: string;
   label: string;
   /** Sparse override map. Empty for the default theme. */
   vars: Record<string, string>;
+  /** Only selectable/emitted when the experimental flag is on. */
+  experimental?: boolean;
+}
+
+/** Themes available given the current experimental flag. */
+function availableThemes(): Theme[] {
+  return isExperimental() ? THEMES : THEMES.filter((t) => !t.experimental);
 }
 
 export const DEFAULT_THEME_ID = "default";
@@ -287,6 +296,62 @@ export const THEMES: Theme[] = [
       "--glow-cyan": "0 0 0 transparent",
     },
   },
+  {
+    id: "geocities",
+    label: "GeoCities '96",
+    experimental: true,
+    vars: {
+      // Retro web 1.0 feel — muted navy/teal surfaces, softened clashing accents, Comic Sans.
+      "--sk-surface-0": "#1a1a3d",
+      "--sk-surface-1": "#222250",
+      "--sk-surface-2": "#2a2a60",
+      "--sk-surface-3": "#343472",
+      "--sk-surface-4": "#404086",
+      "--sk-panel-bg": "#222250",
+      "--sk-panel-elevated-bg": "#2a2a60",
+      "--sk-text": "#f0e6b0",
+      "--sk-text-muted": "#9ad3a0",
+      "--sk-text-subtle": "rgba(140, 200, 210, 0.7)",
+      "--sk-accent-primary": "#d36fc4",
+      "--sk-accent-primary-container": "#a8549a",
+      "--sk-accent-primary-dim": "rgba(211, 111, 196, 0.25)",
+      "--sk-accent-secondary": "#5fc8c8",
+      "--sk-accent-secondary-container": "#173d3d",
+      "--sk-accent-secondary-dim": "rgba(95, 200, 200, 0.2)",
+      "--sk-accent-tertiary": "#7ec77e",
+      "--sk-accent-tertiary-dim": "rgba(126, 199, 126, 0.2)",
+      "--sk-accent-warning": "#e0a050",
+      "--sk-accent-danger": "#e05555",
+      "--sk-border": "rgba(211, 111, 196, 0.3)",
+      "--sk-border-subtle": "rgba(95, 200, 200, 0.3)",
+      "--sk-border-active": "rgba(224, 198, 110, 0.45)",
+      "--sk-glow-primary": "0 0 0.5rem rgba(211, 111, 196, 0.3), 0 0 1rem rgba(95, 200, 200, 0.18)",
+      "--sk-glow-secondary": "0 0 0.5rem rgba(95, 200, 200, 0.3), 0 0 1rem rgba(224, 198, 110, 0.18)",
+      "--sk-font-body": "'Comic Sans MS', 'Comic Sans', 'Chalkboard SE', cursive",
+      "--sk-font-heading": "'Comic Sans MS', 'Comic Sans', 'Chalkboard SE', cursive",
+      "--sk-radius-xs": "0px",
+      "--sk-radius-sm": "0px",
+      "--sk-radius-md": "0px",
+      "--sk-radius-lg": "0px",
+      "--sk-panel-radius": "0px",
+      "--on-primary": "#1a1a3d",
+      "--void": "#1a1a3d",
+      "--surface-low": "#222250",
+      "--surface-mid": "#2a2a60",
+      "--surface-high": "#343472",
+      "--surface-bright": "#404086",
+      "--panel": "rgba(34, 34, 80, 0.97)",
+      "--panel-alt": "rgba(26, 26, 61, 0.97)",
+      "--text": "#f0e6b0",
+      "--muted": "#9ad3a0",
+      "--border": "rgba(211, 111, 196, 0.3)",
+      "--accent-cyan": "#5fc8c8",
+      "--accent-magenta": "#d36fc4",
+      "--accent-yellow": "#e0c66e",
+      "--glow": "0 0 0.5rem rgba(211, 111, 196, 0.3), 0 0 1rem rgba(95, 200, 200, 0.18)",
+      "--glow-cyan": "0 0 0.5rem rgba(95, 200, 200, 0.3), 0 0 1rem rgba(224, 198, 110, 0.18)",
+    },
+  },
 ];
 
 /**
@@ -295,7 +360,7 @@ export const THEMES: Theme[] = [
  * `:root` so `<html data-theme="default">` is a no-op.
  */
 export function themesCss(): string {
-  return THEMES
+  return availableThemes()
     .filter((t) => Object.keys(t.vars).length > 0)
     .map((t) => {
       const decls = Object.entries(t.vars).map(([k, v]) => `${k}: ${v};`).join(" ");
@@ -321,7 +386,7 @@ export function themeBootScript(): string {
  * on change. The CSS class hooks into existing `.sk-` styles where available.
  */
 export function themePickerFragment(): string {
-  const options = THEMES.map(
+  const options = availableThemes().map(
     (t) => `<option value="${t.id}">${t.label}</option>`,
   ).join("");
 
@@ -366,7 +431,155 @@ export function themePickerFragment(): string {
   </label>${script}`;
 }
 
-export function themeOverridesCss(): string { return win95OverridesCss(); }
+export function themeOverridesCss(): string {
+  return win95OverridesCss() + (isExperimental() ? geocitiesOverridesCss() : "");
+}
+
+function geocitiesOverridesCss(): string {
+  const G = '[data-theme="geocities"]';
+  return `
+    /* ══ GeoCities '96 — maximum cringe, peak web 1.0 ══ */
+
+    @keyframes sk-geo-rainbow {
+      0%   { color: #d36fc4; }
+      25%  { color: #e0c66e; }
+      50%  { color: #7ec77e; }
+      75%  { color: #5fc8c8; }
+      100% { color: #d36fc4; }
+    }
+
+    /* Subtle tiled starfield void behind everything */
+    ${G} body {
+      background-color: #1a1a3d;
+      background-image:
+        radial-gradient(1px 1px at 24px 32px, rgba(255,255,255,0.5), transparent),
+        radial-gradient(1px 1px at 96px 72px, rgba(224,198,110,0.5), transparent),
+        radial-gradient(1px 1px at 132px 124px, rgba(95,200,200,0.5), transparent);
+      background-size: 170px 210px;
+    }
+
+    /* Pinned mascot gif, bottom-right corner */
+    ${G} body::after {
+      content: '';
+      position: fixed;
+      bottom: 0;
+      right: 0;
+      width: 160px;
+      height: 160px;
+      z-index: 2147483647;
+      pointer-events: none;
+      transform: scaleX(-1);
+      background: url('https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjExdTBmNnA2am5qdm0xNm9oenVtNmh2ZWZ2N2IwcTM5dGs4d2IzeHl2cCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9cw/nWolkCULqLT4oG9dph/giphy.gif') right bottom / contain no-repeat;
+    }
+
+    /* Everything Comic Sans, no rounding, hard edges */
+    ${G},
+    ${G} * { font-family: 'Comic Sans MS', 'Comic Sans', 'Chalkboard SE', cursive !important; }
+
+    /* Panel / window title bars — softened gradient + ridge border */
+    ${G} .sk-panel,
+    ${G} .card,
+    ${G} .stat-card,
+    ${G} .mc-stat-card,
+    ${G} .panel {
+      border: 3px ridge rgba(211, 111, 196, 0.55);
+      border-radius: 0;
+      box-shadow: none;
+    }
+    ${G} .sk-panel__header,
+    ${G} .sk-modal__header,
+    ${G} .mc-terminal__header,
+    ${G} .mc-chat-panel__header {
+      background: linear-gradient(90deg, #d36fc4, #e0c66e, #7ec77e, #5fc8c8);
+      color: #1a1a3d;
+      font-weight: 700;
+      text-shadow: 1px 1px 0 rgba(255,255,255,0.4);
+    }
+    ${G} .sk-panel__header *,
+    ${G} .sk-modal__header *,
+    ${G} .mc-terminal__header *,
+    ${G} .mc-chat-panel__header * { color: #1a1a3d; }
+
+    /* Headings gently rainbow-cycle like a tasteful <marquee> dream */
+    ${G} h1,
+    ${G} h2,
+    ${G} .sk-navbar__brand {
+      animation: sk-geo-rainbow 8s ease-in-out infinite;
+      text-shadow: 1px 1px 0 rgba(0,0,0,0.4);
+      font-weight: 700;
+    }
+
+    /* Buttons — chunky outset bevels, muted */
+    ${G} .sk-btn,
+    ${G} button,
+    ${G} .btn {
+      border: 3px outset rgba(95, 200, 200, 0.6);
+      border-radius: 0;
+      background: #2a2a60;
+      color: #f0e6b0;
+      box-shadow: none;
+      transition: none;
+    }
+    ${G} .sk-btn:hover,
+    ${G} button:hover,
+    ${G} .btn:hover {
+      background: #d36fc4;
+      color: #1a1a3d;
+    }
+    ${G} .sk-btn:active,
+    ${G} button:active,
+    ${G} .btn:active { border-style: inset; }
+    ${G} .sk-btn--primary { background: #d36fc4; color: #1a1a3d; }
+
+    /* Links — the one true 1996 hyperlink: blue and underlined (softened) */
+    ${G} a { color: #7fa8ff; text-decoration: underline; }
+    ${G} a:visited { color: #b78fd0; }
+    ${G} a:hover { color: #e0a050; }
+
+    /* Button-style links shouldn't inherit the hyperlink color/underline */
+    ${G} a.sk-btn,
+    ${G} a.btn,
+    ${G} a.btn-sm,
+    ${G} .mc-sidebar__create {
+      color: #1a1a3d;
+      text-decoration: none;
+    }
+    ${G} a.sk-btn:visited,
+    ${G} a.btn:visited,
+    ${G} .mc-sidebar__create:visited { color: #1a1a3d; }
+    ${G} .mc-sidebar__create:hover { color: #1a1a3d; }
+
+    /* Inputs — sunken retro */
+    ${G} .sk-input,
+    ${G} .sk-select,
+    ${G} .sk-textarea,
+    ${G} input,
+    ${G} textarea,
+    ${G} select {
+      border: 3px inset rgba(126, 199, 126, 0.55);
+      border-radius: 0;
+      background: #1a1a3d;
+      color: #f0e6b0;
+    }
+
+    /* Navbar — retro bar with a hard edge */
+    ${G} .sk-navbar {
+      background: #2a2a60;
+      border-bottom: 3px ridge rgba(224, 198, 110, 0.6);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    /* Badges / pills — flat */
+    ${G} .sk-badge { border-radius: 0; border: 2px solid rgba(224, 198, 110, 0.6); }
+
+    /* Escalation bar — hard-edged retro alert (no seizure-inducing blink) */
+    ${G} .sk-escalation-bar {
+      border-radius: 0;
+      border: 3px solid rgba(224, 85, 85, 0.7);
+    }
+  `;
+}
 
 function win95OverridesCss(): string {
   const W = '[data-theme="win95"]';
