@@ -65,9 +65,14 @@ export interface CommandCenterViewModel {
   realtimeSessionActive: Map<string, boolean>;
 }
 
-export function buildCommandCenterViewModel(db: Database): CommandCenterViewModel {
+export function buildCommandCenterViewModel(
+  db: Database,
+  opts?: { includeTaskId?: string },
+): CommandCenterViewModel {
   // Tasks with team names and result summaries
-  // Show running/approved scheduled runs in the main list; hide completed/failed ones
+  // Show running/approved scheduled runs in the main list; hide completed/failed
+  // ones. `includeTaskId` force-includes a specific task (e.g. a finished
+  // scheduled run being opened directly) so its detail view can render.
   const allTasks = db.prepare(
     `SELECT t.id, t.title, t.description, t.status, t.current_phase, t.team_id, t.task_type, t.needs_review,
             t.working_directory, t.created_at, t.completed_at, t.result, t.task_config,
@@ -76,8 +81,9 @@ export function buildCommandCenterViewModel(db: Database): CommandCenterViewMode
      FROM tasks t LEFT JOIN teams tm ON tm.id = t.team_id
      WHERE t.source_scheduled_task_id IS NULL
         OR t.status IN ('running', 'approved')
+        OR t.id = ?
      ORDER BY t.created_at DESC`
-  ).all() as Array<{
+  ).all(opts?.includeTaskId ?? null) as Array<{
     id: string; title: string; description: string | null; status: string; current_phase: number; team_id: string | null;
     task_type: string; needs_review: number; working_directory: string; created_at: string; completed_at: string | null;
     result: string | null; task_config: string | null; team_name: string | null; source_scheduled_task_id: string | null;

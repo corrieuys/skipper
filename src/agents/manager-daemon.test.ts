@@ -1142,7 +1142,7 @@ describe("handlePhaseRegression", () => {
     const { agentId, taskId } = await setupRunningTask(phases);
 
     // Set regression_count to MAX
-    db.prepare("UPDATE tasks SET current_phase = 1, regression_count = 3 WHERE id = ?").run(taskId);
+    db.prepare("UPDATE tasks SET current_phase = 1, regression_count = 20 WHERE id = ?").run(taskId);
 
     daemon.handlePhaseRegression(agentId, 1, "Yet another issue");
 

@@ -28,7 +28,7 @@ export function escalationCardPanel(esc: EscalationCardData): string {
   return `<div class="sk-panel sk-mb-4" id="escalation-${escapeHtml(esc.id)}">
     <div class="sk-panel__header">
       <div class="sk-flex sk-items-center sk-gap-2">
-        <span style="color: var(--sk-accent-danger); font-weight: 700;">!</span>
+        <span class="esc-alert-bang" style="color: var(--sk-accent-danger); font-weight: 700;">!</span>
         <strong style="color: var(--sk-text);">${escapeHtml(agentLabel)}</strong>
         <span class="sk-text-xs sk-muted">${escapeHtml(esc.type)}</span>
         ${badgeFragment(esc.status)}

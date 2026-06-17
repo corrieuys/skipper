@@ -298,7 +298,7 @@ export const THEMES: Theme[] = [
   },
   {
     id: "geocities",
-    label: "GeoCities '96",
+    label: "VibeCat",
     experimental: true,
     vars: {
       // Retro web 1.0 feel — muted navy/teal surfaces, softened clashing accents, Comic Sans.
@@ -470,6 +470,19 @@ function geocitiesOverridesCss(): string {
       pointer-events: none;
       transform: scaleX(-1);
       background: url('https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjExdTBmNnA2am5qdm0xNm9oenVtNmh2ZWZ2N2IwcTM5dGs4d2IzeHl2cCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9cw/nWolkCULqLT4oG9dph/giphy.gif') right bottom / contain no-repeat;
+    }
+
+    /* Escalation alert — swap the "!" for the VibeCat gif (this theme only, CSS-only) */
+    ${G} .esc-alert-bang {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      font-size: 0;
+      line-height: 0;
+      color: transparent;
+      overflow: hidden;
+      vertical-align: middle;
+      background: url('https://media.tenor.com/QUSMUwP4DX4AAAAj/plink-cat-blink.gif') center / contain no-repeat;
     }
 
     /* Everything Comic Sans, no rounding, hard edges */

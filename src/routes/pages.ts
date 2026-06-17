@@ -1054,7 +1054,7 @@ function registerV2PageRoutes(): void {
 
   // Workspace fragment — sidebar clicks load this into #mc-main
   addRoute("GET", "/workspace/task/:id", (_req, params) => {
-    const vm = buildCommandCenterViewModel(db);
+    const vm = buildCommandCenterViewModel(db, { includeTaskId: params.id });
     const task = vm.allTasks.find((t: any) => t.id === params.id);
     if (!task) return Response.json({ error: "Not found" }, { status: 404 });
     const { taskMainContent, renderDraftEdit, realtimeTaskContent } = require("../html/pages/command-center.page");

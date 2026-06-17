@@ -11,7 +11,7 @@ import type { Phase } from "../teams/manager";
 import type { OrchestrationState } from "./types";
 import { getTaskTemplateId, resolvePhaseConfig } from "../templates/helpers";
 
-const MAX_REGRESSIONS = 3;
+const MAX_REGRESSIONS = 20;
 
 /**
  * Outcome of a handlePhaseComplete call — surfaced through the MCP

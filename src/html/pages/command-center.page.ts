@@ -886,10 +886,8 @@ export function renderScheduledTaskDetail(
       <span class="sk-badge sk-badge--waiting" style="font-size:9px;padding:1px 5px;">${badge}</span>
       ${st.team_name ? `<span class="sk-muted sk-text-xs">${escapeHtml(st.team_name)}</span>` : ""}
       <div class="mc-task-header__actions">
-        <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/run-now" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful){window.location.reload();}">Run Now</button>
-        <button class="sk-btn sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/unapprove" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful){window.location.reload();}">Unapprove</button>
+        <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/run-now" hx-swap="none">Run Now</button>
+        <button class="sk-btn sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/unapprove" hx-swap="none">Unapprove</button>
         <button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/scheduled-tasks/${eid}" hx-swap="none"
                 hx-confirm="Delete this scheduled task?" hx-on::after-request="if(event.detail.successful){window.location='/';}">Delete</button>
       </div>
@@ -943,8 +941,7 @@ function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: s
       <span class="sk-badge sk-badge--waiting" style="font-size:9px;padding:1px 5px;">${badge}</span>
       ${st.team_name ? `<span class="sk-muted sk-text-xs">${escapeHtml(st.team_name)}</span>` : ""}
       <div class="mc-task-header__actions">
-        <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/approve" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful){window.location.reload();}">Approve</button>
+        <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/approve" hx-swap="none">Approve</button>
         <button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/scheduled-tasks/${eid}" hx-swap="none"
                 hx-confirm="Delete this scheduled task?" hx-on::after-request="if(event.detail.successful){window.location='/';}">Delete</button>
       </div>
