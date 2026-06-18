@@ -131,6 +131,55 @@ function migrateLegacySchema(database: Database): void {
   migrateTeamAgentsDropSkills(database);
   migrateTeamAgentsDropMaxComplexity(database);
   migrateTaskNotesMillisecondTimestamps(database);
+  migrateScheduledTasksOptionalInterval(database);
+}
+
+// Relax schedule_unit/schedule_amount from NOT NULL to nullable so a recurring
+// task can have no interval (manual-only: never auto-fires, only "Run Now").
+// SQLite can't ALTER a column's NOT NULL, so rebuild the table. Runs only when
+// the existing column is still NOT NULL; fresh DBs already create it nullable.
+function migrateScheduledTasksOptionalInterval(database: Database): void {
+  if (!tableExists(database, "scheduled_tasks")) return;
+  const cols = database
+    .prepare("PRAGMA table_info(scheduled_tasks)")
+    .all() as Array<{ name: string; notnull: number }>;
+  const unit = cols.find((c) => c.name === "schedule_unit");
+  if (!unit || unit.notnull === 0) return; // already nullable
+
+  database.exec("PRAGMA foreign_keys = OFF");
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS scheduled_tasks_new (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT,
+        team_id TEXT,
+        working_directory TEXT NOT NULL DEFAULT '',
+        schedule_unit TEXT CHECK (schedule_unit IS NULL OR schedule_unit IN ('minutes', 'hours', 'days')),
+        schedule_amount INTEGER,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'approved')),
+        task_config TEXT NOT NULL DEFAULT '{}',
+        next_run_at TEXT,
+        last_run_at TEXT,
+        single_instance INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    database.exec(`
+      INSERT INTO scheduled_tasks_new (id, title, description, team_id, working_directory,
+        schedule_unit, schedule_amount, status, task_config, next_run_at, last_run_at,
+        single_instance, created_at, updated_at)
+      SELECT id, title, description, team_id, working_directory,
+        schedule_unit, schedule_amount, status, task_config, next_run_at, last_run_at,
+        single_instance, created_at, updated_at FROM scheduled_tasks;
+    `);
+    database.exec("DROP TABLE scheduled_tasks;");
+    database.exec("ALTER TABLE scheduled_tasks_new RENAME TO scheduled_tasks;");
+    database.exec("CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_status_next ON scheduled_tasks(status, next_run_at);");
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
 }
 
 // Upgrade task_notes.created_at default from second-resolution datetime('now')

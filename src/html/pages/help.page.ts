@@ -164,8 +164,8 @@ export function helpPage(vm: HelpPageViewModel): string {
       ${experimental ? `<li>Task-level hooks for pre/post run shell commands.</li>` : ""}
     </ul>
 
-    ${experimental ? `<h3 style="margin-top: var(--sk-space-4);">Scheduled Tasks</h3>
-    <p>Scheduled tasks use a cron-style schedule (amount + unit: minutes, hours, days) to automatically create and approve new task instances at the specified interval. Manage them at <a href="/tasks">Tasks</a> under the Scheduled tab.</p>` : ""}
+    ${experimental ? `<h3 style="margin-top: var(--sk-space-4);">Recurring Tasks</h3>
+    <p>Recurring tasks can use an interval (amount + unit: minutes, hours, days) to automatically create and approve new task instances at the specified interval. The interval is optional — leave it unset and the task only runs when you trigger it with Run Now. Manage them at <a href="/tasks">Tasks</a> under the Recurring tab.</p>` : ""}
 
     <h3 style="margin-top: var(--sk-space-4);">Queue Behaviour</h3>
     <p>The daemon picks one approved standard task per 30-second tick.${experimental ? " Realtime tasks bypass the queue and start immediately." : ""} Only one task runs at a time in the standard queue.</p>

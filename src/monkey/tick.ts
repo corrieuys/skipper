@@ -391,7 +391,7 @@ export class MonkeyEngine {
     }
 
     if (dc.scheduledTasks.length > 0) {
-      p.push("sched:" + dc.scheduledTasks.map(s => `${s.title}/${s.scheduleAmount}${s.scheduleUnit[0]}`).join(","));
+      p.push("sched:" + dc.scheduledTasks.map(s => `${s.title}/${s.scheduleUnit && s.scheduleAmount ? `${s.scheduleAmount}${s.scheduleUnit[0]}` : "manual"}`).join(","));
     }
 
     if (dc.totalAgentsRunning > 0) p.push(`${dc.totalAgentsRunning}agents`);

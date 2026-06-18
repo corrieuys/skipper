@@ -36,8 +36,8 @@ export interface ScheduledTaskSummary {
   description: string | null;
   team_id: string | null;
   team_name: string | null;
-  schedule_unit: string;
-  schedule_amount: number;
+  schedule_unit: string | null;
+  schedule_amount: number | null;
   status: string;
   next_run_at: string | null;
   last_run_at: string | null;

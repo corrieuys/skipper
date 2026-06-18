@@ -405,8 +405,9 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   description TEXT,
   team_id TEXT,
   working_directory TEXT NOT NULL DEFAULT '',
-  schedule_unit TEXT NOT NULL CHECK (schedule_unit IN ('minutes', 'hours', 'days')),
-  schedule_amount INTEGER NOT NULL,
+  -- NULL interval = manual-only recurring task: never auto-fires, only "Run Now".
+  schedule_unit TEXT CHECK (schedule_unit IS NULL OR schedule_unit IN ('minutes', 'hours', 'days')),
+  schedule_amount INTEGER,
   status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'approved')),
   task_config TEXT NOT NULL DEFAULT '{}',
   next_run_at TEXT,

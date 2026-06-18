@@ -9,8 +9,9 @@ export interface ScheduledTask {
   description: string | null;
   team_id: string | null;
   working_directory: string;
-  schedule_unit: ScheduleUnit;
-  schedule_amount: number;
+  // null interval = manual only: never auto-runs, can only fire via "Run Now".
+  schedule_unit: ScheduleUnit | null;
+  schedule_amount: number | null;
   status: "draft" | "approved";
   task_config: Record<string, unknown>;
   next_run_at: string | null;
@@ -30,8 +31,8 @@ interface ScheduledTaskRow {
   description: string | null;
   team_id: string | null;
   working_directory: string;
-  schedule_unit: string;
-  schedule_amount: number;
+  schedule_unit: string | null;
+  schedule_amount: number | null;
   status: string;
   task_config: string;
   next_run_at: string | null;
@@ -53,8 +54,8 @@ function rowToScheduledTask(row: ScheduledTaskRow): ScheduledTask {
     description: row.description,
     team_id: row.team_id,
     working_directory: row.working_directory ?? "",
-    schedule_unit: row.schedule_unit as ScheduleUnit,
-    schedule_amount: row.schedule_amount,
+    schedule_unit: (row.schedule_unit as ScheduleUnit | null) ?? null,
+    schedule_amount: row.schedule_amount ?? null,
     status: row.status as ScheduledTask["status"],
     task_config: taskConfig,
     next_run_at: row.next_run_at,
@@ -70,8 +71,9 @@ export interface CreateScheduledTaskInput {
   description?: string;
   teamId?: string;
   workingDirectory: string;
-  scheduleUnit: ScheduleUnit;
-  scheduleAmount: number;
+  // Omit both to create a manual-only recurring task (no automatic firing).
+  scheduleUnit?: ScheduleUnit | null;
+  scheduleAmount?: number | null;
   taskConfig?: Record<string, unknown>;
   singleInstance?: boolean;
 }
@@ -81,8 +83,9 @@ export interface UpdateScheduledTaskInput {
   description?: string;
   teamId?: string;
   workingDirectory?: string;
-  scheduleUnit?: ScheduleUnit;
-  scheduleAmount?: number;
+  // null clears the interval (manual-only); undefined keeps the existing value.
+  scheduleUnit?: ScheduleUnit | null;
+  scheduleAmount?: number | null;
   taskConfig?: Record<string, unknown>;
   singleInstance?: boolean;
 }
@@ -110,8 +113,8 @@ export class ScheduledTaskScheduler {
         input.description ?? null,
         input.teamId ?? null,
         workingDirectory,
-        input.scheduleUnit,
-        input.scheduleAmount,
+        input.scheduleUnit ?? null,
+        input.scheduleAmount ?? null,
         taskConfig,
         input.singleInstance ? 1 : 0,
       );
@@ -147,6 +150,10 @@ export class ScheduledTaskScheduler {
       ? (task.single_instance ? 1 : 0)
       : (input.singleInstance ? 1 : 0);
 
+    // null = explicit clear (manual-only); undefined = keep existing.
+    const scheduleUnit = input.scheduleUnit !== undefined ? input.scheduleUnit : task.schedule_unit;
+    const scheduleAmount = input.scheduleAmount !== undefined ? input.scheduleAmount : task.schedule_amount;
+
     this.db
       .prepare(
         `UPDATE scheduled_tasks
@@ -159,8 +166,8 @@ export class ScheduledTaskScheduler {
         input.description?.trim() ? input.description.trim() : null,
         input.teamId?.trim() ? input.teamId.trim() : null,
         workingDirectory,
-        input.scheduleUnit ?? task.schedule_unit,
-        input.scheduleAmount ?? task.schedule_amount,
+        scheduleUnit,
+        scheduleAmount,
         taskConfig,
         singleInstance,
         id,
@@ -179,7 +186,11 @@ export class ScheduledTaskScheduler {
       throw new Error("Scheduled task must have a team assigned before approval");
     }
 
-    const nextRunAt = this.calculateNextRunAt(task.schedule_unit, task.schedule_amount);
+    // Manual-only tasks (no interval) approve without a next_run_at, so the
+    // tick loop never fires them — they only run via "Run Now".
+    const nextRunAt = task.schedule_unit && task.schedule_amount
+      ? this.calculateNextRunAt(task.schedule_unit, task.schedule_amount)
+      : null;
 
     this.db
       .prepare(
@@ -232,7 +243,10 @@ export class ScheduledTaskScheduler {
     const task = this.getScheduledTask(id);
     if (!task) return;
 
-    const nextRunAt = this.calculateNextRunAt(task.schedule_unit, task.schedule_amount);
+    // Manual-only tasks keep next_run_at = NULL so they never auto-fire again.
+    const nextRunAt = task.schedule_unit && task.schedule_amount
+      ? this.calculateNextRunAt(task.schedule_unit, task.schedule_amount)
+      : null;
 
     this.db
       .prepare(
@@ -241,6 +255,23 @@ export class ScheduledTaskScheduler {
          WHERE id = ?`,
       )
       .run(nextRunAt, id);
+  }
+
+  // Clear the recurring interval so the task becomes manual-only: it stops
+  // auto-firing (next_run_at cleared) but stays approved/runnable via "Run Now".
+  clearSchedule(id: string): ScheduledTask {
+    const task = this.getScheduledTask(id);
+    if (!task) throw new Error(`Scheduled task not found: ${id}`);
+
+    this.db
+      .prepare(
+        `UPDATE scheduled_tasks
+         SET schedule_unit = NULL, schedule_amount = NULL, next_run_at = NULL, updated_at = datetime('now')
+         WHERE id = ?`,
+      )
+      .run(id);
+
+    return this.getScheduledTask(id)!;
   }
 
   calculateNextRunAt(unit: ScheduleUnit, amount: number, fromDate?: Date): string {

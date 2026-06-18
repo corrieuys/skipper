@@ -124,7 +124,7 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
     ` : ""}
 
     ${isExperimental() && vm.scheduledTasks.length > 0 ? `
-      <div class="mc-sidebar__group-label">Scheduled</div>
+      <div class="mc-sidebar__group-label">Recurring</div>
       ${vm.scheduledTasks.map(st => sidebarScheduledItem(st, activeId)).join("")}
     ` : ""}
 
@@ -165,7 +165,8 @@ function sidebarScheduledItem(st: ScheduledTaskSummary, activeId: string | null)
   </a>`;
 }
 
-function formatScheduleBadge(unit: string, amount: number): string {
+function formatScheduleBadge(unit: string | null, amount: number | null): string {
+  if (!unit || !amount) return "manual";
   if (unit === "minutes") return amount === 1 ? "1m" : `${amount}m`;
   if (unit === "hours") return amount === 1 ? "1h" : `${amount}h`;
   if (unit === "days") return amount === 1 ? "daily" : `${amount}d`;
@@ -873,6 +874,7 @@ export function renderScheduledTaskDetail(
 ): string {
   const eid = escapeHtml(st.id);
   const badge = formatScheduleBadge(st.schedule_unit, st.schedule_amount);
+  const hasInterval = !!(st.schedule_unit && st.schedule_amount);
 
   if (st.status === "draft") {
     return renderScheduledDraftEdit(st, teams, runs);
@@ -887,9 +889,11 @@ export function renderScheduledTaskDetail(
       ${st.team_name ? `<span class="sk-muted sk-text-xs">${escapeHtml(st.team_name)}</span>` : ""}
       <div class="mc-task-header__actions">
         <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/run-now" hx-swap="none">Run Now</button>
+        ${hasInterval ? `<button class="sk-btn sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/clear-schedule" hx-swap="none"
+                hx-confirm="Clear the interval? This task will become manual-only (Run Now).">Clear interval</button>` : ""}
         <button class="sk-btn sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/unapprove" hx-swap="none">Unapprove</button>
         <button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/scheduled-tasks/${eid}" hx-swap="none"
-                hx-confirm="Delete this scheduled task?" hx-on::after-request="if(event.detail.successful){window.location='/';}">Delete</button>
+                hx-confirm="Delete this recurring task?">Delete</button>
       </div>
     </div>
 
@@ -897,7 +901,7 @@ export function renderScheduledTaskDetail(
       <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:var(--sk-space-4); margin-bottom:var(--sk-space-5);">
         <div>
           <div class="sk-muted sk-text-xs">Schedule</div>
-          <div style="font-weight:600;">Every ${st.schedule_amount} ${st.schedule_unit}</div>
+          <div style="font-weight:600;">${hasInterval ? `Every ${st.schedule_amount} ${st.schedule_unit}` : "Manual only"}</div>
         </div>
         <div>
           <div class="sk-muted sk-text-xs">Next Run</div>
@@ -943,7 +947,7 @@ function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: s
       <div class="mc-task-header__actions">
         <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/approve" hx-swap="none">Approve</button>
         <button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/scheduled-tasks/${eid}" hx-swap="none"
-                hx-confirm="Delete this scheduled task?" hx-on::after-request="if(event.detail.successful){window.location='/';}">Delete</button>
+                hx-confirm="Delete this recurring task?" hx-on::after-request="if(event.detail.successful){window.location='/';}">Delete</button>
       </div>
     </div>
 
@@ -953,8 +957,7 @@ function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: s
           <span class="sk-panel__title">Configuration</span>
         </div>
         <div class="sk-panel__body" style="padding: var(--sk-space-4);">
-          <form hx-post="/api/scheduled-tasks/${eid}/update" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful && event.detail.elt === this){window.location.reload();}">
+          <form hx-post="/api/scheduled-tasks/${eid}/update" hx-swap="none">
             <div class="sk-form-group">
               <label class="sk-label">Title</label>
               <input type="text" name="title" class="sk-input" value="${escapeHtml(st.title)}" required>
@@ -987,16 +990,21 @@ function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: s
             <div class="sk-form-row" style="gap:var(--sk-space-3);">
               <div class="sk-form-group" style="flex:1;">
                 <label class="sk-label">Run every</label>
-                <input type="number" name="scheduleAmount" class="sk-input" min="1" value="${st.schedule_amount}" required style="max-width:100px;">
+                <input type="number" name="scheduleAmount" class="sk-input" min="1" value="${st.schedule_amount ?? ""}" style="max-width:100px;"${!st.schedule_unit ? " disabled" : ""}>
               </div>
               <div class="sk-form-group" style="flex:1;">
                 <label class="sk-label">Unit</label>
-                <select name="scheduleUnit" class="sk-select" required>
+                <select name="scheduleUnit" class="sk-select"
+                  onchange="var a=this.form.querySelector('[name=scheduleAmount]'); a.disabled=!this.value; if(!this.value){a.value='';}">
+                  <option value=""${!st.schedule_unit ? " selected" : ""}>None (manual only)</option>
                   <option value="minutes"${st.schedule_unit === "minutes" ? " selected" : ""}>Minutes</option>
                   <option value="hours"${st.schedule_unit === "hours" ? " selected" : ""}>Hours</option>
                   <option value="days"${st.schedule_unit === "days" ? " selected" : ""}>Days</option>
                 </select>
               </div>
+            </div>
+            <div class="sk-muted sk-text-xs" style="margin-top:calc(-1 * var(--sk-space-2)); margin-bottom:var(--sk-space-3);">
+              Leave the interval as "None" to run this task only manually via Run Now.
             </div>
             <div style="display:flex; gap:var(--sk-space-3); margin-top:var(--sk-space-4);">
               <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm">Save Changes</button>

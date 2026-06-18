@@ -6,6 +6,35 @@ import { isExperimental } from "../config/feature-flags";
 
 const EXPERIMENTAL_REQUIRED = Response.json({ error: "scheduled tasks require --experimental" }, { status: 403 });
 
+// Mirror how regular tasks respond (src/routes/tasks.ts): a 200 with an
+// HX-Redirect header. htmx honours the header and navigates client-side. We do
+// NOT use a 3xx redirect — the browser's fetch auto-follows 3xx, so the final
+// response carries no HX-Redirect header and the UI never updates.
+const hxRedirect = (to: string) => new Response("", { status: 200, headers: { "HX-Redirect": to } });
+
+// Parse an optional recurring interval from form fields. The UNIT drives it:
+// an empty/"None" unit means manual-only (unit/amount null) regardless of any
+// leftover value in the amount field. A set unit requires a valid amount.
+export function parseOptionalInterval(
+  unitRaw: FormDataEntryValue | null,
+  amountRaw: FormDataEntryValue | null,
+): { unit: ScheduleUnit | null; amount: number | null; error?: string } {
+  const unitStr = typeof unitRaw === "string" ? unitRaw.trim() : "";
+  const amountStr = typeof amountRaw === "string" ? amountRaw.trim() : "";
+
+  // No unit selected => manual-only. Ignore the amount field entirely.
+  if (!unitStr) return { unit: null, amount: null };
+
+  if (!["minutes", "hours", "days"].includes(unitStr)) {
+    return { unit: null, amount: null, error: "scheduleUnit must be minutes, hours, or days" };
+  }
+  const amount = parseInt(amountStr, 10);
+  if (!Number.isFinite(amount) || amount < 1) {
+    return { unit: null, amount: null, error: "scheduleAmount must be a positive integer" };
+  }
+  return { unit: unitStr as ScheduleUnit, amount };
+}
+
 export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   const getScheduler = () => daemon?.getScheduledTaskScheduler() ?? new ScheduledTaskScheduler();
 
@@ -25,13 +54,11 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
     if (!title || typeof title !== "string" || !title.trim()) {
       return Response.json({ error: "title is required" }, { status: 400 });
     }
-    if (!scheduleUnit || !["minutes", "hours", "days"].includes(String(scheduleUnit))) {
-      return Response.json({ error: "scheduleUnit must be minutes, hours, or days" }, { status: 400 });
-    }
-    const scheduleAmount = parseInt(String(scheduleAmountRaw), 10);
-    if (!Number.isFinite(scheduleAmount) || scheduleAmount < 1) {
-      return Response.json({ error: "scheduleAmount must be a positive integer" }, { status: 400 });
-    }
+    // Interval is optional. When omitted (or blank) the task is manual-only and
+    // only runs via "Run Now". When provided, validate both unit and amount.
+    const { unit: scheduleUnitVal, amount: scheduleAmountVal, error: intervalError } =
+      parseOptionalInterval(scheduleUnit, scheduleAmountRaw);
+    if (intervalError) return Response.json({ error: intervalError }, { status: 400 });
 
     const templateId = formData.get("templateId");
     const taskConfig: Record<string, unknown> = {};
@@ -48,8 +75,8 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       description: typeof description === "string" && description.trim() ? description.trim() : undefined,
       teamId: typeof teamId === "string" && teamId.trim() ? teamId.trim() : undefined,
       workingDirectory: typeof workingDirectory === "string" && workingDirectory.trim() ? workingDirectory.trim() : process.cwd(),
-      scheduleUnit: String(scheduleUnit) as ScheduleUnit,
-      scheduleAmount,
+      scheduleUnit: scheduleUnitVal,
+      scheduleAmount: scheduleAmountVal,
       taskConfig: Object.keys(taskConfig).length > 0 ? taskConfig : undefined,
       singleInstance,
     });
@@ -61,10 +88,7 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       } catch { /* ignore approval errors for auto-approve */ }
     }
 
-    return new Response(null, {
-      status: 303,
-      headers: { "HX-Redirect": `/?scheduled=${task.id}`, Location: `/?scheduled=${task.id}` },
-    });
+    return hxRedirect(`/?scheduled=${task.id}`);
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/update", async (req, params) => {
@@ -83,6 +107,12 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
     if (!title || typeof title !== "string" || !title.trim()) {
       return Response.json({ error: "title is required" }, { status: 400 });
     }
+
+    // The edit form always submits scheduleUnit, so an empty value is an
+    // explicit "clear the interval" (manual-only); a valid value sets it.
+    const { unit: scheduleUnitVal, amount: scheduleAmountVal, error: intervalError } =
+      parseOptionalInterval(scheduleUnit, scheduleAmountRaw);
+    if (intervalError) return Response.json({ error: intervalError }, { status: 400 });
 
     const templateId = formData.get("templateId");
     const taskConfig: Record<string, unknown> = {};
@@ -107,9 +137,8 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
         description: typeof description === "string" && description.trim() ? description.trim() : undefined,
         teamId: typeof teamId === "string" && teamId.trim() ? teamId.trim() : undefined,
         workingDirectory: typeof workingDirectory === "string" && workingDirectory.trim() ? workingDirectory.trim() : undefined,
-        scheduleUnit: typeof scheduleUnit === "string" && ["minutes", "hours", "days"].includes(scheduleUnit)
-          ? scheduleUnit as ScheduleUnit : undefined,
-        scheduleAmount: scheduleAmountRaw ? parseInt(String(scheduleAmountRaw), 10) : undefined,
+        scheduleUnit: scheduleUnitVal,
+        scheduleAmount: scheduleAmountVal,
         taskConfig: Object.keys(taskConfig).length > 0 ? taskConfig : undefined,
         singleInstance,
       });
@@ -117,10 +146,7 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
     }
 
-    return new Response(null, {
-      status: 303,
-      headers: { "HX-Redirect": `/?scheduled=${id}`, Location: `/?scheduled=${id}` },
-    });
+    return hxRedirect(`/?scheduled=${id}`);
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/approve", async (_req, params) => {
@@ -135,10 +161,7 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
     }
 
-    return new Response(null, {
-      status: 303,
-      headers: { "HX-Redirect": `/?scheduled=${id}`, Location: `/?scheduled=${id}` },
-    });
+    return hxRedirect(`/?scheduled=${id}`);
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/unapprove", async (_req, params) => {
@@ -153,10 +176,22 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
     }
 
-    return new Response(null, {
-      status: 303,
-      headers: { "HX-Redirect": `/?scheduled=${id}`, Location: `/?scheduled=${id}` },
-    });
+    return hxRedirect(`/?scheduled=${id}`);
+  });
+
+  addRoute("POST", "/api/scheduled-tasks/:id/clear-schedule", async (_req, params) => {
+    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
+    const id = params?.id;
+    if (!id) return Response.json({ error: "id required" }, { status: 400 });
+
+    const scheduler = getScheduler();
+    try {
+      scheduler.clearSchedule(id);
+    } catch (err) {
+      return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+    }
+
+    return hxRedirect(`/?scheduled=${id}`);
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/run-now", async (_req, params) => {
@@ -197,10 +232,7 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
     taskScheduler.approveTask(task.id);
     scheduler.recordRun(scheduled.id);
 
-    return new Response(null, {
-      status: 303,
-      headers: { "HX-Redirect": `/?scheduled=${id}`, Location: `/?scheduled=${id}` },
-    });
+    return hxRedirect(`/?scheduled=${id}`);
   });
 
   addRoute("DELETE", "/api/scheduled-tasks/:id", async (_req, params) => {
@@ -215,9 +247,6 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
     }
 
-    return new Response(null, {
-      status: 303,
-      headers: { "HX-Redirect": "/", Location: "/" },
-    });
+    return hxRedirect("/");
   });
 }

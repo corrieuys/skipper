@@ -9,12 +9,12 @@ export interface ScheduledTaskCreateViewModel {
 }
 
 export function scheduledTaskCreatePage(vm: ScheduledTaskCreateViewModel): string {
-  return v2layout("New Scheduled Task", `
+  return v2layout("New Recurring Task", `
     ${navbar({ currentPath: "/tasks", daemonState: vm.daemonState, daemonUptime: vm.daemonUptime, escalationCount: vm.escalationCount })}
     <div class="sk-container" style="max-width: 700px;">
       <div class="sk-page-header">
         <a href="/" class="sk-page-header__back">&larr; Dashboard</a>
-        <h1 class="sk-page-header__title">Create Scheduled Task</h1>
+        <h1 class="sk-page-header__title">Create Recurring Task</h1>
         <a href="/tasks/new" class="sk-btn sk-btn--sm" style="margin-left:auto;">&larr; Create Regular Task</a>
       </div>
 
@@ -26,7 +26,7 @@ export function scheduledTaskCreatePage(vm: ScheduledTaskCreateViewModel): strin
           <form hx-post="/api/scheduled-tasks" hx-target="body" hx-swap="innerHTML">
             <div class="sk-form-group">
               <label class="sk-label">Title</label>
-              <input type="text" name="title" class="sk-input" placeholder="What should run on a schedule?" required autofocus>
+              <input type="text" name="title" class="sk-input" placeholder="What should this recurring task do?" required autofocus>
             </div>
             <div class="sk-form-group">
               <label class="sk-label">Description</label>
@@ -54,16 +54,21 @@ export function scheduledTaskCreatePage(vm: ScheduledTaskCreateViewModel): strin
             <div class="sk-form-row" style="gap:var(--sk-space-3);">
               <div class="sk-form-group" style="flex:1;">
                 <label class="sk-label">Run every</label>
-                <input type="number" name="scheduleAmount" class="sk-input" min="1" value="1" required style="max-width:100px;">
+                <input type="number" name="scheduleAmount" class="sk-input" min="1" placeholder="e.g. 1" style="max-width:100px;" disabled>
               </div>
               <div class="sk-form-group" style="flex:1;">
                 <label class="sk-label">Unit</label>
-                <select name="scheduleUnit" class="sk-select" required>
+                <select name="scheduleUnit" class="sk-select"
+                  onchange="var a=this.form.querySelector('[name=scheduleAmount]'); a.disabled=!this.value; if(!this.value){a.value='';}">
+                  <option value="" selected>None (manual only)</option>
                   <option value="minutes">Minutes</option>
-                  <option value="hours" selected>Hours</option>
+                  <option value="hours">Hours</option>
                   <option value="days">Days</option>
                 </select>
               </div>
+            </div>
+            <div class="sk-muted sk-text-xs" style="margin-top:calc(-1 * var(--sk-space-2)); margin-bottom:var(--sk-space-1);">
+              Optional. Leave the interval as "None" to run this task only manually via Run Now.
             </div>
             <div class="sk-form-group">
               <label style="display:flex; align-items:flex-start; gap:0.5rem; cursor:pointer;">

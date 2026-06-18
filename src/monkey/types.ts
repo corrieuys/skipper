@@ -67,8 +67,8 @@ export interface TaskDetail {
 export interface ScheduledTaskInfo {
   title: string;
   status: string;
-  scheduleAmount: number;
-  scheduleUnit: string;
+  scheduleAmount: number | null;
+  scheduleUnit: string | null;
   nextRunAt: string | null;
   lastRunAt: string | null;
 }

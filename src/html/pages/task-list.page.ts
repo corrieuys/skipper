@@ -9,8 +9,8 @@ import { isExperimental } from "../../config/feature-flags";
 export interface ScheduledTaskListItem {
   id: string;
   title: string;
-  schedule_unit: string;
-  schedule_amount: number;
+  schedule_unit: string | null;
+  schedule_amount: number | null;
   status: string;
   team_name: string | null;
   next_run_at: string | null;
@@ -31,7 +31,8 @@ export interface TaskListViewModel {
   daemonUptime: number;
 }
 
-function formatScheduleBadge(unit: string, amount: number): string {
+function formatScheduleBadge(unit: string | null, amount: number | null): string {
+  if (!unit || !amount) return "manual";
   if (unit === "minutes") return amount === 1 ? "1m" : `${amount}m`;
   if (unit === "hours") return amount === 1 ? "1h" : `${amount}h`;
   if (unit === "days") return amount === 1 ? "daily" : `${amount}d`;
@@ -62,7 +63,7 @@ export function taskListPage(vm: TaskListViewModel): string {
 
       ${isExperimental() && scheduled.length > 0 ? `
       <div class="sk-page-header" style="margin-top:var(--sk-space-6);">
-        <h2 class="sk-page-header__title" style="font-size:1.1rem;">Scheduled Tasks</h2>
+        <h2 class="sk-page-header__title" style="font-size:1.1rem;">Recurring Tasks</h2>
       </div>
       <div class="sk-panel">
         <div class="sk-panel__body--flush">
@@ -87,12 +88,12 @@ export function taskListPage(vm: TaskListViewModel): string {
 
       ${isExperimental() && scheduledRuns.length > 0 ? `
       <div class="sk-page-header" style="margin-top:var(--sk-space-6);">
-        <h2 class="sk-page-header__title" style="font-size:1.1rem;">Scheduled Task Runs</h2>
+        <h2 class="sk-page-header__title" style="font-size:1.1rem;">Recurring Task Runs</h2>
       </div>
       <div class="sk-panel">
         <div class="sk-panel__body--flush">
           <table class="sk-table">
-            <thead><tr><th>Title</th><th>Status</th><th>Team</th><th>Phase</th><th>Scheduled Task</th><th>Created</th><th></th></tr></thead>
+            <thead><tr><th>Title</th><th>Status</th><th>Team</th><th>Phase</th><th>Recurring Task</th><th>Created</th><th></th></tr></thead>
             <tbody>${scheduledRuns.map((r) => `<tr>
               <td><a href="/?task=${escapeHtml(r.id)}">${escapeHtml(r.title)}</a></td>
               <td><span class="sk-badge sk-badge--${escapeHtml(r.status)}">${escapeHtml(r.status)}</span></td>
