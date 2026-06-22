@@ -25,7 +25,7 @@ import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { WorktreeManager } from "../orchestrator/worktree-manager";
 import { ConsensusManager } from "../orchestrator/consensus-manager";
 import { RealtimeSessionManager } from "../orchestrator/realtime-session";
-import type { OrchestrationState, TaskCheckpoint } from "../orchestrator/types";
+import type { OrchestrationState, PausedAgentSnapshot, TaskCheckpoint } from "../orchestrator/types";
 import type { Escalation } from "../escalations/manager";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 
@@ -1357,6 +1357,182 @@ export class ManagerDaemon {
     }
 
     this.reconciliationLoop.resume();
+  }
+
+  // --- Per-task pause / resume (scoped variant of pauseDaemonAndAgents) ---
+  //
+  // Stop ALL of one task's agents and their subprocess trees at a point in time,
+  // persisting enough state (session ids + snapshots in orchestration_state) to
+  // respawn with --resume later — even across a server restart. Mirrors the
+  // global daemon pause but does NOT pause the reconciliation loop (other tasks
+  // keep running) and writes snapshots to the DB instead of memory.
+  async pauseTaskAgents(taskId: string): Promise<PausedAgentSnapshot[]> {
+    // step → PAUSING (best-effort; only if the task has orchestration state)
+    const before = this.recoveryManager.getOrchestrationState(taskId);
+    if (before) {
+      this.recoveryManager.updateOrchestrationState(taskId, { ...before, step: "PAUSING" });
+    }
+
+    const runtimes = Array.from(this.agentManager.getRunningAgents().values())
+      .filter((runtime) => runtime.taskId === taskId);
+
+    // Snapshot only entrypoint-level runtimes (no parent) for resume; the
+    // resumed root re-drives any delegation. Persist each session id BEFORE the
+    // kill so it survives even if the exit handler's persist races the teardown.
+    const snapshots: PausedAgentSnapshot[] = [];
+    for (const runtime of runtimes) {
+      if (runtime.parentInstanceId != null) continue;
+      const sessionId = runtime.sessionId ?? this.agentManager.getSessionId(runtime.id);
+      if (sessionId) {
+        try {
+          this.db
+            .prepare("UPDATE agent_instances SET session_id = ?, updated_at = datetime('now') WHERE id = ?")
+            .run(sessionId, runtime.id);
+        } catch { /* row may not exist for template runtimes */ }
+      }
+      const attemptRow = this.db
+        .prepare("SELECT attempt FROM agent_instances WHERE id = ?")
+        .get(runtime.id) as { attempt: number } | null;
+      snapshots.push({
+        runtimeId: runtime.id,
+        templateAgentId: runtime.templateAgentId,
+        taskId,
+        parentInstanceId: runtime.parentInstanceId ?? null,
+        rootInstanceId: runtime.rootInstanceId ?? null,
+        sessionId: sessionId ?? null,
+        attempt: attemptRow?.attempt ?? 1,
+        isTemplateRuntime: runtime.id === runtime.templateAgentId,
+      });
+    }
+
+    // Kill the whole process tree of EVERY runtime for the task (root + any
+    // delegated children). Flag each as pause-interrupted first so its natural
+    // agent:exit is swallowed (handleAgentExit bails) instead of escalating or
+    // completing the task.
+    for (const runtime of runtimes) {
+      this.pauseInterruptedAgents.add(runtime.id);
+      this.agentManager.killAgentTree(runtime.id);
+    }
+    await Promise.all(
+      runtimes.map((runtime) => this.agentManager.waitForExit(runtime.id, STREAMS_DRAIN_TIMEOUT_MS)),
+    );
+
+    // Kill any DB-tracked instance processes for the task that weren't in memory
+    // (orphaned/untracked children), by their process group.
+    const memPids = new Set(runtimes.map((r) => r.process.pid).filter((p): p is number => !!p));
+    const orphanRows = this.db
+      .prepare(
+        "SELECT process_pid FROM agent_instances WHERE task_id = ? AND status IN ('running', 'waiting_delegation', 'pending') AND process_pid IS NOT NULL",
+      )
+      .all(taskId) as Array<{ process_pid: number }>;
+    for (const row of orphanRows) {
+      if (memPids.has(row.process_pid)) continue;
+      try { process.kill(-row.process_pid, "SIGKILL"); }
+      catch { try { process.kill(row.process_pid, "SIGKILL"); } catch { /* already dead */ } }
+    }
+
+    // Mark the task's live instances stopped (NOT failed) and clear pids so the
+    // startup orphan sweep won't touch them after a restart.
+    this.db
+      .prepare(
+        "UPDATE agent_instances SET status = 'stopped', process_pid = NULL, updated_at = datetime('now') WHERE task_id = ? AND status IN ('running', 'waiting_delegation', 'pending')",
+      )
+      .run(taskId);
+    this.db
+      .prepare("UPDATE agents SET process_pid = NULL, status = 'stopped', updated_at = datetime('now') WHERE current_task_id = ?")
+      .run(taskId);
+
+    // step → PAUSED + persist snapshots in a single orchestration_state write.
+    const afterKill = this.recoveryManager.getOrchestrationState(taskId) ?? before;
+    if (afterKill) {
+      this.recoveryManager.updateOrchestrationState(taskId, {
+        ...afterKill,
+        step: "PAUSED",
+        paused_snapshots: snapshots,
+      });
+    }
+
+    return snapshots;
+  }
+
+  async resumeTaskAgents(taskId: string): Promise<void> {
+    const state = this.recoveryManager.getOrchestrationState(taskId);
+    const snapshots = state?.paused_snapshots ?? [];
+
+    if (state) {
+      this.recoveryManager.updateOrchestrationState(taskId, { ...state, step: "RECOVERING" });
+    }
+
+    const taskRow = this.db
+      .prepare("SELECT working_directory FROM tasks WHERE id = ?")
+      .get(taskId) as { working_directory: string } | null;
+    const workingDir = taskRow?.working_directory || process.cwd();
+
+    for (const snapshot of snapshots) {
+      const templateAgent = this.agentManager.getAgent(snapshot.templateAgentId);
+      const typeDef = templateAgent ? getAgentTypeDefinition(templateAgent.type, this.db) : null;
+      if (!templateAgent || !typeDef) continue;
+
+      this.pauseInterruptedAgents.delete(snapshot.runtimeId);
+      const usesInline = agentTypeUsesInlinePrompt(typeDef, snapshot.sessionId);
+
+      const spawnPromise = snapshot.isTemplateRuntime
+        ? this.agentManager.spawnAgent(snapshot.templateAgentId, {
+          workingDir,
+          sessionId: snapshot.sessionId ?? undefined,
+          initialPrompt: usesInline ? PAUSE_RESUME_CONTINUE_MESSAGE : undefined,
+        })
+        : this.agentManager.spawnAgentInstance(snapshot.templateAgentId, snapshot.runtimeId, {
+          workingDir,
+          sessionId: snapshot.sessionId ?? undefined,
+          taskId: snapshot.taskId,
+          parentInstanceId: snapshot.parentInstanceId,
+          rootInstanceId: snapshot.rootInstanceId,
+          attempt: snapshot.attempt,
+          initialPrompt: usesInline ? PAUSE_RESUME_CONTINUE_MESSAGE : undefined,
+        });
+
+      await spawnPromise
+        .then(() => {
+          if (snapshot.isTemplateRuntime) {
+            this.db
+              .prepare(
+                "UPDATE agent_instances SET status = 'running', process_pid = ?, session_id = ?, updated_at = datetime('now') WHERE id = ?",
+              )
+              .run(
+                this.agentManager.getRunningAgent(snapshot.runtimeId)?.process.pid ?? null,
+                snapshot.sessionId,
+                snapshot.runtimeId,
+              );
+          }
+          this.db
+            .prepare("UPDATE agents SET current_task_id = ?, status = 'busy', updated_at = datetime('now') WHERE id = ?")
+            .run(snapshot.taskId, snapshot.templateAgentId);
+
+          if (!usesInline) {
+            const closeStdin = !(typeDef.supports_stdin ?? false);
+            this.agentManager.sendInput(snapshot.runtimeId, PAUSE_RESUME_CONTINUE_MESSAGE, closeStdin);
+          }
+        })
+        .catch((err) => {
+          logError(this.db, "task_resume_spawn", { runtimeId: snapshot.runtimeId, templateAgentId: snapshot.templateAgentId, taskId }, err);
+        });
+    }
+
+    // step → AGENT_RUNNING, drop the snapshots, and clear stale delegation
+    // tracking (the open delegations were reconciled on pause; the resumed root
+    // re-drives them fresh).
+    const after = this.recoveryManager.getOrchestrationState(taskId);
+    if (after) {
+      const { paused_snapshots: _drop, ...rest } = after;
+      this.recoveryManager.updateOrchestrationState(taskId, {
+        ...rest,
+        step: "AGENT_RUNNING",
+        active_delegation_group_id: null,
+        active_delegation_child_count: 0,
+        active_delegation_settled_count: 0,
+      });
+    }
   }
 
   private isPromptTooLongError(stderrSnippet: string): boolean {

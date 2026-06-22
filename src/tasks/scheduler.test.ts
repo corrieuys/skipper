@@ -140,6 +140,75 @@ describe("approveTask", () => {
   });
 });
 
+describe("pauseTask / resumeFromPause", () => {
+  function runningTask(): string {
+    const teamId = createTeam(db);
+    const task = scheduler.createTask({ title: "Pausable", teamId });
+    scheduler.approveTask(task.id);
+    scheduler.startTask(task.id);
+    return task.id;
+  }
+
+  it("flips a running task to paused and back to running", () => {
+    const id = runningTask();
+    const paused = scheduler.pauseTask(id);
+    expect(paused.status).toBe("paused");
+    const resumed = scheduler.resumeFromPause(id);
+    expect(resumed.status).toBe("running");
+  });
+
+  it("rejects pausing a non-running task", () => {
+    const teamId = createTeam(db);
+    const task = scheduler.createTask({ title: "Draft", teamId });
+    expect(() => scheduler.pauseTask(task.id)).toThrow("Can only pause a running task");
+  });
+
+  it("rejects resuming a task that is not paused", () => {
+    const id = runningTask();
+    expect(() => scheduler.resumeFromPause(id)).toThrow("Can only resume a paused task");
+  });
+
+  it("reconciles open delegations to a terminal state on pause", () => {
+    const id = runningTask();
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('inst-root', ?, 'default-agent', 'running')",
+    ).run(id);
+    db.prepare(
+      "INSERT INTO delegation_groups (id, task_id, parent_instance_id, status, expected_count) VALUES ('dg-1', ?, 'inst-root', 'running', 1)",
+    ).run(id);
+    db.prepare(
+      "INSERT INTO delegations (id, parent_agent_id, child_agent_id, task_id, delegation_group_id, prompt, status) VALUES ('d-1', 'default-agent', 'default-agent', ?, 'dg-1', 'do work', 'running')",
+    ).run(id);
+
+    scheduler.pauseTask(id);
+
+    const del = db.prepare("SELECT status FROM delegations WHERE id = 'd-1'").get() as { status: string };
+    const grp = db.prepare("SELECT status FROM delegation_groups WHERE id = 'dg-1'").get() as { status: string };
+    expect(del.status).toBe("failed");
+    expect(grp.status).toBe("completed");
+  });
+
+  it("excludes paused tasks from the approved-task queue", () => {
+    const pausedId = runningTask();
+    scheduler.pauseTask(pausedId);
+    const teamId = createTeam(db, "team-2");
+    const approved = scheduler.createTask({ title: "Next", teamId });
+    scheduler.approveTask(approved.id);
+
+    const next = scheduler.getNextApprovedTask();
+    expect(next?.id).toBe(approved.id);
+  });
+
+  it("counts a paused task toward the running/paused slot count", () => {
+    const id = runningTask();
+    scheduler.pauseTask(id);
+    const count = (db
+      .prepare("SELECT COUNT(*) AS c FROM tasks WHERE status IN ('running','paused') AND task_type != 'real_time'")
+      .get() as { c: number }).c;
+    expect(count).toBe(1);
+  });
+});
+
 describe("unapproveTask", () => {
   it("moves an approved task back to draft", () => {
     const teamId = createTeam(db);

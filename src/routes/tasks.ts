@@ -152,13 +152,16 @@ function killRunningRuntimesForTask(taskId: string, daemon?: Pick<ManagerDaemon,
     }
   }
 
-  // 4. Force kill all collected PIDs with SIGKILL to ensure processes die
+  // 4. Force kill all collected process trees with SIGKILL. Agents are spawned
+  // detached (pid===pgid), so the negative pgid kills the agent AND every
+  // subprocess it spawned. Fall back to the positive pid for legacy processes.
   for (const pid of killedPids) {
-    try { process.kill(pid, 9); } catch { /* already dead or no permission */ }
+    try { process.kill(-pid, 9); }
+    catch { try { process.kill(pid, 9); } catch { /* already dead or no permission */ } }
   }
 }
 
-export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager" | "getRealtimeSessionManager" | "getPhaseManager" | "getStatus">): void {
+export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager" | "getRealtimeSessionManager" | "getPhaseManager" | "getStatus" | "pauseTaskAgents" | "resumeTaskAgents">): void {
   const scheduler = new TaskScheduler();
 
   addRoute("POST", "/api/settings/parallel-tasks", async (req) => {
@@ -676,6 +679,48 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       }
       killRunningRuntimesForTask(params.id, daemon);
       scheduler.cancelTask(params.id);
+      if (_req.headers.get("HX-Request")) {
+        return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
+      }
+      return Response.json({ ok: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      return Response.json({ error: message }, { status: 400 });
+    }
+  });
+
+  addRoute("POST", "/api/tasks/:id/pause", async (_req, params) => {
+    try {
+      const task = scheduler.getTask(params.id);
+      if (!task) return Response.json({ error: "Task not found" }, { status: 404 });
+      if (task.task_type === "real_time") {
+        return Response.json({ error: "Realtime tasks cannot be paused" }, { status: 400 });
+      }
+      // Flip to 'paused' first so recovery/health/queue loops immediately stop
+      // treating it as a live running task, THEN stop the agents + their trees.
+      scheduler.pauseTask(params.id);
+      if (daemon) await daemon.pauseTaskAgents(params.id);
+      if (_req.headers.get("HX-Request")) {
+        return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
+      }
+      return Response.json({ ok: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      return Response.json({ error: message }, { status: 400 });
+    }
+  });
+
+  addRoute("POST", "/api/tasks/:id/resume-from-pause", async (_req, params) => {
+    try {
+      const task = scheduler.getTask(params.id);
+      if (!task) return Response.json({ error: "Task not found" }, { status: 404 });
+      if (task.status !== "paused") {
+        return Response.json({ error: `Task is not paused (status: ${task.status})` }, { status: 400 });
+      }
+      // Respawn the agents first (reading snapshots from orchestration_state),
+      // THEN flip to 'running' so the task is only live once agents are back.
+      if (daemon) await daemon.resumeTaskAgents(params.id);
+      scheduler.resumeFromPause(params.id);
       if (_req.headers.get("HX-Request")) {
         return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
       }

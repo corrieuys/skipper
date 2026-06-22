@@ -132,6 +132,65 @@ function migrateLegacySchema(database: Database): void {
   migrateTeamAgentsDropMaxComplexity(database);
   migrateTaskNotesMillisecondTimestamps(database);
   migrateScheduledTasksOptionalInterval(database);
+  migrateTasksAddPausedStatus(database);
+}
+
+// Add 'paused' to the tasks.status CHECK so a running task can be paused
+// (agents stopped at a point in time, resumable). SQLite can't ALTER a CHECK,
+// so rebuild the table. Runs only when the existing CHECK lacks 'paused';
+// fresh DBs already include it via schema.runtime.sql. FK must be OFF during
+// the rebuild — otherwise DROP TABLE tasks implicitly deletes all rows and
+// cascades to children (checkpoints, instances, events, …).
+function migrateTasksAddPausedStatus(database: Database): void {
+  if (!tableExists(database, "tasks")) return;
+  const row = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'")
+    .get() as { sql: string } | null;
+  if (!row || row.sql.includes("'paused'")) return; // already migrated
+
+  database.exec("PRAGMA foreign_keys = OFF");
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS tasks_new (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT,
+        team_id TEXT,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'approved', 'running', 'paused', 'completed', 'failed')),
+        current_phase INTEGER NOT NULL DEFAULT 0,
+        result TEXT,
+        orchestration_state TEXT NOT NULL DEFAULT '{}',
+        regression_count INTEGER NOT NULL DEFAULT 0,
+        iteration_count INTEGER NOT NULL DEFAULT 0,
+        needs_review INTEGER NOT NULL DEFAULT 0,
+        working_directory TEXT NOT NULL DEFAULT '',
+        task_type TEXT NOT NULL DEFAULT 'standard' CHECK (task_type IN ('standard', 'real_time')),
+        task_config TEXT NOT NULL DEFAULT '{}',
+        source_scheduled_task_id TEXT,
+        pending_compact INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        approved_at TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    database.exec(`
+      INSERT INTO tasks_new (id, title, description, team_id, status, current_phase,
+        result, orchestration_state, regression_count, iteration_count, needs_review,
+        working_directory, task_type, task_config, source_scheduled_task_id,
+        pending_compact, created_at, approved_at, started_at, completed_at, updated_at)
+      SELECT id, title, description, team_id, status, current_phase,
+        result, orchestration_state, regression_count, iteration_count, needs_review,
+        working_directory, task_type, task_config, source_scheduled_task_id,
+        pending_compact, created_at, approved_at, started_at, completed_at, updated_at FROM tasks;
+    `);
+    database.exec("DROP TABLE tasks;");
+    database.exec("ALTER TABLE tasks_new RENAME TO tasks;");
+    database.exec("CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at);");
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
 }
 
 // Relax schedule_unit/schedule_amount from NOT NULL to nullable so a recurring

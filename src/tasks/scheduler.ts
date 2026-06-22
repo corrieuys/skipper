@@ -623,6 +623,79 @@ export class TaskScheduler {
     return updated;
   }
 
+  // Pause a running task: flips status running→paused (the daemon stops the
+  // agents + their process trees separately). Open delegations are reconciled to
+  // a terminal state so the resumed root re-drives delegation fresh. Escalations
+  // and result are deliberately left intact — this is NOT a terminal cancel.
+  pauseTask(id: string): Task {
+    const task = this.getTask(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    if (task.status !== "running") {
+      throw new Error(`Can only pause a running task, current status: ${task.status}`);
+    }
+
+    let changed = 0;
+    this.db.transaction(() => {
+      changed = this.db
+        .prepare(
+          "UPDATE tasks SET status = 'paused', updated_at = datetime('now') WHERE id = ? AND status = 'running'",
+        )
+        .run(id).changes;
+      if (changed === 0) return; // raced to a terminal state; leave delegations alone
+      this.db
+        .prepare(
+          `UPDATE delegations
+           SET status = CASE WHEN status IN ('pending', 'running') THEN 'failed' ELSE status END,
+               completed_at = COALESCE(completed_at, datetime('now')),
+               result = COALESCE(result, 'Task paused before delegation settled')
+           WHERE task_id = ?`,
+        )
+        .run(id);
+      this.db
+        .prepare(
+          "UPDATE delegation_groups SET status = 'completed', completed_at = datetime('now') WHERE task_id = ? AND status = 'running'",
+        )
+        .run(id);
+    })();
+
+    if (changed === 0) {
+      throw new Error("Task is no longer running");
+    }
+
+    eventBus.emit("task:state_changed", {
+      taskId: id,
+      previousStatus: "running",
+      newStatus: "paused",
+    });
+    return this.getTask(id)!;
+  }
+
+  // Resume a paused task: flips status paused→running (the daemon respawns the
+  // snapshotted agents with --resume separately).
+  resumeFromPause(id: string): Task {
+    const task = this.getTask(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    if (task.status !== "paused") {
+      throw new Error(`Can only resume a paused task, current status: ${task.status}`);
+    }
+
+    const changed = this.db
+      .prepare(
+        "UPDATE tasks SET status = 'running', updated_at = datetime('now') WHERE id = ? AND status = 'paused'",
+      )
+      .run(id).changes;
+    if (changed === 0) {
+      throw new Error("Task is no longer paused");
+    }
+
+    eventBus.emit("task:state_changed", {
+      taskId: id,
+      previousStatus: "paused",
+      newStatus: "running",
+    });
+    return this.getTask(id)!;
+  }
+
   getNextApprovedTask(): Task | null {
     const row = this.db
       .prepare(

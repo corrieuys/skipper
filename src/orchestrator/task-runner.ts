@@ -33,8 +33,11 @@ export class TaskRunner {
   async processTaskQueue(): Promise<{ processed: number }> {
     const parallel = getBoolSetting(this.db, SETTING_PARALLEL_TASKS, true);
     const cap = parallel ? TaskRunner.PARALLEL_MAX_CONCURRENT : 1;
+    // A paused task still occupies its concurrency slot — pausing must NOT free
+    // the daemon to start the next approved task (critical when parallel
+    // execution is disabled, cap=1).
     const runningCount = (this.db
-      .prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'running' AND task_type != 'real_time'")
+      .prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('running', 'paused') AND task_type != 'real_time'")
       .get() as { c: number }).c;
     if (runningCount >= cap) {
       return { processed: 0 };

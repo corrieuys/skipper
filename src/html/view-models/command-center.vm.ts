@@ -80,7 +80,7 @@ export function buildCommandCenterViewModel(
             tm.name AS team_name
      FROM tasks t LEFT JOIN teams tm ON tm.id = t.team_id
      WHERE t.source_scheduled_task_id IS NULL
-        OR t.status IN ('running', 'approved')
+        OR t.status IN ('running', 'approved', 'paused')
         OR t.id = ?
      ORDER BY t.created_at DESC`
   ).all(opts?.includeTaskId ?? null) as Array<{

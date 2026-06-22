@@ -112,6 +112,89 @@ export class RecoveryManager {
     return !!row;
   }
 
+  /**
+   * True if any agent in the task's subtree is still alive — an in-memory runtime
+   * for the task, or a DB-tracked instance whose OS process still responds to a
+   * zero-signal liveness probe. Used by recoverTask as an orphan-guard so a fresh
+   * root is never spawned alongside a still-running delegation chain.
+   */
+  private taskHasLiveInstance(taskId: string): boolean {
+    for (const runtime of this.agentManager.getRunningAgents().values()) {
+      if (runtime.taskId === taskId) return true;
+    }
+    const instances = this.db
+      .prepare(
+        "SELECT process_pid FROM agent_instances WHERE task_id = ? AND process_pid IS NOT NULL AND status IN ('running', 'waiting_delegation', 'pending')",
+      )
+      .all(taskId) as { process_pid: number }[];
+    for (const inst of instances) {
+      try {
+        process.kill(inst.process_pid, 0);
+        return true;
+      } catch { /* process dead — keep scanning */ }
+    }
+    return false;
+  }
+
+  /**
+   * Kill every process in the task's instance subtree and reconcile its open
+   * delegation bookkeeping to a neutral, terminal state. Covers both in-memory
+   * runtimes (process-group kill of the whole tree) and orphaned DB instances no
+   * longer tracked in memory (raw PID kill). Leaves the DB consistent so a freshly
+   * spawned root re-drives delegation against a clean slate.
+   */
+  private async reapTaskSubtree(taskId: string): Promise<void> {
+    try {
+      const runtimes = [...this.agentManager.getRunningAgents().values()].filter(
+        (r) => r.taskId === taskId,
+      );
+      for (const runtime of runtimes) {
+        this.agentManager.killAgentTree(runtime.id);
+      }
+      await Promise.all(runtimes.map((r) => this.agentManager.waitForExit(r.id, 10_000)));
+
+      // Orphaned DB instances not tracked in memory — kill their process trees by raw PID.
+      const tracked = new Set(runtimes.map((r) => r.id));
+      const orphans = this.db
+        .prepare(
+          "SELECT id, process_pid FROM agent_instances WHERE task_id = ? AND process_pid IS NOT NULL AND status IN ('running', 'waiting_delegation', 'pending')",
+        )
+        .all(taskId) as { id: string; process_pid: number }[];
+      for (const inst of orphans) {
+        if (tracked.has(inst.id)) continue;
+        try {
+          process.kill(-inst.process_pid, "SIGKILL");
+        } catch {
+          try { process.kill(inst.process_pid, "SIGKILL"); } catch { /* already dead */ }
+        }
+      }
+
+      // Reconcile DB state so the new root starts clean.
+      this.db
+        .prepare(
+          "UPDATE agent_instances SET status = 'stopped', process_pid = NULL, updated_at = datetime('now') WHERE task_id = ? AND status IN ('running', 'waiting_delegation', 'pending')",
+        )
+        .run(taskId);
+      this.db
+        .prepare(
+          "UPDATE delegations SET status = 'failed', result = COALESCE(result, 'Reaped during task recovery'), completed_at = datetime('now') WHERE task_id = ? AND status IN ('pending', 'running')",
+        )
+        .run(taskId);
+      this.db
+        .prepare("UPDATE delegation_groups SET status = 'completed' WHERE task_id = ? AND status = 'running'")
+        .run(taskId);
+
+      if (runtimes.length > 0 || orphans.length > 0) {
+        this.emitRemediationEvent("recovery_subtree_reaped", null, taskId, {
+          runtimes: runtimes.length,
+          orphans: orphans.length,
+        });
+      }
+    } catch (err) {
+      logError(this.db, "recovery_reap_subtree", { taskId, method: "reapTaskSubtree" }, err);
+    }
+  }
+
   async recoverAllStaleTasks(): Promise<number> {
     let recovered = 0;
 
@@ -294,17 +377,29 @@ export class RecoveryManager {
       }
     }
 
+    // Orphan-guard against duplicate roots: if a delegation group is still running
+    // AND any process in this task's subtree is genuinely alive, the chain is still
+    // working — a completing child resumes its parent up to the root. Spawning a
+    // fresh root here would create a SECOND parallel delegation chain (the
+    // duplicate-validator bug). Park the entrypoint in waiting_delegation so the
+    // resume-on-child-complete path revives it. We resolve the running group from
+    // the DB (not just orchState.active_delegation_group_id) because that field is
+    // unreliable — a stale/null value is exactly what let the duplicate root spawn.
     const activeGroupId = orchState.active_delegation_group_id;
-    if (activeGroupId) {
-      const group = this.db
-        .prepare("SELECT status FROM delegation_groups WHERE id = ?")
-        .get(activeGroupId) as { status: string } | null;
-      if (group && group.status === "running") {
-        this.setAgentState(entrypointAgentId, "waiting_delegation", {
-          delegation_id: activeGroupId,
-        });
-        return true;
-      }
+    const runningGroup = (
+      activeGroupId
+        ? (this.db.prepare("SELECT id FROM delegation_groups WHERE id = ? AND status = 'running'").get(activeGroupId) as { id: string } | null)
+        : null
+    ) ?? (this.db
+      .prepare("SELECT id FROM delegation_groups WHERE task_id = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1")
+      .get(taskId) as { id: string } | null);
+
+    if (runningGroup && this.taskHasLiveInstance(taskId)) {
+      this.setAgentState(entrypointAgentId, "waiting_delegation", {
+        delegation_id: runningGroup.id,
+      });
+      this.clearOrphanRecoverySeen(taskId);
+      return true;
     }
 
     const sessionId =
@@ -349,10 +444,12 @@ export class RecoveryManager {
     const fullPrompt = recoveryPrefix + prompt;
     const usesInlinePrompt = agentTypeUsesInlinePrompt(typeDef, canResume ? sessionId : null);
 
-    if (this.agentManager.getRunningAgent(entrypointAgentId)) {
-      this.agentManager.killAgent(entrypointAgentId);
-      await this.agentManager.waitForExit(entrypointAgentId);
-    }
+    // Reap-before-respawn: kill the entire existing instance subtree for this task
+    // and reconcile its open delegations to a neutral state BEFORE spawning a fresh
+    // root. Killing only the entrypoint runtime (the old behavior) left orphaned
+    // delegated children alive — they kept executing alongside the new root,
+    // producing duplicate parallel agents. The resumed root re-drives delegation.
+    await this.reapTaskSubtree(taskId);
 
     try {
       const workingDir = process.cwd(); // Agents spawn in orchestrator cwd

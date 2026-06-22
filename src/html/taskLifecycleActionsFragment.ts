@@ -43,6 +43,16 @@ export function taskLifecycleActionsFragment(
             );
         }
         buttons.push(
+            `<button class="btn btn-secondary" hx-post="/api/tasks/${id}/pause" hx-target="body" hx-swap="innerHTML" hx-confirm="Pause this task? All its agents and their subprocesses will be stopped; you can resume later.">Pause</button>`
+        );
+        buttons.push(
+            `<button class="btn btn-danger" hx-post="/api/tasks/${id}/cancel" hx-target="body" hx-swap="innerHTML" hx-confirm="Cancel this task?">Cancel</button>`
+        );
+    } else if (task.status === "paused") {
+        buttons.push(
+            `<button class="btn btn-primary" hx-post="/api/tasks/${id}/resume-from-pause" hx-target="body" hx-swap="innerHTML">Resume</button>`
+        );
+        buttons.push(
             `<button class="btn btn-danger" hx-post="/api/tasks/${id}/cancel" hx-target="body" hx-swap="innerHTML" hx-confirm="Cancel this task?">Cancel</button>`
         );
     } else if (task.status === "failed") {

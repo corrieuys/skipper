@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   title TEXT NOT NULL,
   description TEXT,
   team_id TEXT REFERENCES teams(id),
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'approved', 'running', 'completed', 'failed')),
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'approved', 'running', 'paused', 'completed', 'failed')),
   current_phase INTEGER NOT NULL DEFAULT 0,
   result TEXT,                               -- JSON
   orchestration_state TEXT NOT NULL DEFAULT '{}', -- JSONB

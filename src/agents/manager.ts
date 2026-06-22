@@ -17,6 +17,8 @@ const TRUNCATION_MARKER = "\n\n[PROMPT TRUNCATED — original exceeded size limi
 
 // Proactive compaction threshold for resume messages
 const RESUME_COMPACT_CHARS = 200_000;
+// Grace between SIGTERM and the SIGKILL sweep when killing an agent process tree.
+const KILL_TREE_GRACE_MS = 3_000;
 const SIGNAL_DEDUP_WINDOW_MS = 15_000;
 const SIGNAL_DEDUP_CACHE_LIMIT = 128;
 
@@ -636,6 +638,10 @@ export class AgentManager {
         stdout: "pipe",
         stderr: "pipe",
         stdin: "pipe",
+        // Detach so the child becomes a process-group leader (setsid → pid===pgid).
+        // Lets killAgentTree() signal the whole tree via the negative pgid, so a
+        // paused/cancelled task's agent AND every subprocess it spawned dies.
+        detached: true,
       });
     } catch (err) {
       // Only mark the row failed when one was actually inserted above.
@@ -919,6 +925,36 @@ export class AgentManager {
     if (!runningAgent) return false;
 
     runningAgent.process.kill();
+    return true;
+  }
+
+  // Kill an agent AND every subprocess it spawned. Agents are spawned detached
+  // (their own process group, pid===pgid), so signalling the negative pgid hits
+  // the whole tree. SIGTERM first for graceful exit handlers, then a SIGKILL
+  // sweep after a grace period for anything that ignored it. Falls back to the
+  // positive pid for any legacy non-detached process.
+  killAgentTree(agentId: string): boolean {
+    const resolvedId = this.resolveRuntimeId(agentId);
+    const runningAgent = resolvedId ? this.agents.get(resolvedId) : undefined;
+    if (!runningAgent) return false;
+    const pid = runningAgent.process.pid;
+    if (!pid) {
+      runningAgent.process.kill();
+      return true;
+    }
+
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      try { process.kill(pid, "SIGTERM"); } catch { /* already dead */ }
+    }
+    setTimeout(() => {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ }
+      }
+    }, KILL_TREE_GRACE_MS);
     return true;
   }
 

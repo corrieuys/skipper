@@ -394,6 +394,90 @@ describe("Recovery manager — one-shot recovery policy", () => {
   });
 });
 
+describe("Recovery manager — duplicate-root prevention", () => {
+  it("orphan-guard: parks (no respawn) while a delegated child is still alive but orchState lost the group", async () => {
+    const agentId = createAgent("worker");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createRunningTask(teamId);
+
+    // Root is dead, but a delegated child's OS process is still alive (use this
+    // test process's own PID — guaranteed live). A delegation_group is still
+    // 'running' in the DB, but orchestration_state does NOT reference it — exactly
+    // the stale-state condition that let a second root spawn in the incident.
+    const deadRoot = crypto.randomUUID();
+    const liveChild = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, status, attempt)
+       VALUES (?, ?, 'skipper', 'waiting_delegation', 1)`,
+    ).run(deadRoot, taskId);
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, status, process_pid, attempt)
+       VALUES (?, ?, ?, ?, 'running', ?, 1)`,
+    ).run(liveChild, taskId, agentId, deadRoot, process.pid);
+    const groupId = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO delegation_groups (id, task_id, parent_instance_id, expected_count, status)
+       VALUES (?, ?, ?, 1, 'running')`,
+    ).run(groupId, taskId, deadRoot);
+
+    const recovered = await daemon.getRecoveryManager().recoverTask(taskId);
+
+    // Guard fired: parked in waiting_delegation, NOT respawned, child untouched.
+    expect(recovered).toBe(true);
+    const parentState = db.prepare("SELECT state FROM agent_states WHERE agent_id = 'skipper'").get() as { state: string } | null;
+    expect(parentState?.state).toBe("waiting_delegation");
+    const inst = db.prepare("SELECT status, process_pid FROM agent_instances WHERE id = ?").get(liveChild) as { status: string; process_pid: number | null };
+    expect(inst.status).toBe("running");
+    expect(inst.process_pid).toBe(process.pid);
+  });
+
+  it("reap-before-respawn: reconciles a dead orphaned subtree before spawning", async () => {
+    // Make the entrypoint a lightweight test agent so the post-reap spawn succeeds
+    // cleanly (and is torn down in afterEach) rather than exec'ing a real CLI.
+    db.prepare("UPDATE agents SET type = 'test-echo' WHERE id = 'skipper'").run();
+
+    const agentId = createAgent("worker");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createRunningTask(teamId);
+
+    // Orphaned subtree: instances with dead PIDs + open delegation bookkeeping.
+    const deadRoot = crypto.randomUUID();
+    const deadChild = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, status, process_pid, attempt)
+       VALUES (?, ?, 'skipper', 'running', 999999, 1)`,
+    ).run(deadRoot, taskId);
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, status, process_pid, attempt)
+       VALUES (?, ?, ?, ?, 'waiting_delegation', 999998, 1)`,
+    ).run(deadChild, taskId, agentId, deadRoot);
+
+    const groupId = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO delegation_groups (id, task_id, parent_instance_id, expected_count, status)
+       VALUES (?, ?, ?, 1, 'running')`,
+    ).run(groupId, taskId, deadRoot);
+    const delegationId = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO delegations (id, parent_agent_id, child_agent_id, parent_instance_id, child_instance_id, delegation_group_id, task_id, prompt, status)
+       VALUES (?, 'skipper', ?, ?, ?, ?, ?, 'do work', 'running')`,
+    ).run(delegationId, agentId, deadRoot, deadChild, groupId, taskId);
+
+    await daemon.getRecoveryManager().recoverTask(taskId);
+
+    // The orphaned subtree is reaped + reconciled, regardless of spawn outcome.
+    const root = db.prepare("SELECT status, process_pid FROM agent_instances WHERE id = ?").get(deadRoot) as { status: string; process_pid: number | null };
+    expect(root.status).toBe("stopped");
+    expect(root.process_pid).toBeNull();
+    const child = db.prepare("SELECT status FROM agent_instances WHERE id = ?").get(deadChild) as { status: string };
+    expect(child.status).toBe("stopped");
+    const group = db.prepare("SELECT status FROM delegation_groups WHERE id = ?").get(groupId) as { status: string };
+    expect(group.status).toBe("completed");
+    const delegation = db.prepare("SELECT status FROM delegations WHERE id = ?").get(delegationId) as { status: string };
+    expect(delegation.status).toBe("failed");
+  });
+});
+
 describe("Recovery manager — terminal task cleanup", () => {
   it("should clean up agent assignments on terminal state", () => {
     const agentId = createAgent("worker");
