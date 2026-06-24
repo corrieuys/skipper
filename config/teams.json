@@ -191,6 +191,64 @@
       ]
     },
     {
+      "id": "e9a3c1d7-4b2f-4a8e-9c3d-1f7b6a2e5c8d",
+      "name": "Incident",
+      "goal": "Investigate a reported incident, and — only if the root cause is confidently located in the codebase — fix it, validate it, and open pull requests for every affected repository. If the investigation is not confident, the task ends after the investigation with no fix attempted.",
+      "entrypoint_agent_id": "skipper",
+      "phases": [
+        {
+          "name": "Investigation",
+          "prompt": "Delegate to the Incident Investigator with the incident description and any reproduction context from the task. The Investigator reproduces/diagnoses, locates the problem in the codebase, and MUST return an explicit confidence level (`high`/`medium`/`low`) for whether a fix should be attempted. Make the incident-investigation mode explicit in your delegation: an inconclusive outcome is acceptable, and no implementation plan / acceptance criteria are required from the Investigator.\n\nWhen the Investigator returns, read its `incident-investigation` artifact and stated confidence:\n\n- NOT CONFIDENT (`low`): DO NOT continue. Do not delegate to anyone else, do not attempt a fix, do not advance the phase. Record a short note with the verdict and COMPLETE THE TASK here.\n\n- CONFIDENT (`high`/`medium`): the artifact must contain a breakdown of findings. Now delegate to the Implementation Analyst, handing it the investigation findings, and ask it to produce an `implementation-plan` artifact (with a thorough Acceptance Criteria section) AND a testing strategy for the fix. Once the plan exists, advance to the Implementation phase.\n\nThere is NO manual review gate on this phase."
+        },
+        {
+          "name": "Implementation",
+          "prompt": "You (Skipper) drive delegation in this phase. Read the `implementation-plan` artifact first. Delegate to Coder with the full plan and acceptance criteria to implement the fix. When Coder reports success, delegate to Tester to verify the fix works, that the project's tests/build/typecheck/lint pass, and that nothing regressed. If Tester FAILs, resume the existing Coder via `delegate_resume` with Tester's feedback, then re-run Tester. Loop Coder ↔ Tester until PASS. Tester must not implement fixes, must stop any app instances it started, and must delete any screenshots it took. For a large fix, you may split it into sequenceable parts and run Coder → Tester per part (resume each role across parts) — use your judgment. Only advance once the final fix passes the Tester."
+        },
+        {
+          "name": "Validation",
+          "prompt": "Delegate to the Validator with the full `implementation-plan` artifact. The Validator compares the cumulative diff across all touched repositories against the plan and acceptance criteria item by item, confirming everything passes and every criterion is met. If the Validator FAILs, route the gap back to the Coder, re-run the Tester, then re-run the Validator; loop until PASS. If the Validator needs an operator decision (out-of-scope changes, ambiguous criteria), it must call `escalate` directly from its own run.\n\nOnce the Validator signs off, Skipper (not a delegate) opens pull requests for EVERY affected repository: for each repo that received changes, push the branch and run `gh pr create` with a branch-prefix convention based on the work (`fix/<slug>` for a fix). The PR title and description must clearly summarise the incident, the root cause, and the fix delivered. Record the created PR URLs in a final note and complete the task."
+        }
+      ],
+      "members": [
+        {
+          "agent_id": "d5b8e3f2-1a7c-4e9b-8f6d-3c2a1b9e4d7a",
+          "role": "incident investigator",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "056fe104-ac53-46bb-b1b6-2a2a08122b8e",
+          "role": "implementation analyst",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "b052a0c7-2a2a-4dde-be39-95d88184fded",
+          "role": "developer",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "7c0d3a92-1f4e-4b8a-9d11-2e6f8b3c5a90",
+          "role": "tester",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "ff96ca77-3209-47c4-8660-0308d10a1363",
+          "role": "validator",
+          "level": 1,
+          "parent_agent_id": null
+        },
+        {
+          "agent_id": "skipper",
+          "role": "lead",
+          "level": 0,
+          "parent_agent_id": null
+        }
+      ]
+    },
+    {
       "id": "c8d4f2a1-7b3e-4c89-9a2f-1e5d3b8c6a47",
       "name": "Bug Hunters",
       "goal": "Investigate a reported bug. The Analyst reproduces and diagnoses; the Skipper coordinates and reports back to the user. The investigation may be inconclusive — that is an acceptable outcome.",
