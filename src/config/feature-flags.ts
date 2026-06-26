@@ -19,8 +19,20 @@ const ALLOWED_AGENT_IDS = new Set<string>([
   "skipper",
 ]);
 
+// User-created teams are always visible. Their ids are registered here so the
+// allowlist-filtered dropdowns include them even outside --experimental.
+const VISIBLE_LOCAL_TEAM_IDS = new Set<string>();
+
+export function registerVisibleLocalTeam(id: string): void {
+  VISIBLE_LOCAL_TEAM_IDS.add(id);
+}
+
+export function unregisterVisibleLocalTeam(id: string): void {
+  VISIBLE_LOCAL_TEAM_IDS.delete(id);
+}
+
 export function isTeamVisible(id: string): boolean {
-  return isExperimental() || ALLOWED_TEAM_IDS.has(id);
+  return isExperimental() || ALLOWED_TEAM_IDS.has(id) || VISIBLE_LOCAL_TEAM_IDS.has(id);
 }
 
 export function isAgentVisible(id: string): boolean {

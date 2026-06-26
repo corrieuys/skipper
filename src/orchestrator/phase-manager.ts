@@ -9,7 +9,7 @@ import { logError } from "../logging";
 import type { ConsensusManager } from "./consensus-manager";
 import type { Phase } from "../teams/manager";
 import type { OrchestrationState } from "./types";
-import { getTaskTemplateId, resolvePhaseConfig } from "../templates/helpers";
+import { resolvePhaseConfig } from "./phase-config";
 
 const MAX_REGRESSIONS = 20;
 
@@ -127,8 +127,7 @@ export class PhaseManager {
         }
       }
 
-      const templateId = getTaskTemplateId(task.task_config);
-      const resolvedCurrentPhase = resolvePhaseConfig(this.db, phases[task.current_phase]!, templateId, task.task_config as Record<string, unknown>);
+      const resolvedCurrentPhase = resolvePhaseConfig(phases[task.current_phase]!, task.task_config as Record<string, unknown>);
       if (resolvedCurrentPhase.review) {
         // Phase has review flag — pause for human review before advancing
         try {
@@ -223,8 +222,7 @@ export class PhaseManager {
       instruction: agent.config.instruction,
     };
 
-    const templateId = getTaskTemplateId(task.task_config);
-    const resolved = resolvePhaseConfig(this.db, phases[targetPhase], templateId, task.task_config as Record<string, unknown>);
+    const resolved = resolvePhaseConfig(phases[targetPhase], task.task_config as Record<string, unknown>);
     const phaseInfo: PhaseInfo = {
       name: resolved.name,
       prompt: resolved.prompt,
@@ -289,8 +287,7 @@ export class PhaseManager {
     approvalNote?: string,
   ): Promise<void> {
     const nextPhaseIndex = task.current_phase + 1;
-    const templateId = getTaskTemplateId(task.task_config);
-    const resolvedNext = resolvePhaseConfig(this.db, phases[nextPhaseIndex], templateId, task.task_config as Record<string, unknown>);
+    const resolvedNext = resolvePhaseConfig(phases[nextPhaseIndex], task.task_config as Record<string, unknown>);
     const resolvedNextPhaseObj: Phase = { name: resolvedNext.name, prompt: resolvedNext.prompt, review: resolvedNext.review, consensus: resolvedNext.consensus ?? undefined };
 
     // Consensus phase — delegate to ConsensusManager

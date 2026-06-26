@@ -46,8 +46,8 @@ export function dashboardInlineTaskCreationFragment(
           <option value="standard">Standard</option>
           <option value="real_time">Real-Time</option>
         </select>
-        <div id="task-form-team-template-slot" style="display:contents;"
-          hx-get="/fragments/task-form/team-template?taskType=standard&amp;context=inline"
+        <div id="task-form-team-slot" style="display:contents;"
+          hx-get="/fragments/task-form/team?taskType=standard&amp;context=inline"
           hx-trigger="load, change from:[name=taskType]"
           hx-include="[name=taskType]"
           hx-swap="outerHTML"></div>

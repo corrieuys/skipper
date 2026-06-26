@@ -532,58 +532,7 @@
     },
   };
 
-  // ── Hooks editor (template form) ──
-  // Structured row editor that serializes to a hidden #sk-hooks-json field
-  // immediately before form submit. Routes still consume `hooks` as a JSON
-  // string just like before.
-  Skipper.hooks = {
-    serialize: function (formEl) {
-      var rows = formEl.querySelectorAll("[data-sk-hook-row]");
-      var hooks = [];
-      rows.forEach(function (row) {
-        var template = row.querySelector('[data-sk-field="template"]').value;
-        if (!template.trim()) return; // drop empty rows silently
-        var h = {
-          event: row.querySelector('[data-sk-field="event"]').value,
-          type: row.querySelector('[data-sk-field="type"]').value,
-          template: template,
-        };
-        var name = row.querySelector('[data-sk-field="name"]').value.trim();
-        if (name) h.name = name;
-        if (row.querySelector('[data-sk-field="disabled"]').checked) h.disabled = true;
-        hooks.push(h);
-      });
-      var hidden = formEl.querySelector("#sk-hooks-json");
-      if (hidden) hidden.value = JSON.stringify(hooks);
-    },
-    addRow: function (editor) {
-      var rows = editor.querySelectorAll("[data-sk-hook-row]");
-      if (rows.length > 0) {
-        var blank = rows[rows.length - 1].cloneNode(true);
-        blank.querySelectorAll("[data-sk-field]").forEach(function (el) {
-          if (el.type === "checkbox") el.checked = false;
-          else el.value = el.tagName === "SELECT" ? el.options[0].value : "";
-        });
-        editor.appendChild(blank);
-        return;
-      }
-      // No existing rows — fetch a fresh empty row from the server
-      if (typeof htmx !== "undefined") {
-        htmx.ajax("GET", "/fragments/templates/hook-row", {
-          target: "#sk-hooks-editor",
-          swap: "beforeend",
-        });
-      }
-    },
-  };
-
-  // Serialize hooks before any htmx-submitted form fires off the request.
   document.addEventListener("htmx:configRequest", function (e) {
-    var form = e.target && e.target.closest ? e.target.closest("form") : null;
-    if (form && form.querySelector("#sk-hooks-editor")) {
-      Skipper.hooks.serialize(form);
-    }
-
     // Suppress the WS-pushed #mc-main refresh when the user is viewing a
     // task other than the one whose state changed. The push lands as an
     // OOB swap of #mc-main-refresh containing a hidden <div hx-get="/workspace/task/<runningId>"

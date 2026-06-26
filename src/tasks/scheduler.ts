@@ -17,7 +17,6 @@ export interface RealtimeTaskConfig {
   max_pending_windows?: number;
   transcription_command?: string;
   transcription_args?: string[];
-  template_id?: string;
   phase_overrides?: Record<string, PhaseOverride>;
 }
 

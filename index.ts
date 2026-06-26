@@ -1,5 +1,4 @@
 import { startServer, addRoute, setWebSocketUpgradeHandlers, setWebSocketHandlers } from "./src/server";
-import { registerAgentRoutes } from "./src/routes/agents";
 import { registerTaskRoutes } from "./src/routes/tasks";
 import { registerTeamRoutes } from "./src/routes/teams";
 import { registerSkipperRoutes } from "./src/routes/skipper";
@@ -8,7 +7,6 @@ import { registerDaemonRoutes } from "./src/routes/daemon";
 import { registerRealtimeRoutes } from "./src/routes/realtime";
 import { registerDataRoutes } from "./src/routes/data/index";
 import { registerConversationRoutes } from "./src/routes/conversations";
-import { registerTemplateRoutes } from "./src/routes/templates";
 import { registerScheduledTaskRoutes } from "./src/routes/scheduled-tasks";
 import { registerApiKeyRoutes } from "./src/routes/api-keys";
 import { ManagerDaemon } from "./src/agents/manager-daemon";
@@ -50,16 +48,15 @@ const mcpServer = new DaemonMcpServer(getDb(), {
 });
 const whisperManager = new WhisperManager();
 
-registerAgentRoutes(daemon);
 registerTaskRoutes(daemon);
-registerTeamRoutes(undefined, daemon);
+// Teams (with inline agents) CRUD + /api/teams/import|export.
+registerTeamRoutes();
 registerSkipperRoutes();
 registerDaemonRoutes(daemon);
 registerPageRoutes(daemon);
 registerRealtimeRoutes(daemon);
 registerDataRoutes(getDb(), daemon);
 registerConversationRoutes(daemon.getConversationManager());
-registerTemplateRoutes();
 registerScheduledTaskRoutes(daemon);
 registerApiKeyRoutes();
 

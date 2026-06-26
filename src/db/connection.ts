@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { dirname, resolve } from "path";
 import { mkdirSync, readFileSync, readdirSync, existsSync } from "fs";
 import { loadConfigSnapshotIntoDb, loadRealtimeDefaultsIntoDb } from "../config/store";
+import { flattenLocalTeamsIntoStore } from "../teams/local-teams";
 import { getRuntimeDbPath, migrateLegacyDbIfNeeded } from "../paths";
 
 const MONOLITH_SCHEMA_PATH = resolve(import.meta.dir, "schema.sql");
@@ -48,6 +49,7 @@ const RUNTIME_TABLES = [
   "notification_preferences",
   "app_settings",
   "api_keys",
+  "local_teams",
 ];
 
 function configureDatabase(database: Database): void {
@@ -121,8 +123,6 @@ function migrateLegacySchema(database: Database): void {
   ensureColumn(database, "task_template_phases", "review_override", "TEXT DEFAULT NULL");
   ensureColumn(database, "task_template_phases", "consensus_override", "TEXT DEFAULT NULL");
   ensureColumn(database, "tasks", "source_scheduled_task_id", "TEXT");
-  ensureColumn(database, "tasks", "pending_compact", "INTEGER NOT NULL DEFAULT 0");
-  ensureColumn(database, "scheduled_tasks", "single_instance", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(database, "agent_instances", "input_tokens", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(database, "agent_instances", "output_tokens", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(database, "agent_instances", "cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0");
@@ -167,7 +167,6 @@ function migrateTasksAddPausedStatus(database: Database): void {
         task_type TEXT NOT NULL DEFAULT 'standard' CHECK (task_type IN ('standard', 'real_time')),
         task_config TEXT NOT NULL DEFAULT '{}',
         source_scheduled_task_id TEXT,
-        pending_compact INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         approved_at TEXT,
         started_at TEXT,
@@ -179,11 +178,11 @@ function migrateTasksAddPausedStatus(database: Database): void {
       INSERT INTO tasks_new (id, title, description, team_id, status, current_phase,
         result, orchestration_state, regression_count, iteration_count, needs_review,
         working_directory, task_type, task_config, source_scheduled_task_id,
-        pending_compact, created_at, approved_at, started_at, completed_at, updated_at)
+        created_at, approved_at, started_at, completed_at, updated_at)
       SELECT id, title, description, team_id, status, current_phase,
         result, orchestration_state, regression_count, iteration_count, needs_review,
         working_directory, task_type, task_config, source_scheduled_task_id,
-        pending_compact, created_at, approved_at, started_at, completed_at, updated_at FROM tasks;
+        created_at, approved_at, started_at, completed_at, updated_at FROM tasks;
     `);
     database.exec("DROP TABLE tasks;");
     database.exec("ALTER TABLE tasks_new RENAME TO tasks;");
@@ -220,7 +219,6 @@ function migrateScheduledTasksOptionalInterval(database: Database): void {
         task_config TEXT NOT NULL DEFAULT '{}',
         next_run_at TEXT,
         last_run_at TEXT,
-        single_instance INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
@@ -228,10 +226,10 @@ function migrateScheduledTasksOptionalInterval(database: Database): void {
     database.exec(`
       INSERT INTO scheduled_tasks_new (id, title, description, team_id, working_directory,
         schedule_unit, schedule_amount, status, task_config, next_run_at, last_run_at,
-        single_instance, created_at, updated_at)
+        created_at, updated_at)
       SELECT id, title, description, team_id, working_directory,
         schedule_unit, schedule_amount, status, task_config, next_run_at, last_run_at,
-        single_instance, created_at, updated_at FROM scheduled_tasks;
+        created_at, updated_at FROM scheduled_tasks;
     `);
     database.exec("DROP TABLE scheduled_tasks;");
     database.exec("ALTER TABLE scheduled_tasks_new RENAME TO scheduled_tasks;");
@@ -493,6 +491,9 @@ function initializeSplitDatabases(runtimeDb: Database): void {
   // config/*.json are the source of truth and are loaded here once at boot.
   ensureSharedAttached(runtimeDb);
   runSharedConfigSchema(runtimeDb);
+  // Register teams into the in-memory store Maps before seeding the shared.*
+  // tables, so the snapshot below already includes them.
+  flattenLocalTeamsIntoStore(runtimeDb);
   loadConfigSnapshotIntoDb(runtimeDb, "shared");
   loadRealtimeDefaultsIntoDb(runtimeDb);
   installSplitSqlRouting(runtimeDb);
@@ -503,6 +504,7 @@ function initializeSingleDatabase(database: Database): void {
   runSchema(database, MONOLITH_SCHEMA_PATH);
   migrateLegacySchema(database);
   applyVersionedMigrations(database);
+  flattenLocalTeamsIntoStore(database);
   loadConfigSnapshotIntoDb(database, "main");
   loadRealtimeDefaultsIntoDb(database);
 }

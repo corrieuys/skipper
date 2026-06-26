@@ -17,10 +17,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   task_type TEXT NOT NULL DEFAULT 'standard' CHECK (task_type IN ('standard', 'real_time')),
   task_config TEXT NOT NULL DEFAULT '{}',
   source_scheduled_task_id TEXT,
-  -- Set to 1 by handleAgentExit when a single_instance scheduled task's
-  -- Skipper exits cleanly. The next scheduled fire prepends a context-
-  -- compaction instruction to Skipper's prompt and clears the flag.
-  pending_compact INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   approved_at TEXT,
   started_at TEXT,
@@ -412,11 +408,6 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   task_config TEXT NOT NULL DEFAULT '{}',
   next_run_at TEXT,
   last_run_at TEXT,
-  -- single_instance=1: each fire respawns Skipper against ONE persistent
-  -- tasks row instead of creating a new task per fire. End-of-fire sets
-  -- tasks.pending_compact=1 so the next fire's prompt starts with a
-  -- context-compaction instruction.
-  single_instance INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -450,4 +441,17 @@ CREATE TABLE IF NOT EXISTS global_store (
 );
 CREATE INDEX IF NOT EXISTS idx_global_store_type   ON global_store(type);
 CREATE INDEX IF NOT EXISTS idx_global_store_status ON global_store(status);
+
+-- Unified "local teams" persisted in the runtime DB. Flattened into the shared
+-- config layer at boot + on mutation so the orchestrator sees them unchanged.
+CREATE TABLE IF NOT EXISTS local_teams (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  skipper_prompt TEXT NOT NULL DEFAULT '',
+  hooks TEXT NOT NULL DEFAULT '[]',
+  phases TEXT NOT NULL DEFAULT '[]',
+  agents TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 

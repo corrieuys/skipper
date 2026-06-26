@@ -31,19 +31,17 @@ export function helpPage(vm: HelpPageViewModel): string {
         <ol style="margin: 0; padding-left: var(--sk-space-6); line-height: 2;">
           <li><a href="#overview">Overview</a></li>
           <li><a href="#teams">Teams</a></li>
-          <li><a href="#templates">Templates</a></li>
           <li><a href="#tasks">Tasks</a></li>
           <li><a href="#delegation">Delegation${experimental ? " &amp; Consensus" : ""}</a></li>
           <li><a href="#escalations">Escalations</a></li>
           <li><a href="#artifacts">Artifacts &amp; Notes</a></li>
-          <li><a href="#agents">Agent Types &amp; Configuration</a></li>
+          <li><a href="#agents">Agent Types &amp; Agents</a></li>
           ${experimental ? `<li><a href="#realtime">Realtime Sessions</a></li>` : ""}
-          ${experimental ? `<li><a href="#hooks">User Hooks</a></li>` : ""}
           <li><a href="#mcp">MCP (Model Context Protocol)</a></li>
           ${experimental ? `<li><a href="#conversations">Conversations</a></li>` : ""}
           <li><a href="#notifications">Notifications &amp; WebSocket</a></li>
           <li><a href="#config">Configuration</a></li>
-          <li><a href="#analytics">Analytics &amp; Logs</a></li>
+          <li><a href="#logs">Logs</a></li>
         </ol>
       </div>
     </div>`;
@@ -59,7 +57,7 @@ export function helpPage(vm: HelpPageViewModel): string {
     <h3 style="margin-top: var(--sk-space-4);">UI Overview</h3>
     <ul>
       <li>Server-rendered HTML dashboard, updated in real time via <strong>WebSocket push</strong> and HTMX polling.</li>
-      <li>Pages: Dashboard (Command Center), Tasks, Escalations, Config, Templates, Analytics, Logs, Help.</li>
+      <li>Pages: Dashboard (Command Center), Tasks, Escalations, Config, Logs${experimental ? ", Global Store" : ""}, Help.</li>
       <li>The sidebar on the Dashboard lists tasks; clicking one loads the task workspace into the main area without a full page reload.</li>
     </ul>
   `);
@@ -67,83 +65,53 @@ export function helpPage(vm: HelpPageViewModel): string {
   const teams = section("teams", "Teams (Core Concept)", `
     <p>A <strong>team</strong> is the foundational organizational unit in Skipper. It defines <em>how</em> agents collaborate on a task: the roles they play, their hierarchy, and the phases of work they follow.</p>
 
+    <p>Teams are created and edited on the <a href="/config">Config</a> page (<em>+ New Team</em> / <em>Edit</em>). A team embeds its own agents and phases inline — there is no separate global roster to wire up.</p>
+
     <h3 style="margin-top: var(--sk-space-4);">Team Structure</h3>
     <ul>
-      <li><strong>name</strong> — human-readable label (e.g. "Software Team").</li>
-      <li><strong>goal</strong> — the team's purpose statement, injected into agent prompts.</li>
-      <li><strong>entrypoint_agent_id</strong> — the lead agent (typically Skipper) that is spawned when a task starts. This agent drives the work and coordinates other team members.</li>
-      <li><strong>phases</strong> — an ordered list of execution stages (see Phases below).</li>
+      <li><strong>Team Name</strong> — human-readable label (e.g. "Software Team").</li>
+      <li><strong>Skipper Prompt</strong> — optional extra context for Skipper, the implicit team lead. It is prepended to Skipper's base instructions for every task this team runs.</li>
+      <li><strong>Phases</strong> — an ordered list of execution stages (see Phases below). At least one is required.</li>
+      <li><strong>Agents</strong> — the team's specialist members (see Agents below).</li>
     </ul>
+    <p><strong>Skipper is the implicit, fixed entrypoint</strong> of every team — the level-0 lead spawned when a task starts. You do not add or pick it; it is always present and drives the work.</p>
 
-    <h3 style="margin-top: var(--sk-space-4);">Team Membership</h3>
-    <p>Each team has a roster of agent members. Every member has:</p>
+    <h3 style="margin-top: var(--sk-space-4);">Agents (Team Members)</h3>
+    <p>Each agent is authored <strong>inline on the team</strong> (not referenced from a shared pool). Per agent you set:</p>
     <ul>
-      <li><strong>role</strong> — what the agent does (e.g. developer, qa, analyst, tester, lead).</li>
-      <li><strong>level</strong> — hierarchy position. <code>0</code> = lead/orchestrator; <code>1+</code> = workers that can be delegated to.</li>
-      <li><strong>parent_agent_id</strong> — optional structural parent in the hierarchy.</li>
+      <li><strong>Name</strong> — used in delegation prompts (e.g. "Coder", "Tester", "Analyst").</li>
+      <li><strong>Type</strong> — the underlying CLI agent type (claude-code, codex, opencode, oz).</li>
+      <li><strong>Model</strong> — the model to run (or <code>default</code>).</li>
+      <li><strong>Role</strong> — optional free-text label for what the agent does.</li>
+      <li><strong>Instruction</strong> — system-level prompt injected when this agent is spawned.</li>
     </ul>
-    <p>The lead agent (level 0) orchestrates the team by delegating sub-tasks to workers (level 1+) and advancing the task through phases.</p>
+    <p>Do not add Skipper as an agent — it is the implicit lead. Every agent reports to Skipper by default, and Skipper delegates sub-tasks to them during a phase.</p>
 
     <h3 style="margin-top: var(--sk-space-4);">Phases</h3>
     <p>Phases are the sequential execution stages of a task. A typical software team might have: <em>Planning → Implementation → Testing → Cleanup</em>. Each phase defines:</p>
     <ul>
-      <li><strong>name</strong> — identifier used in templates and phase overrides.</li>
-      <li><strong>prompt</strong> — instructions injected into the entrypoint agent when this phase starts. The agent is respawned or resumed with the new prompt at each phase transition.</li>
-      <li><strong>review</strong> (optional boolean) — when <code>true</code>, the task pauses after this phase completes and waits for human approval via the Escalations UI before advancing to the next phase.</li>
-      ${experimental ? `<li><strong>consensus</strong> (optional object) — enables parallel multi-agent execution for the phase. Multiple agents tackle the same problem independently; a consensus reviewer merges or selects the best result. Config: <code>agent_count</code>, <code>strategy</code> (best_of or merge), <code>worktree</code>, <code>reviewer_agent_id</code>.</li>` : ""}
+      <li><strong>name</strong> — identifier, also used to key per-task phase overrides.</li>
+      <li><strong>prompt</strong> — instructions injected into Skipper when this phase starts. Skipper is respawned or resumed with the new prompt at each phase transition. Can be overridden for a single task at creation time (see Tasks &rarr; Configuration).</li>
+      <li><strong>review gate</strong> — when enabled, the task pauses after this phase completes and waits for human approval before advancing to the next phase.</li>
     </ul>
+    ${experimental ? `<p><strong>Consensus</strong> (parallel multi-agent execution for a phase) is configured as a <em>per-task phase override</em> on the New Task form, not on the team itself — see Delegation &amp; Consensus.</p>` : ""}
 
     <h3 style="margin-top: var(--sk-space-4);">Review Gates</h3>
-    <p>When a phase has <code>review: true</code>, the task enters a <strong>needs_review</strong> state after the phase completes. The Dashboard shows a review banner. The operator approves or rejects from the UI, injecting their decision back into the lead agent on resume.</p>
+    <p>When a phase has its review gate enabled, the task enters a <strong>needs_review</strong> state after the phase completes. The Dashboard shows a review banner. The operator approves (optionally with a note) or rejects from the UI, injecting their decision back into Skipper on resume.</p>
 
     <h3 style="margin-top: var(--sk-space-4);">How Teams Orchestrate Agents</h3>
-    <p>The entrypoint agent (Skipper) coordinates by:</p>
+    <p>Skipper (the implicit lead) coordinates by:</p>
     <ul>
-      <li>Calling <code>delegate</code> or <code>delegate_batch</code> MCP tools to spawn child agents for sub-tasks.</li>
+      <li>Calling <code>delegate</code> or <code>delegate_batch</code> MCP tools to spawn its team's agents for sub-tasks.</li>
       <li>Calling <code>complete_phase</code> to advance to the next phase (after passing any review gate).</li>
       <li>Calling <code>escalate</code> to surface questions to the human operator.</li>
       <li>Calling <code>complete_task</code> when the final phase finishes.</li>
     </ul>
-    <p>Example teams: <strong>Software Team</strong> (4 phases, 6 members including Analyst, Coder, Tester, Validator) and <strong>Lean Software Team</strong> (2 phases, 3 members).</p>
-  `);
-
-  const templates = section("templates", "Templates (Core Concept)", `
-    <p>A <strong>template</strong> is a reusable configuration package bound to a team. It customises phase behaviour for a specific domain or workflow without changing the team's base definition. The same team can be reused across many task types — templates provide the domain-specific layer on top.</p>
-
-    <h3 style="margin-top: var(--sk-space-4);">Template Structure</h3>
-    <ul>
-      <li><strong>template_name</strong> — descriptive name shown in task creation dropdowns.</li>
-      <li><strong>team_id</strong> — the team this template applies to.</li>
-      <li><strong>skipper_prompt</strong> — optional additional instructions for the lead agent, appended to (or replacing) the base team prompt.</li>
-      ${experimental ? `<li><strong>hooks</strong> — task lifecycle shell commands: <code>pre-run</code>, <code>post-run</code>, and event-triggered hooks. Executed by the orchestrator, not agents.</li>` : ""}
-      <li><strong>per-phase overrides</strong> — per-phase configuration changes (see below).</li>
-    </ul>
-
-    <h3 style="margin-top: var(--sk-space-4);">Per-Phase Overrides</h3>
-    <p>Templates can override any phase's settings independently:</p>
-    <ul>
-      <li><strong>prompt</strong> — additional (or replacement) instructions for the phase.</li>
-      <li><strong>override_prompt</strong> — if <code>true</code>, the template prompt <em>replaces</em> the team's base phase prompt entirely. If <code>false</code> (default), the template prompt is <em>appended</em> to the base prompt.</li>
-      <li><strong>review_override</strong> — set to <code>true</code> or <code>false</code> to enable or disable the review gate for a specific phase, overriding the team's setting. Set to <code>null</code> to inherit from the team.</li>
-      ${experimental ? `<li><strong>consensus_override</strong> — override or disable consensus for a phase. Set to a consensus config object to enable, <code>null</code> to disable, or omit to inherit from the team.</li>` : ""}
-    </ul>
-
-    <h3 style="margin-top: var(--sk-space-4);">Resolution Hierarchy</h3>
-    <p>When a phase starts, its effective configuration is resolved in order of precedence (highest wins):</p>
-    <ol>
-      <li><strong>Task-level override</strong> — per-phase settings set at task creation time (review gate${experimental ? ", consensus" : ""}).</li>
-      <li><strong>Template override</strong> — the template's <code>review_override</code>${experimental ? " / <code>consensus_override</code>" : ""} / prompt settings.</li>
-      <li><strong>Team base</strong> — the team's phase definition (prompt, review${experimental ? ", consensus" : ""}).</li>
-    </ol>
-    <p>Prompts combine team + template levels (append or replace per <code>override_prompt</code>). Review${experimental ? " and consensus" : ""} use${experimental ? " all three" : " both"} levels. This is implemented in <code>resolvePhaseConfig()</code> in the orchestrator.</p>
-
-    <h3 style="margin-top: var(--sk-space-4);">Templates and Tasks</h3>
-    <p>When creating a task, you select an optional template from the team's available templates. At runtime, each time a phase starts, the orchestrator calls <code>resolvePhaseConfig()</code> with the team definition, template overrides, and any per-task overrides — producing the final effective prompt and phase settings for that run.</p>
-    <p>Templates are managed at <a href="/templates">Templates</a>.${experimental ? " Each template's hook execution history is visible in the template edit form." : ""}</p>
+    <p>Manage and export all teams on the <a href="/config">Config</a> page.</p>
   `);
 
   const tasks = section("tasks", "Tasks", `
-    <p>A <strong>task</strong> is the unit of work in Skipper. It ties together a team, an optional template, a description, and lifecycle state.</p>
+    <p>A <strong>task</strong> is the unit of work in Skipper. It ties together a team, a description, and lifecycle state.</p>
 
     <h3 style="margin-top: var(--sk-space-4);">Lifecycle</h3>
     <pre style="background: var(--sk-surface-1); padding: var(--sk-space-3); border-radius: var(--sk-radius-sm); font-family: var(--sk-font-mono); font-size: 13px;">draft → approved → running → completed | failed</pre>
@@ -158,14 +126,13 @@ export function helpPage(vm: HelpPageViewModel): string {
 
     <h3 style="margin-top: var(--sk-space-4);">Configuration</h3>
     <ul>
-      <li>Team assignment and optional template selection.</li>
-      <li>Per-phase overrides for review gates${experimental ? " and consensus settings" : ""}.</li>
+      <li>Team assignment.</li>
+      <li>Per-phase overrides — set at task creation in a collapsible <em>Phase overrides</em> panel that appears once a team is selected (collapsed by default, since most tasks won't override). For each phase you can override the <strong>prompt</strong> — the full phase prompt becomes editable for this task only — and the <strong>review gate</strong>${experimental ? ", plus consensus settings" : ""}. Phases you leave untouched inherit the team defaults.</li>
       <li>Working directory — the filesystem path the entrypoint agent operates in.</li>
-      ${experimental ? `<li>Task-level hooks for pre/post run shell commands.</li>` : ""}
     </ul>
 
     ${experimental ? `<h3 style="margin-top: var(--sk-space-4);">Recurring Tasks</h3>
-    <p>Recurring tasks can use an interval (amount + unit: minutes, hours, days) to automatically create and approve new task instances at the specified interval. The interval is optional — leave it unset and the task only runs when you trigger it with Run Now. Manage them at <a href="/tasks">Tasks</a> under the Recurring tab.</p>` : ""}
+    <p>Recurring is a <strong>task type</strong> — choose it from the Task Type dropdown on the <a href="/tasks/new">New Task</a> form and the schedule fields appear inline (there is no separate recurring page). Set an interval (amount + unit: minutes, hours, days) to automatically create and approve a new task instance each interval, or leave the interval unset to run it only on demand with Run Now. Every fire is a <strong>fresh, independent task</strong> — no state carries over between runs. Manage recurring definitions from the Recurring group in the Dashboard sidebar.</p>` : ""}
 
     <h3 style="margin-top: var(--sk-space-4);">Queue Behaviour</h3>
     <p>The daemon picks one approved standard task per 30-second tick.${experimental ? " Realtime tasks bypass the queue and start immediately." : ""} Only one task runs at a time in the standard queue.</p>
@@ -218,28 +185,19 @@ export function helpPage(vm: HelpPageViewModel): string {
     <p>Notes are short inline observations (max ~280 characters) recorded by agents for team visibility. They appear in the task detail Notes tab and are delivered to subsequent agent runs on the same task as context.</p>
   `);
 
-  const agents = section("agents", "Agent Types &amp; Configuration", `
-    <h3>Supported CLIs</h3>
-    <p>Skipper spawns these external agent CLIs: <strong>claude-code</strong>, <strong>codex</strong>, <strong>opencode</strong>, <strong>oz</strong>. Each has different capabilities around stdin, resume sessions, and JSON output mode.</p>
-
-    <h3 style="margin-top: var(--sk-space-4);">Agent Types</h3>
-    <p>Agent types define capabilities shared across all instances of that CLI:</p>
+  const agents = section("agents", "Agent Types &amp; Agents", `
+    <h3>Supported CLIs (Agent Types)</h3>
+    <p>Skipper spawns these external agent CLIs: <strong>claude-code</strong>, <strong>codex</strong>, <strong>opencode</strong>, <strong>oz</strong>. Each agent type has fixed capabilities:</p>
     <ul>
       <li>Supported model families.</li>
-      <li>Whether the agent supports stdin input (<code>supports_stdin</code>).</li>
-      <li>Whether the agent supports resuming a prior session (<code>supports_resume</code>).</li>
+      <li>Whether it supports stdin input (<code>supports_stdin</code>).</li>
+      <li>Whether it supports resuming a prior session (<code>supports_resume</code>).</li>
       <li>JSON output mode (for structured signal parsing).</li>
     </ul>
+    <p>Agent types are seeded by Skipper and are not edited from the UI.</p>
 
-    <h3 style="margin-top: var(--sk-space-4);">Agent Instances (Definitions)</h3>
-    <p>Agent instances are named, configurable identities built on top of an agent type:</p>
-    <ul>
-      <li><strong>name</strong> — used in team membership and delegation prompts (e.g. "Coder", "Tester", "Skipper").</li>
-      <li><strong>model</strong> — the specific model to use (e.g. claude-sonnet-4-6).</li>
-      <li><strong>instruction</strong> — system-level prompt injected at spawn time.</li>
-      <li><strong>capabilities</strong> — descriptive tags used by the orchestrator for routing.</li>
-    </ul>
-    <p>Configure agents at <a href="/config">Config</a>.</p>
+    <h3 style="margin-top: var(--sk-space-4);">Agents</h3>
+    <p>Agents are the named members of a team, and they are <strong>authored inline when you edit a team</strong> — there is no separate global agent registry. Each agent picks an agent type, a model, and an optional role and system instruction. See <a href="#teams">Teams &rarr; Agents</a> for the full field list. Skipper itself is the implicit lead and is configured per-team via the team's Skipper Prompt.</p>
   `);
 
   const realtime = section("realtime", "Realtime Sessions", `
@@ -268,30 +226,6 @@ export function helpPage(vm: HelpPageViewModel): string {
     <p>Clicking <strong>Record</strong> starts the whisper server automatically. When recording stops, the client signals <code>recording.stopped</code> over WebSocket — the server transcribes any final pending audio, then shuts whisper down. Whisper can also be stopped manually via the API.</p>
   `);
 
-  const hooks = section("hooks", "User Hooks", `
-    <p>Hooks are shell commands that the orchestrator executes automatically in response to task lifecycle events. They run outside of any agent process.</p>
-
-    <h3 style="margin-top: var(--sk-space-4);">Supported events</h3>
-    <ul>
-      <li><code>task.started</code> — fired when a task transitions to running.</li>
-      <li><code>task.completed</code> — fired when a task finishes successfully.</li>
-      <li><code>task.failed</code> — fired on task failure or cancellation.</li>
-      <li><code>escalation.created</code> — fired when an agent escalates a question.</li>
-      <li><code>escalation.resolved</code> — fired when the operator responds to an escalation.</li>
-      <li><code>phase.review_pending</code> — fired when a phase completes and is waiting for human review.</li>
-    </ul>
-
-    <h3 style="margin-top: var(--sk-space-4);">Placeholder substitution</h3>
-    <p>Hook command strings support placeholders: <code>&#123;&#123;task.id&#125;&#125;</code>, <code>&#123;&#123;task.title&#125;&#125;</code>, <code>&#123;&#123;escalation.id&#125;&#125;</code>, etc. The orchestrator substitutes these at execution time.</p>
-
-    <h3 style="margin-top: var(--sk-space-4);">Limits &amp; configuration</h3>
-    <ul>
-      <li>30-second timeout per hook execution.</li>
-      <li>Hooks can be configured per-template (in the Templates editor) or per-task.</li>
-      <li>Hook execution history is shown in the template edit form.</li>
-    </ul>
-  `);
-
   const mcp = section("mcp", "MCP (Model Context Protocol)", `
     <p>MCP is the <strong>primary</strong> communication channel between agents and the Skipper orchestrator. Agents call strongly-typed tools on the daemon's MCP server instead of printing stdout markers.</p>
 
@@ -300,7 +234,7 @@ export function helpPage(vm: HelpPageViewModel): string {
 
     <h3 style="margin-top: var(--sk-space-4);">Tool sets by role</h3>
     <ul>
-      <li><strong>Root Skipper agent</strong> — full tool set: delegate, delegate_batch, complete_phase, regress_phase, complete_task, escalate, create_note, create_artifact, get_artifact, list_artifacts, send_message.</li>
+      <li><strong>Root Skipper agent</strong> — full tool set: delegate, delegate_batch, complete_phase, regress_phase, complete_task, escalate, create_note, list_notes, create_artifact, get_artifact, list_artifacts, send_message${experimental ? ", and the global-store tools (set_global_value, get_global_value, query_global_store, delete_global_value)" : ""}.</li>
       <li><strong>Delegated child agents</strong> — reduced set: create_note, list_notes, create_artifact, list_artifacts, get_artifact, create_escalation. Phase lifecycle tools are rejected.</li>
       <li><strong>External API key holders</strong> — task-management-only tools (for external integrations).</li>
     </ul>
@@ -341,31 +275,17 @@ export function helpPage(vm: HelpPageViewModel): string {
   `);
 
   const config = section("config", "Configuration", `
-    <p>The <a href="/config">Config</a> page is the central control panel for all persistent Skipper settings.</p>
+    <p>The <a href="/config">Config</a> page holds persistent Skipper settings, organised into these panels:</p>
     <ul>
-      <li><strong>Agent types</strong> — view the supported CLI types and their capabilities.</li>
-      <li><strong>Agent instances</strong> — create, edit, and export named agents with specific models and instructions.</li>
-      <li><strong>Teams</strong> — view, edit, and export team definitions (members, phases, entrypoint).</li>
-      <li><strong>Feature flags</strong> — enable/disable agent and team visibility in the UI.</li>
-      <li><strong>Skipper prompt</strong> — customise the lead agent's base instructions.</li>
-      <li><strong>Appearance</strong> — themes, background wallpapers (upload or choose from gallery).</li>
-      <li><strong>API keys</strong> — manage keys for external clients that need access to task management tools via MCP.</li>
-      <li><strong>Notification sounds</strong> — per-event audio preference toggles.</li>
-      <li><strong>Housekeeping</strong> — purge old terminal output and agent session logs to reclaim disk space.</li>
+      <li><strong>Teams</strong> — create, edit, delete, import, and export team definitions (skipper prompt, phases, and inline agent members). Export produces JSON you can paste or upload via Import; team config is also written back to <code>config/teams.json</code> so it survives a database reset.</li>
+      <li><strong>Sound Notifications</strong> — per-event audio toggles (task started/completed/failed, escalation created, phase review pending).</li>
+      <li><strong>Terminal Output Retention</strong> — set the retention window and purge old terminal output, agent sessions, and events to reclaim disk space.</li>
+      <li><strong>System</strong> — current daemon state and uptime.</li>
     </ul>
-    <p>Agent and team config can be <strong>exported</strong> back to the JSON config files (<code>config/agents.json</code>, <code>config/teams.json</code>) so changes survive database resets.</p>
   `);
 
-  const analytics = section("analytics", "Analytics &amp; Logs", `
-    <h3>Token Analytics</h3>
-    <p>The <a href="/analytics/tokens">Analytics</a> page shows token usage aggregated by agent type and model:</p>
-    <ul>
-      <li>Input, output, cache read, and cache write tokens per agent.</li>
-      <li>Instance count and total usage events.</li>
-      <li>Summary totals across all agents.</li>
-    </ul>
-
-    <h3 style="margin-top: var(--sk-space-4);">Log Viewer</h3>
+  const logs = section("logs", "Logs", `
+    <h3>Log Viewer</h3>
     <p>The <a href="/logs">Logs</a> page shows raw terminal output from all agent processes, filterable by agent and stream (stdout/stderr). Useful for debugging agent behaviour.</p>
 
     <h3 style="margin-top: var(--sk-space-4);">Agent Terminal Output</h3>
@@ -399,19 +319,17 @@ export function helpPage(vm: HelpPageViewModel): string {
       ${toc}
       ${overview}
       ${teams}
-      ${templates}
       ${tasks}
       ${delegation}
       ${escalations}
       ${artifacts}
       ${agents}
       ${experimental ? realtime : ""}
-      ${experimental ? hooks : ""}
       ${mcp}
       ${experimental ? conversations : ""}
       ${notifications}
       ${config}
-      ${analytics}
+      ${logs}
     </div>
   `;
 

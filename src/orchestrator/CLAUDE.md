@@ -16,6 +16,7 @@ Modules called by `agents/manager-daemon.ts` facade in response to bus events.
 | `idle-poke-manager.ts` | Nudge stuck agents that go silent |
 | `worktree-manager.ts` | Git worktree create/destroy per delegation |
 | `state.ts` | `TaskOrchStep` state machine. Transition validate + log |
+| `phase-config.ts` | `resolvePhaseConfig()` — merge team base phase + per-task `task_config.phase_overrides` (prompt + review gate + consensus) |
 | `types.ts` | `OrchestrationState`, `TaskCheckpoint`, regression metadata |
 
 ## Phase advancement

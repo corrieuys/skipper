@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import type { AgentTypeDefinition } from "../agents/types";
+import { BUILTIN_REALTIME_AGENTS, BUILTIN_REALTIME_TEAMS } from "./builtin-realtime";
 
 export interface AgentDefinition {
   id: string;
@@ -142,13 +143,16 @@ function loadAgentTypes(): Map<string, AgentTypeDefinition> {
   return map;
 }
 
+// Skipper and the chat agent. All other agents are defined on teams.
+const INFRA_AGENT_IDS = new Set(["skipper", "chat-skipper"]);
+
 function loadAgents(): Map<string, AgentDefinition> {
   const raw = readJson(CONFIG_FILES.agents);
   const rows = parseContainer<Record<string, unknown>>(raw, "agents");
   const map = new Map<string, AgentDefinition>();
   for (const row of rows) {
     const id = String(row.id ?? "");
-    if (!id) continue;
+    if (!id || !INFRA_AGENT_IDS.has(id)) continue;
     map.set(id, {
       id,
       name: String(row.name ?? ""),
@@ -162,56 +166,6 @@ function loadAgents(): Map<string, AgentDefinition> {
         ? toStringRecord(row.constraints)
         : undefined,
       capabilities: toStringArray(row.capabilities),
-    });
-  }
-  return map;
-}
-
-function loadTeams(): Map<string, TeamDefinition> {
-  const raw = readJson(CONFIG_FILES.teams);
-  const rows = parseContainer<Record<string, unknown>>(raw, "teams");
-  const map = new Map<string, TeamDefinition>();
-  for (const row of rows) {
-    const id = String(row.id ?? "");
-    if (!id) continue;
-    const phasesRaw = Array.isArray(row.phases) ? row.phases : [];
-    const phases: TeamPhase[] = phasesRaw.map((p) => {
-      const ph = p as Record<string, unknown>;
-      const result: TeamPhase = {
-        name: String(ph.name ?? ""),
-        prompt: String(ph.prompt ?? ""),
-      };
-      if (ph.review) result.review = true;
-      if (ph.consensus && typeof ph.consensus === "object") {
-        const c = ph.consensus as Record<string, unknown>;
-        result.consensus = {
-          agent_count: Number(c.agent_count ?? 2),
-          strategy: String(c.strategy ?? "best_of"),
-          worktree: !!c.worktree,
-          ...(c.reviewer_agent_id ? { reviewer_agent_id: String(c.reviewer_agent_id) } : {}),
-        };
-      }
-      return result;
-    });
-
-    const membersRaw = Array.isArray(row.members) ? row.members : [];
-    const members: TeamMember[] = membersRaw.map((m) => {
-      const mr = m as Record<string, unknown>;
-      return {
-        agent_id: String(mr.agent_id ?? ""),
-        role: mr.role == null ? null : String(mr.role),
-        level: Number(mr.level ?? 0),
-        parent_agent_id: mr.parent_agent_id == null ? null : String(mr.parent_agent_id),
-      };
-    });
-
-    map.set(id, {
-      id,
-      name: String(row.name ?? ""),
-      goal: row.goal == null ? null : String(row.goal),
-      entrypoint_agent_id: row.entrypoint_agent_id == null ? null : String(row.entrypoint_agent_id),
-      phases,
-      members,
     });
   }
   return map;
@@ -312,7 +266,11 @@ function loadAppearance(): AppearanceConfig {
 export function initializeConfigStore(): void {
   agentTypes = loadAgentTypes();
   agents = loadAgents();
-  teams = loadTeams();
+  // Teams are stored in the runtime DB and registered into this Map at boot.
+  // The built-in "Real Time" team and its agents are always present.
+  teams = new Map();
+  for (const agent of BUILTIN_REALTIME_AGENTS) agents.set(agent.id, agent);
+  for (const team of BUILTIN_REALTIME_TEAMS) teams.set(team.id, team);
   skipperConfig = loadSkipperConfig();
   realtimeConfigDefaults = loadRealtimeConfigDefaults();
   appearanceConfig = loadAppearance();
@@ -468,46 +426,6 @@ export function removeAgentType(name: string): boolean {
 export function setSkipperConfig(config: SkipperConfig): void {
   ensureInitialized();
   skipperConfig = { ...config };
-}
-
-// ---------------------------------------------------------------------------
-// Persist in-memory config back to the JSON files on disk.
-// ---------------------------------------------------------------------------
-
-export function persistAgents(): void {
-  ensureInitialized();
-  const arr = [...agents.values()].map((a) => {
-    const out: Record<string, unknown> = {
-      id: a.id,
-      name: a.name,
-      type: a.type,
-      model: a.model,
-    };
-    if (a.instruction) out.instruction = a.instruction;
-    if (a.environment && Object.keys(a.environment).length > 0) out.environment = a.environment;
-    if (a.constraints && Object.keys(a.constraints).length > 0) out.constraints = a.constraints;
-    out.capabilities = a.capabilities;
-    return out;
-  });
-  writeFileSync(CONFIG_FILES.agents, JSON.stringify({ agents: arr }, null, 2) + "\n");
-}
-
-export function persistTeams(): void {
-  ensureInitialized();
-  const arr = [...teams.values()].map((t) => ({
-    id: t.id,
-    name: t.name,
-    goal: t.goal,
-    entrypoint_agent_id: t.entrypoint_agent_id,
-    phases: t.phases.map((p) => {
-      const out: Record<string, unknown> = { name: p.name, prompt: p.prompt };
-      if (p.review) out.review = true;
-      if (p.consensus) out.consensus = p.consensus;
-      return out;
-    }),
-    members: t.members,
-  }));
-  writeFileSync(CONFIG_FILES.teams, JSON.stringify({ teams: arr }, null, 2) + "\n");
 }
 
 // ---------------------------------------------------------------------------

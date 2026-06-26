@@ -15,7 +15,7 @@ Role-based tool visibility locked at session create. Three identity types:
 - **Internal delegated**: same minus phase-lifecycle tools
 
 Global-store tools (`set_global_value`, `get_global_value`, `query_global_store`, `delete_global_value`) read/write the cross-task `global_store` table via `GlobalStoreManager` (`src/global-store/`). Available to root + delegated. Prompts instruct agents to use them only when a task/phase/template explicitly asks.
-- **External** (API key): `create_task`, `list_tasks`, `approve_task`, `list_teams`, `list_templates`
+- **External** (API key): `create_task`, `list_tasks`, `approve_task`, `list_teams`
 
 ## External access
 

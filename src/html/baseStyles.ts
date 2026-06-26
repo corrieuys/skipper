@@ -188,10 +188,6 @@ export function baseStyles(): string {
     .metric-card { padding: 0.7rem 0.75rem; background: var(--surface-bright); border: 1px solid rgba(173, 170, 170, 0.08); min-width: 0; }
     .metric-value { font-family: "Space Grotesk", sans-serif; font-size: 1.15rem; line-height: 1.1; color: var(--on-surface); font-weight: 700; letter-spacing: -0.02em; }
     .metric-label { color: var(--muted); font-size: 0.66rem; font-family: "Inter", sans-serif; letter-spacing: 0.06em; text-transform: uppercase; margin-top: 0.25rem; }
-    .analytics-summary-grid { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
-    .analytics-meta { margin-bottom: 0.75rem; font-size: 0.82rem; }
-    .analytics-agent-name { color: var(--on-surface); font-weight: 600; line-height: 1.25; }
-    .analytics-agent-id { color: var(--muted); font-size: 0.72rem; letter-spacing: 0.03em; }
     .daemon-card { display: flex; align-items: center; gap: 0.45rem; padding: 0.48rem 0.68rem; }
     .daemon-killswitch { width: 100%; justify-content: center; gap: 0.8rem; flex-wrap: wrap; }
     .daemon-killswitch-nav { width: auto; margin: 0; justify-content: flex-end; padding: 0.34rem 0.55rem; gap: 0.45rem; }

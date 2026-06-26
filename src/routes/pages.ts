@@ -1,7 +1,7 @@
 import { addRoute } from "../server";
 import { getDb } from "../db/connection";
 import { getRealtimeTeamId, listTeamsForStandardTasks } from "../config/teams";
-import { isAgentVisible, isTeamVisible, isExperimental } from "../config/feature-flags";
+import { isTeamVisible, isExperimental } from "../config/feature-flags";
 import { listPreferences, setPreference } from "../notifications/store";
 import { NOTIFICATION_EVENTS, type NotificationEventKey } from "../notifications/types";
 import { readFileSync } from "fs";
@@ -11,18 +11,8 @@ import {
   fetchTaskById,
   fetchTaskDelegations,
   fetchTaskForensics,
-  fetchAgents,
-  fetchAgentById,
-  fetchActiveInstances,
-  fetchAgentTypes,
-  fetchTeams,
-  fetchTeamById,
-  fetchTeamMembers,
-  fetchAvailableTeamAgents,
-  fetchDashboardActiveTeamAgents,
   fetchDashboardRealtimeTimeline,
   fetchDashboardPhaseIndicatorTask,
-  fetchTokenAnalyticsByAgentTypeAndModel,
 } from "../data/queries";
 export {
   fetchTasksWithTeams,
@@ -39,16 +29,11 @@ import {
   taskPhaseStepperFragment,
   taskDelegationsFragment,
   taskForensicsFragment,
-  agentDetailSummaryFragment,
-  teamListPollingFragment,
-  teamDetailSummaryFragment,
-  teamMembersFragment,
   terminalOutputFragment,
   logsTableFragment,
 } from "../html/components";
 import { formatTimestamp } from "../html/formatTimestamp";
 import { metricsFragment } from "../html/metricsFragment";
-import { agentListPollingFragment } from "../html/agentListPollingFragment";
 import { escalationCardPanel, type EscalationCardData } from "../html/panels/escalation-card.panel";
 import { logsPage } from "../html/pages/logs.page";
 import { dashboardNotesFragment } from "../html/dashboardNotesFragment";
@@ -63,12 +48,10 @@ import { dashboardRunningInstancesFragment } from "../html/dashboardRunningInsta
 import { selectDashboardFocusTasks } from "../html/selectDashboardFocusTasks";
 // v1 task page imports removed — replaced by v2 pages
 import { diagnosticCard } from "../html/diagnosticCard";
-import { analyticsPage } from "../html/pages/analytics.page";
 import { dashboardActiveTaskFragment } from "../html/dashboardActiveTaskFragment";
 // configurationPage import removed — replaced by v2 config page
 import { helpPage } from "../html/pages/help.page";
 import { asteroidsPage } from "../html/pages/asteroids.page";
-import { scheduledTaskCreatePage } from "../html/pages/scheduled-task-create.page";
 import { dashboardSteerListFragment, type SteeringOption } from "../html/dashboardLatestSteerFragment";
 import { getNumberSetting, setNumberSetting, SETTING_LOG_RETENTION_HOURS } from "../config/app-settings";
 import { recentActivityFragment } from "../html/recentActivityFragment";
@@ -411,19 +394,9 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return new Response(null, { status: 302, headers: { Location: "/config" } });
   });
 
-  // Agent detail (v1 redirect → config page)
+  // Agent detail → runtime terminal output (agent definition management removed)
   addRoute("GET", "/agents/:id", (_req, params) => {
-    return new Response(null, { status: 302, headers: { Location: `/config/agents/${params.id}` } });
-  });
-
-  addRoute("GET", "/fragments/agents/list", () => {
-    const agents = fetchAgents(db);
-    return html(agentListPollingFragment(agents, getPollIntervalSeconds(db)));
-  });
-
-  addRoute("GET", "/fragments/agents/:id/summary", (_req, params) => {
-    const agent = fetchAgentById(db, params.id);
-    return html(agentDetailSummaryFragment(agent, getPollIntervalSeconds(db)));
+    return new Response(null, { status: 302, headers: { Location: `/agents/${params.id}/output` } });
   });
 
   // Agent terminal output
@@ -473,36 +446,17 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return html(terminalOutputFragment(rows));
   });
 
-  // Teams list
+  // Teams list / detail → DB-backed teams page (legacy team management removed)
   addRoute("GET", "/teams", () => {
     return new Response(null, { status: 302, headers: { Location: "/config" } });
   });
 
   addRoute("GET", "/teams/new", () => {
-    return new Response(null, { status: 302, headers: { Location: "/config" } });
+    return new Response(null, { status: 302, headers: { Location: "/config/teams/new" } });
   });
 
-  // Team detail (v1 redirect → config page)
   addRoute("GET", "/teams/:id", () => {
     return new Response(null, { status: 302, headers: { Location: "/config" } });
-  });
-
-  addRoute("GET", "/fragments/teams/list", () => {
-    const teams = fetchTeams(db);
-    return html(teamListPollingFragment(teams, getPollIntervalSeconds(db)));
-  });
-
-  addRoute("GET", "/fragments/teams/:id/summary", (_req, params) => {
-    const team = fetchTeamById(db, params.id);
-    const agents = team ? fetchTeamMembers(db, params.id) : [];
-    return html(teamDetailSummaryFragment(team, agents, getPollIntervalSeconds(db)));
-  });
-
-  addRoute("GET", "/fragments/teams/:id/members", (_req, params) => {
-    const team = fetchTeamById(db, params.id);
-    const agents = team ? fetchTeamMembers(db, params.id) : [];
-    const availableAgents = team ? fetchAvailableTeamAgents(db, params.id) : [];
-    return html(teamMembersFragment(team, agents, availableAgents, getPollIntervalSeconds(db)));
   });
 
   // Old v1 Escalations page — replaced by v2 (now at /escalations)
@@ -885,23 +839,6 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return html(open.map((e) => escalationCardPanel(e)).join(""));
   });
 
-  addRoute("GET", "/analytics/tokens", () => {
-    const analytics = fetchTokenAnalyticsByAgentTypeAndModel(db);
-    const status = daemon.getStatus();
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
-    return html(analyticsPage({
-      analytics,
-      daemonState: status.state,
-      daemonUptime: status.uptime,
-      escalationCount,
-    }));
-  });
-
-  addRoute("GET", "/api/analytics/tokens/by-agent-type", () => {
-    const analytics = fetchTokenAnalyticsByAgentTypeAndModel(db);
-    return Response.json(analytics);
-  });
-
   // ── Chat / Conversation fragment routes ──────────────────────────────────
 
   function loadConversationalSkipperPrompt(): string {
@@ -1019,8 +956,8 @@ function registerV2PageRoutes(): void {
       `SELECT st.*, tm.name AS team_name FROM scheduled_tasks st LEFT JOIN teams tm ON tm.id = st.team_id WHERE st.id = ?`
     ).get(scheduledId) as any;
     if (!st) return null;
-    const teams = (db.prepare("SELECT id, name FROM teams ORDER BY name").all() as Array<{ id: string; name: string }>)
-      .filter(t => isTeamVisible(t.id));
+    // Recurring tasks are always standard — exclude the Real Time team.
+    const teams = listTeamsForStandardTasks();
     const runs = db.prepare(
       `SELECT id, title, status, started_at, completed_at, result, created_at FROM tasks WHERE source_scheduled_task_id = ? ORDER BY created_at DESC LIMIT 20`
     ).all(scheduledId) as Array<{ id: string; title: string; status: string; started_at: string | null; completed_at: string | null; result: string | null; created_at: string }>;
@@ -1349,19 +1286,11 @@ function registerV2PageRoutes(): void {
     return html(renderScheduledRuns(runs));
   });
 
-  // Task Creation — must be before /tasks/:id to avoid matching "new" as an ID
+  // Task Creation — must be before /tasks/:id to avoid matching "new" as an ID.
+  // Recurring task creation is now merged into /tasks/new (Task Type = Recurring);
+  // keep the old path as a redirect for any lingering links/bookmarks.
   addRoute("GET", "/tasks/scheduled/new", () => {
-    if (!isExperimental()) return new Response("Not Found", { status: 404 });
-    const teams = (db.prepare("SELECT id, name FROM teams ORDER BY name").all() as Array<{ id: string; name: string }>)
-      .filter(t => isTeamVisible(t.id));
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
-    const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
-    return html(scheduledTaskCreatePage({
-      teams,
-      daemonState: pausedRow?.value === "true" ? "paused" : "running",
-      daemonUptime: process.uptime(),
-      escalationCount,
-    }));
+    return new Response(null, { status: 302, headers: { Location: "/tasks/new" } });
   });
 
   addRoute("GET", "/tasks/new", () => {
@@ -1427,23 +1356,11 @@ function registerV2PageRoutes(): void {
 
   // Configuration Overview
   addRoute("GET", "/config", () => {
-    const agents = db.prepare(
-      `SELECT id, name, type, model, status FROM agents ORDER BY created_at`
-    ).all() as Array<{ id: string; name: string; type: string; model: string; status: string }>;
-    const teams = db.prepare(
-      `SELECT t.id, t.name, t.phases, a.name AS entrypoint_agent_name
-       FROM teams t LEFT JOIN agents a ON a.id = t.entrypoint_agent_id
-       ORDER BY t.created_at`
-    ).all() as Array<{ id: string; name: string; phases: string; entrypoint_agent_name?: string }>;
-    const parsedTeams = teams.map(t => ({
-      ...t,
-      phases: (() => { try { return JSON.parse(t.phases); } catch { return []; } })(),
-    }));
+    const { listLocalTeams } = require("../teams/local-teams");
     const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
     const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
     return html(configPage({
-      agents: agents.filter(a => isAgentVisible(a.id)),
-      teams: parsedTeams.filter(t => isTeamVisible(t.id)),
+      teams: listLocalTeams(db),
       notificationPreferences: listPreferences(db),
       logRetentionHours: getNumberSetting(db, SETTING_LOG_RETENTION_HOURS, 24),
       daemonState: pausedRow?.value === "true" ? "paused" : "running",
@@ -1489,121 +1406,9 @@ function registerV2PageRoutes(): void {
     return new Response(null, { status: 204 });
   });
 
-  // Agent Detail
+  // Old agent detail path → Config page.
   addRoute("GET", "/config/agents/:id", () => {
     return new Response(null, { status: 302, headers: { Location: "/config" } });
-  });
-
-  addRoute("GET", "/config/teams/:id", () => {
-    return new Response(null, { status: 302, headers: { Location: "/config" } });
-  });
-
-  // ── Inline config edit fragments ─────────────────────────────────────────
-  const { configAgentEditFragment } = require("../html/fragments/config-agent-edit.fragment");
-  const { configTeamEditFragment } = require("../html/fragments/config-team-edit.fragment");
-  const { configAgentRowFragment, configTeamRowFragment } = require("../html/pages/config.page");
-  const configStore = require("../config/store");
-
-  addRoute("GET", "/fragments/config/agents/:id/edit", (_req, params) => {
-    const agent = configStore.getAgent(params.id);
-    if (!agent) return new Response("Agent not found", { status: 404 });
-    const agentTypes = configStore.listAgentTypes();
-    return html(configAgentEditFragment(agent, agentTypes));
-  });
-
-  addRoute("GET", "/fragments/config/teams/:id/edit", (_req, params) => {
-    const team = configStore.getTeam(params.id);
-    if (!team) return new Response("Team not found", { status: 404 });
-    const allAgents = configStore.listAgents();
-    return html(configTeamEditFragment(team, allAgents));
-  });
-
-  addRoute("POST", "/api/config/agents/:id", async (req, params) => {
-    const agent = configStore.getAgent(params.id);
-    if (!agent) return Response.json({ error: "Agent not found" }, { status: 404 });
-
-    const formData = await req.formData();
-    const updated = {
-      ...agent,
-      name: formData.get("name")?.toString() ?? agent.name,
-      type: formData.get("type")?.toString() ?? agent.type,
-      model: formData.get("model")?.toString() ?? agent.model,
-      instruction: formData.get("instruction")?.toString() || undefined,
-      capabilities: (formData.get("capabilities")?.toString() ?? "")
-        .split(",").map((s: string) => s.trim()).filter(Boolean),
-    };
-    configStore.setAgent(updated);
-
-    const config = JSON.stringify({
-      instruction: updated.instruction ?? null,
-      model: updated.model,
-      environment: agent.environment ?? {},
-      constraints: agent.constraints ?? {},
-    });
-    db.prepare(
-      `UPDATE agents SET name = ?, type = ?, model = ?, config = ?, capabilities = ? WHERE id = ?`
-    ).run(updated.name, updated.type, updated.model, config,
-      JSON.stringify(updated.capabilities), params.id);
-
-    const row = db.prepare("SELECT id, name, type, model, status FROM agents WHERE id = ?")
-      .get(params.id) as { id: string; name: string; type: string; model: string; status: string };
-    return html(configAgentRowFragment(row));
-  });
-
-  addRoute("POST", "/api/config/teams/:id", async (req, params) => {
-    const team = configStore.getTeam(params.id);
-    if (!team) return Response.json({ error: "Team not found" }, { status: 404 });
-
-    const formData = await req.formData();
-    const name = formData.get("name")?.toString() ?? team.name;
-    const goal = formData.get("goal")?.toString() || null;
-    const entrypointAgentId = formData.get("entrypoint_agent_id")?.toString() || null;
-
-    const phasesJson = formData.get("phases")?.toString();
-    let phases = team.phases;
-    if (phasesJson) {
-      try { phases = JSON.parse(phasesJson); } catch { /* keep existing */ }
-    }
-
-    const membersJson = formData.get("members")?.toString();
-    let members = team.members;
-    if (membersJson) {
-      try { members = JSON.parse(membersJson); } catch { /* keep existing */ }
-    }
-
-    const updated = { ...team, name, goal, entrypoint_agent_id: entrypointAgentId, phases, members };
-    configStore.setTeam(updated);
-
-    db.prepare(
-      `UPDATE teams SET name = ?, goal = ?, entrypoint_agent_id = ?, phases = ? WHERE id = ?`
-    ).run(name, goal, entrypointAgentId, JSON.stringify(phases), params.id);
-
-    db.prepare("DELETE FROM team_agents WHERE team_id = ?").run(params.id);
-    const insertMember = db.prepare(
-      "INSERT INTO team_agents (id, team_id, agent_id, role, level, parent_agent_id) VALUES (?, ?, ?, ?, ?, ?)"
-    );
-    for (const m of members) {
-      const memberId = crypto.randomUUID();
-      insertMember.run(memberId, params.id, m.agent_id, m.role ?? null, m.level ?? 0, m.parent_agent_id ?? null);
-    }
-
-    const teamRow = db.prepare(
-      `SELECT t.id, t.name, t.phases, a.name AS entrypoint_agent_name
-       FROM teams t LEFT JOIN agents a ON a.id = t.entrypoint_agent_id
-       WHERE t.id = ?`
-    ).get(params.id) as { id: string; name: string; phases: string; entrypoint_agent_name?: string };
-    const parsedPhases = (() => { try { return JSON.parse(teamRow.phases); } catch { return []; } })();
-    return html(configTeamRowFragment({ ...teamRow, phases: parsedPhases }));
-  });
-
-  addRoute("POST", "/api/config/export/agents", () => {
-    configStore.persistAgents();
-    return new Response("OK", { status: 200 });
-  });
-
-  addRoute("POST", "/api/config/export/teams", () => {
-    configStore.persistTeams();
-    return new Response("OK", { status: 200 });
   });
 
   // ── Global store routes (experimental) ───────────────────────────────────
@@ -1657,241 +1462,116 @@ function registerV2PageRoutes(): void {
   });
   }
 
-  // ── Template routes ──────────────────────────────────────────────────────
-  const { templateListPage } = require("../html/pages/template-list.page");
-  const { templateFormPage, phaseInputsFragment } = require("../html/pages/template-form.page");
+  // ── Team config forms (managed on the Config page) ──────────────────────
+  {
+    const { localTeamFormPage } = require("../html/pages/local-team-form.page");
+    const { getLocalTeam } = require("../teams/local-teams");
+    const { listAgentTypes } = require("../config/store");
 
-  // Map a raw task_template_phases DB row into the shape phaseInputsFragment expects.
-  // DB stores override_prompt as INTEGER (0/1) and review_override/consensus_override as JSON TEXT.
-  const parseTemplatePhaseRow = (r: { phase_name: string; prompt: string; override_prompt: number; review_override: string | null; consensus_override: string | null }) => {
-    let review_override: boolean | null = null;
-    if (r.review_override != null) { try { review_override = JSON.parse(r.review_override); } catch { /* ignore */ } }
-    let consensus_override: unknown = null;
-    if (r.consensus_override != null) { try { consensus_override = JSON.parse(r.consensus_override); } catch { /* ignore */ } }
-    return {
-      phase_name: r.phase_name,
-      prompt: r.prompt,
-      override_prompt: r.override_prompt === 1,
-      review_override,
-      consensus_override,
+    const daemonMeta = () => {
+      const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+      const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
+      return {
+        escalationCount,
+        daemonState: pausedRow?.value === "true" ? "paused" : "running",
+        daemonUptime: process.uptime(),
+      };
     };
-  };
 
-  addRoute("GET", "/templates", () => {
-    const templates = db.prepare(
-      `SELECT tt.id, tt.template_name, tt.team_id, tt.created_at, tm.name AS team_name
-       FROM task_templates tt
-       LEFT JOIN teams tm ON tm.id = tt.team_id
-       WHERE tt.deleted_at IS NULL
-       ORDER BY tt.template_name`
-    ).all() as Array<{ id: string; template_name: string; team_id: string; created_at: string; team_name: string | null }>;
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
-    const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
-    return html(templateListPage({
-      templates,
-      escalationCount,
-      daemonState: pausedRow?.value === "true" ? "paused" : "running",
-      daemonUptime: process.uptime(),
-    }));
-  });
+    const agentTypeChoices = () =>
+      (listAgentTypes() as Array<{ name: string; available_models: string[] }>).map((t) => ({
+        name: t.name,
+        models: Array.isArray(t.available_models) ? t.available_models : [],
+      }));
 
-  addRoute("GET", "/templates/new", () => {
-    const teams = (db.prepare("SELECT id, name FROM teams ORDER BY name").all() as Array<{ id: string; name: string }>)
-      .filter(t => isTeamVisible(t.id));
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
-    const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
-    return html(templateFormPage({
-      teams,
-      template: null,
-      teamPhases: [],
-      existingPhases: [],
-      recentHookFires: [],
-      escalationCount,
-      daemonState: pausedRow?.value === "true" ? "paused" : "running",
-      daemonUptime: process.uptime(),
-    }));
-  });
+    // Redirect the old list path to the Config page where teams now live.
+    addRoute("GET", "/local-teams", () => {
+      return new Response(null, { status: 302, headers: { Location: "/config" } });
+    });
 
-  addRoute("GET", "/templates/:id/edit", (_req, params) => {
-    const rawTemplate = db.prepare(
-      "SELECT * FROM task_templates WHERE id = ? AND deleted_at IS NULL"
-    ).get(params.id) as { id: string; template_name: string; team_id: string; skipper_prompt: string; hooks?: string } | null;
-    if (!rawTemplate) return new Response("Template not found", { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
+    addRoute("GET", "/config/teams/new", () => {
+      return html(localTeamFormPage({ team: null, agentTypes: agentTypeChoices(), ...daemonMeta() }));
+    });
 
-    let hooks: any[] = [];
-    try { hooks = JSON.parse((rawTemplate as any).hooks ?? "[]"); } catch { /* ignore */ }
-    const template = { ...rawTemplate, hooks };
+    addRoute("GET", "/config/teams/:id/edit", (_req, params) => {
+      const team = getLocalTeam(db, params.id!);
+      if (!team) return new Response("Team not found", { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
+      return html(localTeamFormPage({ team, agentTypes: agentTypeChoices(), ...daemonMeta() }));
+    });
+  }
 
-    const existingPhases = (db.prepare(
-      "SELECT phase_name, prompt, override_prompt, review_override, consensus_override FROM task_template_phases WHERE task_template_id = ? ORDER BY phase_name"
-    ).all(params.id) as Array<{ phase_name: string; prompt: string; override_prompt: number; review_override: string | null; consensus_override: string | null }>)
-      .map(parseTemplatePhaseRow);
+  // ── Task-form fragments ──────────────────────────────────────────────────
 
-    const teamRow = db.prepare("SELECT phases FROM teams WHERE id = ?").get(template.team_id) as { phases: string } | null;
-    let teamPhases: Array<{ name: string }> = [];
-    try { teamPhases = JSON.parse(teamRow?.phases ?? "[]"); } catch { /* ignore */ }
-
-    const teams = (db.prepare("SELECT id, name FROM teams ORDER BY name").all() as Array<{ id: string; name: string }>)
-      .filter(t => isTeamVisible(t.id));
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
-    const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
-
-    return html(templateFormPage({
-      teams,
-      template,
-      teamPhases,
-      existingPhases,
-      recentHookFires: [],
-      escalationCount,
-      daemonState: pausedRow?.value === "true" ? "paused" : "running",
-      daemonUptime: process.uptime(),
-    }));
-  });
-
-  // Fragment: phase inputs for a given team (used by template form HTMX)
-  addRoute("GET", "/fragments/templates/phases-form", (req) => {
+  // Fragment: per-task phase overrides for a selected team (used by the task form
+  // #phase-config-slot). Renders review-gate + (experimental) consensus override
+  // controls per phase; submitted fields are parsed in src/routes/tasks.ts into
+  // task_config.phase_overrides.
+  const { taskPhaseConfigFragment } = require("../html/pages/task-create.page");
+  addRoute("GET", "/fragments/task-form/phase-config", (req) => {
     const url = new URL(req.url, "http://localhost");
-    const teamId = url.searchParams.get("teamId") ?? url.searchParams.get("team_id") ?? "";
-    const templateId = url.searchParams.get("templateId") ?? "";
+    // The command-center slot bakes teamId into the URL (for taskId) AND sends the
+    // live select value via hx-include on change — prefer the last non-empty value.
+    const teamIds = url.searchParams.getAll("teamId");
+    const teamId = [...teamIds].reverse().find((v) => v !== "") ?? "";
+    const taskId = url.searchParams.get("taskId") ?? "";
 
-    if (!teamId) return html(`<div id="template-phases"></div>`);
+    if (!teamId) return html(`<div></div>`);
     const teamRow = db.prepare("SELECT phases FROM teams WHERE id = ?").get(teamId) as { phases: string } | null;
-    if (!teamRow) return html(`<div id="template-phases"></div>`);
+    if (!teamRow) return html(`<div></div>`);
 
-    let teamPhases: Array<{ name: string }> = [];
+    let teamPhases: Array<{ name: string; prompt?: string; review?: boolean; consensus?: unknown }> = [];
     try { teamPhases = JSON.parse(teamRow.phases ?? "[]"); } catch { /* ignore */ }
 
-    let existingPhases: ReturnType<typeof parseTemplatePhaseRow>[] = [];
-    if (templateId) {
-      existingPhases = (db.prepare(
-        "SELECT phase_name, prompt, override_prompt, review_override, consensus_override FROM task_template_phases WHERE task_template_id = ?"
-      ).all(templateId) as Array<{ phase_name: string; prompt: string; override_prompt: number; review_override: string | null; consensus_override: string | null }>)
-        .map(parseTemplatePhaseRow);
+    let existingOverrides: Record<string, { prompt?: string; review?: boolean; consensus?: unknown }> = {};
+    if (taskId) {
+      const taskRow = db.prepare("SELECT task_config FROM tasks WHERE id = ?").get(taskId) as { task_config: string } | null;
+      if (taskRow?.task_config) {
+        try {
+          const cfg = JSON.parse(taskRow.task_config) as Record<string, unknown>;
+          const po = cfg.phase_overrides;
+          if (po && typeof po === "object") existingOverrides = po as Record<string, { prompt?: string; review?: boolean; consensus?: unknown }>;
+        } catch { /* ignore */ }
+      }
     }
 
-    return html(phaseInputsFragment(teamPhases, existingPhases));
+    return html(taskPhaseConfigFragment(teamPhases, existingOverrides));
   });
 
-  // Fragment: template dropdown for task creation (used by task form HTMX)
-  addRoute("GET", "/fragments/templates/by-team", (req) => {
-    const url = new URL(req.url, "http://localhost");
-    const teamId = url.searchParams.get("teamId") ?? "";
-    if (!teamId) return html(`<div id="template-field-wrapper"></div>`);
-
-    const templates = db.prepare(
-      "SELECT id, template_name FROM task_templates WHERE team_id = ? AND deleted_at IS NULL ORDER BY template_name"
-    ).all(teamId) as Array<{ id: string; template_name: string }>;
-
-    if (templates.length === 0) return html(`<div id="template-field-wrapper"></div>`);
-
-    const options = templates.map(t =>
-      `<option value="${escapeHtml(t.id)}">${escapeHtml(t.template_name)}</option>`
-    ).join("");
-
-    return html(`<div id="template-field-wrapper" class="sk-form-group" style="flex:1;">
-      <label class="sk-label">Template</label>
-      <select name="templateId" class="sk-select">
-        <option value="">None</option>
-        ${options}
-      </select>
-    </div>`);
-  });
-
-  // Fragment: template dropdown sized to fit inside the dashboard inline task form.
-  // Returns just the select wrapped in the same <span id="dashboard-inline-template-wrapper">
-  // grid cell so the surrounding layout doesn't shift when swapped.
-  addRoute("GET", "/fragments/templates/by-team-inline", (req) => {
-    const url = new URL(req.url, "http://localhost");
-    const teamId = url.searchParams.get("teamId") ?? "";
-    const renderEmpty = (disabled: boolean) =>
-      `<span id="dashboard-inline-template-wrapper"><select name="templateId" id="dashboard-inline-template"${disabled ? " disabled" : ""}><option value="">None</option></select></span>`;
-
-    if (!teamId) return html(renderEmpty(true));
-
-    const templates = db.prepare(
-      "SELECT id, template_name FROM task_templates WHERE team_id = ? AND deleted_at IS NULL ORDER BY template_name"
-    ).all(teamId) as Array<{ id: string; template_name: string }>;
-
-    if (templates.length === 0) return html(renderEmpty(false));
-
-    const options = templates.map(t =>
-      `<option value="${escapeHtml(t.id)}">${escapeHtml(t.template_name)}</option>`
-    ).join("");
-    return html(
-      `<span id="dashboard-inline-template-wrapper"><select name="templateId" id="dashboard-inline-template"><option value="">None</option>${options}</select></span>`
-    );
-  });
-
-  // Fragment: task-type-aware team + template section. Owned by all task creation
-  // forms via <div id="task-form-team-template-slot" hx-get="...">. Renders one of
-  // two branches:
-  //   - taskType=real_time  -> hidden teamId locked to the Real Time team + template
-  //                             dropdown auto-populated for that team
-  //   - taskType=standard   -> normal team dropdown (excluding Real Time) + the
-  //                             existing template-by-team loader
-  //
-  // `context` controls markup style so the slot fits the host form:
+  // Fragment: task-type-aware team selector. Owned by all task creation forms via
+  // <div id="task-form-team-slot" hx-get="...">. Realtime locks to the Real Time
+  // team; standard shows a team dropdown. `context` controls markup style so the
+  // slot fits the host form:
   //   - "full"    -> sk-* form-group classes (task-create.page, command-center)
   //   - "inline"  -> compact ids/classes matching dashboard inline form
   //   - "compact" -> bare <label> blocks for task-form-grid (taskFormFields)
-  addRoute("GET", "/fragments/task-form/team-template", (req) => {
+  addRoute("GET", "/fragments/task-form/team", (req) => {
     const url = new URL(req.url, "http://localhost");
     const taskType = url.searchParams.get("taskType") === "real_time" ? "real_time" : "standard";
     const context = (url.searchParams.get("context") ?? "full") as "full" | "inline" | "compact";
     const selectedTeamId = url.searchParams.get("selectedTeamId") ?? "";
-    const selectedTemplateId = url.searchParams.get("selectedTemplateId") ?? "";
 
-    const templatesForTeam = (teamId: string) =>
-      db.prepare(
-        "SELECT id, template_name FROM task_templates WHERE team_id = ? AND deleted_at IS NULL ORDER BY template_name"
-      ).all(teamId) as Array<{ id: string; template_name: string }>;
-
-    const templateOptions = (templates: Array<{ id: string; template_name: string }>, selected: string) =>
-      templates.map(t =>
-        `<option value="${escapeHtml(t.id)}"${t.id === selected ? " selected" : ""}>${escapeHtml(t.template_name)}</option>`
-      ).join("");
+    const slotAttrs = (ctx: string) =>
+      `id="task-form-team-slot" style="display:contents;" hx-get="/fragments/task-form/team?context=${ctx}" hx-trigger="change from:[name=taskType]" hx-include="[name=taskType]" hx-target="this" hx-swap="outerHTML"`;
 
     if (taskType === "real_time") {
       const rtId = getRealtimeTeamId();
-      const templates = rtId ? templatesForTeam(rtId) : [];
-      const opts = templateOptions(templates, selectedTemplateId);
       const rtHidden = `<input type="hidden" name="teamId" value="${escapeHtml(rtId ?? "")}">`;
 
-      const rtSlotAttrs = (ctx: string) =>
-        `id="task-form-team-template-slot" style="display:contents;" hx-get="/fragments/task-form/team-template?context=${ctx}" hx-trigger="change from:[name=taskType]" hx-include="[name=taskType]" hx-target="this" hx-swap="outerHTML"`;
-
       if (context === "inline") {
-        return html(`<div ${rtSlotAttrs("inline")}>
+        return html(`<div ${slotAttrs("inline")}>
           <span class="dashboard-inline-team-locked">${rtHidden}<span class="muted">Real Time (auto)</span></span>
-          <span id="dashboard-inline-template-wrapper">
-            <select name="templateId" id="dashboard-inline-template"${templates.length === 0 ? " disabled" : ""}>
-              <option value="">None</option>${opts}
-            </select>
-          </span>
         </div>`);
       }
       if (context === "compact") {
-        return html(`<div ${rtSlotAttrs("compact")}>
+        return html(`<div ${slotAttrs("compact")}>
           <label><span>Team</span>${rtHidden}<small class="muted">Real Time (auto)</small></label>
-          <label><span>Template</span>
-            <select name="templateId"${templates.length === 0 ? " disabled" : ""}>
-              <option value="">None</option>${opts}
-            </select>
-          </label>
         </div>`);
       }
-      // full
-      return html(`<div ${rtSlotAttrs("full")}>
+      return html(`<div ${slotAttrs("full")}>
         <div class="sk-form-group" style="flex:1;">
           <label class="sk-label">Team</label>
           ${rtHidden}
           <div class="sk-text-sm sk-muted" style="padding-top:var(--sk-space-2);">Real Time (auto-assigned)</div>
-        </div>
-        <div class="sk-form-group" style="flex:1;">
-          <label class="sk-label">Template</label>
-          <select name="templateId" class="sk-select"${templates.length === 0 ? " disabled" : ""}>
-            <option value="">None</option>${opts}
-          </select>
         </div>
       </div>`);
     }
@@ -1902,92 +1582,31 @@ function registerV2PageRoutes(): void {
       `<option value="${escapeHtml(t.id)}"${t.id === selectedTeamId ? " selected" : ""}>${escapeHtml(t.name)}</option>`
     ).join("");
 
-    const stdSlotAttrs = (ctx: string) =>
-      `id="task-form-team-template-slot" style="display:contents;" hx-get="/fragments/task-form/team-template?context=${ctx}" hx-trigger="change from:[name=taskType]" hx-include="[name=taskType]" hx-target="this" hx-swap="outerHTML"`;
-
     if (context === "inline") {
-      return html(`<div ${stdSlotAttrs("inline")}>
-        <select name="teamId" id="dashboard-inline-team"
-          hx-get="/fragments/templates/by-team-inline"
-          hx-trigger="change"
-          hx-target="#dashboard-inline-template-wrapper"
-          hx-swap="outerHTML"
-          hx-include="this">
+      return html(`<div ${slotAttrs("inline")}>
+        <select name="teamId" id="dashboard-inline-team">
           <option value=""${selectedTeamId === "" ? " selected" : ""}>Unassigned</option>${teamOptions}
         </select>
-        <span id="dashboard-inline-template-wrapper">
-          <select name="templateId" id="dashboard-inline-template" disabled>
-            <option value="">None</option>
-          </select>
-        </span>
       </div>`);
     }
     if (context === "compact") {
-      return html(`<div ${stdSlotAttrs("compact")}>
+      return html(`<div ${slotAttrs("compact")}>
         <label id="team-field-wrapper"><span>Team</span>
-          <select name="teamId" id="team-field"
-            hx-get="/fragments/templates/by-team-compact"
-            hx-trigger="change"
-            hx-target="#compact-template-wrapper"
-            hx-swap="outerHTML"
-            hx-include="this">
+          <select name="teamId" id="team-field">
             <option value=""${selectedTeamId === "" ? " selected" : ""}>Unassigned</option>${teamOptions}
-          </select>
-          <small class="muted" id="team-field-note"></small>
-        </label>
-        <label id="compact-template-wrapper"><span>Template</span>
-          <select name="templateId" disabled>
-            <option value="">None</option>
           </select>
         </label>
       </div>`);
     }
-    // full — pre-populate the template wrapper when a team is already selected
-    // (e.g. editing an existing draft) so the dropdown surfaces on load, not only
-    // after the user changes the team select.
-    const stdTemplates = selectedTeamId ? templatesForTeam(selectedTeamId) : [];
-    const templateWrapper = stdTemplates.length > 0
-      ? `<div id="template-field-wrapper" class="sk-form-group" style="flex:1;">
-          <label class="sk-label">Template</label>
-          <select name="templateId" class="sk-select">
-            <option value="">None</option>${templateOptions(stdTemplates, selectedTemplateId)}
-          </select>
-        </div>`
-      : `<div id="template-field-wrapper"></div>`;
-    return html(`<div ${stdSlotAttrs("full")}>
+    // full
+    return html(`<div ${slotAttrs("full")}>
       <div class="sk-form-group" style="flex:1;">
         <label class="sk-label">Team</label>
-        <select name="teamId" class="sk-select"
-          hx-get="/fragments/templates/by-team"
-          hx-trigger="change"
-          hx-target="#template-field-wrapper"
-          hx-swap="outerHTML"
-          hx-include="this">
+        <select name="teamId" class="sk-select">
           <option value=""${selectedTeamId === "" ? " selected" : ""}>Unassigned</option>${teamOptions}
         </select>
       </div>
-      ${templateWrapper}
     </div>`);
-  });
-
-  // Fragment: template dropdown for the `compact` context (taskFormFields).
-  // Mirrors /fragments/templates/by-team but emits a <label>-wrapped select
-  // matching the task-form-grid layout.
-  addRoute("GET", "/fragments/templates/by-team-compact", (req) => {
-    const url = new URL(req.url, "http://localhost");
-    const teamId = url.searchParams.get("teamId") ?? "";
-    const renderEmpty = (disabled: boolean) =>
-      `<label id="compact-template-wrapper"><span>Template</span><select name="templateId"${disabled ? " disabled" : ""}><option value="">None</option></select></label>`;
-
-    if (!teamId) return html(renderEmpty(true));
-    const templates = db.prepare(
-      "SELECT id, template_name FROM task_templates WHERE team_id = ? AND deleted_at IS NULL ORDER BY template_name"
-    ).all(teamId) as Array<{ id: string; template_name: string }>;
-    if (templates.length === 0) return html(renderEmpty(false));
-    const opts = templates.map(t =>
-      `<option value="${escapeHtml(t.id)}">${escapeHtml(t.template_name)}</option>`
-    ).join("");
-    return html(`<label id="compact-template-wrapper"><span>Template</span><select name="templateId"><option value="">None</option>${opts}</select></label>`);
   });
 
   // Escalation Queue

@@ -6,7 +6,7 @@ import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/typ
 import { getEntrypointAgentId } from "../agents/skipper";
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
-import { getTaskTemplateId, resolvePhaseConfig } from "../templates/helpers";
+import { resolvePhaseConfig } from "./phase-config";
 
 const CHILD_RETRY_LIMIT = 1;
 const DELEGATION_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
@@ -666,8 +666,7 @@ export class DelegationManager {
     const idx = Math.min(Math.max(0, task.current_phase ?? 0), phases.length - 1);
     const rawPhase = phases[idx];
     if (!rawPhase) return undefined;
-    const templateId = getTaskTemplateId(task.task_config);
-    const resolved = resolvePhaseConfig(this.db, rawPhase, templateId, task.task_config as Record<string, unknown>);
+    const resolved = resolvePhaseConfig(rawPhase, task.task_config as Record<string, unknown>);
     return {
       name: resolved.name,
       prompt: resolved.prompt,

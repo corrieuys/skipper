@@ -3,6 +3,7 @@ import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import type { ScheduleUnit } from "../tasks/scheduled-scheduler";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 import { isExperimental } from "../config/feature-flags";
+import { parsePhaseOverridesFromForm } from "./phase-overrides";
 
 const EXPERIMENTAL_REQUIRED = Response.json({ error: "scheduled tasks require --experimental" }, { status: 403 });
 
@@ -60,14 +61,10 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       parseOptionalInterval(scheduleUnit, scheduleAmountRaw);
     if (intervalError) return Response.json({ error: intervalError }, { status: 400 });
 
-    const templateId = formData.get("templateId");
     const taskConfig: Record<string, unknown> = {};
-    if (typeof templateId === "string" && templateId.trim()) {
-      taskConfig.template_id = templateId.trim();
-    }
-
-    const singleInstanceRaw = formData.get("singleInstance");
-    const singleInstance = singleInstanceRaw === "1" || singleInstanceRaw === "true" || singleInstanceRaw === "on";
+    const resolvedTeamId = typeof teamId === "string" && teamId.trim() ? teamId.trim() : undefined;
+    const { overrides: phaseOverrides } = parsePhaseOverridesFromForm(formData, resolvedTeamId);
+    if (Object.keys(phaseOverrides).length > 0) taskConfig.phase_overrides = phaseOverrides;
 
     const scheduler = getScheduler();
     const task = scheduler.createScheduledTask({
@@ -78,7 +75,6 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       scheduleUnit: scheduleUnitVal,
       scheduleAmount: scheduleAmountVal,
       taskConfig: Object.keys(taskConfig).length > 0 ? taskConfig : undefined,
-      singleInstance,
     });
 
     const shouldAutoApprove = autoApproveRaw === "1" || autoApproveRaw === "true";
@@ -114,21 +110,10 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       parseOptionalInterval(scheduleUnit, scheduleAmountRaw);
     if (intervalError) return Response.json({ error: intervalError }, { status: 400 });
 
-    const templateId = formData.get("templateId");
     const taskConfig: Record<string, unknown> = {};
-    if (typeof templateId === "string" && templateId.trim()) {
-      taskConfig.template_id = templateId.trim();
-    }
-
-    const singleInstanceRaw = formData.get("singleInstance");
-    // For the update form, only treat the field as set when it actually appeared
-    // in the form data — otherwise leave the existing value unchanged. We accept
-    // any "truthy" string for ON; an explicit "0"/"false" turns it off.
-    let singleInstance: boolean | undefined;
-    if (singleInstanceRaw !== null) {
-      const v = String(singleInstanceRaw);
-      singleInstance = v === "1" || v === "true" || v === "on";
-    }
+    const resolvedTeamId = typeof teamId === "string" && teamId.trim() ? teamId.trim() : undefined;
+    const { overrides: phaseOverrides } = parsePhaseOverridesFromForm(formData, resolvedTeamId);
+    if (Object.keys(phaseOverrides).length > 0) taskConfig.phase_overrides = phaseOverrides;
 
     const scheduler = getScheduler();
     try {
@@ -140,7 +125,6 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
         scheduleUnit: scheduleUnitVal,
         scheduleAmount: scheduleAmountVal,
         taskConfig: Object.keys(taskConfig).length > 0 ? taskConfig : undefined,
-        singleInstance,
       });
     } catch (err) {
       return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
@@ -211,18 +195,9 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
     const { getDb } = require("../db/connection");
     const db = getDb();
 
-    const baseDesc = scheduled.description ?? undefined;
-    let finalDesc = baseDesc;
-    const tplId = (scheduled.task_config as Record<string, unknown>)?.template_id;
-    if (typeof tplId === "string" && tplId) {
-      const { getTemplateSkipperPrompt } = require("../templates/helpers");
-      const sp = getTemplateSkipperPrompt(db, tplId);
-      if (sp) finalDesc = baseDesc ? `${baseDesc}\n\n${sp}` : sp;
-    }
-
     const task = taskScheduler.createTask({
       title: `${scheduled.title} (${timestamp})`,
-      description: finalDesc,
+      description: scheduled.description ?? undefined,
       teamId: scheduled.team_id ?? undefined,
       workingDirectory: scheduled.working_directory,
       taskConfig: scheduled.task_config as any,

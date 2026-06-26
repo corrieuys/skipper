@@ -631,20 +631,17 @@ export function registerExternalTools(
       description: z.string().optional().describe("Task description"),
       team_id: z.string().optional().describe("Team ID (use list_teams to discover)"),
       working_directory: z.string().optional().describe("Working directory path"),
-      template_id: z.string().optional().describe("Task template ID (use list_templates to discover)"),
     },
-    async ({ title, description, team_id, working_directory, template_id }) => {
+    async ({ title, description, team_id, working_directory }) => {
       const identity = getIdentity();
       if (!identity) return authError;
 
       try {
-        const taskConfig = template_id ? { template_id } : undefined;
         const task = taskScheduler.createTask({
           title,
           description,
           teamId: team_id,
           workingDirectory: working_directory || process.cwd(),
-          taskConfig,
         });
 
         return { content: [{ type: "text" as const, text: JSON.stringify({
@@ -720,28 +717,6 @@ export function registerExternalTools(
 
       const teams = db.prepare("SELECT id, name FROM teams ORDER BY name").all() as { id: string; name: string }[];
       return { content: [{ type: "text" as const, text: JSON.stringify(teams) }] };
-    },
-  );
-
-  server.tool(
-    "list_templates",
-    "List available task templates, optionally filtered by team",
-    {
-      team_id: z.string().optional().describe("Filter by team ID"),
-    },
-    async ({ team_id }) => {
-      const identity = getIdentity();
-      if (!identity) return authError;
-
-      const templates = team_id
-        ? db.prepare(
-            "SELECT id, template_name, team_id FROM task_templates WHERE team_id = ? AND deleted_at IS NULL ORDER BY template_name",
-          ).all(team_id) as { id: string; template_name: string; team_id: string }[]
-        : db.prepare(
-            "SELECT id, template_name, team_id FROM task_templates WHERE deleted_at IS NULL ORDER BY template_name",
-          ).all() as { id: string; template_name: string; team_id: string }[];
-
-      return { content: [{ type: "text" as const, text: JSON.stringify(templates) }] };
     },
   );
 }

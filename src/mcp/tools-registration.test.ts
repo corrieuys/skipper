@@ -108,7 +108,7 @@ describe("registerDaemonTools — role-based registration", () => {
   });
 });
 
-const EXTERNAL_TOOLS = ["create_task", "list_tasks", "approve_task", "list_teams", "list_templates"];
+const EXTERNAL_TOOLS = ["create_task", "list_tasks", "approve_task", "list_teams"];
 
 describe("registerExternalTools — external agent registration", () => {
   beforeEach(() => {

@@ -9,7 +9,7 @@ Server-side HTML rendering. No framework — string templates from TS.
 | `atoms/` | Smallest helpers: `escape-html`, `format-timestamp`, `format-tokens` |
 | `fragments/` | Single-element snippets (badge, metric, task-row, chat-message, tree-node, phase-step…) |
 | `panels/` | Larger composite cards (steer panel, agent tree, task queue, phase stepper, escalation, artifacts, notes) |
-| `pages/` | Full-page renderers (command-center, task-list, task-create, config, logs, analytics, grug, scheduled-task-create, template-form/list, escalation-queue, agent-terminal) |
+| `pages/` | Full-page renderers (command-center, task-list, task-create, config, logs, grug, escalation-queue, agent-terminal). Recurring tasks use the same task-create form (Task Type = Recurring) |
 | `shell/` | Layout + navbar wrappers |
 | `view-models/` | Data shape feeding renderers (e.g. `command-center.vm.ts`) |
 | `styles/` | CSS strings |

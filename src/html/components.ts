@@ -13,7 +13,6 @@ import { formatTimestamp } from "./formatTimestamp";
 export const navItems: { href: string; label: string }[] = [
   { href: "/", label: "Dashboard" },
   { href: "/tasks", label: "Tasks" },
-  { href: "/analytics/tokens", label: "Analytics" },
   { href: "/config", label: "Configuration" },
   { href: "/templates", label: "Templates" },
   { href: "/escalations", label: "Escalations" },
@@ -379,33 +378,6 @@ export function taskDelegationsFragment(
     ? taskDelegationsContent(delegations)
     : `<div class="card"><p class="muted">Task not found.</p></div>`;
   return `<div id="task-delegations-fragment">${content}</div>`;
-}
-
-export interface TokenAnalyticsPageData {
-  generated_at: string;
-  window: "all_time";
-  groups: Array<{
-    agent_id: string;
-    agent_name: string;
-    provider: string;
-    model: string;
-    input_tokens: number;
-    cache_read_tokens: number;
-    cache_write_tokens: number;
-    output_tokens: number;
-    total_tokens: number;
-    instance_count: number;
-    usage_event_count: number;
-  }>;
-  summary: {
-    input_tokens: number;
-    cache_read_tokens: number;
-    cache_write_tokens: number;
-    output_tokens: number;
-    total_tokens: number;
-    instance_count: number;
-    usage_event_count: number;
-  };
 }
 
 export function taskForensicsFragment(

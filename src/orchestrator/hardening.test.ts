@@ -431,6 +431,67 @@ describe("Recovery manager — duplicate-root prevention", () => {
     expect(inst.process_pid).toBe(process.pid);
   });
 
+  it("recoverAllStaleTasks: does NOT reap a live delegated child after the root instance exits", async () => {
+    // Regression: the orphan guard looked up the active delegation by the
+    // ASSIGNED AGENT id (template id, e.g. "skipper"), but delegations are keyed
+    // by the parent INSTANCE uuid (parent_instance_id). Once the root instance
+    // exits after handing off — status 'completed', pid null — the parent-id
+    // lookup never matched, so a still-running analyst child was reaped as if it
+    // were orphaned, and the task got the "died twice" pause banner.
+    const workerId = createAgent("analyst");
+    const teamId = createTeamWithEntrypoint(workerId);
+    const taskId = createRunningTask(teamId);
+
+    // Root Skipper is assigned to the task but its instance has exited: in the
+    // agents table its current_task_id points here with a null pid, and it is
+    // NOT in the in-memory running map.
+    db.prepare("UPDATE agents SET current_task_id = ?, process_pid = NULL WHERE id = 'skipper'").run(taskId);
+    const exitedRootInstance = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, status, attempt)
+       VALUES (?, ?, 'skipper', 'completed', 1)`,
+    ).run(exitedRootInstance, taskId);
+
+    // The analyst child is genuinely running — spawn a real (sleep) instance so
+    // it lives in the agent manager's in-memory map under its runtime id.
+    const childRuntimeId = "live-analyst-runtime";
+    await daemon.getAgentManager().spawnAgentInstance(workerId, childRuntimeId, {
+      workingDir: process.cwd(),
+      taskId,
+      parentInstanceId: exitedRootInstance,
+      rootInstanceId: exitedRootInstance,
+      attempt: 1,
+    });
+    expect(daemon.getAgentManager().getRunningAgent(childRuntimeId)).toBeDefined();
+
+    // Active delegation: parent_instance_id is the EXITED root uuid (not "skipper").
+    const groupId = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO delegation_groups (id, task_id, parent_instance_id, expected_count, status)
+       VALUES (?, ?, ?, 1, 'running')`,
+    ).run(groupId, taskId, exitedRootInstance);
+    db.prepare(
+      `INSERT INTO delegations (id, parent_agent_id, child_agent_id, parent_instance_id, child_instance_id, delegation_group_id, task_id, prompt, status)
+       VALUES (?, 'skipper', ?, ?, ?, ?, ?, 'analyze', 'running')`,
+    ).run(crypto.randomUUID(), workerId, exitedRootInstance, childRuntimeId, groupId, taskId);
+
+    // Pre-arm the grace timer as already-elapsed so the buggy path would proceed
+    // straight to recovery on this single call.
+    db.prepare("INSERT OR REPLACE INTO daemon_state (key, value) VALUES (?, ?)")
+      .run(`orphan_recovery_seen:${taskId}`, String(Date.now() - 60_000));
+
+    await daemon.getRecoveryManager().recoverAllStaleTasks();
+
+    // The child guard fires: task stays running, no recovery attempted, child untouched.
+    const task = scheduler.getTask(taskId)!;
+    expect(task.status).toBe("running");
+    const seen = db.prepare("SELECT value FROM daemon_state WHERE key = ?").get(`orphan_recovery_seen:${taskId}`);
+    expect(seen).toBeNull();
+    const recoveryAttempt = db.prepare("SELECT value FROM daemon_state WHERE key = ?").get(`recovery_attempt:${taskId}`);
+    expect(recoveryAttempt).toBeNull();
+    expect(daemon.getAgentManager().getRunningAgent(childRuntimeId)).toBeDefined();
+  });
+
   it("reap-before-respawn: reconciles a dead orphaned subtree before spawning", async () => {
     // Make the entrypoint a lightweight test agent so the post-reap spawn succeeds
     // cleanly (and is torn down in afterEach) rather than exec'ing a real CLI.

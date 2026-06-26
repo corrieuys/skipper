@@ -8,7 +8,7 @@ import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/typ
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
 import type { OrchestrationState } from "./types";
-import { getTaskTemplateId, resolvePhaseConfig } from "../templates/helpers";
+import { resolvePhaseConfig } from "./phase-config";
 import { getBoolSetting, SETTING_PARALLEL_TASKS } from "../config/app-settings";
 
 export class TaskRunner {
@@ -114,8 +114,7 @@ export class TaskRunner {
     let resolvedStartPhase: Phase | undefined;
     if (phases.length > 0) {
       const safePhase = Math.min(startPhase, phases.length - 1);
-      const templateId = getTaskTemplateId(startedTask.task_config);
-      const resolved = resolvePhaseConfig(this.db, phases[safePhase], templateId, startedTask.task_config as Record<string, unknown>);
+      const resolved = resolvePhaseConfig(phases[safePhase], startedTask.task_config as Record<string, unknown>);
       resolvedStartPhase = { name: resolved.name, prompt: resolved.prompt, review: resolved.review, consensus: resolved.consensus ?? undefined };
       phaseInfo = {
         name: resolved.name,

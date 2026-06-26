@@ -820,36 +820,14 @@ export class ManagerDaemon {
     return !!row;
   }
 
-  /**
-   * Returns true when the task is backed by a single_instance scheduled task.
-   * Used by handleAgentExit to short-circuit the standard
-   * complete/fail/markIdle path — single_instance tasks stay running forever
-   * and are re-fired by the scheduler at the configured interval.
-   */
-  private isSingleInstanceTask(taskId: string): boolean {
-    const row = this.db
-      .prepare(
-        `SELECT st.single_instance AS si
-         FROM tasks t
-         JOIN scheduled_tasks st ON st.id = t.source_scheduled_task_id
-         WHERE t.id = ?`,
-      )
-      .get(taskId) as { si: number } | null;
-    return !!(row && Number(row.si) === 1);
-  }
-
-  private async processScheduledTasks(): Promise<void> {
+  private processScheduledTasks(): void {
     try {
       const dueTasks = this.scheduledTaskScheduler.getDueScheduledTasks();
       for (const scheduled of dueTasks) {
         try {
-          if (scheduled.single_instance) {
-            await this.fireSingleInstanceScheduledTask(scheduled);
-          } else {
-            this.fireStandardScheduledTask(scheduled);
-          }
+          this.fireStandardScheduledTask(scheduled);
         } catch (err) {
-          logError(this.db, "scheduled_task_fire", { scheduledId: scheduled.id, single_instance: scheduled.single_instance, method: "processScheduledTasks" }, err);
+          logError(this.db, "scheduled_task_fire", { scheduledId: scheduled.id, method: "processScheduledTasks" }, err);
         }
       }
     } catch (err) {
@@ -857,7 +835,7 @@ export class ManagerDaemon {
     }
   }
 
-  /** Standard scheduled task fire — create a new task per fire, queued for TaskRunner. */
+  /** Each scheduled fire creates a new, fresh task, queued for TaskRunner. */
   private fireStandardScheduledTask(scheduled: import("../tasks/scheduled-scheduler").ScheduledTask): void {
     const queuedCount = (this.db
       .prepare(
@@ -867,17 +845,9 @@ export class ManagerDaemon {
     if (queuedCount > 0) return;
 
     const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
-    const baseDesc = scheduled.description ?? undefined;
-    let finalDesc = baseDesc;
-    const tplId = (scheduled.task_config as Record<string, unknown>)?.template_id;
-    if (typeof tplId === "string" && tplId) {
-      const { getTemplateSkipperPrompt } = require("../templates/helpers");
-      const sp = getTemplateSkipperPrompt(this.db, tplId);
-      if (sp) finalDesc = baseDesc ? `${baseDesc}\n\n${sp}` : sp;
-    }
     const task = this.taskScheduler.createTask({
       title: `${scheduled.title} (${timestamp})`,
-      description: finalDesc,
+      description: scheduled.description ?? undefined,
       teamId: scheduled.team_id ?? undefined,
       workingDirectory: scheduled.working_directory,
       taskConfig: scheduled.task_config as import("../tasks/scheduler").RealtimeTaskConfig,
@@ -888,107 +858,6 @@ export class ManagerDaemon {
       .run(scheduled.id, task.id);
 
     this.taskScheduler.approveTask(task.id);
-    this.scheduledTaskScheduler.recordRun(scheduled.id);
-  }
-
-  /**
-   * Single-instance scheduled task fire. Uses ONE persistent backing tasks
-   * row per scheduled task; each fire respawns the entrypoint Skipper against
-   * that same task with --resume <sessionId>, prepending a context-compaction
-   * instruction when handleAgentExit has flagged pending_compact=1.
-   *
-   * First fire: defers to the standard path (createTask → approveTask →
-   * TaskRunner spawn) so the initial Skipper + session exist. The new
-   * handleAgentExit short-circuit then keeps the task running forever.
-   * Subsequent fires: skip task creation entirely, just respawn Skipper.
-   */
-  private async fireSingleInstanceScheduledTask(scheduled: import("../tasks/scheduled-scheduler").ScheduledTask): Promise<void> {
-    const existing = this.db
-      .prepare("SELECT id, status FROM tasks WHERE source_scheduled_task_id = ? ORDER BY created_at LIMIT 1")
-      .get(scheduled.id) as { id: string; status: string } | null;
-
-    if (!existing) {
-      // First fire — create the backing task via the standard flow so
-      // TaskRunner spawns the initial entrypoint Skipper + session.
-      this.fireStandardScheduledTask(scheduled);
-      return;
-    }
-
-    if (existing.status === "failed") {
-      // Don't auto-fire a failed single_instance task; let the operator
-      // investigate. We also don't recordRun so the timer doesn't advance.
-      logError(this.db, "single_instance_failed_backing_task", { scheduledId: scheduled.id, taskId: existing.id, method: "fireSingleInstanceScheduledTask" }, new Error("backing task is failed"));
-      return;
-    }
-
-    const teamExec = scheduled.team_id ? this.teamManager.getTeamForExecution(scheduled.team_id) : null;
-    if (!teamExec) {
-      logError(this.db, "single_instance_no_team", { scheduledId: scheduled.id, taskId: existing.id, method: "fireSingleInstanceScheduledTask" }, new Error("team missing or invalid"));
-      return;
-    }
-    const entrypointAgentId = teamExec.entrypoint_agent_id;
-
-    // Don't double-fire: if Skipper is mid-fire from the previous slot, just
-    // advance next_run_at so we don't queue up forever, and bail.
-    const running = this.db
-      .prepare(
-        "SELECT id FROM agent_instances WHERE task_id = ? AND template_agent_id = ? AND status = 'running' AND process_pid IS NOT NULL LIMIT 1",
-      )
-      .get(existing.id, entrypointAgentId) as { id: string } | null;
-    if (running) {
-      this.scheduledTaskScheduler.recordRun(scheduled.id);
-      return;
-    }
-
-    const pendingCompact = (this.db
-      .prepare("SELECT pending_compact FROM tasks WHERE id = ?")
-      .get(existing.id) as { pending_compact: number } | null)?.pending_compact ?? 0;
-
-    const fireTs = new Date().toISOString();
-    const descBody = scheduled.description?.trim() || scheduled.title;
-    let prompt = `[SCHEDULED_FIRE @ ${fireTs}]\n\n${descBody}\n\nThis is a recurring single-instance scheduled task. When you've completed this fire's work, end your turn naturally — do NOT call complete_phase or complete_task. The task stays running and the next fire (at the configured interval) will resume from this point.`;
-    if (pendingCompact) {
-      prompt = `[SYSTEM: CONTEXT_COMPACTION] Before doing anything else this fire, summarize the prior conversation into a short context block (key decisions, recent findings, open items) and acknowledge the discard of verbose history. THEN proceed with the new fire instruction below.\n\n${prompt}`;
-    }
-
-    const agent = this.agentManager.getAgent(entrypointAgentId);
-    if (!agent) return;
-    const typeDef = getAgentTypeDefinition(agent.type, this.db);
-    if (!typeDef) return;
-    const sessionId = this.agentManager.getEntrypointSessionIdForTask(existing.id, entrypointAgentId);
-    const canResume = (typeDef.supports_resume ?? false) && !!sessionId;
-    const usesInlinePrompt = agentTypeUsesInlinePrompt(typeDef, canResume ? sessionId : null);
-    const isStreaming = typeDef.supports_stdin ?? false;
-
-    try {
-      const workingDir = scheduled.working_directory || process.cwd();
-      const spawnOpts = canResume
-        ? { workingDir, taskId: existing.id, sessionId: sessionId!, initialPrompt: usesInlinePrompt ? prompt : undefined }
-        : { workingDir, taskId: existing.id, initialPrompt: usesInlinePrompt ? prompt : undefined };
-      await this.agentManager.spawnAgent(entrypointAgentId, spawnOpts);
-    } catch (err) {
-      logError(this.db, "single_instance_spawn", { scheduledId: scheduled.id, taskId: existing.id, method: "fireSingleInstanceScheduledTask" }, err);
-      return;
-    }
-
-    this.db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run(existing.id, entrypointAgentId);
-
-    if (!usesInlinePrompt) {
-      const closeStdin = !isStreaming;
-      try {
-        this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
-      } catch (err) {
-        logError(this.db, "single_instance_send_input", { scheduledId: scheduled.id, taskId: existing.id, method: "fireSingleInstanceScheduledTask" }, err);
-        return;
-      }
-    }
-
-    // Prompt successfully dispatched — clear the compact flag so we don't
-    // re-issue the compaction instruction on the next fire.
-    if (pendingCompact) {
-      this.db.prepare("UPDATE tasks SET pending_compact = 0, updated_at = datetime('now') WHERE id = ?").run(existing.id);
-    }
-
     this.scheduledTaskScheduler.recordRun(scheduled.id);
   }
 
@@ -1119,28 +988,6 @@ export class ManagerDaemon {
       const task = this.taskScheduler.getTask(taskId);
       if (!task || task.status !== "running") {
         logError(this.db, "agent_exit_bail", { agentId: event.agentId, taskId, reason: !task ? "task_not_found" : `task_status_${task.status}`, method: "handleAgentExit" }, new Error("bail"));
-        return;
-      }
-
-      // Single-instance scheduled task short-circuit: the task is a
-      // persistent shell that fires Skipper on schedule. A clean Skipper exit
-      // means "this fire is done"; the task stays running, no phase
-      // advancement, no idle-poke (that would compete with the scheduler),
-      // no completeTask. Set pending_compact=1 so the next fire's prompt
-      // prepends a context-compaction instruction. Non-zero exit codes still
-      // fall through to the normal failure path so genuine crashes don't get
-      // silently swallowed.
-      if (event.code === 0 && this.isSingleInstanceTask(taskId)) {
-        const templateId = this.agentManager.getTemplateAgentId(event.agentId) ?? event.agentId;
-        this.db
-          .prepare("UPDATE tasks SET pending_compact = 1, updated_at = datetime('now') WHERE id = ?")
-          .run(taskId);
-        this.db
-          .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
-          .run(templateId);
-        this.db
-          .prepare("UPDATE agent_instances SET status = 'completed', updated_at = datetime('now') WHERE id = ?")
-          .run(event.agentId);
         return;
       }
 

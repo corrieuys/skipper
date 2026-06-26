@@ -71,7 +71,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   task_type TEXT NOT NULL DEFAULT 'standard' CHECK (task_type IN ('standard', 'real_time')),
   task_config TEXT NOT NULL DEFAULT '{}',     -- JSON: real-time config
   source_scheduled_task_id TEXT,             -- links spawned runs back to their scheduled_tasks row
-  pending_compact INTEGER NOT NULL DEFAULT 0, -- single_instance scheduled tasks: prepend compact instruction next fire
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   approved_at TEXT,
   started_at TEXT,
@@ -479,7 +478,6 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   task_config TEXT NOT NULL DEFAULT '{}',
   next_run_at TEXT,
   last_run_at TEXT,
-  single_instance INTEGER NOT NULL DEFAULT 0, -- reuse one tasks row + session across fires; compact between
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -513,6 +511,19 @@ CREATE TABLE IF NOT EXISTS global_store (
 );
 CREATE INDEX IF NOT EXISTS idx_global_store_type   ON global_store(type);
 CREATE INDEX IF NOT EXISTS idx_global_store_status ON global_store(status);
+
+-- Unified "local teams" (runtime table). Flattened into the config tables
+-- (teams/agents/team_agents) at boot + on mutation.
+CREATE TABLE IF NOT EXISTS local_teams (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  skipper_prompt TEXT NOT NULL DEFAULT '',
+  hooks TEXT NOT NULL DEFAULT '[]',
+  phases TEXT NOT NULL DEFAULT '[]',
+  agents TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- monkey_usage table moved to greg.db (see src/monkey/db.ts)
 

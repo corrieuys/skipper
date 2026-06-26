@@ -6,7 +6,7 @@ import type { TeamManager, Phase } from "../teams/manager";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
 import { TaskStateMachine } from "./state";
 import { logError } from "../logging";
-import { getTaskTemplateId, resolvePhaseConfig } from "../templates/helpers";
+import { resolvePhaseConfig } from "./phase-config";
 import type { OrchestrationState, TaskCheckpoint } from "./types";
 
 const RECOVERY_ATTEMPT_KEY_PREFIX = "recovery_attempt:";
@@ -239,14 +239,19 @@ export class RecoveryManager {
           }
         }
 
-        const activeDelegation = this.getActiveDelegationForParent(assignedAgent.id);
-        if (activeDelegation) {
-          const childRuntimeId = activeDelegation.child_instance_id ?? activeDelegation.child_agent_id;
-          const childRunning = this.agentManager.getRunningAgent(childRuntimeId);
-          if (childRunning) {
-            this.clearOrphanRecoverySeen(taskId);
-            continue;
-          }
+        // A delegated child still running means the task is making progress —
+        // the parent instance legitimately exits after handing off and gets
+        // re-spawned when the child completes. Match active delegations by
+        // TASK, not by the parent's id: `assignedAgent.id` is the template
+        // agent id ("skipper"), whereas delegations are keyed by the parent
+        // INSTANCE uuid (parent_instance_id), so a parent-id lookup never
+        // matches once the parent instance has exited — which would reap a
+        // live child as if it were orphaned.
+        const childRuntimeIds = this.getActiveDelegationChildrenForTask(taskId);
+        const anyChildRunning = childRuntimeIds.some((cid) => this.agentManager.getRunningAgent(cid));
+        if (anyChildRunning) {
+          this.clearOrphanRecoverySeen(taskId);
+          continue;
         }
 
         if (!this.shouldAttemptOrphanRecovery(taskId)) {
@@ -421,8 +426,7 @@ export class RecoveryManager {
 
     let phaseInfo: PhaseInfo | undefined;
     if (phases.length > 0 && phaseCursor < phases.length) {
-      const templateId = getTaskTemplateId(task.task_config);
-      const resolved = resolvePhaseConfig(this.db, phases[phaseCursor], templateId, task.task_config as Record<string, unknown>);
+      const resolved = resolvePhaseConfig(phases[phaseCursor], task.task_config as Record<string, unknown>);
       phaseInfo = {
         name: resolved.name,
         prompt: resolved.prompt,
@@ -792,37 +796,22 @@ export class RecoveryManager {
       .filter((t): t is import("../tasks/scheduler").Task => t !== null);
   }
 
-  private getActiveDelegationForParent(parentAgentId: string): {
-    child_agent_id: string;
-    child_instance_id: string | null;
-    delegation_group_id: string | null;
-    expected_count: number | null;
-    settled_count: number | null;
-  } | null {
+  // Runtime ids of children for every pending/running delegation on a task.
+  // Prefers child_instance_id (the runtime uuid the agent manager tracks),
+  // falling back to child_agent_id for legacy rows.
+  private getActiveDelegationChildrenForTask(taskId: string): string[] {
     try {
-      const row = this.db
+      const rows = this.db
         .prepare(
-          `SELECT d.child_agent_id,
-                  d.child_instance_id,
-                  d.delegation_group_id,
-                  dg.expected_count,
-                  dg.settled_count
-           FROM delegations d
-           LEFT JOIN delegation_groups dg ON dg.id = d.delegation_group_id
-           WHERE d.parent_instance_id = ? AND d.status IN ('pending', 'running')
-           LIMIT 1`,
+          `SELECT child_agent_id, child_instance_id
+           FROM delegations
+           WHERE task_id = ? AND status IN ('pending', 'running')`,
         )
-        .get(parentAgentId) as {
-        child_agent_id: string;
-        child_instance_id: string | null;
-        delegation_group_id: string | null;
-        expected_count: number | null;
-        settled_count: number | null;
-      } | null;
-      return row ?? null;
+        .all(taskId) as Array<{ child_agent_id: string; child_instance_id: string | null }>;
+      return rows.map((r) => r.child_instance_id ?? r.child_agent_id).filter((v): v is string => !!v);
     } catch (err) {
-      logError(this.db, "get_active_delegation_parent", { parentAgentId, method: "getActiveDelegationForParent" }, err);
-      return null;
+      logError(this.db, "get_active_delegation_children_task", { taskId, method: "getActiveDelegationChildrenForTask" }, err);
+      return [];
     }
   }
 }

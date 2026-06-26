@@ -11,7 +11,7 @@ import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/typ
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
 import { MAX_DELEGATION_RESULT_CHARS, truncateResult } from "./delegation-manager";
-import { getTaskTemplateId, resolvePhaseConfig } from "../templates/helpers";
+import { resolvePhaseConfig } from "./phase-config";
 
 const REVIEWER_TERMINAL_OUTPUT_CHARS = 5_000;
 const REVIEWER_RETRY_LIMIT = 1;
@@ -739,8 +739,7 @@ ${instructions}`;
         const phases = JSON.parse(teamRow.phases) as Phase[];
         const phase = phases[meta.phaseIndex];
         if (phase) {
-          const templateId = getTaskTemplateId(task.task_config);
-          phaseHasReview = resolvePhaseConfig(this.db, phase, templateId, task.task_config as Record<string, unknown>).review;
+          phaseHasReview = resolvePhaseConfig(phase, task.task_config as Record<string, unknown>).review;
         }
       } catch { /* ignore */ }
     }

@@ -5,9 +5,9 @@ export function taskFormFields(
     _teams: TeamOptionData[],
     task?: Partial<TaskData>
 ): string {
-    // Team + template fields are served by the slot endpoint; the passed-in
-    // teams list is retained in the signature for backwards compatibility but
-    // no longer consumed here.
+    // The team field is served by the slot endpoint; the passed-in teams list is
+    // retained in the signature for backwards compatibility but no longer consumed
+    // here.
     void _teams;
     const taskType = task?.task_type;
     const taskConfig = task?.task_config;
@@ -19,8 +19,8 @@ export function taskFormFields(
     return `<div class="task-form-grid">
     <label><span>Title</span><input type="text" name="title" value="${task?.title ? escapeHtml(task.title) : ""}" required placeholder="Summarize the work to be done"></label>
     <label class="task-form-span-2"><span>Description</span><textarea name="description" rows="6" placeholder="Context, acceptance criteria, or specific instructions">${task?.description ? escapeHtml(task.description) : ""}</textarea></label>
-    <div id="task-form-team-template-slot" style="display:contents;"
-      hx-get="/fragments/task-form/team-template?${slotQs}"
+    <div id="task-form-team-slot" style="display:contents;"
+      hx-get="/fragments/task-form/team?${slotQs}"
       hx-trigger="load, change from:[name=taskType]"
       hx-include="[name=taskType]"
       hx-swap="outerHTML"></div>

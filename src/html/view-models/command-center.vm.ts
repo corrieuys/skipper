@@ -15,7 +15,6 @@ export interface TaskSummary {
   task_type: string;
   team_id: string | null;
   team_name: string | null;
-  template_id: string | null;
   working_directory: string;
   created_at: string;
   completed_at: string | null;
@@ -234,13 +233,6 @@ export function buildCommandCenterViewModel(
         resultSummary = typeof t.result === "string" ? t.result.slice(0, 200) : null;
       }
     }
-    let templateId: string | null = null;
-    if (t.task_config) {
-      try {
-        const cfg = JSON.parse(t.task_config) as Record<string, unknown>;
-        if (typeof cfg.template_id === "string") templateId = cfg.template_id;
-      } catch { /* ignore */ }
-    }
     return {
       id: t.id,
       title: t.title,
@@ -249,7 +241,6 @@ export function buildCommandCenterViewModel(
       task_type: t.task_type,
       team_id: t.team_id,
       team_name: t.team_name,
-      template_id: templateId,
       working_directory: t.working_directory ?? "",
       created_at: t.created_at,
       completed_at: t.completed_at,

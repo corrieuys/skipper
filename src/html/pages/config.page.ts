@@ -3,30 +3,94 @@ import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
 import { NOTIFICATION_EVENTS } from "../../notifications/types";
 import type { NotificationPreference } from "../../notifications/store";
-
-export interface ConfigPageAgent {
-  id: string;
-  name: string;
-  type: string;
-  model: string;
-  status: string;
-}
-
-export interface ConfigPageTeam {
-  id: string;
-  name: string;
-  entrypoint_agent_name?: string;
-  phases: { name: string }[];
-}
+import type { LocalTeam } from "../../teams/local-teams";
 
 export interface ConfigPageViewModel {
-  agents: ConfigPageAgent[];
-  teams: ConfigPageTeam[];
+  teams: LocalTeam[];
   notificationPreferences: NotificationPreference[];
   logRetentionHours: number;
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
+}
+
+function teamsPanel(teams: LocalTeam[]): string {
+  const rows = teams.length === 0
+    ? `<tr><td colspan="3" class="sk-muted" style="text-align:center;padding:1.5rem;">No teams yet. <a href="/config/teams/new">Create one.</a></td></tr>`
+    : teams.map((t) => `
+      <tr>
+        <td>${escapeHtml(t.name)}</td>
+        <td class="sk-text-xs">${t.phases.length} phase${t.phases.length === 1 ? "" : "s"}, ${t.agents.length} agent${t.agents.length === 1 ? "" : "s"}</td>
+        <td style="white-space:nowrap;text-align:right;">
+          <a href="/config/teams/${escapeHtml(t.id)}/edit" class="sk-btn sk-btn--sm">Edit</a>
+          <a href="/api/teams/export?id=${encodeURIComponent(t.id)}" class="sk-btn sk-btn--sm">Export</a>
+          <button class="sk-btn sk-btn--sm sk-btn--danger"
+            hx-post="/api/teams/${escapeHtml(t.id)}/delete"
+            hx-confirm="Delete team '${escapeHtml(t.name)}'?"
+            hx-target="closest tr"
+            hx-swap="outerHTML">Delete</button>
+        </td>
+      </tr>`).join("");
+
+  return `
+      <!-- Teams Section -->
+      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
+        <div class="sk-panel__header">
+          <span class="sk-panel__title">Teams</span>
+          <span class="sk-panel__count">${teams.length}</span>
+          <div style="margin-left:auto;display:flex;gap:var(--sk-space-2);">
+            <a href="/api/teams/export" class="sk-btn sk-btn--sm">Export All</a>
+            <a href="/config/teams/new" class="sk-btn sk-btn--sm sk-btn--primary">New Team</a>
+          </div>
+        </div>
+        <div class="sk-panel__body--flush">
+          <table class="sk-table">
+            <thead><tr><th>Name</th><th>Contents</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div class="sk-panel__body">
+          <h4 style="margin:0 0 var(--sk-space-2);">Import Teams</h4>
+          <p class="sk-muted sk-text-xs" style="margin:0 0 var(--sk-space-2);">Paste an export (an array of teams, or <code>{"teams":[...]}</code>), or choose a file. Existing ids are updated; new ids are created.</p>
+          <textarea id="team-import-json" class="sk-textarea" rows="5" placeholder='{"teams":[ ... ]}'></textarea>
+          <div style="display:flex;gap:var(--sk-space-3);align-items:center;margin-top:var(--sk-space-2);">
+            <input type="file" id="team-import-file" accept="application/json,.json" class="sk-input" style="max-width:280px;">
+            <button type="button" class="sk-btn sk-btn--sm sk-btn--primary" id="team-import-btn">Import</button>
+          </div>
+          <div id="team-import-result" class="sk-text-xs" style="margin-top:var(--sk-space-2);"></div>
+        </div>
+      </div>
+      <script>
+      (function(){
+        var fileInput = document.getElementById('team-import-file');
+        var textArea = document.getElementById('team-import-json');
+        var btn = document.getElementById('team-import-btn');
+        var result = document.getElementById('team-import-result');
+        if (fileInput) fileInput.addEventListener('change', function(){
+          var f = fileInput.files && fileInput.files[0];
+          if (!f) return;
+          var reader = new FileReader();
+          reader.onload = function(){ textArea.value = String(reader.result || ''); };
+          reader.readAsText(f);
+        });
+        if (btn) btn.addEventListener('click', async function(){
+          result.textContent = 'Importing...';
+          var raw = textArea.value.trim();
+          if (!raw) { result.textContent = 'Nothing to import.'; return; }
+          var parsed;
+          try { parsed = JSON.parse(raw); } catch (e) { result.textContent = 'Invalid JSON: ' + e.message; return; }
+          try {
+            var res = await fetch('/api/teams/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) });
+            var data = await res.json();
+            if (!res.ok) { result.textContent = 'Import failed: ' + (data.error || res.status); return; }
+            var msg = 'Imported ' + (data.imported || 0) + ', updated ' + (data.updated || 0) + '.';
+            if (data.errors && data.errors.length) msg += ' Errors: ' + data.errors.map(function(e){ return e.team + ': ' + e.error; }).join('; ');
+            result.textContent = msg;
+            setTimeout(function(){ window.location.reload(); }, 1200);
+          } catch (e) { result.textContent = 'Import failed: ' + e.message; }
+        });
+      })();
+      </script>`;
 }
 
 function notificationRows(prefs: NotificationPreference[]): string {
@@ -49,42 +113,6 @@ function notificationRows(prefs: NotificationPreference[]): string {
 }
 
 export function configPage(vm: ConfigPageViewModel): string {
-  const agentRows = vm.agents.map((agent) => {
-    const eid = escapeHtml(agent.id);
-    return `<tbody id="agent-row-${eid}">
-      <tr>
-        <td>${escapeHtml(agent.name)}</td>
-        <td class="sk-mono">${escapeHtml(agent.type)}</td>
-        <td class="sk-mono">${escapeHtml(agent.model)}</td>
-        <td><span class="sk-badge sk-badge--${agent.status}">${agent.status}</span></td>
-        <td style="text-align:right;">
-          <button class="sk-btn sk-btn--sm"
-            hx-get="/fragments/config/agents/${eid}/edit"
-            hx-target="#agent-row-${eid}"
-            hx-swap="beforeend">Edit</button>
-        </td>
-      </tr>
-    </tbody>`;
-  }).join("");
-
-  const teamRows = vm.teams.map((team) => {
-    const eid = escapeHtml(team.id);
-    const phaseCount = Array.isArray(team.phases) ? team.phases.length : 0;
-    return `<tbody id="team-row-${eid}">
-      <tr>
-        <td>${escapeHtml(team.name)}</td>
-        <td>${team.entrypoint_agent_name ? escapeHtml(team.entrypoint_agent_name) : '<span class="sk-muted">-</span>'}</td>
-        <td>${phaseCount} phase${phaseCount === 1 ? "" : "s"}</td>
-        <td style="text-align:right;">
-          <button class="sk-btn sk-btn--sm"
-            hx-get="/fragments/config/teams/${eid}/edit"
-            hx-target="#team-row-${eid}"
-            hx-swap="beforeend">Edit</button>
-        </td>
-      </tr>
-    </tbody>`;
-  }).join("");
-
   return v2layout("Configuration", `
     ${navbar({ currentPath: "/config", daemonState: vm.daemonState, daemonUptime: vm.daemonUptime, escalationCount: vm.escalationCount })}
     <div class="sk-container">
@@ -92,45 +120,7 @@ export function configPage(vm: ConfigPageViewModel): string {
         <h1 class="sk-page-header__title">Configuration</h1>
       </div>
 
-      <!-- Agents Section -->
-      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
-        <div class="sk-panel__header">
-          <span class="sk-panel__title">Agents</span>
-          <span class="sk-panel__count">${vm.agents.length}</span>
-          <button class="sk-btn sk-btn--sm" style="margin-left:auto;"
-            hx-post="/api/config/export/agents" hx-swap="none"
-            hx-on::after-request="if(event.detail.successful){this.textContent='Exported!';setTimeout(()=>this.textContent='Export to base config',1500);}">Export to base config</button>
-        </div>
-        <div class="sk-panel__body--flush">
-          ${vm.agents.length > 0
-            ? `<table class="sk-table">
-                <thead><tr><th>Name</th><th>Type</th><th>Model</th><th>Status</th><th></th></tr></thead>
-                ${agentRows}
-              </table>`
-            : `<div class="sk-panel__empty">No agents configured</div>`
-          }
-        </div>
-      </div>
-
-      <!-- Teams Section -->
-      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
-        <div class="sk-panel__header">
-          <span class="sk-panel__title">Teams</span>
-          <span class="sk-panel__count">${vm.teams.length}</span>
-          <button class="sk-btn sk-btn--sm" style="margin-left:auto;"
-            hx-post="/api/config/export/teams" hx-swap="none"
-            hx-on::after-request="if(event.detail.successful){this.textContent='Exported!';setTimeout(()=>this.textContent='Export to base config',1500);}">Export to base config</button>
-        </div>
-        <div class="sk-panel__body--flush">
-          ${vm.teams.length > 0
-            ? `<table class="sk-table">
-                <thead><tr><th>Name</th><th>Entrypoint</th><th>Phases</th><th></th></tr></thead>
-                ${teamRows}
-              </table>`
-            : `<div class="sk-panel__empty">No teams configured</div>`
-          }
-        </div>
-      </div>
+      ${teamsPanel(vm.teams)}
 
       <!-- Sound Notifications Section -->
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
@@ -175,8 +165,6 @@ export function configPage(vm: ConfigPageViewModel): string {
           <table class="sk-table">
             <tr><td class="sk-muted">Daemon State</td><td><span class="sk-badge sk-badge--${vm.daemonState === "running" ? "running" : "draft"}">${escapeHtml(vm.daemonState)}</span></td></tr>
             <tr><td class="sk-muted">Uptime</td><td>${Math.floor(vm.daemonUptime / 60)}m</td></tr>
-            <tr><td class="sk-muted">Agents</td><td>${vm.agents.length}</td></tr>
-            <tr><td class="sk-muted">Teams</td><td>${vm.teams.length}</td></tr>
           </table>
         </div>
       </div>
@@ -202,38 +190,3 @@ export function apiKeysPanel(keys: ApiKeyData[]): string {
   </div>`;
 }
 
-export function configAgentRowFragment(agent: ConfigPageAgent): string {
-  const eid = escapeHtml(agent.id);
-  return `<tbody id="agent-row-${eid}">
-    <tr>
-      <td>${escapeHtml(agent.name)}</td>
-      <td class="sk-mono">${escapeHtml(agent.type)}</td>
-      <td class="sk-mono">${escapeHtml(agent.model)}</td>
-      <td><span class="sk-badge sk-badge--${agent.status}">${agent.status}</span></td>
-      <td style="text-align:right;">
-        <button class="sk-btn sk-btn--sm"
-          hx-get="/fragments/config/agents/${eid}/edit"
-          hx-target="#agent-row-${eid}"
-          hx-swap="beforeend">Edit</button>
-      </td>
-    </tr>
-  </tbody>`;
-}
-
-export function configTeamRowFragment(team: ConfigPageTeam): string {
-  const eid = escapeHtml(team.id);
-  const phaseCount = Array.isArray(team.phases) ? team.phases.length : 0;
-  return `<tbody id="team-row-${eid}">
-    <tr>
-      <td>${escapeHtml(team.name)}</td>
-      <td>${team.entrypoint_agent_name ? escapeHtml(team.entrypoint_agent_name) : '<span class="sk-muted">-</span>'}</td>
-      <td>${phaseCount} phase${phaseCount === 1 ? "" : "s"}</td>
-      <td style="text-align:right;">
-        <button class="sk-btn sk-btn--sm"
-          hx-get="/fragments/config/teams/${eid}/edit"
-          hx-target="#team-row-${eid}"
-          hx-swap="beforeend">Edit</button>
-      </td>
-    </tr>
-  </tbody>`;
-}

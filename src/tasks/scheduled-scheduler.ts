@@ -16,11 +16,6 @@ export interface ScheduledTask {
   task_config: Record<string, unknown>;
   next_run_at: string | null;
   last_run_at: string | null;
-  // When true, each fire re-uses the ONE backing tasks row + its Skipper
-  // session (--resume) instead of creating a new task per fire. The end of
-  // each fire flips tasks.pending_compact=1 so the next fire's prompt starts
-  // with a context-compaction instruction.
-  single_instance: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -37,7 +32,6 @@ interface ScheduledTaskRow {
   task_config: string;
   next_run_at: string | null;
   last_run_at: string | null;
-  single_instance: number;
   created_at: string;
   updated_at: string;
 }
@@ -60,7 +54,6 @@ function rowToScheduledTask(row: ScheduledTaskRow): ScheduledTask {
     task_config: taskConfig,
     next_run_at: row.next_run_at,
     last_run_at: row.last_run_at,
-    single_instance: Number(row.single_instance ?? 0) === 1,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -75,7 +68,6 @@ export interface CreateScheduledTaskInput {
   scheduleUnit?: ScheduleUnit | null;
   scheduleAmount?: number | null;
   taskConfig?: Record<string, unknown>;
-  singleInstance?: boolean;
 }
 
 export interface UpdateScheduledTaskInput {
@@ -87,7 +79,6 @@ export interface UpdateScheduledTaskInput {
   scheduleUnit?: ScheduleUnit | null;
   scheduleAmount?: number | null;
   taskConfig?: Record<string, unknown>;
-  singleInstance?: boolean;
 }
 
 export class ScheduledTaskScheduler {
@@ -104,8 +95,8 @@ export class ScheduledTaskScheduler {
 
     this.db
       .prepare(
-        `INSERT INTO scheduled_tasks (id, title, description, team_id, working_directory, schedule_unit, schedule_amount, task_config, single_instance)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO scheduled_tasks (id, title, description, team_id, working_directory, schedule_unit, schedule_amount, task_config)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -116,7 +107,6 @@ export class ScheduledTaskScheduler {
         input.scheduleUnit ?? null,
         input.scheduleAmount ?? null,
         taskConfig,
-        input.singleInstance ? 1 : 0,
       );
 
     return this.getScheduledTask(id)!;
@@ -146,10 +136,6 @@ export class ScheduledTaskScheduler {
     const taskConfig = input.taskConfig ? JSON.stringify(input.taskConfig) : JSON.stringify(task.task_config);
     const workingDirectory = input.workingDirectory?.trim() ?? task.working_directory;
 
-    const singleInstance = input.singleInstance === undefined
-      ? (task.single_instance ? 1 : 0)
-      : (input.singleInstance ? 1 : 0);
-
     // null = explicit clear (manual-only); undefined = keep existing.
     const scheduleUnit = input.scheduleUnit !== undefined ? input.scheduleUnit : task.schedule_unit;
     const scheduleAmount = input.scheduleAmount !== undefined ? input.scheduleAmount : task.schedule_amount;
@@ -158,7 +144,7 @@ export class ScheduledTaskScheduler {
       .prepare(
         `UPDATE scheduled_tasks
          SET title = ?, description = ?, team_id = ?, working_directory = ?,
-             schedule_unit = ?, schedule_amount = ?, task_config = ?, single_instance = ?, updated_at = datetime('now')
+             schedule_unit = ?, schedule_amount = ?, task_config = ?, updated_at = datetime('now')
          WHERE id = ?`,
       )
       .run(
@@ -169,7 +155,6 @@ export class ScheduledTaskScheduler {
         scheduleUnit,
         scheduleAmount,
         taskConfig,
-        singleInstance,
         id,
       );
 

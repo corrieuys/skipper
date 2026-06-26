@@ -24,8 +24,6 @@ export function navbar(data: NavbarData): string {
     { href: "/escalations", label: "Escalations", match: "/escalations" },
     { href: "/config", label: "Config", match: "/config" },
     ...(isExperimental() ? [{ href: "/global-store", label: "Store", match: "/global-store" }] : []),
-    { href: "/templates", label: "Templates", match: "/templates" },
-    { href: "/analytics/tokens", label: "Analytics", match: "/analytics" },
     { href: "/logs", label: "Logs", match: "/logs" },
     { href: "/help", label: "Help", match: "/help" },
   ];

@@ -209,17 +209,15 @@ function renderTaskView(vm: CommandCenterViewModel, task: TaskSummary): string {
 }
 
 export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; name: string }>): string {
-  void _teams; // team/template selects are rendered via the shared slot endpoint
+  void _teams; // team select is rendered via the shared slot endpoint
   const eid = escapeHtml(task.id);
   const slotQuery = new URLSearchParams({
     taskType: "standard",
     context: "full",
     selectedTeamId: task.team_id ?? "",
-    selectedTemplateId: task.template_id ?? "",
   }).toString();
   const phaseQuery = new URLSearchParams({
     teamId: task.team_id ?? "",
-    templateId: task.template_id ?? "",
     taskId: task.id,
   }).toString();
   return `
@@ -247,15 +245,16 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
           <input type="text" name="workingDirectory" class="sk-input" value="${escapeHtml(task.working_directory || "")}" placeholder="/path/to/repo" required>
         </div>
         <div class="sk-form-row">
-          <div id="task-form-team-template-slot" style="display:contents;"
-            hx-get="/fragments/task-form/team-template?${slotQuery}"
+          <div id="task-form-team-slot" style="display:contents;"
+            hx-get="/fragments/task-form/team?${slotQuery}"
             hx-trigger="load"
             hx-target="this"
             hx-swap="outerHTML"></div>
         </div>
         <div id="phase-config-slot"
           hx-get="/fragments/task-form/phase-config?${phaseQuery}"
-          hx-trigger="load"
+          hx-trigger="load, change[target.name=='teamId'] from:document"
+          hx-include="[name='teamId']"
           hx-target="this"
           hx-swap="innerHTML"></div>
         <div style="display:flex; gap:var(--sk-space-3); margin-top:var(--sk-space-4);">
@@ -931,11 +930,6 @@ export function renderScheduledTaskDetail(
 
 function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: string; name: string }>, runs: Array<{ id: string; title: string; status: string; started_at: string | null; completed_at: string | null; result: string | null; created_at: string }> = []): string {
   const eid = escapeHtml(st.id);
-  const taskConfig = (st as any).task_config as Record<string, unknown> | undefined;
-  const templateId = typeof taskConfig?.template_id === "string" ? taskConfig.template_id : "";
-  const templateQuery = st.team_id && templateId
-    ? `?teamId=${encodeURIComponent(st.team_id)}&selected=${encodeURIComponent(templateId)}`
-    : st.team_id ? `?teamId=${encodeURIComponent(st.team_id)}` : "";
   const badge = formatScheduleBadge(st.schedule_unit, st.schedule_amount);
   return `
     <div class="mc-task-header">
@@ -975,17 +969,11 @@ function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: s
             <div class="sk-form-row" style="gap:var(--sk-space-3);">
               <div class="sk-form-group" style="flex:1;">
                 <label class="sk-label">Team</label>
-                <select name="teamId" class="sk-select" required
-                  hx-get="/fragments/templates/by-team"
-                  hx-trigger="change"
-                  hx-target="#template-field-wrapper"
-                  hx-swap="outerHTML"
-                  hx-include="[name='teamId']">
+                <select name="teamId" class="sk-select" required>
                   <option value="">Select team...</option>
                   ${teams.map(t => `<option value="${t.id}"${t.id === st.team_id ? " selected" : ""}>${escapeHtml(t.name)}</option>`).join("")}
                 </select>
               </div>
-              <div id="template-field-wrapper"${templateQuery ? ` hx-get="/fragments/templates/by-team${templateQuery}" hx-trigger="load" hx-swap="outerHTML"` : ""}></div>
             </div>
             <div class="sk-form-row" style="gap:var(--sk-space-3);">
               <div class="sk-form-group" style="flex:1;">

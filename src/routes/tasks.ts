@@ -1,7 +1,6 @@
 import { addRoute } from "../server";
 import { TaskScheduler } from "../tasks/scheduler";
 import type { TaskType, RealtimeTaskConfig } from "../tasks/scheduler";
-import { getTemplateSkipperPrompt } from "../templates/helpers";
 import { getDb } from "../db/connection";
 import { setBoolSetting, SETTING_PARALLEL_TASKS, SETTING_ZEN_MODE } from "../config/app-settings";
 import { buildSkillsPromptAddition as _buildSkillsPromptAddition } from "../config-readers/skills";
@@ -19,6 +18,10 @@ import { eventBus } from "../events/bus";
 import { htmlResponse, parseRequestBody } from "./utils";
 import { noteItemFragment } from "../html/dashboardNotesFragment";
 import { getRealtimeTeamId } from "../config/teams";
+import { parsePhaseOverridesFromForm } from "./phase-overrides";
+import { parseOptionalInterval } from "./scheduled-tasks";
+import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
+import { isExperimental } from "../config/feature-flags";
 
 function parseTaskRow(row: Record<string, unknown>): TaskData {
   const result = { ...row };
@@ -187,12 +190,42 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     const taskTypeRaw = formData.get("taskType");
     const taskConfigRaw = formData.get("taskConfig");
     const autoApproveRaw = formData.get("autoApprove");
-    const templateIdRaw = formData.get("templateId");
-    const templateId = typeof templateIdRaw === "string" && templateIdRaw.trim() ? templateIdRaw.trim() : undefined;
     const shouldAutoApprove = autoApproveRaw === "1" || autoApproveRaw === "true";
 
     if (!title || typeof title !== "string" || !title.trim()) {
       return taskCreationPageResponse("title is required", daemon?.getStatus());
+    }
+
+    // Recurring tasks are created via the merged task form (Task Type = Recurring).
+    // They live in scheduled_tasks, not tasks, so dispatch to the scheduler here.
+    if (taskTypeRaw === "recurring") {
+      if (!isExperimental()) return Response.json({ error: "recurring tasks require --experimental" }, { status: 403 });
+
+      const { unit: scheduleUnitVal, amount: scheduleAmountVal, error: intervalError } =
+        parseOptionalInterval(formData.get("scheduleUnit"), formData.get("scheduleAmount"));
+      if (intervalError) return Response.json({ error: intervalError }, { status: 400 });
+
+      const resolvedTeamId = typeof teamId === "string" && teamId.trim() ? teamId.trim() : undefined;
+      const recurringConfig: Record<string, unknown> = {};
+      const { overrides: recurringOverrides } = parsePhaseOverridesFromForm(formData, resolvedTeamId);
+      if (Object.keys(recurringOverrides).length > 0) recurringConfig.phase_overrides = recurringOverrides;
+
+      const scheduledScheduler = new ScheduledTaskScheduler();
+      const scheduled = scheduledScheduler.createScheduledTask({
+        title: title.trim(),
+        description: typeof description === "string" && description.trim() ? description.trim() : undefined,
+        teamId: resolvedTeamId,
+        workingDirectory: typeof workingDirectoryRaw === "string" && workingDirectoryRaw.trim() ? workingDirectoryRaw.trim() : process.cwd(),
+        scheduleUnit: scheduleUnitVal,
+        scheduleAmount: scheduleAmountVal,
+        taskConfig: Object.keys(recurringConfig).length > 0 ? recurringConfig : undefined,
+      });
+
+      if (shouldAutoApprove && scheduled.team_id) {
+        try { scheduledScheduler.approveScheduledTask(scheduled.id); } catch { /* ignore */ }
+      }
+
+      return new Response("", { status: 200, headers: { "HX-Redirect": `/?scheduled=${scheduled.id}`, "Content-Type": "text/html; charset=utf-8" } });
     }
 
     const workingDirectory = typeof workingDirectoryRaw === "string" && workingDirectoryRaw.trim()
@@ -230,17 +263,8 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     try {
       const db = getDb();
       let resolvedTeamId = typeof teamId === "string" && teamId.trim() ? teamId.trim() : findDefaultTaskTeamId(db, taskType);
-      const templateId = typeof templateIdRaw === "string" && templateIdRaw.trim() ? templateIdRaw.trim() : undefined;
 
-      // Append template skipper_prompt to description before task creation
-      const baseDescription = typeof description === "string" && description.trim() ? description.trim() : undefined;
-      let finalDescription = baseDescription;
-      if (templateId) {
-        const skipperPrompt = getTemplateSkipperPrompt(db, templateId);
-        if (skipperPrompt) {
-          finalDescription = baseDescription ? `${baseDescription}\n\n${skipperPrompt}` : skipperPrompt;
-        }
-      }
+      const finalDescription = typeof description === "string" && description.trim() ? description.trim() : undefined;
 
       let created = scheduler.createTask({
         title: title.trim(),
@@ -251,98 +275,14 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         taskConfig,
       });
 
-      // Collect per-task phase overrides from form fields. The task-create
-      // form (src/routes/pages.ts ~2070-2110) posts one review field and up
-      // to five consensus fields per phase:
-      //   phaseReviewOverride_<phase>          = "" | "true" | "false"
-      //   phaseConsensusMode_<phase>           = "" | "override" | "disabled"
-      //   phaseConsensusAgentCount_<phase>     = number (when mode=override)
-      //   phaseConsensusStrategy_<phase>       = "best_of" | "merge"
-      //   phaseConsensusWorktree_<phase>       = "on" (checkbox; absent = off)
-      //   phaseConsensusReviewerAgentId_<phase> = string
-      type ConsensusConfig = import("../teams/manager").ConsensusConfig;
-      const phaseOverrides: Record<string, { review?: boolean; consensus?: ConsensusConfig | null }> = {};
-      const REVIEW_PREFIX = "phaseReviewOverride_";
-      const CONSENSUS_MODE_PREFIX = "phaseConsensusMode_";
+      // Collect per-task phase overrides (prompt / review gate / consensus) from
+      // the task-create form fields. See src/routes/phase-overrides.ts.
+      const { overrides: phaseOverrides } = parsePhaseOverridesFromForm(formData, resolvedTeamId);
 
-      // The task-create form names per-phase fields with a sanitized phase name
-      // (pages.ts:2443 safeNameAttr = phase.name.replace(/[^a-zA-Z0-9_-]/g, "_")),
-      // but downstream consumers (templates/helpers.ts) look up overrides by the
-      // ORIGINAL phase name. Build a safeName → realName map from the team's
-      // phases and translate when persisting so spaces/punctuation in phase
-      // names don't silently drop the override.
-      const safeNameToRealName: Record<string, string> = {};
-      if (resolvedTeamId) {
-        try {
-          const teamRow = db
-            .prepare("SELECT phases FROM teams WHERE id = ?")
-            .get(resolvedTeamId) as { phases: string } | null;
-          if (teamRow?.phases) {
-            const teamPhases = JSON.parse(teamRow.phases) as Array<{ name: string }>;
-            for (const p of teamPhases) {
-              if (p && typeof p.name === "string") {
-                const safe = p.name.replace(/[^a-zA-Z0-9_-]/g, "_");
-                safeNameToRealName[safe] = p.name;
-              }
-            }
-          }
-        } catch { /* ignore — fall back to safe name if team phases unreadable */ }
-      }
-      const resolvePhaseName = (safe: string): string => safeNameToRealName[safe] ?? safe;
-
-      const upsert = (phaseName: string, patch: Partial<{ review: boolean; consensus: ConsensusConfig | null }>) => {
-        phaseOverrides[phaseName] = { ...phaseOverrides[phaseName], ...patch };
-      };
-
-      for (const [key, value] of formData.entries()) {
-        if (key.startsWith(REVIEW_PREFIX) && key.length > REVIEW_PREFIX.length) {
-          const phaseName = resolvePhaseName(key.slice(REVIEW_PREFIX.length));
-          const val = typeof value === "string" ? value : "";
-          if (val === "true") upsert(phaseName, { review: true });
-          else if (val === "false") upsert(phaseName, { review: false });
-        } else if (key.startsWith(CONSENSUS_MODE_PREFIX) && key.length > CONSENSUS_MODE_PREFIX.length) {
-          const safe = key.slice(CONSENSUS_MODE_PREFIX.length);
-          const phaseName = resolvePhaseName(safe);
-          const mode = typeof value === "string" ? value : "";
-          if (mode === "disabled") {
-            upsert(phaseName, { consensus: null });
-          } else if (mode === "override") {
-            const countRaw = formData.get(`phaseConsensusAgentCount_${safe}`);
-            const strategyRaw = formData.get(`phaseConsensusStrategy_${safe}`);
-            const worktreeRaw = formData.get(`phaseConsensusWorktree_${safe}`);
-            const reviewerRaw = formData.get(`phaseConsensusReviewerAgentId_${safe}`);
-            const agent_count = Math.max(1, parseInt(typeof countRaw === "string" ? countRaw : "", 10) || 2);
-            const strategy: ConsensusConfig["strategy"] =
-              strategyRaw === "merge" ? "merge" : "best_of";
-            const consensus: ConsensusConfig = {
-              agent_count,
-              strategy,
-              worktree: typeof worktreeRaw === "string" && worktreeRaw.length > 0,
-            };
-            const reviewer = typeof reviewerRaw === "string" ? reviewerRaw.trim() : "";
-            if (reviewer) consensus.reviewer_agent_id = reviewer;
-            upsert(phaseName, { consensus });
-          }
-        }
-      }
-
-      // Store template_id, phase_overrides, and hooks in task_config
-      if (templateId || Object.keys(phaseOverrides).length > 0) {
+      // Store phase_overrides in task_config
+      if (Object.keys(phaseOverrides).length > 0) {
         const currentConfig = created.task_config as unknown as Record<string, unknown>;
-        const updatedConfig: Record<string, unknown> = { ...currentConfig };
-        if (templateId) updatedConfig.template_id = templateId;
-        if (Object.keys(phaseOverrides).length > 0) updatedConfig.phase_overrides = phaseOverrides;
-        if (templateId) {
-          const templateRow = db
-            .prepare("SELECT hooks FROM task_templates WHERE id = ? AND deleted_at IS NULL")
-            .get(templateId) as { hooks: string } | null;
-          if (templateRow?.hooks) {
-            try {
-              const hooks = JSON.parse(templateRow.hooks);
-              if (Array.isArray(hooks) && hooks.length > 0) updatedConfig.hooks = hooks;
-            } catch { /* ignore invalid hooks JSON */ }
-          }
-        }
+        const updatedConfig: Record<string, unknown> = { ...currentConfig, phase_overrides: phaseOverrides };
         db.prepare("UPDATE tasks SET task_config = ?, updated_at = datetime('now') WHERE id = ?")
           .run(JSON.stringify(updatedConfig), created.id);
       }
@@ -452,9 +392,6 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       const description = formData.get("description");
       const teamId = formData.get("teamId");
       const workingDirectory = formData.get("workingDirectory");
-      const templateIdRaw = formData.get("templateId");
-      const templateIdSubmitted = formData.has("templateId");
-      const templateId = typeof templateIdRaw === "string" && templateIdRaw.trim() ? templateIdRaw.trim() : null;
 
       const updates: string[] = [];
       const values: any[] = [];
@@ -476,99 +413,20 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         values.push(workingDirectory.trim());
       }
 
-      // Collect per-task phase overrides (phaseReviewOverride_<name>, phaseConsensusOverride_<name>)
-      const phaseOverrides: Record<string, { review?: boolean; consensus?: import("../teams/manager").ConsensusConfig | null }> = {};
-      let phaseOverridesSubmitted = false;
-      // Build safeName → realName map so sanitized form field names resolve to
-      // the original phase names (same logic as the create route).
+      // Collect per-task phase overrides (prompt / review gate / consensus).
+      // See src/routes/phase-overrides.ts.
       const resolvedTeamId = typeof teamId === "string" ? teamId.trim() : task.team_id;
-      const safeNameToRealName: Record<string, string> = {};
-      if (resolvedTeamId) {
-        try {
-          const teamRow = db.prepare("SELECT phases FROM teams WHERE id = ?").get(resolvedTeamId) as { phases: string } | null;
-          if (teamRow?.phases) {
-            const teamPhases = JSON.parse(teamRow.phases) as Array<{ name: string }>;
-            for (const p of teamPhases) {
-              if (p && typeof p.name === "string") {
-                const safe = p.name.replace(/[^a-zA-Z0-9_-]/g, "_");
-                safeNameToRealName[safe] = p.name;
-              }
-            }
-          }
-        } catch { /* ignore */ }
-      }
-      const resolvePhaseName = (safe: string): string => safeNameToRealName[safe] ?? safe;
+      const { overrides: phaseOverrides, submitted: phaseOverridesSubmitted } =
+        parsePhaseOverridesFromForm(formData, resolvedTeamId ?? undefined);
 
-      const REVIEW_PREFIX = "phaseReviewOverride_";
-      const CONSENSUS_MODE_PREFIX = "phaseConsensusMode_";
-      for (const [key, value] of formData.entries()) {
-        if (key.startsWith(REVIEW_PREFIX) && key.length > REVIEW_PREFIX.length) {
-          phaseOverridesSubmitted = true;
-          const phaseName = resolvePhaseName(key.slice(REVIEW_PREFIX.length));
-          const val = typeof value === "string" ? value : "";
-          if (val === "true") {
-            phaseOverrides[phaseName] = { ...phaseOverrides[phaseName], review: true };
-          } else if (val === "false") {
-            phaseOverrides[phaseName] = { ...phaseOverrides[phaseName], review: false };
-          }
-        } else if (key.startsWith(CONSENSUS_MODE_PREFIX) && key.length > CONSENSUS_MODE_PREFIX.length) {
-          phaseOverridesSubmitted = true;
-          const safe = key.slice(CONSENSUS_MODE_PREFIX.length);
-          const phaseName = resolvePhaseName(safe);
-          const mode = typeof value === "string" ? value : "";
-          if (mode === "disabled") {
-            phaseOverrides[phaseName] = { ...phaseOverrides[phaseName], consensus: null };
-          } else if (mode === "override") {
-            const countRaw = formData.get(`phaseConsensusAgentCount_${safe}`);
-            const strategyRaw = formData.get(`phaseConsensusStrategy_${safe}`);
-            const worktreeRaw = formData.get(`phaseConsensusWorktree_${safe}`);
-            const reviewerRaw = formData.get(`phaseConsensusReviewerAgentId_${safe}`);
-            const agent_count = Math.max(1, parseInt(typeof countRaw === "string" ? countRaw : "", 10) || 2);
-            const strategy: import("../teams/manager").ConsensusConfig["strategy"] =
-              strategyRaw === "merge" ? "merge" : "best_of";
-            const consensus: import("../teams/manager").ConsensusConfig = {
-              agent_count,
-              strategy,
-              worktree: typeof worktreeRaw === "string" && worktreeRaw.length > 0,
-            };
-            const reviewer = typeof reviewerRaw === "string" ? reviewerRaw.trim() : "";
-            if (reviewer) consensus.reviewer_agent_id = reviewer;
-            phaseOverrides[phaseName] = { ...phaseOverrides[phaseName], consensus };
-          }
-        }
-      }
-
-      // If templateId or phase overrides were part of the submission, rewrite task_config
-      if (templateIdSubmitted || phaseOverridesSubmitted) {
+      // If phase overrides were part of the submission, rewrite task_config
+      if (phaseOverridesSubmitted) {
         const row = db.prepare("SELECT task_config FROM tasks WHERE id = ?").get(params.id) as { task_config: string } | null;
         let currentConfig: Record<string, unknown> = {};
         try { currentConfig = row?.task_config ? JSON.parse(row.task_config) : {}; } catch { /* ignore */ }
         const updatedConfig: Record<string, unknown> = { ...currentConfig };
-        if (templateIdSubmitted) {
-          if (templateId) {
-            updatedConfig.template_id = templateId;
-            // Copy hooks from the selected template so they fire for this task
-            const templateRow = db
-              .prepare("SELECT hooks FROM task_templates WHERE id = ? AND deleted_at IS NULL")
-              .get(templateId) as { hooks: string } | null;
-            if (templateRow?.hooks) {
-              try {
-                const hooks = JSON.parse(templateRow.hooks);
-                if (Array.isArray(hooks) && hooks.length > 0) updatedConfig.hooks = hooks;
-                else delete updatedConfig.hooks;
-              } catch { /* ignore */ }
-            } else {
-              delete updatedConfig.hooks;
-            }
-          } else {
-            delete updatedConfig.template_id;
-            delete updatedConfig.hooks;
-          }
-        }
-        if (phaseOverridesSubmitted) {
-          if (Object.keys(phaseOverrides).length > 0) updatedConfig.phase_overrides = phaseOverrides;
-          else delete updatedConfig.phase_overrides;
-        }
+        if (Object.keys(phaseOverrides).length > 0) updatedConfig.phase_overrides = phaseOverrides;
+        else delete updatedConfig.phase_overrides;
         updates.push("task_config = ?");
         values.push(JSON.stringify(updatedConfig));
       }
