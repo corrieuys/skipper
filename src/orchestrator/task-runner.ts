@@ -96,9 +96,12 @@ export class TaskRunner {
       this.agentManager.clearSessionId(entrypointAgentId);
     }
 
-    if (this.agentManager.getRunningAgent(entrypointAgentId)) {
-      this.agentManager.killAgent(entrypointAgentId);
-      await this.agentManager.waitForExit(entrypointAgentId);
+    // Only tear down a stale instance belonging to THIS task (e.g. a resume).
+    // Killing by template id would murder a sibling same-team task's entrypoint.
+    const staleInstance = this.agentManager.getRunningInstanceForTask(entrypointAgentId, task.id);
+    if (staleInstance) {
+      this.agentManager.killAgent(staleInstance.id);
+      await this.agentManager.waitForExit(staleInstance.id);
     }
 
     const agentInfo: AgentInfo = {

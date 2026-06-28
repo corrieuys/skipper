@@ -307,6 +307,28 @@ export class AgentManager {
     return undefined;
   }
 
+  /**
+   * Resolve the running runtime instance of a template that belongs to a
+   * specific task. A single template entrypoint agent can have multiple live
+   * instances when several tasks share a team and run in parallel; callers that
+   * need to kill/respawn one task's entrypoint MUST target that task's instance,
+   * not an arbitrary one (which `getRunningAgent` would return). Returns
+   * undefined when this task has no running instance of the template.
+   */
+  getRunningInstanceForTask(templateAgentId: string, taskId: string): RunningAgent | undefined {
+    const instances = this.templateToInstances.get(templateAgentId);
+    if (instances) {
+      for (const runtimeId of instances) {
+        const agent = this.agents.get(runtimeId);
+        if (agent && agent.taskId === taskId) return agent;
+      }
+    }
+    // templateAgentId may itself be a runtime id already bound to the task.
+    const direct = this.agents.get(templateAgentId);
+    if (direct && direct.taskId === taskId) return direct;
+    return undefined;
+  }
+
   /** Resolve an agent ID to the runtime ID, checking template→instance mapping. */
   private resolveRuntimeId(id: string): string | undefined {
     if (this.agents.has(id)) return id;
