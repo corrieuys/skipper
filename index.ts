@@ -19,6 +19,8 @@ import { DaemonMcpServer } from "./src/mcp/server";
 import { MonkeyEngine } from "./src/monkey/tick";
 import { getGregDb, closeGregDb } from "./src/monkey/db";
 import { GlobalStoreManager } from "./src/global-store/manager";
+import { initConnectClient } from "./src/connect/client";
+import { getBoolSetting, getStringSetting, SETTING_SKIPPER_CONNECT_ENABLED, SETTING_SKIPPER_CONNECT_GUID, SETTING_SKIPPER_CONNECT_KEY } from "./src/config/app-settings";
 
 const experimental = process.argv.includes("--experimental");
 if (experimental) {
@@ -100,9 +102,24 @@ setWebSocketHandlers({
   "ui-push": uiPush.wsHandlers,
 });
 
+const connectClient = initConnectClient(
+  daemon.getTaskScheduler(),
+  daemon.getScheduledTaskScheduler(),
+  daemon.getEscalationManager(),
+  daemon.getArtifactManager(),
+  daemon.getPhaseManager(),
+);
+
 async function startup() {
   await daemon.start();
   monkeyEngine.start();
+
+  const db = getDb();
+  const hasCredentials = !!getStringSetting(db, SETTING_SKIPPER_CONNECT_GUID, "") &&
+    !!getStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, "");
+  if (hasCredentials && getBoolSetting(db, SETTING_SKIPPER_CONNECT_ENABLED, false)) {
+    connectClient.start();
+  }
 }
 
 startup().catch((err) => console.error("Startup failed:", err));
@@ -110,6 +127,7 @@ startup().catch((err) => console.error("Startup failed:", err));
 const server = startServer();
 
 function shutdown() {
+  connectClient.stop();
   monkeyEngine.stop();
   closeGregDb();
   mcpServer.close();

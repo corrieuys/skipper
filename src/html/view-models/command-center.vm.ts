@@ -1,6 +1,9 @@
 import type { Database } from "bun:sqlite";
 import { isTeamVisible, isExperimental } from "../../config/feature-flags";
-import { getBoolSetting, SETTING_PARALLEL_TASKS, SETTING_ZEN_MODE } from "../../config/app-settings";
+import {
+  getBoolSetting, SETTING_PARALLEL_TASKS, SETTING_ZEN_MODE,
+  SETTING_SKIPPER_CONNECT_ENABLED, getStringSetting, SETTING_SKIPPER_CONNECT_GUID,
+} from "../../config/app-settings";
 import type { ActiveMissionData } from "../panels/active-mission.panel";
 import type { MetricsData } from "../panels/metrics-bar.panel";
 import type { QueuedTask } from "../panels/task-queue.panel";
@@ -61,6 +64,7 @@ export interface CommandCenterViewModel {
   daemonUptime: number;
   parallelExecution: boolean;
   zenModeEnabled: boolean;
+  skipperConnectEnabled: boolean;
   realtimeSessionActive: Map<string, boolean>;
 }
 
@@ -301,6 +305,7 @@ export function buildCommandCenterViewModel(
     daemonUptime: process.uptime(),
     parallelExecution: getBoolSetting(db, SETTING_PARALLEL_TASKS, true),
     zenModeEnabled: isExperimental() && getBoolSetting(db, SETTING_ZEN_MODE, false),
+    skipperConnectEnabled: !!getStringSetting(db, SETTING_SKIPPER_CONNECT_GUID, "") && getBoolSetting(db, SETTING_SKIPPER_CONNECT_ENABLED, false),
     realtimeSessionActive,
   };
 }

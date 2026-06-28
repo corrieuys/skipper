@@ -53,7 +53,11 @@ import { dashboardActiveTaskFragment } from "../html/dashboardActiveTaskFragment
 import { helpPage } from "../html/pages/help.page";
 import { asteroidsPage } from "../html/pages/asteroids.page";
 import { dashboardSteerListFragment, type SteeringOption } from "../html/dashboardLatestSteerFragment";
-import { getNumberSetting, setNumberSetting, SETTING_LOG_RETENTION_HOURS } from "../config/app-settings";
+import {
+  getNumberSetting, setNumberSetting, SETTING_LOG_RETENTION_HOURS,
+  getStringSetting, setStringSetting, getSetting,
+  SETTING_SKIPPER_CONNECT_GUID, SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_URL,
+} from "../config/app-settings";
 import { recentActivityFragment } from "../html/recentActivityFragment";
 import type {
   DashboardData,
@@ -1366,6 +1370,9 @@ function registerV2PageRoutes(): void {
       daemonState: pausedRow?.value === "true" ? "paused" : "running",
       daemonUptime: process.uptime(),
       escalationCount,
+      skipperConnectGuid: getStringSetting(db, SETTING_SKIPPER_CONNECT_GUID, ""),
+      skipperConnectHasKey: !!getSetting(db, SETTING_SKIPPER_CONNECT_KEY),
+      skipperConnectUrl: getStringSetting(db, SETTING_SKIPPER_CONNECT_URL, "wss://connect.letskipper.work"),
     }));
   });
 
@@ -1392,6 +1399,19 @@ function registerV2PageRoutes(): void {
     db.prepare("DELETE FROM terminal_outputs WHERE created_at < datetime('now', ? || ' hours')").run(-retentionHours);
     db.prepare("DELETE FROM agent_sessions WHERE created_at < datetime('now', ? || ' hours')").run(-retentionHours);
     db.prepare("DELETE FROM events WHERE created_at < datetime('now', ? || ' hours')").run(-retentionHours);
+    return new Response(null, { status: 204 });
+  });
+
+  addRoute("POST", "/api/config/skipper-connect", async (req) => {
+    const formData = await req.formData();
+    const url = (formData.get("url") ?? "").toString().trim();
+    const guid = (formData.get("guid") ?? "").toString().trim();
+    const key = (formData.get("key") ?? "").toString().trim();
+
+    if (url) setStringSetting(db, SETTING_SKIPPER_CONNECT_URL, url);
+    if (guid) setStringSetting(db, SETTING_SKIPPER_CONNECT_GUID, guid);
+    if (key) setStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, key);
+
     return new Response(null, { status: 204 });
   });
 

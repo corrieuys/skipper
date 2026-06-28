@@ -4,6 +4,11 @@ export const SETTING_PARALLEL_TASKS = "parallel_task_execution";
 export const SETTING_LOG_RETENTION_HOURS = "log_retention_hours";
 export const SETTING_ZEN_MODE = "zen_mode_view";
 
+export const SETTING_SKIPPER_CONNECT_ENABLED = "skipper_connect_enabled";
+export const SETTING_SKIPPER_CONNECT_GUID = "skipper_connect_global_id_guid";
+export const SETTING_SKIPPER_CONNECT_KEY = "skipper_connect_key";
+export const SETTING_SKIPPER_CONNECT_URL = "skipper_connect_url";
+
 type SettingType = "boolean" | "number" | "string" | "json";
 
 interface SettingRow {
@@ -45,4 +50,13 @@ export function getNumberSetting(db: Database, key: string, defaultValue: number
 
 export function setNumberSetting(db: Database, key: string, value: number): void {
   setSetting(db, key, String(value), "number");
+}
+
+export function getStringSetting(db: Database, key: string, defaultValue = ""): string {
+  const row = getSetting(db, key);
+  return row ? row.value : defaultValue;
+}
+
+export function setStringSetting(db: Database, key: string, value: string): void {
+  setSetting(db, key, value, "string");
 }

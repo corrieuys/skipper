@@ -11,6 +11,7 @@ export interface NavbarData {
   escalationCount: number;
   showChatToggle?: boolean;
   zenModeEnabled?: boolean;
+  skipperConnectEnabled?: boolean;
 }
 
 export function navbar(data: NavbarData): string {
@@ -55,6 +56,10 @@ export function navbar(data: NavbarData): string {
         style="opacity:${data.zenModeEnabled ? "1" : "0.5"}"
         hx-post="/api/settings/zen-mode" hx-vals='${JSON.stringify({ enabled: data.zenModeEnabled ? "false" : "true" })}'
         hx-swap="none" hx-on::after-request="window.location.reload()">🪷</span>` : ""}
+      ${data.skipperConnectEnabled !== undefined ? `<span class="sk-navbar__monkey-toggle mc-mobile-hide" id="skipper-connect-toggle" title="Skipper Connect"
+        style="opacity:${data.skipperConnectEnabled ? "1" : "0.5"}"
+        hx-post="/api/settings/skipper-connect" hx-vals='${JSON.stringify({ enabled: data.skipperConnectEnabled ? "false" : "true" })}'
+        hx-swap="none" hx-on::after-request="window.location.reload()">🔗</span><span class="mc-mobile-hide sk-text-xs" style="display:inline-flex;align-items:center;gap:3px;" hx-get="/api/settings/skipper-connect/status" hx-trigger="load, every 5s" hx-swap="outerHTML"><span style="width:7px;height:7px;border-radius:50%;background:var(--sk-text-subtle);flex-shrink:0;display:inline-block;"></span></span>` : ""}
       ${themePickerFragment()}
       ${data.showChatToggle ? `<button class="mc-chat-toggle" data-sk-chat-toggle title="Toggle Chat Panel">Chat</button>` : ""}
       <div class="sk-dropdown" data-sk-dropdown>

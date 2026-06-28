@@ -12,6 +12,9 @@ export interface ConfigPageViewModel {
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
+  skipperConnectGuid: string;
+  skipperConnectHasKey: boolean;
+  skipperConnectUrl: string;
 }
 
 function teamsPanel(teams: LocalTeam[]): string {
@@ -153,6 +156,51 @@ export function configPage(vm: ConfigPageViewModel): string {
               hx-include="this">
             <span class="sk-text-xs sk-muted">Deletes terminal_outputs, agent_sessions, and events older than this. Default: 24h.</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Skipper Connect Section -->
+      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
+        <div class="sk-panel__header">
+          <span class="sk-panel__title">Skipper Connect</span>
+        </div>
+        <div class="sk-panel__body">
+          <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
+            Connect to <code>connect.letskipper.work</code> to expose task operations as webhooks.
+            Create a user in the dashboard to get a Global ID and generate a Connect API key.
+            Use the navbar toggle to enable or disable the live connection.
+          </p>
+          <form hx-post="/api/config/skipper-connect" hx-swap="none"
+            hx-on::after-request="if(event.detail.successful&&event.target===this){window.location.reload();}">
+            <div style="display:flex;flex-direction:column;gap:var(--sk-space-3);">
+              <div style="display:flex;align-items:center;gap:var(--sk-space-3);">
+                <label class="sk-muted sk-text-xs" style="width:130px;" for="sc-url">Connect URL</label>
+                <input type="text" id="sc-url" name="url"
+                  value="${escapeHtml(vm.skipperConnectUrl)}"
+                  class="sk-input sk-input--sm" style="flex:1;">
+              </div>
+              <div style="display:flex;align-items:center;gap:var(--sk-space-3);">
+                <label class="sk-muted sk-text-xs" style="width:130px;" for="sc-guid">Global ID</label>
+                <input type="text" id="sc-guid" name="guid"
+                  value="${escapeHtml(vm.skipperConnectGuid)}"
+                  placeholder="Paste global_id from dashboard"
+                  class="sk-input sk-input--sm" style="flex:1;">
+              </div>
+              <div style="display:flex;align-items:center;gap:var(--sk-space-3);">
+                <label class="sk-muted sk-text-xs" style="width:130px;" for="sc-key">Connect API Key</label>
+                <input type="password" id="sc-key" name="key"
+                  placeholder="${vm.skipperConnectHasKey ? "(saved — enter to replace)" : "Paste connect JWT from dashboard"}"
+                  class="sk-input sk-input--sm" style="flex:1;">
+              </div>
+              <div style="display:flex;align-items:center;gap:var(--sk-space-3);">
+                <span class="sk-muted sk-text-xs" style="width:130px;">Status</span>
+                <span hx-get="/api/settings/skipper-connect/status" hx-trigger="load, every 5s" hx-swap="outerHTML" class="sk-text-xs"><span style="width:7px;height:7px;border-radius:50%;background:var(--sk-text-subtle);display:inline-block;margin-right:4px;"></span>–</span>
+              </div>
+              <div>
+                <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Save</button>
+              </div>
+            </div>
+          </form>
         </div>
       </div>
 

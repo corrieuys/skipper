@@ -184,28 +184,16 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 
     const scheduler = getScheduler();
-    const scheduled = scheduler.getScheduledTask(id);
-    if (!scheduled) return Response.json({ error: "not found" }, { status: 404 });
-    if (scheduled.status !== "approved") return Response.json({ error: "task must be approved to run" }, { status: 400 });
-
     const taskScheduler = daemon?.getTaskScheduler();
     if (!taskScheduler) return Response.json({ error: "daemon unavailable" }, { status: 500 });
 
-    const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
-    const { getDb } = require("../db/connection");
-    const db = getDb();
-
-    const task = taskScheduler.createTask({
-      title: `${scheduled.title} (${timestamp})`,
-      description: scheduled.description ?? undefined,
-      teamId: scheduled.team_id ?? undefined,
-      workingDirectory: scheduled.working_directory,
-      taskConfig: scheduled.task_config as any,
-    });
-    db.prepare("UPDATE tasks SET source_scheduled_task_id = ? WHERE id = ?").run(scheduled.id, task.id);
-
-    taskScheduler.approveTask(task.id);
-    scheduler.recordRun(scheduled.id);
+    try {
+      scheduler.runTaskNow(id, taskScheduler);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = msg.includes("not found") ? 404 : 400;
+      return Response.json({ error: msg }, { status });
+    }
 
     return hxRedirect(`/?scheduled=${id}`);
   });

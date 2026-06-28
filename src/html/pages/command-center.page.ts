@@ -23,6 +23,7 @@ export function commandCenterPage(vm: CommandCenterViewModel, selectedTaskId?: s
     escalationCount: vm.escalationCount,
     showChatToggle: experimental,
     zenModeEnabled: experimental ? vm.zenModeEnabled : undefined,
+    skipperConnectEnabled: vm.skipperConnectEnabled,
   });
 
   // Determine what to show in main area

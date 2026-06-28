@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
+import type { TaskScheduler, Task } from "./scheduler";
 
 export type ScheduleUnit = "minutes" | "hours" | "days";
 
@@ -277,6 +278,26 @@ export class ScheduledTaskScheduler {
     }
 
     return new Date(nextMs).toISOString().replace("T", " ").slice(0, 19);
+  }
+
+  runTaskNow(id: string, taskScheduler: TaskScheduler): Task {
+    const scheduled = this.getScheduledTask(id);
+    if (!scheduled) throw new Error(`Scheduled task not found: ${id}`);
+    if (scheduled.status !== "approved") throw new Error("Scheduled task must be approved to run");
+
+    const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+    const task = taskScheduler.createTask({
+      title: `${scheduled.title} (${timestamp})`,
+      description: scheduled.description ?? undefined,
+      teamId: scheduled.team_id ?? undefined,
+      workingDirectory: scheduled.working_directory,
+      taskConfig: scheduled.task_config as any,
+    });
+
+    this.db.prepare("UPDATE tasks SET source_scheduled_task_id = ? WHERE id = ?").run(scheduled.id, task.id);
+    taskScheduler.approveTask(task.id);
+    this.recordRun(scheduled.id);
+    return task;
   }
 
   getRunsForScheduledTask(scheduledTaskId: string): Array<{

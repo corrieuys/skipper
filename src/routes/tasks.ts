@@ -2,7 +2,8 @@ import { addRoute } from "../server";
 import { TaskScheduler } from "../tasks/scheduler";
 import type { TaskType, RealtimeTaskConfig } from "../tasks/scheduler";
 import { getDb } from "../db/connection";
-import { setBoolSetting, SETTING_PARALLEL_TASKS, SETTING_ZEN_MODE } from "../config/app-settings";
+import { setBoolSetting, SETTING_PARALLEL_TASKS, SETTING_ZEN_MODE, SETTING_SKIPPER_CONNECT_ENABLED } from "../config/app-settings";
+import { getConnectClient, type ConnectionStatus } from "../connect/client";
 import { buildSkillsPromptAddition as _buildSkillsPromptAddition } from "../config-readers/skills";
 import { getPollIntervalSeconds } from "./pages";
 import type {
@@ -22,6 +23,24 @@ import { parsePhaseOverridesFromForm } from "./phase-overrides";
 import { parseOptionalInterval } from "./scheduled-tasks";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { isExperimental } from "../config/feature-flags";
+
+function connectStatusFragment(status: ConnectionStatus): string {
+  const dotColor: Record<ConnectionStatus, string> = {
+    disabled: "var(--sk-text-subtle)",
+    connecting: "var(--accent-yellow)",
+    connected: "var(--success)",
+    auth_failed: "var(--error)",
+    error: "var(--accent-yellow)",
+  };
+  const label: Record<ConnectionStatus, string> = {
+    disabled: "Disabled",
+    connecting: "Connecting…",
+    connected: "Connected",
+    auth_failed: "Auth failed — check Global ID & Key",
+    error: "Reconnecting…",
+  };
+  return `<span class="mc-mobile-hide sk-text-xs" style="display:inline-flex;align-items:center;gap:3px;" hx-get="/api/settings/skipper-connect/status" hx-trigger="every 5s" hx-swap="outerHTML" title="${label[status]}"><span style="width:7px;height:7px;border-radius:50%;background:${dotColor[status]};flex-shrink:0;display:inline-block;"></span></span>`;
+}
 
 function parseTaskRow(row: Record<string, unknown>): TaskData {
   const result = { ...row };
@@ -179,6 +198,26 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     const enabled = body.enabled === "on" || body.enabled === "true" || body.enabled === "1";
     setBoolSetting(getDb(), SETTING_ZEN_MODE, enabled);
     return Response.json({ zenMode: enabled });
+  });
+
+  addRoute("POST", "/api/settings/skipper-connect", async (req) => {
+    const body = await parseRequestBody<Record<string, string>>(req);
+    const enabled = body.enabled === "on" || body.enabled === "true" || body.enabled === "1";
+    setBoolSetting(getDb(), SETTING_SKIPPER_CONNECT_ENABLED, enabled);
+    const client = getConnectClient();
+    if (client) {
+      if (enabled) {
+        client.start();
+      } else {
+        client.stop();
+      }
+    }
+    return Response.json({ skipperConnect: enabled });
+  });
+
+  addRoute("GET", "/api/settings/skipper-connect/status", () => {
+    const status = getConnectClient()?.getConnectionStatus() ?? "disabled";
+    return htmlResponse(connectStatusFragment(status));
   });
 
   addRoute("POST", "/api/tasks", async (req) => {
