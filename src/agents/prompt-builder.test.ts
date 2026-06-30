@@ -372,6 +372,70 @@ describe("buildPromptEnrichment", () => {
   });
 });
 
+describe("team lead instructions (local_teams.skipper_prompt)", () => {
+  const LEAD = "Skipper, check the capstone-ghas-reports slack channel and the global store before doing anything.";
+
+  // Wire a local team + matching shared team so both the entrypoint check
+  // (teams.entrypoint_agent_id) and the lead-prompt lookup (local_teams) resolve.
+  function setupTeamWithLeadPrompt(opts: { skipperPrompt: string; childId: string; taskId: string }): string {
+    const skipperId = "skipper";
+    db.prepare("INSERT OR IGNORE INTO agents (id, name, type, model) VALUES ('skipper', 'Skipper', 'claude-code', 'default')").run();
+    const teamId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO local_teams (id, name, skipper_prompt, hooks, phases, agents) VALUES (?, ?, ?, '[]', '[]', '[]')",
+    ).run(teamId, "Ghas", opts.skipperPrompt);
+    db.prepare("INSERT INTO teams (id, name, entrypoint_agent_id) VALUES (?, ?, ?)").run(teamId, "Ghas", skipperId);
+    db.prepare("INSERT INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, ?, 'lead', 0)")
+      .run(crypto.randomUUID(), teamId, skipperId);
+    db.prepare("INSERT INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, ?, 'fixer', 1)")
+      .run(crypto.randomUUID(), teamId, opts.childId);
+    db.prepare("INSERT INTO tasks (id, title, description, team_id) VALUES (?, 'ghas test', 'do it', ?)")
+      .run(opts.taskId, teamId);
+    return teamId;
+  }
+
+  it("injects the team's skipper_prompt for the entrypoint (Skipper)", () => {
+    const childId = createAgent("Fixer", "claude-code", "Fix the issue");
+    setupTeamWithLeadPrompt({ skipperPrompt: LEAD, childId, taskId: "task-lead-1" });
+
+    const prompt = builder.buildInitialPrompt({
+      agent: { id: "skipper", name: "Skipper", type: "claude-code" },
+      task: { id: "task-lead-1", title: "ghas test", description: "do it" },
+      isStreaming: true,
+    });
+
+    expect(prompt).toContain("TEAM LEAD INSTRUCTIONS");
+    expect(prompt).toContain(LEAD);
+  });
+
+  it("does NOT inject team lead instructions into a delegated child's prompt", () => {
+    const childId = createAgent("Fixer", "claude-code", "Fix the issue");
+    setupTeamWithLeadPrompt({ skipperPrompt: LEAD, childId, taskId: "task-lead-2" });
+
+    const prompt = builder.buildDelegationPrompt({
+      childAgent: { id: childId, name: "Fixer", type: "claude-code", instruction: "Fix the issue" },
+      task: { id: "task-lead-2", title: "ghas test", description: "do it" },
+      delegationPrompt: "Fix critical findings in repo X",
+    });
+
+    expect(prompt).not.toContain("TEAM LEAD INSTRUCTIONS");
+    expect(prompt).not.toContain(LEAD);
+  });
+
+  it("omits the section when the team has no skipper_prompt", () => {
+    const childId = createAgent("Fixer", "claude-code", "Fix the issue");
+    setupTeamWithLeadPrompt({ skipperPrompt: "", childId, taskId: "task-lead-3" });
+
+    const prompt = builder.buildInitialPrompt({
+      agent: { id: "skipper", name: "Skipper", type: "claude-code" },
+      task: { id: "task-lead-3", title: "ghas test", description: "do it" },
+      isStreaming: true,
+    });
+
+    expect(prompt).not.toContain("TEAM LEAD INSTRUCTIONS");
+  });
+});
+
 describe("buildDelegationPrompt", () => {
   it("builds delegation prompt with full context", () => {
     const parentId = createAgent("Lead Dev", "claude-code", "Lead the project");

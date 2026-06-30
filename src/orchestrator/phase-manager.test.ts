@@ -62,6 +62,9 @@ function createPhaseManager(
     advancePhase?: (id: string) => { current_phase: number };
     sendInput?: (agentId: string, prompt: string) => void;
     spawnAgent?: (id: string, opts: unknown) => Promise<void>;
+    spawnAgentInstance?: (templateId: string, runtimeId: string, opts: unknown) => Promise<void>;
+    runningInstance?: { id: string; taskId: string } | undefined;
+    killAgent?: (id: string) => boolean;
     failTask?: (id: string, reason: string) => void;
   } = {},
 ): PhaseManager {
@@ -113,12 +116,21 @@ function createPhaseManager(
     },
     sendInput: overrides.sendInput ?? (() => {}),
     getRunningAgent: () => null,
+    getRunningInstanceForTask: () => overrides.runningInstance,
     getSessionId: () => null,
     getEntrypointSessionIdForTask: () => null,
     markAsRespawning: () => {},
-    killAgent: () => true,
+    killAgent: overrides.killAgent ?? (() => true),
     waitForExit: async () => {},
     spawnAgent: overrides.spawnAgent ?? (async () => {}),
+    // Entrypoint respawn now goes through spawnAgentInstance; route it to the
+    // explicit override, else fall back to the spawnAgent override so existing
+    // spawn-count assertions keep working.
+    spawnAgentInstance:
+      overrides.spawnAgentInstance ??
+      (overrides.spawnAgent
+        ? ((id: string, _runtimeId: string, opts: unknown) => overrides.spawnAgent!(id, opts))
+        : (async () => {})),
   } as any;
 
   const mockPromptBuilder = {
@@ -234,6 +246,73 @@ describe("handlePhaseComplete - dedup retry after failure", () => {
     // and the dedup key for phase 0 prevents re-advancing it.
     await phaseManager.handlePhaseComplete(agentId);
     expect(spawnCount).toBe(1);
+  });
+
+  it("advance kills THIS task's entrypoint instance, not the shared template", async () => {
+    const agentId = createAgent(db);
+    const phases = [
+      { name: "Phase 1", prompt: "p1" },
+      { name: "Phase 2", prompt: "p2" },
+    ];
+    const teamId = createTeamWithPhases(db, agentId, phases);
+    createRunningTask(db, teamId, 0);
+
+    // The shared template (agentId) has a live runtime instance bound to task-1.
+    const runtimeInstanceId = "runtime-task-1";
+    let killedId: string | null = null;
+    let spawnedTemplate: string | null = null;
+    let spawnedRuntimeId: string | null = null;
+
+    const phaseManager = createPhaseManager(db, {
+      runningInstance: { id: runtimeInstanceId, taskId: "task-1" },
+      killAgent: (id: string) => {
+        killedId = id;
+        return true;
+      },
+      spawnAgentInstance: async (templateId: string, runtimeId: string) => {
+        spawnedTemplate = templateId;
+        spawnedRuntimeId = runtimeId;
+      },
+    });
+
+    await phaseManager.handlePhaseComplete(agentId);
+
+    // Kill must target the task's runtime instance, never the template id.
+    expect(killedId).toBe(runtimeInstanceId);
+    expect(killedId).not.toBe(agentId);
+    // Respawn reuses that runtime id under the same template.
+    expect(spawnedTemplate).toBe(agentId);
+    expect(spawnedRuntimeId).toBe(runtimeInstanceId);
+  });
+
+  it("advance with no running instance respawns under a fresh runtime id", async () => {
+    const agentId = createAgent(db);
+    const phases = [
+      { name: "Phase 1", prompt: "p1" },
+      { name: "Phase 2", prompt: "p2" },
+    ];
+    const teamId = createTeamWithPhases(db, agentId, phases);
+    createRunningTask(db, teamId, 0);
+
+    let killed = false;
+    let spawnedRuntimeId: string | null = null;
+
+    const phaseManager = createPhaseManager(db, {
+      runningInstance: undefined,
+      killAgent: () => {
+        killed = true;
+        return true;
+      },
+      spawnAgentInstance: async (_templateId: string, runtimeId: string) => {
+        spawnedRuntimeId = runtimeId;
+      },
+    });
+
+    await phaseManager.handlePhaseComplete(agentId);
+
+    expect(killed).toBe(false);
+    expect(spawnedRuntimeId).toBeTruthy();
+    expect(spawnedRuntimeId).not.toBe(agentId);
   });
 });
 

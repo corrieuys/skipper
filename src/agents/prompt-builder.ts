@@ -124,6 +124,12 @@ export class PromptBuilder {
       const config = getSkipperConfig(this.db);
       parts.push(config.prompt || SKIPPER_PROMPT_DEFAULT);
       parts.push("");
+      const teamLead = this.getTeamLeadInstructions(options.task.id);
+      if (teamLead) {
+        parts.push("TEAM LEAD INSTRUCTIONS (specific to this task's team — these take precedence over the generic guidance above; follow them precisely):");
+        parts.push(teamLead);
+        parts.push("");
+      }
     } else if (options.agent.instruction) {
       parts.push(`INSTRUCTION: ${options.agent.instruction}`);
       parts.push("");
@@ -458,6 +464,26 @@ export class PromptBuilder {
     }
     lines.push("Call `mcp__skipper-daemon__get_artifact({ name, version })` to retrieve any artifact.");
     return lines.join("\n");
+  }
+
+  // The team's lead instructions live only in local_teams.skipper_prompt (they
+  // are intentionally dropped from the shared teams/Maps representation). Inject
+  // them into the entrypoint (Skipper) prompt so team-specific workflow applies.
+  private getTeamLeadInstructions(taskId: string): string | null {
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT lt.skipper_prompt AS prompt
+             FROM local_teams lt
+             JOIN tasks t ON t.team_id = lt.id
+            WHERE t.id = ?`,
+        )
+        .get(taskId) as { prompt: string | null } | null;
+      const prompt = row?.prompt?.trim();
+      return prompt ? prompt : null;
+    } catch {
+      return null;
+    }
   }
 
   private getTeamRoster(agentId: string, taskId?: string): TeamMember[] {

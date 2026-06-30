@@ -94,10 +94,12 @@ function createMockAgentManager() {
       };
     },
     getRunningAgent: () => null,
+    getRunningInstanceForTask: () => undefined,
     clearSessionId: () => {},
     killAgent: () => {},
     waitForExit: async () => {},
     spawnAgent: async () => {},
+    spawnAgentInstance: async () => {},
     sendInput: () => {},
     getSessionId: () => null,
     getEntrypointSessionIdForTask: () => null,

@@ -32,6 +32,7 @@ export function v2layout(
   <script src="/skipper.js"></script>
   <script src="/ws-subscribe.js"></script>
   <script src="/monkey.js" defer></script>
+  <script src="/zen-orbs-3d.js" defer></script>
   <link rel="stylesheet" href="${STYLESHEET_PATH}">
   ${appearanceCss ? `<style>${appearanceCss}</style>` : ""}
 </head>

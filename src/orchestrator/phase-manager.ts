@@ -239,15 +239,27 @@ export class PhaseManager {
     }, entrypointAgentId);
     const usesInlinePrompt = typeDef ? agentTypeUsesInlinePrompt(typeDef, sessionId) : false;
 
-    if (this.agentManager.getRunningAgent(entrypointAgentId)) {
-      this.agentManager.markAsRespawning(entrypointAgentId);
-      this.agentManager.killAgent(entrypointAgentId);
-      await this.agentManager.waitForExit(entrypointAgentId);
+    // Target THIS task's entrypoint instance, not the shared template id —
+    // parallel same-team tasks each have their own instance under one template.
+    const runningInstance = this.agentManager.getRunningInstanceForTask(entrypointAgentId, task.id);
+    const respawnRuntimeId = runningInstance?.id ?? crypto.randomUUID();
+    if (runningInstance) {
+      this.agentManager.markAsRespawning(runningInstance.id);
+      this.agentManager.killAgent(runningInstance.id);
+      await this.agentManager.waitForExit(runningInstance.id);
     }
 
     try {
       const workingDir = process.cwd();
-      await this.agentManager.spawnAgent(entrypointAgentId, { workingDir, taskId: task.id, sessionId, initialPrompt: usesInlinePrompt ? prompt : undefined });
+      await this.agentManager.spawnAgentInstance(entrypointAgentId, respawnRuntimeId, {
+        workingDir,
+        taskId: task.id,
+        sessionId,
+        initialPrompt: usesInlinePrompt ? prompt : undefined,
+        parentInstanceId: null,
+        rootInstanceId: respawnRuntimeId,
+        attempt: 1,
+      });
     } catch (err) {
       logError(this.db, "regression_respawn", { taskId: task.id, agentId: entrypointAgentId, targetPhase, method: "respawnForRegression" }, err);
       try {
@@ -338,16 +350,31 @@ export class PhaseManager {
     }, entrypointAgentId);
     const usesInlinePrompt = typeDef ? agentTypeUsesInlinePrompt(typeDef, sessionId) : false;
 
-    const runningAgent = this.agentManager.getRunningAgent(entrypointAgentId);
-    if (runningAgent) {
-      this.agentManager.markAsRespawning(entrypointAgentId);
-      this.agentManager.killAgent(entrypointAgentId);
-      await this.agentManager.waitForExit(entrypointAgentId);
+    // Target THIS task's entrypoint instance, not the shared template id. With
+    // parallel same-team tasks the template has several live instances; killing
+    // by template id would tear down a sibling task's agent.
+    const runningInstance = this.agentManager.getRunningInstanceForTask(entrypointAgentId, task.id);
+    const respawnRuntimeId = runningInstance?.id ?? crypto.randomUUID();
+    if (runningInstance) {
+      this.agentManager.markAsRespawning(runningInstance.id);
+      this.agentManager.killAgent(runningInstance.id);
+      await this.agentManager.waitForExit(runningInstance.id);
     }
 
     try {
       const workingDir = process.cwd();
-      await this.agentManager.spawnAgent(entrypointAgentId, { workingDir, taskId: task.id, sessionId, initialPrompt: usesInlinePrompt ? prompt : undefined });
+      // spawnAgentInstance bypasses the template-keyed spawn lock that
+      // spawnAgent takes, so a sibling same-team task mid-respawn can't trip
+      // "Spawn already in flight for agent <template>".
+      await this.agentManager.spawnAgentInstance(entrypointAgentId, respawnRuntimeId, {
+        workingDir,
+        taskId: task.id,
+        sessionId,
+        initialPrompt: usesInlinePrompt ? prompt : undefined,
+        parentInstanceId: null,
+        rootInstanceId: respawnRuntimeId,
+        attempt: 1,
+      });
     } catch (err) {
       logError(this.db, "phase_respawn", { taskId: task.id, agentId: entrypointAgentId, method: "advanceAndRespawn" }, err);
       this.taskScheduler.failTask(task.id, "Failed to respawn agent for next phase");

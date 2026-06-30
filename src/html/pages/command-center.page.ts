@@ -609,7 +609,11 @@ function renderActions(task: TaskSummary, needsReview?: boolean): string {
     if (needsReview) {
       btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/approve-phase" hx-swap="none">Approve Phase</button>`);
     }
+    btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/pause" hx-swap="none" hx-confirm="Pause this task? All its agents and their subprocesses will be stopped; you can resume later.">Pause</button>`);
     btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/complete" hx-swap="none" hx-confirm="Mark this task as complete and kill all active agents?">Complete</button>`);
+    btns.push(`<button class="sk-btn sk-btn--danger sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/cancel" hx-swap="none" hx-confirm="Cancel?">Cancel</button>`);
+  } else if (task.status === "paused") {
+    btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/resume-from-pause" hx-swap="none" title="Respawn agents and continue from where the task was paused.">Resume</button>`);
     btns.push(`<button class="sk-btn sk-btn--danger sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/cancel" hx-swap="none" hx-confirm="Cancel?">Cancel</button>`);
   } else if (task.status === "failed") {
     btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/resume" hx-swap="none" title="Resume at the current phase. Skipper inspects notes/artifacts/delegations and continues from where the task left off.">Resume</button>`);
