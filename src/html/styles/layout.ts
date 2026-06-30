@@ -41,6 +41,66 @@ export function layoutStyles(): string {
       text-decoration: none;
     }
 
+    /* ── Skipper Connect — tinted link icon, status by colour + glow ── */
+    .sk-connect {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .sk-connect__status { display: none; }
+    .sk-connect__icon {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--sk-text-muted);
+      transition: color 300ms ease;
+    }
+    .sk-connect__icon svg { display: block; width: 18px; height: 18px; position: relative; z-index: 1; }
+    /* status driven from the hidden polled carrier via sibling selector */
+    .sk-connect__status[data-status="connecting"] ~ .sk-connect__icon,
+    .sk-connect__status[data-status="error"] ~ .sk-connect__icon {
+      color: var(--accent-yellow);
+    }
+    .sk-connect__status[data-status="auth_failed"] ~ .sk-connect__icon {
+      color: var(--error);
+    }
+    .sk-connect__status[data-status="connected"] ~ .sk-connect__icon {
+      color: var(--success);
+    }
+    /* radar ping — waves radiating from the exact centre of the icon.
+       translate(-50%,-50%) keeps the ring centred on the icon's mid-point
+       independent of ring size, so growth is always concentric. */
+    .sk-connect__status[data-status="connected"] ~ .sk-connect__icon::before,
+    .sk-connect__status[data-status="connected"] ~ .sk-connect__icon::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 1.5px solid rgba(176, 255, 150, 0.7);
+      pointer-events: none;
+      z-index: 0;
+      transform: translate(-50%, -50%) scale(0.1);
+      opacity: 0;
+      animation: sk-connect-ping 2.2s ease-out infinite;
+    }
+    .sk-connect__status[data-status="connected"] ~ .sk-connect__icon::after {
+      animation-delay: 1.1s;
+    }
+    @keyframes sk-connect-ping {
+      0%   { transform: translate(-50%, -50%) scale(0.1); opacity: 0.75; }
+      70%  { opacity: 0; }
+      100% { transform: translate(-50%, -50%) scale(2.4); opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .sk-connect__status[data-status="connected"] ~ .sk-connect__icon::before,
+      .sk-connect__status[data-status="connected"] ~ .sk-connect__icon::after { animation: none; }
+    }
+
     .sk-container {
       max-width: 1200px;
       margin: 0 auto;

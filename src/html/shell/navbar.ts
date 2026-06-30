@@ -56,10 +56,9 @@ export function navbar(data: NavbarData): string {
         style="opacity:${data.zenModeEnabled ? "1" : "0.5"}"
         hx-post="/api/settings/zen-mode" hx-vals='${JSON.stringify({ enabled: data.zenModeEnabled ? "false" : "true" })}'
         hx-swap="none" hx-on::after-request="window.location.reload()">🪷</span>` : ""}
-      ${data.skipperConnectEnabled !== undefined ? `<span class="sk-navbar__monkey-toggle mc-mobile-hide" id="skipper-connect-toggle" title="Skipper Connect"
-        style="opacity:${data.skipperConnectEnabled ? "1" : "0.5"}"
+      ${data.skipperConnectEnabled !== undefined ? `<span class="sk-connect mc-mobile-hide" title="Skipper Connect" style="opacity:${data.skipperConnectEnabled ? "1" : "0.5"}"><span class="sk-connect__status" data-status="disabled" hx-get="/api/settings/skipper-connect/status" hx-trigger="load, every 5s" hx-swap="outerHTML"></span><span class="sk-connect__icon" id="skipper-connect-toggle" role="button"
         hx-post="/api/settings/skipper-connect" hx-vals='${JSON.stringify({ enabled: data.skipperConnectEnabled ? "false" : "true" })}'
-        hx-swap="none" hx-on::after-request="window.location.reload()">🔗</span><span class="mc-mobile-hide sk-text-xs" style="display:inline-flex;align-items:center;gap:3px;" hx-get="/api/settings/skipper-connect/status" hx-trigger="load, every 5s" hx-swap="outerHTML"><span style="width:7px;height:7px;border-radius:50%;background:var(--sk-text-subtle);flex-shrink:0;display:inline-block;"></span></span>` : ""}
+        hx-swap="none" hx-on::after-request="window.location.reload()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg></span></span>` : ""}
       ${themePickerFragment()}
       ${data.showChatToggle ? `<button class="mc-chat-toggle" data-sk-chat-toggle title="Toggle Chat Panel">Chat</button>` : ""}
       <div class="sk-dropdown" data-sk-dropdown>

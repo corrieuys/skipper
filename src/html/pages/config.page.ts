@@ -167,7 +167,7 @@ export function configPage(vm: ConfigPageViewModel): string {
         <div class="sk-panel__body">
           <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
             Connect to <code>connect.letskipper.work</code> to expose task operations as webhooks.
-            Create a user in the dashboard to get a Global ID and generate a Connect API key.
+            Create a user in the dashboard to get an Integrator ID and generate a Connect API key.
             Use the navbar toggle to enable or disable the live connection.
           </p>
           <form hx-post="/api/config/skipper-connect" hx-swap="none"
@@ -180,10 +180,10 @@ export function configPage(vm: ConfigPageViewModel): string {
                   class="sk-input sk-input--sm" style="flex:1;">
               </div>
               <div style="display:flex;align-items:center;gap:var(--sk-space-3);">
-                <label class="sk-muted sk-text-xs" style="width:130px;" for="sc-guid">Global ID</label>
+                <label class="sk-muted sk-text-xs" style="width:130px;" for="sc-guid">Integrator ID</label>
                 <input type="text" id="sc-guid" name="guid"
                   value="${escapeHtml(vm.skipperConnectGuid)}"
-                  placeholder="Paste global_id from dashboard"
+                  placeholder="Paste Integrator ID from dashboard"
                   class="sk-input sk-input--sm" style="flex:1;">
               </div>
               <div style="display:flex;align-items:center;gap:var(--sk-space-3);">

@@ -25,21 +25,7 @@ import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { isExperimental } from "../config/feature-flags";
 
 function connectStatusFragment(status: ConnectionStatus): string {
-  const dotColor: Record<ConnectionStatus, string> = {
-    disabled: "var(--sk-text-subtle)",
-    connecting: "var(--accent-yellow)",
-    connected: "var(--success)",
-    auth_failed: "var(--error)",
-    error: "var(--accent-yellow)",
-  };
-  const label: Record<ConnectionStatus, string> = {
-    disabled: "Disabled",
-    connecting: "Connecting…",
-    connected: "Connected",
-    auth_failed: "Auth failed — check Global ID & Key",
-    error: "Reconnecting…",
-  };
-  return `<span class="mc-mobile-hide sk-text-xs" style="display:inline-flex;align-items:center;gap:3px;" hx-get="/api/settings/skipper-connect/status" hx-trigger="every 5s" hx-swap="outerHTML" title="${label[status]}"><span style="width:7px;height:7px;border-radius:50%;background:${dotColor[status]};flex-shrink:0;display:inline-block;"></span></span>`;
+  return `<span class="sk-connect__status" data-status="${status}" hx-get="/api/settings/skipper-connect/status" hx-trigger="every 5s" hx-swap="outerHTML"></span>`;
 }
 
 function parseTaskRow(row: Record<string, unknown>): TaskData {

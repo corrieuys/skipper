@@ -149,7 +149,7 @@ export class ConnectClient {
       if (event.code === 4001) {
         this.running = false;
         this._connectionStatus = "auth_failed";
-        console.error("[connect] Auth failed (code 4001) — check Global ID and Connect API Key in config. Reconnect stopped.");
+        console.error("[connect] Auth failed (code 4001) — check Integrator ID and Connect API Key in config. Reconnect stopped.");
         return;
       }
       if (this.running) {
