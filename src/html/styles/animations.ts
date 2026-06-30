@@ -60,8 +60,10 @@ export function animationStyles(): string {
     .zen-view__orbs { display: flex; gap: var(--sk-space-5); flex-wrap: wrap; justify-content: center; padding: var(--sk-space-4) 0; min-height: 130px; }
     .zen-view__orb-wrapper { display: flex; flex-direction: column; align-items: center; gap: var(--sk-space-2); width: 120px; }
     .zen-view__orb-label {
-      font-size: 11px; color: var(--sk-text-muted); width: 120px; text-align: center;
+      font-size: 13px; color: var(--sk-text-muted); width: 120px; text-align: center;
       word-wrap: break-word; overflow-wrap: break-word; line-height: 1.3;
+      position: relative; z-index: 6; /* sit above the z-index:5 WebGL orb canvas */
+      text-shadow: 0 1px 3px var(--sk-surface-0), 0 0 6px var(--sk-surface-0);
     }
 
     .zen-orb {
@@ -103,6 +105,21 @@ export function animationStyles(): string {
       filter: grayscale(0.8) brightness(0.6); opacity: 0.5;
       animation: none;
       border-color: rgba(255,255,255,0.06);
+    }
+
+    /* When the WebGL 3D orbs boot, strip the CSS crystal-ball visuals so the
+       three.js polygon + particles show through. Keeps the float + the active
+       glow ring as framing; falls back to CSS orbs if three.js never loads. */
+    body.zen-3d-on .zen-orb { background: transparent; box-shadow: none; overflow: visible; }
+    body.zen-3d-on .zen-orb__shine,
+    body.zen-3d-on .zen-orb--active::after { display: none; }
+    body.zen-3d-on .zen-orb--active {
+      box-shadow: 0 0 22px color-mix(in srgb, var(--sk-accent-secondary) 35%, transparent),
+                  0 0 46px color-mix(in srgb, var(--sk-accent-primary) 18%, transparent);
+      animation: zen-float 3s ease-in-out infinite;
+    }
+    body.zen-3d-on .zen-orb--inactive {
+      filter: none; opacity: 0.85; animation: zen-float 5s ease-in-out infinite;
     }
 
     /* Summary section — fixed min-height */
