@@ -1,5 +1,7 @@
+import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
 import { logError } from "../logging";
+import type { AgentTile } from "../html/dashboardLatestSteerFragment";
 import type {
   TaskData,
   AgentData,
@@ -23,6 +25,33 @@ import type {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Full team roster for a task's agents — the same source zen mode uses. Returns
+ * every team member (active + idle) with a live instance count, so the dashboard
+ * can render the whole team as orbs rather than only running instances.
+ */
+export function buildTeamAgentTiles(db: Database, taskId: string): AgentTile[] {
+  const task = db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(taskId) as { team_id: string | null } | null;
+  if (!task?.team_id) return [];
+  const rows = db.prepare(
+    `SELECT a.id AS template_agent_id,
+            COALESCE(a.name, a.id) AS agent_name,
+            (SELECT COUNT(*) FROM agent_instances ai
+              WHERE ai.template_agent_id = ta.agent_id AND ai.task_id = ?
+                AND ai.status IN ('running', 'waiting_delegation')) AS instance_count
+     FROM team_agents ta
+     JOIN agents a ON a.id = ta.agent_id
+     WHERE ta.team_id = ?
+     ORDER BY ta.level, ta.created_at`,
+  ).all(taskId, task.team_id) as Array<{ template_agent_id: string; agent_name: string; instance_count: number }>;
+  return rows.map((r) => ({
+    template_agent_id: r.template_agent_id,
+    agent_name: r.agent_name,
+    instance_count: r.instance_count,
+    is_active: r.instance_count > 0,
+  }));
+}
 
 export function parseRow(
   row: Record<string, unknown>,

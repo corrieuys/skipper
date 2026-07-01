@@ -219,6 +219,7 @@ export const THEMES: Theme[] = [
       "--sk-radius-sm": "6px",
       "--sk-radius-md": "10px",
       "--sk-radius-lg": "14px",
+      "--sk-btn-radius": "5px",
       "--sk-border": "rgba(160, 175, 200, 0.15)",
       "--sk-border-subtle": "rgba(160, 175, 200, 0.25)",
       "--sk-border-active": "rgba(110, 196, 255, 0.3)",
@@ -1106,7 +1107,7 @@ export function glassOverridesCss(): string {
     ${G} .sk-btn {
       backdrop-filter: blur(8px);
       -webkit-backdrop-filter: blur(8px);
-      border-radius: var(--sk-radius-md);
+      border-radius: var(--sk-btn-radius);
     }
 
     /* ── Forms ── */
@@ -1149,10 +1150,12 @@ export function glassOverridesCss(): string {
     }
 
     /* Task header */
+    /* No backdrop-filter here: it would create a stacking context that traps the
+       taskbar agent orbs' count badge below the global 3D cube canvas (which is
+       fixed at z-index 5 and must paint over the header for the cubes to show).
+       A slightly more opaque solid bg keeps the frosted look without the trap. */
     ${G} .mc-task-header {
-      background: rgba(12, 16, 24, 0.4);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
+      background: rgba(12, 16, 24, 0.72);
     }
 
     /* Steer card */
@@ -1173,11 +1176,11 @@ export function glassOverridesCss(): string {
 
     /* Tabs — pill-shaped */
     ${G} .mc-tab {
-      border-radius: var(--sk-radius-lg);
+      border-radius: var(--sk-btn-radius);
     }
     ${G} .mc-tab--active {
       background: rgba(110, 196, 255, 0.1);
-      border-radius: var(--sk-radius-lg);
+      border-radius: var(--sk-btn-radius);
     }
     ${G} .mc-tabs {
       background: rgba(12, 16, 24, 0.3);
@@ -1194,10 +1197,10 @@ export function glassOverridesCss(): string {
       background: rgba(12, 16, 24, 0.3);
     }
     ${G} .mc-activity__filter {
-      border-radius: var(--sk-radius-md);
+      border-radius: var(--sk-btn-radius);
     }
     ${G} .mc-activity__filter--active {
-      border-radius: var(--sk-radius-md);
+      border-radius: var(--sk-btn-radius);
     }
     ${G} .mc-activity__kind {
       border-radius: var(--sk-radius-sm);

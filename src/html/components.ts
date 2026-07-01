@@ -15,7 +15,6 @@ export const navItems: { href: string; label: string }[] = [
   { href: "/tasks", label: "Tasks" },
   { href: "/config", label: "Configuration" },
   { href: "/templates", label: "Templates" },
-  { href: "/escalations", label: "Escalations" },
   { href: "/logs", label: "Logs" },
   { href: "/help", label: "Help" },
 ];

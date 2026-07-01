@@ -2,7 +2,7 @@ import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
 import { formatTimestamp } from "../atoms/format-timestamp";
-import { terminalJsonSummary } from "../terminalJsonSummary";
+import { terminalJsonSummary, stripThinking } from "../terminalJsonSummary";
 import { iteratePanel } from "../panels/iterate.panel";
 import { isExperimental } from "../../config/feature-flags";
 import type { CommandCenterViewModel, TaskSummary, ScheduledTaskSummary } from "../view-models/command-center.vm";
@@ -22,7 +22,6 @@ export function commandCenterPage(vm: CommandCenterViewModel, selectedTaskId?: s
     daemonUptime: vm.daemonUptime,
     escalationCount: vm.escalationCount,
     showChatToggle: experimental,
-    zenModeEnabled: experimental ? vm.zenModeEnabled : undefined,
     skipperConnectEnabled: vm.skipperConnectEnabled,
   });
 
@@ -84,17 +83,7 @@ function renderSidebar(vm: CommandCenterViewModel, activeId: string | null): str
     <div class="mc-sidebar__list" id="mc-sidebar-list">
       ${renderSidebarListBody(vm, activeId)}
     </div>
-
-    <div id="mc-sidebar-escalations">${sidebarEscalationFooter(vm.escalationCount)}</div>
   </aside>`;
-}
-
-export function sidebarEscalationFooter(count: number): string {
-  if (count <= 0) return "";
-  return `<div class="mc-sidebar__escalations">
-    <span class="mc-node__indicator mc-node__indicator--failed"></span>
-    <a href="/escalations">${count} escalation${count !== 1 ? "s" : ""} open</a>
-  </div>`;
 }
 
 export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: string | null): string {
@@ -147,6 +136,7 @@ function sidebarItem(t: TaskSummary, activeId: string | null): string {
       hx-get="/workspace/task/${escapeHtml(t.id)}" hx-target="#mc-main" hx-swap="innerHTML" hx-push-url="/?task=${escapeHtml(t.id)}">
     <span class="mc-sidebar__item-dot mc-sidebar__item-dot--${t.status}"></span>
     <span class="mc-sidebar__item-title">${escapeHtml(t.title)}</span>
+    ${t.has_attention ? '<span class="mc-sidebar__item-attention" title="Needs your input (escalation or review)"></span>' : ""}
     ${isRT ? '<span class="sk-badge sk-badge--waiting" style="font-size:8px;padding:1px 4px;">RT</span>' : ""}
     <span class="mc-sidebar__item-time">${t.completed_at ? formatTimestamp(t.completed_at) : formatTimestamp(t.created_at)}</span>
   </a>`;
@@ -195,10 +185,6 @@ function renderTaskView(vm: CommandCenterViewModel, task: TaskSummary): string {
   // Draft tasks — show edit form
   if (task.status === "draft") {
     return renderDraftEdit(task, vm.teams);
-  }
-  // Zen mode overrides all task views (except draft)
-  if (vm.zenModeEnabled) {
-    return zenModeContent(vm, task);
   }
   // Check if this is a real-time task — render different UI
   const taskRow = vm.allTasks.find(t => t.id === task.id);
@@ -462,49 +448,46 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
     </div>
   ` : "";
 
+  // Review gate / recovery banner — moved into the User Input tab.
+  const reviewGate = task.status === "failed" && task.needs_review
+    ? renderRecoveryPausedBanner(task)
+    : needsReview ? renderReviewBanner(task) : "";
+  const iterate = task.status === "completed" ? iteratePanel(task.id) : "";
+  // Default to the User Input tab when it holds something worth seeing (a
+  // pending review, a result summary, or the iterate panel); else Outputs.
+  const inputHasContent = !!(reviewGate || resultHtml || iterate);
+  const defaultTab = inputHasContent ? "input" : "outputs";
+  const tabCls = (name: string) => name === defaultTab ? "mc-tab mc-tab--active" : "mc-tab";
+  const panelCls = (name: string) => name === defaultTab ? "mc-tab-panel mc-tab-panel--active" : "mc-tab-panel";
+
   return `
-    <!-- Task header (phase stepper inlined) -->
-    <div class="mc-task-header mc-task-header--with-phases">
+    <!-- Task header (phase stepper + agent orbs inlined) -->
+    <div class="mc-task-header mc-task-header--with-phases${isRunning ? " mc-task-header--running" : ""}">
       <span class="mc-node__indicator mc-node__indicator--${task.status === "waiting_delegation" ? "waiting" : task.status}"></span>
       <span class="mc-task-header__title">${escapeHtml(task.title)}</span>
       ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
-      <span class="sk-badge sk-badge--${task.status}">${task.status}</span>
-      ${task.team_name ? `<span class="sk-muted sk-text-xs">${escapeHtml(task.team_name)}</span>` : ""}
+      ${isRunning ? `<div class="mc-task-header__orbs">
+        <div id="mc-steer-${escapeHtml(task.id)}"
+          hx-get="/fragments/dashboard/latest-steer?task=${escapeHtml(task.id)}"
+          hx-trigger="load"
+          hx-target="this"
+          hx-swap="innerHTML"></div>
+      </div>` : ""}
       <div class="mc-task-header__actions">
         ${actions}
       </div>
     </div>
 
-    ${task.status === "failed" && task.needs_review
-      ? renderRecoveryPausedBanner(task)
-      : needsReview ? renderReviewBanner(task) : ""}
-
-    <div id="mc-task-escalations-${escapeHtml(task.id)}"
-         hx-get="/fragments/tasks/${escapeHtml(task.id)}/escalations"
-         hx-trigger="load"
-         hx-swap="innerHTML"></div>
-
-    ${isRunning ? `
-      <div id="mc-steer-${escapeHtml(task.id)}"
-        hx-get="/fragments/dashboard/latest-steer?task=${escapeHtml(task.id)}"
-        hx-trigger="load"
-        hx-target="this"
-        hx-swap="innerHTML">
-      </div>
-    ` : ""}
-
-    ${resultHtml}
-
-    ${task.status === "completed" ? iteratePanel(task.id) : ""}
-
-    <!-- Tabbed content -->
+    <!-- Tabbed content — flush against the task bar (review/escalation prompts
+         now live inside the User Input tab, not stacked above the tabs). -->
     <div class="mc-tabs">
-      <button class="mc-tab mc-tab--active" onclick="Skipper.tabs.show('outputs')">Outputs</button>
-      <button class="mc-tab" onclick="Skipper.tabs.show('details')">Details</button>
+      <button class="${tabCls("outputs")}" data-mc-tab="outputs" onclick="Skipper.tabs.show('outputs')">Outputs</button>
+      <button class="${tabCls("details")}" data-mc-tab="details" onclick="Skipper.tabs.show('details')">Details</button>
+      <button class="${tabCls("input")}${reviewGate ? " mc-tab--attention" : ""}" data-mc-tab="input" onclick="Skipper.tabs.show('input')">User Input<span class="mc-tab__badge" data-mc-tab-badge${reviewGate ? "" : " hidden"}>${reviewGate ? "1" : ""}</span></button>
     </div>
 
     <!-- Outputs tab — Activity | Notes | Artifacts side-by-side -->
-    <div class="mc-tab-panel mc-tab-panel--active" id="mc-tab-outputs">
+    <div class="${panelCls("outputs")}" id="mc-tab-outputs">
       <div class="mc-outputs" id="mc-outputs">
         <!-- Activity column -->
         <div class="mc-outputs__col" data-outputs-col="activity">
@@ -552,9 +535,23 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
     </div>
 
     <!-- Details tab -->
-    <div class="mc-tab-panel" id="mc-tab-details"
+    <div class="${panelCls("details")}" id="mc-tab-details"
          hx-get="/workspace/task/${escapeHtml(task.id)}/details" hx-trigger="revealed" hx-swap="innerHTML">
       <span class="sk-muted" style="padding: var(--sk-space-4);">Loading...</span>
+    </div>
+
+    <!-- User Input tab — review gate + escalation prompts + result/iterate -->
+    <div class="${panelCls("input")}" id="mc-tab-input">
+      ${reviewGate}
+      <div id="mc-task-escalations-${escapeHtml(task.id)}"
+           hx-get="/fragments/tasks/${escapeHtml(task.id)}/escalations"
+           hx-trigger="load"
+           hx-swap="innerHTML"></div>
+      ${resultHtml}
+      ${iterate}
+      ${!reviewGate && !resultHtml && !iterate
+        ? `<div class="mc-userinput__empty sk-muted" style="padding: var(--sk-space-4); text-align:center;">Nothing needs your input right now.</div>`
+        : ""}
     </div>
 
     <!-- Activity detail modal -->
@@ -622,34 +619,63 @@ function renderActions(task: TaskSummary, needsReview?: boolean): string {
   return btns.join("");
 }
 
+// Warning-tinted status pill matching the escalation card's badge slot.
+const warnBadge = (label: string) =>
+  `<span class="sk-badge" style="background: color-mix(in srgb, var(--sk-accent-warning) 22%, transparent); color: var(--sk-accent-warning);">${label}</span>`;
+
 function renderRecoveryPausedBanner(task: TaskSummary): string {
   const eid = escapeHtml(task.id);
-  return `<div class="mc-escalation" style="border-color: rgba(255,176,90,0.45); background: linear-gradient(90deg, rgba(255,176,90,0.10), rgba(255,176,90,0.03));">
-    <div class="mc-escalation__icon" style="background: var(--sk-accent-warning);">&#x23F8;</div>
-    <span class="mc-escalation__text" style="color: var(--sk-accent-warning);">Recovery paused &mdash; Skipper died twice without progress. Notes/artifacts intact. Hit Resume to continue.</span>
-    <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/resume" hx-swap="none">Resume</button>
+  return `<div class="sk-panel sk-mb-4" data-mc-pending="recovery">
+    <div class="sk-panel__header">
+      <div class="sk-flex sk-items-center sk-gap-2">
+        <span class="esc-alert-bang" style="color: var(--sk-accent-warning); font-weight: 700;">&#x23F8;</span>
+        <strong style="color: var(--sk-text);">Recovery paused</strong>
+        <span class="sk-text-xs sk-muted">skipper</span>
+        ${warnBadge("paused")}
+      </div>
+    </div>
+    <div class="sk-panel__body">
+      <div class="sk-mb-4" style="color: var(--sk-text-muted); font-size: var(--sk-text-sm);">
+        Skipper died twice without progress. Notes and artifacts are intact. Resume to continue.
+      </div>
+      <div class="sk-flex sk-gap-2">
+        <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/resume" hx-swap="none">Resume</button>
+      </div>
+    </div>
   </div>`;
 }
 
 function renderReviewBanner(task: TaskSummary): string {
   const eid = escapeHtml(task.id);
-  return `<div class="mc-escalation" style="border-color: rgba(255,208,128,0.4); background: linear-gradient(90deg, rgba(255,208,128,0.1), rgba(255,208,128,0.03));">
-    <div class="mc-escalation__icon" style="background: var(--sk-accent-warning); animation: mc-pulse 1.5s ease-in-out infinite;">&#x270E;</div>
-    <span class="mc-escalation__text" style="color: var(--sk-accent-warning);">Phase review required</span>
-    <button class="sk-btn sk-btn--primary sk-btn--sm" onclick="const r=this.closest('.mc-escalation'); r.querySelector('.mc-reject-form').style.display='none'; r.querySelector('.mc-approve-form').style.display='flex';">Approve</button>
-    <button class="sk-btn sk-btn--sm" onclick="const r=this.closest('.mc-escalation'); r.querySelector('.mc-approve-form').style.display='none'; r.querySelector('.mc-reject-form').style.display='flex';">Reject</button>
-    <form class="mc-approve-form" style="display:none; width:100%; margin-top:var(--sk-space-2); gap:var(--sk-space-2); align-items:center;"
-          hx-post="/api/tasks/${eid}/approve-phase" hx-swap="none"
-          hx-on::after-request="if(event.detail.successful){this.style.display='none';this.querySelector('textarea').value='';}">
-      <textarea name="message" class="sk-input" rows="2" placeholder="Optional note for the next phase (guidance, scope tweaks, things to watch out for)..." style="flex:1; font-size:var(--sk-text-sm); resize:none;"></textarea>
-      <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm" style="flex-shrink:0;">Approve &amp; Advance</button>
-    </form>
-    <form class="mc-reject-form" style="display:none; width:100%; margin-top:var(--sk-space-2); gap:var(--sk-space-2); align-items:center;"
-          hx-post="/api/tasks/${eid}/reject-phase" hx-swap="none"
-          hx-on::after-request="if(event.detail.successful){this.style.display='none';}">
-      <textarea name="message" class="sk-input" rows="2" placeholder="Why are you rejecting? What should change?" style="flex:1; font-size:var(--sk-text-sm); resize:none;" required></textarea>
-      <button type="submit" class="sk-btn sk-btn--danger sk-btn--sm" style="flex-shrink:0;">Send Rejection</button>
-    </form>
+  return `<div class="sk-panel sk-mb-4" data-mc-pending="review">
+    <div class="sk-panel__header">
+      <div class="sk-flex sk-items-center sk-gap-2">
+        <span class="esc-alert-bang" style="color: var(--sk-accent-warning); font-weight: 700;">&#x270E;</span>
+        <strong style="color: var(--sk-text);">Phase review required</strong>
+        ${warnBadge("review")}
+      </div>
+    </div>
+    <div class="sk-panel__body">
+      <div class="sk-mb-2" style="color: var(--sk-text-muted); font-size: var(--sk-text-sm);">
+        Approve to advance to the next phase, or reject with guidance for a redo.
+      </div>
+      <div class="sk-flex sk-gap-2">
+        <button class="sk-btn sk-btn--primary sk-btn--sm" onclick="const r=this.closest('.sk-panel'); r.querySelector('.mc-reject-form').style.display='none'; r.querySelector('.mc-approve-form').style.display='flex';">Approve</button>
+        <button class="sk-btn sk-btn--sm" onclick="const r=this.closest('.sk-panel'); r.querySelector('.mc-approve-form').style.display='none'; r.querySelector('.mc-reject-form').style.display='flex';">Reject</button>
+      </div>
+      <form class="mc-approve-form" style="display:none; width:100%; margin-top:var(--sk-space-2); gap:var(--sk-space-2); align-items:center;"
+            hx-post="/api/tasks/${eid}/approve-phase" hx-swap="none"
+            hx-on::after-request="if(event.detail.successful){this.style.display='none';this.querySelector('textarea').value='';}">
+        <textarea name="message" class="sk-input" rows="2" placeholder="Optional note for the next phase (guidance, scope tweaks, things to watch out for)..." style="flex:1; font-size:var(--sk-text-sm); resize:none;"></textarea>
+        <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm" style="flex-shrink:0;">Approve &amp; Advance</button>
+      </form>
+      <form class="mc-reject-form" style="display:none; width:100%; margin-top:var(--sk-space-2); gap:var(--sk-space-2); align-items:center;"
+            hx-post="/api/tasks/${eid}/reject-phase" hx-swap="none"
+            hx-on::after-request="if(event.detail.successful){this.style.display='none';}">
+        <textarea name="message" class="sk-input" rows="2" placeholder="Why are you rejecting? What should change?" style="flex:1; font-size:var(--sk-text-sm); resize:none;" required></textarea>
+        <button type="submit" class="sk-btn sk-btn--danger sk-btn--sm" style="flex-shrink:0;">Send Rejection</button>
+      </form>
+    </div>
   </div>`;
 }
 
@@ -743,6 +769,7 @@ export function parseTerminalActivity(lines: Array<{ stream: string; data: strin
       kind = line.stream === "stderr" ? "event" : "message";
     }
 
+    if (kind === "message") summary = stripThinking(summary);
     if (!summary) return "";
 
     const kindLabel = kind === "tool" ? "tool" : kind === "message" ? "msg" : "sys";
@@ -848,6 +875,7 @@ export function parseRealtimeActivity(rows: RealtimeActivityRow[]): string {
       kind = row.stream === "stderr" ? "event" : "message";
     }
 
+    if (kind === "message") summary = stripThinking(summary);
     if (!summary) return "";
 
     const kindLabel = kind === "tool" ? "tool" : kind === "message" ? "msg" : "sys";
@@ -1057,150 +1085,4 @@ export function renderScheduledRuns(runs: Array<{ id: string; title: string; sta
   }).join("")}
     </tbody>
   </table>`;
-}
-
-/** Zen mode — centered mystical view with crystal ball orbs per team member */
-export function zenModeContent(vm: CommandCenterViewModel, task: TaskSummary): string {
-  const eid = escapeHtml(task.id);
-  const mission = vm.missionsByTask.get(task.id) ?? (vm.mission?.taskId === task.id ? vm.mission : null);
-  const needsReview = mission?.needsReview ?? false;
-  const phaseStepper = mission && mission.phases.length > 0
-    ? renderPhaseStepper(mission.phases, task.id, true)
-    : "";
-
-  const banner = task.status === "failed" && task.needs_review
-    ? renderRecoveryPausedBanner(task)
-    : needsReview ? renderReviewBanner(task) : "";
-
-  const isRT = task.task_type === "real_time";
-  const sessionActive = isRT && task.status === "running" && vm.realtimeSessionActive.get(task.id) !== false;
-  const composer = sessionActive ? renderZenComposer(eid) : "";
-
-  return `
-    <div class="zen-view__outer">
-      ${banner}
-      <div class="zen-view">
-        <div class="zen-view__header">
-        <span class="sk-badge sk-badge--${task.status}" style="font-size:10px;">${escapeHtml(task.status)}</span>
-        <h2 class="zen-view__title">${escapeHtml(task.title)}</h2>
-        ${task.team_name ? `<span class="zen-view__team">${escapeHtml(task.team_name)}</span>` : ""}
-      </div>
-
-      ${phaseStepper ? `<div class="zen-view__phase">${phaseStepper}</div>` : ""}
-
-      ${composer}
-
-      <div class="zen-view__orbs"
-           id="zen-agents-${eid}"
-           hx-get="/workspace/task/${eid}/zen-agents"
-           hx-trigger="load"
-           hx-swap="innerHTML">
-        <span class="sk-muted">Loading agents...</span>
-      </div>
-      <script>
-        (function(){
-          var container = document.getElementById('zen-agents-${eid}');
-          if (!container) return;
-          var tid = setInterval(function(){
-            if (!document.contains(container)) { clearInterval(tid); return; }
-            fetch('/api/tasks/${eid}/zen-agent-states').then(function(r){ return r.json(); }).then(function(states){
-              states.forEach(function(s){
-                var orb = container.querySelector('[data-zen-agent="'+CSS.escape(s.name)+'"]');
-                if (!orb) return;
-                var want = s.is_active ? 'zen-orb--active' : 'zen-orb--inactive';
-                var drop = s.is_active ? 'zen-orb--inactive' : 'zen-orb--active';
-                if (!orb.classList.contains(want)) { orb.classList.remove(drop); orb.classList.add(want); }
-              });
-            }).catch(function(){});
-          }, 5000);
-        })();
-      </script>
-
-      <div class="zen-view__summary"
-           id="zen-summary-${eid}"
-           hx-get="/workspace/task/${eid}/zen-summary"
-           hx-trigger="load, every 10s"
-           hx-swap="innerHTML">
-        <span class="sk-muted">Loading summary...</span>
-      </div>
-    </div>
-
-    <!-- Artifact modal (shared with standard view) -->
-    <div id="task-artifact-modal" class="sk-modal" data-sk-modal-backdrop style="padding:0.5rem;">
-      <div class="sk-modal__content" style="width:99vw;height:99vh;max-width:none;max-height:none;display:flex;flex-direction:column;overflow:hidden;">
-        <div class="sk-modal__header" style="padding:0.4rem 0.85rem;">
-          <span>Artifact</span>
-          <button class="sk-btn sk-btn--sm" data-sk-modal-close="task-artifact-modal">Close</button>
-        </div>
-        <div class="sk-modal__body" id="task-artifact-modal-body" style="flex:1;min-height:0;overflow:auto;padding:0.75rem 1rem;">
-          <span class="sk-muted">Loading...</span>
-        </div>
-      </div>
-    </div>
-    </div>
-  `;
-}
-
-export function renderZenComposer(eid: string): string {
-  return `
-    <div class="zen-view__composer">
-      <form hx-post="/api/realtime-tasks/${eid}/input" hx-swap="none"
-            hx-on::after-request="if(event.detail.successful){this.querySelector('input[name=text]').value='';}"
-            class="zen-view__composer-form">
-        <input type="text" name="text" placeholder="Type a message or cue..." required autocomplete="off"
-               class="zen-view__composer-input" />
-        <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Send</button>
-      </form>
-      <div id="rt-audio-controls" class="zen-view__composer-audio">
-        <button id="btn-start-recording" onclick="startRealtimeAudio('${eid}', 60, 5)" class="sk-btn sk-btn--sm" title="Start audio recording (auto-starts whisper)" style="display:inline-flex;align-items:center;gap:0.35rem;">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-          Record
-        </button>
-        <button id="btn-stop-recording" onclick="stopRealtimeAudio()" class="sk-btn sk-btn--sm sk-btn--danger sk-animate-pulse" title="Stop recording and whisper" style="display:none;align-items:center;gap:0.35rem;">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
-          Stop
-        </button>
-        <span id="audio-status" class="sk-muted sk-text-xs"></span>
-      </div>
-      <div id="audio-visualizer-wrap" class="zen-view__composer-viz" style="display:none;">
-        <canvas id="audio-visualizer" width="600" height="80" style="width:100%;height:72px;display:block;"></canvas>
-      </div>
-    </div>
-    <script src="/realtime-audio.js"></script>
-  `;
-}
-
-export function renderZenAgents(agents: Array<{ name: string; is_active: number }>): string {
-  if (agents.length === 0) return `<div class="sk-muted" style="text-align:center;">No team members</div>`;
-
-  return agents.map(a => {
-    const cls = a.is_active ? "zen-orb--active" : "zen-orb--inactive";
-    return `<div class="zen-view__orb-wrapper">
-      <div class="zen-orb ${cls}" data-zen-agent="${escapeHtml(a.name)}">
-        <div class="zen-orb__shine"></div>
-      </div>
-      <span class="zen-view__orb-label">${escapeHtml(a.name)}</span>
-    </div>`;
-  }).join("");
-}
-
-export function renderZenSummary(data: { taskId: string; noteCount: number; artifactCount: number; latestNote: string | null; latestArtifactName: string | null }): string {
-  const parts: string[] = [];
-  parts.push(`<span>${data.noteCount} note${data.noteCount !== 1 ? "s" : ""} · ${data.artifactCount} artifact${data.artifactCount !== 1 ? "s" : ""}</span>`);
-
-  if (data.latestNote) {
-    const truncated = data.latestNote.length > 150 ? data.latestNote.slice(0, 147) + "..." : data.latestNote;
-    parts.push(`<div class="zen-view__latest-note"><span class="zen-view__summary-label">Latest note</span><p>${escapeHtml(truncated)}</p></div>`);
-  }
-
-  if (data.latestArtifactName) {
-    const eid = escapeHtml(data.taskId);
-    const ename = encodeURIComponent(data.latestArtifactName);
-    parts.push(`<div class="zen-view__latest-artifact"><span class="zen-view__summary-label">Latest artifact</span><a href="#" onclick="openTaskArtifactModal(); return false;"
-      hx-get="/fragments/tasks/${eid}/artifacts/${ename}"
-      hx-target="#task-artifact-modal-body"
-      hx-swap="innerHTML">${escapeHtml(data.latestArtifactName)}</a></div>`);
-  }
-
-  return parts.join("");
 }

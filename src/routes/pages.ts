@@ -13,6 +13,7 @@ import {
   fetchTaskForensics,
   fetchDashboardRealtimeTimeline,
   fetchDashboardPhaseIndicatorTask,
+  buildTeamAgentTiles,
 } from "../data/queries";
 export {
   fetchTasksWithTeams,
@@ -58,6 +59,8 @@ import {
   getStringSetting, setStringSetting, getSetting,
   SETTING_SKIPPER_CONNECT_GUID, SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_URL,
 } from "../config/app-settings";
+import { dashboardSteerListFragment, agentInstancesModalFragment, type SteeringOption } from "../html/dashboardLatestSteerFragment";
+import { getNumberSetting, setNumberSetting, SETTING_LOG_RETENTION_HOURS } from "../config/app-settings";
 import { recentActivityFragment } from "../html/recentActivityFragment";
 import type {
   DashboardData,
@@ -489,7 +492,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     }
 
     daemon.getEscalationManager().reconcileOpenEscalationsForInactiveTasks();
-    return new Response(null, { status: 302, headers: { Location: "/escalations" } });
+    return new Response(null, { status: 302, headers: { Location: "/" } });
   });
 
   addRoute("POST", "/api/escalations/:id/dismiss", (_req, params) => {
@@ -501,7 +504,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     }
 
     daemon.getEscalationManager().reconcileOpenEscalationsForInactiveTasks();
-    return new Response(null, { status: 302, headers: { Location: "/escalations" } });
+    return new Response(null, { status: 302, headers: { Location: "/" } });
   });
 
   // Fragment routes: resolve/dismiss returning a single rendered card.
@@ -786,10 +789,52 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     }));
   });
 
-  // Latest steer fragment — polled every 3s by command-center task view
+  // Team roster fragment — the dashboard "Active Agent" panel. Task context
+  // shows the whole team (like zen mode); the aggregate dashboard shows the
+  // running agent types across all tasks.
   addRoute("GET", "/fragments/dashboard/latest-steer", (req) => {
     const url = new URL(req.url);
     const taskId = url.searchParams.get("task");
+
+    if (taskId) {
+      return html(dashboardSteerListFragment(buildTeamAgentTiles(db, taskId), taskId));
+    }
+
+    const rows = db.prepare(
+      `SELECT ai.template_agent_id,
+              COALESCE(a.name, ai.template_agent_id) AS agent_name,
+              COUNT(*) AS instance_count
+       FROM agent_instances ai
+       LEFT JOIN agents a ON a.id = ai.template_agent_id
+       WHERE ai.status IN ('running', 'waiting_delegation')
+       GROUP BY ai.template_agent_id
+       ORDER BY MAX(ai.updated_at) DESC`,
+    ).all() as Array<{ template_agent_id: string; agent_name: string; instance_count: number }>;
+
+    const tiles = rows.map((r) => ({
+      template_agent_id: r.template_agent_id,
+      agent_name: r.agent_name,
+      instance_count: r.instance_count,
+      is_active: true,
+    }));
+
+    return html(dashboardSteerListFragment(tiles));
+  });
+
+  // Agent instance list for the agent modal — all running instances of one
+  // agent type (optionally scoped to a task), each with output + steer input.
+  addRoute("GET", "/fragments/dashboard/agent-instances", (req) => {
+    const url = new URL(req.url);
+    const templateAgentId = url.searchParams.get("template_agent_id");
+    const taskId = url.searchParams.get("task");
+    if (!templateAgentId) return html(agentInstancesModalFragment([]));
+
+    const conds = ["ai.status IN ('running', 'waiting_delegation')", "ai.template_agent_id = ?"];
+    const queryArgs: string[] = [templateAgentId];
+    if (taskId) {
+      conds.push("ai.task_id = ?");
+      queryArgs.push(taskId);
+    }
 
     const instances = db.prepare(
       `SELECT ai.id AS runtime_id, ai.template_agent_id,
@@ -799,10 +844,9 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
        FROM agent_instances ai
        LEFT JOIN agents a ON a.id = ai.template_agent_id
        LEFT JOIN tasks t ON t.id = ai.task_id
-       WHERE ai.status IN ('running', 'waiting_delegation')
-       ${taskId ? "AND ai.task_id = ?" : ""}
+       WHERE ${conds.join(" AND ")}
        ORDER BY ai.updated_at DESC`,
-    ).all(...(taskId ? [taskId] : [])) as Array<{
+    ).all(...queryArgs) as Array<{
       runtime_id: string; template_agent_id: string; agent_name: string;
       task_id: string; task_title: string | null; status: string;
       process_pid: number | null; session_id: string | null;
@@ -821,7 +865,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
       latest_message: fetchLatestAssistantMessage(db, inst.runtime_id),
     }));
 
-    return html(dashboardSteerListFragment(options));
+    return html(agentInstancesModalFragment(options));
   });
 
   // Task escalation cards — polled every 5s by command-center task view
@@ -950,7 +994,6 @@ function registerV2PageRoutes(): void {
   const { taskListPage } = require("../html/pages/task-list.page");
   // task-execution.page and task-execution.vm removed — /tasks/:id redirects to dashboard
   const { agentTerminalPage } = require("../html/pages/agent-terminal.page");
-  const { escalationQueuePage } = require("../html/pages/escalation-queue.page");
   const { configPage } = require("../html/pages/config.page");
   // agent-detail.page and team-detail.page removed — config uses inline edit fragments
   const { taskCreatePage } = require("../html/pages/task-create.page");
@@ -1000,10 +1043,6 @@ function registerV2PageRoutes(): void {
     if (!task) return Response.json({ error: "Not found" }, { status: 404 });
     const { taskMainContent, renderDraftEdit, realtimeTaskContent } = require("../html/pages/command-center.page");
     if (task.status === "draft") return html(renderDraftEdit(task, vm.teams));
-    if (vm.zenModeEnabled && task.status !== "draft") {
-      const { zenModeContent } = require("../html/pages/command-center.page");
-      return html(zenModeContent(vm, task));
-    }
     if ((task as any).task_type === "real_time") {
       const isSessionActive = vm.realtimeSessionActive?.get(task.id);
       return html(realtimeTaskContent(task, isSessionActive));
@@ -1120,62 +1159,6 @@ function registerV2PageRoutes(): void {
     return html(parseRealtimeActivity(limited));
   });
 
-  // Zen mode: team member orbs with active status
-  addRoute("GET", "/workspace/task/:id/zen-agents", (_req, params) => {
-    const { renderZenAgents } = require("../html/pages/command-center.page");
-    const task = db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(params.id) as { team_id: string | null } | null;
-    if (!task?.team_id) return html(renderZenAgents([]));
-
-    const agents = db.prepare(
-      `SELECT a.name,
-              CASE WHEN EXISTS(
-                SELECT 1 FROM agent_instances ai
-                WHERE ai.template_agent_id = ta.agent_id AND ai.task_id = ?
-                  AND ai.status IN ('running', 'waiting_delegation', 'pending')
-              ) THEN 1 ELSE 0 END AS is_active
-       FROM team_agents ta
-       JOIN agents a ON a.id = ta.agent_id
-       WHERE ta.team_id = ?
-       ORDER BY ta.level, ta.created_at`
-    ).all(params.id, task.team_id) as Array<{ name: string; is_active: number }>;
-    return html(renderZenAgents(agents));
-  });
-
-  // Zen mode: agent active states as JSON (class-toggle polling, no DOM replace)
-  addRoute("GET", "/api/tasks/:id/zen-agent-states", (_req, params) => {
-    const task = db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(params.id) as { team_id: string | null } | null;
-    if (!task?.team_id) return Response.json([]);
-    const agents = db.prepare(
-      `SELECT a.name,
-              CASE WHEN EXISTS(
-                SELECT 1 FROM agent_instances ai
-                WHERE ai.template_agent_id = ta.agent_id AND ai.task_id = ?
-                  AND ai.status IN ('running', 'waiting_delegation', 'pending')
-              ) THEN 1 ELSE 0 END AS is_active
-       FROM team_agents ta
-       JOIN agents a ON a.id = ta.agent_id
-       WHERE ta.team_id = ?
-       ORDER BY ta.level, ta.created_at`
-    ).all(params.id, task.team_id) as Array<{ name: string; is_active: number }>;
-    return Response.json(agents);
-  });
-
-  // Zen mode: notes/artifacts summary
-  addRoute("GET", "/workspace/task/:id/zen-summary", (_req, params) => {
-    const { renderZenSummary } = require("../html/pages/command-center.page");
-    const noteCount = (db.prepare("SELECT COUNT(*) AS c FROM task_notes WHERE task_id = ?").get(params.id) as { c: number }).c;
-    const artifactCount = (db.prepare("SELECT COUNT(DISTINCT name) AS c FROM task_artifacts WHERE task_id = ?").get(params.id) as { c: number }).c;
-    const latestNote = db.prepare("SELECT content FROM task_notes WHERE task_id = ? ORDER BY created_at DESC, id DESC LIMIT 1").get(params.id) as { content: string } | null;
-    const latestArtifact = db.prepare("SELECT name FROM task_artifacts WHERE task_id = ? ORDER BY created_at DESC LIMIT 1").get(params.id) as { name: string } | null;
-    return html(renderZenSummary({
-      taskId: params.id,
-      noteCount,
-      artifactCount,
-      latestNote: latestNote?.content ?? null,
-      latestArtifactName: latestArtifact?.name ?? null,
-    }));
-  });
-
   // Terminal output by task ID (finds the root agent instance)
   addRoute("GET", "/workspace/task/:id/terminal", (_req, params) => {
     // Find agent instances for this task, prefer root/entrypoint
@@ -1245,8 +1228,8 @@ function registerV2PageRoutes(): void {
     ).all(params.id) as Array<{ id: string; parent_name: string; child_name: string; status: string; prompt: string; result: string | null }>;
 
     const esc = escapeHtml;
-    const instanceRows = instances.map(i => `<tr><td class="sk-mono sk-text-xs">${esc(i.id.slice(0,8))}</td><td>${esc(i.agent_name)}</td><td><span class="sk-badge sk-badge--${i.status}">${i.status}</span></td><td class="sk-muted sk-text-xs">${formatTimestamp(i.created_at)}</td></tr>`).join("");
-    const delegationRows = delegations.map(d => `<tr><td>${esc(d.parent_name)} → ${esc(d.child_name)}</td><td><span class="sk-badge sk-badge--${d.status}">${d.status}</span></td><td class="sk-text-xs sk-muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc((d.prompt ?? "").slice(0,100))}</td></tr>`).join("");
+    const instanceRows = instances.map(i => `<tr><td class="sk-mono sk-text-xs">${esc(i.id.slice(0, 8))}</td><td>${esc(i.agent_name)}</td><td><span class="sk-badge sk-badge--${i.status}">${i.status}</span></td><td class="sk-muted sk-text-xs">${formatTimestamp(i.created_at)}</td></tr>`).join("");
+    const delegationRows = delegations.map(d => `<tr><td>${esc(d.parent_name)} → ${esc(d.child_name)}</td><td><span class="sk-badge sk-badge--${d.status}">${d.status}</span></td><td class="sk-text-xs sk-muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc((d.prompt ?? "").slice(0, 100))}</td></tr>`).join("");
 
     return html(`<div style="padding: var(--sk-space-4); overflow-y:auto;">
       <h3 style="color:var(--sk-text); margin-bottom:var(--sk-space-3); font-size:var(--sk-text-sm);">Task Info</h3>
@@ -1433,53 +1416,53 @@ function registerV2PageRoutes(): void {
 
   // ── Global store routes (experimental) ───────────────────────────────────
   if (isExperimental()) {
-  const { globalStorePage } = require("../html/pages/global-store.page");
-  const { globalStoreEditFragment, globalStoreRowFragment } = require("../html/fragments/global-store-edit.fragment");
-  const { GlobalStoreManager } = require("../global-store/manager");
-  const globalStore = new GlobalStoreManager(db);
+    const { globalStorePage } = require("../html/pages/global-store.page");
+    const { globalStoreEditFragment, globalStoreRowFragment } = require("../html/fragments/global-store-edit.fragment");
+    const { GlobalStoreManager } = require("../global-store/manager");
+    const globalStore = new GlobalStoreManager(db);
 
-  addRoute("GET", "/global-store", () => {
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
-    const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
-    return html(globalStorePage({
-      rows: globalStore.query({}),
-      daemonState: pausedRow?.value === "true" ? "paused" : "running",
-      daemonUptime: process.uptime(),
-      escalationCount,
-    }));
-  });
-
-  addRoute("GET", "/fragments/global-store/new", () => {
-    return html(globalStoreEditFragment());
-  });
-
-  addRoute("GET", "/fragments/global-store/edit", (req) => {
-    const name = new URL(req.url).searchParams.get("name");
-    if (!name) return new Response("Missing name", { status: 400 });
-    const row = globalStore.get(name);
-    if (!row) return new Response("Value not found", { status: 404 });
-    return html(globalStoreEditFragment(row));
-  });
-
-  addRoute("POST", "/api/global-store", async (req) => {
-    const formData = await req.formData();
-    const name = formData.get("name")?.toString().trim();
-    if (!name) return new Response("Missing name", { status: 400 });
-    const row = globalStore.set({
-      name,
-      type: formData.get("type")?.toString() || null,
-      data: formData.get("data")?.toString() ?? null,
-      status: formData.get("status")?.toString() || null,
+    addRoute("GET", "/global-store", () => {
+      const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+      const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
+      return html(globalStorePage({
+        rows: globalStore.query({}),
+        daemonState: pausedRow?.value === "true" ? "paused" : "running",
+        daemonUptime: process.uptime(),
+        escalationCount,
+      }));
     });
-    return html(globalStoreRowFragment(row));
-  });
 
-  addRoute("DELETE", "/api/global-store", (req) => {
-    const name = new URL(req.url).searchParams.get("name");
-    if (!name) return new Response("Missing name", { status: 400 });
-    globalStore.delete(name);
-    return new Response("", { status: 200 });
-  });
+    addRoute("GET", "/fragments/global-store/new", () => {
+      return html(globalStoreEditFragment());
+    });
+
+    addRoute("GET", "/fragments/global-store/edit", (req) => {
+      const name = new URL(req.url).searchParams.get("name");
+      if (!name) return new Response("Missing name", { status: 400 });
+      const row = globalStore.get(name);
+      if (!row) return new Response("Value not found", { status: 404 });
+      return html(globalStoreEditFragment(row));
+    });
+
+    addRoute("POST", "/api/global-store", async (req) => {
+      const formData = await req.formData();
+      const name = formData.get("name")?.toString().trim();
+      if (!name) return new Response("Missing name", { status: 400 });
+      const row = globalStore.set({
+        name,
+        type: formData.get("type")?.toString() || null,
+        data: formData.get("data")?.toString() ?? null,
+        status: formData.get("status")?.toString() || null,
+      });
+      return html(globalStoreRowFragment(row));
+    });
+
+    addRoute("DELETE", "/api/global-store", (req) => {
+      const name = new URL(req.url).searchParams.get("name");
+      if (!name) return new Response("Missing name", { status: 400 });
+      globalStore.delete(name);
+      return new Response("", { status: 200 });
+    });
   }
 
   // ── Team config forms (managed on the Config page) ──────────────────────
@@ -1629,26 +1612,6 @@ function registerV2PageRoutes(): void {
     </div>`);
   });
 
-  // Escalation Queue
-  addRoute("GET", "/escalations", () => {
-    const allEsc = db.prepare(
-      `SELECT e.id, e.agent_id, e.task_id, t.title AS task_title, e.type, e.question, e.status, e.response, e.created_at, e.resolved_at
-       FROM escalations e LEFT JOIN tasks t ON t.id = e.task_id
-       ORDER BY e.created_at DESC LIMIT 50`
-    ).all() as Array<{ id: string; agent_id: string; task_id: string; task_title: string | null; type: string; question: string; status: string; response: string | null; created_at: string; resolved_at: string | null }>;
-
-    const open = allEsc.filter((e) => e.status === "open");
-    const resolved = allEsc.filter((e) => e.status !== "open");
-    const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
-
-    return html(escalationQueuePage({
-      open,
-      resolved,
-      escalationCount: open.length,
-      daemonState: pausedRow?.value === "true" ? "paused" : "running",
-      daemonUptime: process.uptime(),
-    }));
-  });
 }
 
 function renderArtifactDetail(

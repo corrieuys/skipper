@@ -1,4 +1,17 @@
 
+/**
+ * Strip reasoning/thinking from a message summary so the messages view shows
+ * only real output. Removes closed `<thinking>…</thinking>` blocks, the
+ * `<thinking> …` preview marker emitted below (segments joined by " | "), and
+ * any dangling open `<thinking>` run. Empty result → caller drops the row.
+ */
+export function stripThinking(text: string): string {
+    let out = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, "");
+    out = out.split(" | ").filter(seg => !seg.trim().toLowerCase().startsWith("<thinking>")).join(" | ");
+    out = out.replace(/<thinking>[\s\S]*$/i, "");
+    return out.trim();
+}
+
 export function terminalJsonSummary(event: Record<string, unknown>): string {
     const trunc = (s: string, n = 160) => s.length > n ? s.slice(0, n) + "…" : s;
 

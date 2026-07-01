@@ -37,9 +37,7 @@ export function escalationCardPanel(esc: EscalationCardData): string {
     </div>
     <div class="sk-panel__body">
       <div class="esc-q sk-mb-2">
-        <input type="checkbox" id="esc-q-cb-${escapeHtml(esc.id)}" class="esc-q__cb">
         <div class="esc-q__body sk-md" data-artifact-md style="color: var(--sk-text);">${escapeHtml(esc.question)}</div>
-        <label for="esc-q-cb-${escapeHtml(esc.id)}" class="esc-q__toggle"></label>
       </div>
       <div class="sk-flex sk-gap-2 sk-text-xs sk-muted sk-mb-4">
         <span title="${escapeHtml(esc.agent_id)}">Agent: ${escapeHtml(agentLabel)}${runtimeHint ? ` <span class="sk-mono">(${escapeHtml(runtimeHint)})</span>` : ""}</span>

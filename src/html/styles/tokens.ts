@@ -76,6 +76,17 @@ export function tokens(): string {
       --sk-radius-md: 6px;
       --sk-radius-lg: 10px;
 
+      /* ── Button sizing (single source of truth — both .sk-btn and legacy .btn use these) ── */
+      --sk-btn-height: 2rem;
+      --sk-btn-pad-y: 0.4rem;
+      --sk-btn-pad-x: 0.8rem;
+      --sk-btn-font: var(--sk-text-sm);
+      --sk-btn-radius: var(--sk-radius-md);
+      --sk-btn-height-sm: 1.7rem;
+      --sk-btn-pad-y-sm: 0.28rem;
+      --sk-btn-pad-x-sm: 0.6rem;
+      --sk-btn-font-sm: var(--sk-text-xs);
+
       /* ══ Backward-compatible aliases (old variable names → new tokens) ══ */
       --void: var(--sk-surface-0);
       --surface-low: var(--sk-surface-1);

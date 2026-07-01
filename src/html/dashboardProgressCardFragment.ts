@@ -2,7 +2,7 @@ import { DashboardData, PollIntervalSeconds } from "./components";
 import { dashboardProgressStatsFragment } from "./dashboardProgressStatsFragment";
 import { dashboardPhaseIndicatorFragment } from "./dashboardPhaseIndicatorFragment";
 import { dashboardDelegationGroupsFragment } from "./dashboardDelegationGroupsFragment";
-import { dashboardSteerListFragment, type SteeringOption } from "./dashboardLatestSteerFragment";
+import { dashboardSteerListFragment, groupSteerOptionsToTiles, type SteeringOption } from "./dashboardLatestSteerFragment";
 
 
 export function dashboardProgressCardFragment(data: {
@@ -50,7 +50,7 @@ export function dashboardProgressCardFragment(data: {
             hx-trigger="load"
             hx-target="this"
             hx-swap="innerHTML">
-            ${dashboardSteerListFragment(latestSteerOptions)}
+            ${dashboardSteerListFragment(groupSteerOptionsToTiles(latestSteerOptions))}
           </div>
         </section>
         <section class="cmd-progress-section">

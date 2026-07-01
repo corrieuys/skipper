@@ -92,6 +92,88 @@
     },
   };
 
+  // ── Agent instance modal ──
+  // Singleton modal at body level (survives fragment re-renders / WS pushes).
+  // Loads the running instances of one agent type, each with output + steer input.
+  Skipper.agentModal = {
+    ensure: function () {
+      var m = document.getElementById("mc-agent-modal");
+      if (m) return m;
+      m = document.createElement("div");
+      m.id = "mc-agent-modal";
+      m.className = "sk-modal";
+      m.setAttribute("data-sk-modal-backdrop", "");
+      m.innerHTML =
+        '<div class="sk-modal__content mc-agent-modal__content">' +
+        '<div class="sk-modal__header">' +
+        '<span id="mc-agent-modal-title">Agent</span>' +
+        '<button class="sk-btn sk-btn--sm" data-sk-modal-close="mc-agent-modal">Close</button>' +
+        "</div>" +
+        '<div class="sk-modal__body" id="mc-agent-modal-body"><span class="sk-muted">Loading...</span></div>' +
+        "</div>";
+      document.body.appendChild(m);
+      return m;
+    },
+    _poll: null,
+    open: function (templateId, agentName, taskId) {
+      if (!templateId) return;
+      this.ensure();
+      var title = document.getElementById("mc-agent-modal-title");
+      if (title) title.textContent = agentName || "Agent";
+      var body = document.getElementById("mc-agent-modal-body");
+      if (body) body.innerHTML = '<span class="sk-muted">Loading...</span>';
+      var url = "/fragments/dashboard/agent-instances?template_agent_id=" + encodeURIComponent(templateId);
+      if (taskId) url += "&task=" + encodeURIComponent(taskId);
+      if (window.htmx) {
+        window.htmx.ajax("GET", url, { target: "#mc-agent-modal-body", swap: "innerHTML" });
+      } else {
+        fetch(url).then(function (r) { return r.text(); }).then(function (h) {
+          if (body) body.innerHTML = h;
+        });
+      }
+      Skipper.modal.open("mc-agent-modal");
+      this._watch(url);
+    },
+    // While open, poll the instance endpoint and reconcile: drop cards for
+    // instances that have finished, and close once none remain. Cards that are
+    // still active are left in place so an in-progress steer textarea isn't
+    // clobbered (we never re-swap the whole body).
+    _watch: function (url) {
+      var self = this;
+      if (self._poll) clearInterval(self._poll);
+      self._poll = setInterval(function () {
+        var m = document.getElementById("mc-agent-modal");
+        if (!m || !m.classList.contains("sk-modal--open")) {
+          clearInterval(self._poll);
+          self._poll = null;
+          return;
+        }
+        fetch(url).then(function (r) { return r.text(); }).then(function (h) {
+          var mm = document.getElementById("mc-agent-modal");
+          if (!mm || !mm.classList.contains("sk-modal--open")) return;
+          if (h.indexOf("data-mc-agent-empty") !== -1) {
+            Skipper.modal.close("mc-agent-modal");
+            if (self._poll) { clearInterval(self._poll); self._poll = null; }
+            return;
+          }
+          // Set of instances still active per the fresh response.
+          var tmp = document.createElement("div");
+          tmp.innerHTML = h;
+          var active = {};
+          tmp.querySelectorAll(".mc-steer-card[data-runtime-id]").forEach(function (c) {
+            active[c.getAttribute("data-runtime-id")] = true;
+          });
+          // Remove cards whose instance has finished (not in the fresh set).
+          var body = document.getElementById("mc-agent-modal-body");
+          if (!body) return;
+          body.querySelectorAll(".mc-steer-card[data-runtime-id]").forEach(function (c) {
+            if (!active[c.getAttribute("data-runtime-id")]) c.remove();
+          });
+        }).catch(function () {});
+      }, 3000);
+    },
+  };
+
   // ── Terminal Auto-Scroll ──
   Skipper.terminal = {
     observers: {},
@@ -350,10 +432,49 @@
       // Activate the target
       var panel = document.getElementById("mc-tab-" + name);
       if (panel) panel.classList.add("mc-tab-panel--active");
-      // Activate the button
-      document.querySelectorAll(".mc-tab").forEach(function (t) {
-        if (t.textContent.trim().toLowerCase() === name) t.classList.add("mc-tab--active");
-      });
+      // Activate the button (matched by data attribute, so the label can differ
+      // from the tab name — e.g. "User Input" → "input").
+      var btn = document.querySelector('.mc-tab[data-mc-tab="' + name + '"]');
+      if (btn) btn.classList.add("mc-tab--active");
+    },
+    // Badge the User Input tab with the count of pending items — the review
+    // gate (.mc-escalation) plus each escalation card (id^="escalation-").
+    // Its content loads async, so recompute on every swap.
+    //
+    // opts.reset (passed on a full task re-render) re-baselines the count
+    // without auto-switching, so changing tasks never counts as "answered".
+    refreshAttention: function (opts) {
+      var panel = document.getElementById("mc-tab-input");
+      var btn = document.querySelector('.mc-tab[data-mc-tab="input"]');
+      if (!panel || !btn) { this._inputCount = undefined; return; }
+      // Count only OPEN items: the review/recovery gate ([data-mc-pending])
+      // plus each escalation card that still shows its resolve form. A resolved
+      // card keeps its id but drops the form, so counting forms lets the
+      // badge/switch react to the instant direct swap, not the later WS push.
+      var reviews = panel.querySelectorAll("[data-mc-pending]").length;
+      var openEscalations = panel.querySelectorAll('form[hx-post*="/resolve"]').length;
+      var count = reviews + openEscalations;
+      var badge = btn.querySelector("[data-mc-tab-badge]");
+      if (badge) {
+        if (count > 0) { badge.textContent = String(count); badge.removeAttribute("hidden"); }
+        else { badge.textContent = ""; badge.setAttribute("hidden", ""); }
+      }
+      if (count > 0) btn.classList.add("mc-tab--attention");
+      else btn.classList.remove("mc-tab--attention");
+
+      // Auto-navigate on transitions. opts.reset (full task re-render) just
+      // re-baselines so switching tasks never counts as raised/answered.
+      var prev = this._inputCount;
+      this._inputCount = count;
+      if (opts && opts.reset) return;
+      if (typeof prev !== "number") return;
+      if (prev === 0 && count > 0) {
+        // Something was raised → surface the User Input tab.
+        Skipper.tabs.show("input");
+      } else if (prev > 0 && count === 0 && panel.classList.contains("mc-tab-panel--active")) {
+        // Last item answered while viewing it → back to Outputs.
+        Skipper.tabs.show("outputs");
+      }
     },
   };
 
@@ -589,6 +710,17 @@
     var openBtn = e.target.closest("[data-sk-modal-open]");
     if (openBtn) {
       Skipper.modal.open(openBtn.getAttribute("data-sk-modal-open"));
+      return;
+    }
+
+    // Agent tile → instance modal
+    var agentTile = e.target.closest("[data-mc-agent-tile]");
+    if (agentTile) {
+      Skipper.agentModal.open(
+        agentTile.getAttribute("data-template-id"),
+        agentTile.getAttribute("data-agent-name"),
+        agentTile.getAttribute("data-task-id"),
+      );
       return;
     }
 
@@ -863,6 +995,20 @@
       if (openModal) {
         Skipper.modal.close(openModal.id);
       }
+      return;
+    }
+
+    // Enter/Space on a focused agent orb opens its instance modal.
+    if (e.key === "Enter" || e.key === " ") {
+      var tile = e.target.closest && e.target.closest("[data-mc-agent-tile]");
+      if (tile) {
+        e.preventDefault();
+        Skipper.agentModal.open(
+          tile.getAttribute("data-template-id"),
+          tile.getAttribute("data-agent-name"),
+          tile.getAttribute("data-task-id"),
+        );
+      }
     }
   });
 
@@ -895,9 +1041,14 @@
   });
 
   // ── HTMX Integration ──
-  document.addEventListener("htmx:afterSwap", function () {
+  document.addEventListener("htmx:afterSwap", function (evt) {
     // Restore output column widths after any HTMX swap
     restoreOutputsCols();
+
+    // Flag the User Input tab when review/escalation content lands in it. A
+    // full task re-render (target #mc-main) re-baselines instead of switching.
+    var tgt = evt && evt.detail && evt.detail.target;
+    Skipper.tabs.refreshAttention(tgt && tgt.id === "mc-main" ? { reset: true } : undefined);
 
     renderMarkdownBlocks();
 

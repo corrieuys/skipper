@@ -1,18 +1,19 @@
 /**
  * Zen mode 3D orbs.
  *
- * Replaces the CSS crystal-ball orbs with faceted 3D polygons (icosahedra)
- * wrapped in an orbiting particle shell, rendered with three.js.
+ * Renders each `.zen-orb` element as a simple faceted cube on a single shared
+ * WebGL canvas overlaid on the page. Each orb is drawn into its own
+ * scissor/viewport region that tracks the element's rect, so it works for any
+ * team size with one GL context total.
  *
- * One shared WebGL canvas is overlaid on the page; each `.zen-orb` element is
- * drawn into its own scissor/viewport region, so the renderer naturally tracks
- * the floating orb rects and works for any team size (one GL context total).
+ * Orientation is a deterministic function of the shared clock plus a per-agent
+ * seed (hashed from the orb's data-zen-agent), so nothing needs persisting and a
+ * DOM re-render never jumps — a rebuilt cube recomputes the exact same pose:
+ *   - inactive → the cube faces the camera as a flat, static square
+ *   - active   → the cube tumbles on all axes with random accel/decel, and bobs
  *
- * Active/inactive state is read from the orb's CSS classes every frame, so the
- * existing 5s `zen-agent-states` poller drives the visuals with no extra wiring.
- *
- * three.js is loaded lazily from a CDN. If it fails to load (no WebGL / offline)
- * nothing is mounted and the original CSS orbs remain visible.
+ * three.js is loaded lazily from a CDN. If it fails (no WebGL / offline) nothing
+ * is mounted and the original CSS orbs remain visible.
  */
 (function () {
   "use strict";
@@ -21,230 +22,170 @@
 
   var THREE_URL = "https://esm.sh/three@0.160.0";
 
-  // Each orb is drawn into a square region PAD times larger than the orb itself
-  // so the orbiting particle shell has room and isn't clipped at the orb box.
-  // The camera is pushed back by the same factor so the polygon keeps its size.
-  var PAD = 2.4;
+  // Each orb is drawn into a square region PAD times larger than the orb, with
+  // the camera pushed back by the same factor so the cube keeps its size while
+  // leaving room for the tumbling corners and the up/down bob.
+  var PAD = 1.5;
   var BASE_Z = 3.4;
+  var CUBE = 1.2;        // cube edge length (world units)
+  var SPEED = 4;         // peak angular-speed multiplier (ramp timing unchanged)
 
   var THREE = null;
   var renderer = null;
   var canvas = null;
   var clock = null;
-  var views = []; // { el, scene, camera, mesh, edges, particles, mat, edgeMat, ptMat, baseColor, lit, lerp }
+  var views = [];
   var booted = false;
   var booting = false;
   var loopRunning = false;
 
+  // Reused scratch objects (set once THREE has loaded) to avoid per-frame allocs.
+  var scratchEuler = null;
+  var scratchQuat = null;
+  var identQuat = null;
+
+  // Active↔inactive transition value (0..1) per agent seed. The steer panel
+  // re-renders replace the .zen-orb DOM nodes on every poll, so a rebuilt view
+  // must resume its in-flight transition here instead of snapping back to 0
+  // (which would cut a deactivating cube straight to flat and restart the
+  // fade-in of active ones). Orientation itself is deterministic and needs no
+  // persisting; only this eased value does.
+  var lerpState = Object.create(null);
+
   function hasOrbs() {
     return !!document.querySelector(".zen-orb");
+  }
+
+  // Stable hash of a string → uint32, so each agent seeds the same tumble.
+  function hashStr(s) {
+    var h = 2166136261 >>> 0;
+    for (var i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h;
+  }
+
+  // Deterministic PRNG seeded from the hash, for per-agent tumble parameters.
+  function mulberry32(seed) {
+    return function () {
+      seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+      var t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Per-axis tumble: a base spin plus two sines, giving smoothly ramping angular
+  // velocity (accelerate/decelerate, occasionally reversing) that reads as random.
+  function makeAxis(rng) {
+    return {
+      base: (0.15 + rng() * 0.35) * (rng() < 0.5 ? -1 : 1),
+      a1: 0.35 + rng() * 0.5, f1: 0.3 + rng() * 0.5, p1: rng() * 6.2832,
+      a2: 0.2 + rng() * 0.35, f2: 0.7 + rng() * 0.7, p2: rng() * 6.2832,
+    };
+  }
+  function axisAngle(ax, t) {
+    // Scaling the whole angle by SPEED raises peak velocity without touching the
+    // sine frequencies, so the accel/decel ramp times stay the same.
+    return SPEED * (ax.base * t + ax.a1 * Math.sin(t * ax.f1 + ax.p1) + ax.a2 * Math.sin(t * ax.f2 + ax.p2));
   }
 
   function cssColor(varName, fallback) {
     var c = new THREE.Color(fallback);
     try {
       var raw = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
-      if (raw) c.setStyle(raw); // setStyle throws/ignores unknown formats (oklch, color-mix)
+      if (raw) c.setStyle(raw); // setStyle ignores unknown formats (oklch, color-mix)
     } catch (e) {
       c.set(fallback);
     }
     return c;
   }
 
-  // Atom-style electrons: a few orbital rings tilted onto distinct planes, each
-  // carrying a handful of electron points plus a faint orbit trace. Each ring is
-  // a group spun on its own axis so the electrons orbit like an atom diagram.
-  var RING_DEFS = [
-    { r: 1.75, tilt: [0, 0, 0], speed: 1.5, dir: 1, n: 3 },
-    { r: 1.95, tilt: [Math.PI / 2.3, 0.6, 0], speed: 1.0, dir: -1, n: 2 },
-    { r: 1.6, tilt: [-0.7, 1.35, 0.4], speed: 1.9, dir: 1, n: 2 },
-  ];
-
-  function makeElectrons(accent) {
-    var group = new THREE.Group();
-    var ptMat = new THREE.PointsMaterial({
-      color: accent.clone(),
-      size: 0.16,
-      sizeAttenuation: true,
-      transparent: true,
-      opacity: 0.85,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    var orbitMat = new THREE.LineBasicMaterial({
-      color: accent.clone(),
-      transparent: true,
-      opacity: 0.22,
-    });
-    var rings = [];
-
-    for (var d = 0; d < RING_DEFS.length; d++) {
-      var def = RING_DEFS[d];
-      var ring = new THREE.Group();
-      ring.rotation.set(def.tilt[0], def.tilt[1], def.tilt[2]);
-
-      // faint orbit trace
-      var seg = 64;
-      var orbit = new Float32Array(seg * 3);
-      for (var s = 0; s < seg; s++) {
-        var ang = (s / seg) * Math.PI * 2;
-        orbit[s * 3] = Math.cos(ang) * def.r;
-        orbit[s * 3 + 1] = Math.sin(ang) * def.r;
-        orbit[s * 3 + 2] = 0;
-      }
-      var orbitGeo = new THREE.BufferGeometry();
-      orbitGeo.setAttribute("position", new THREE.BufferAttribute(orbit, 3));
-      ring.add(new THREE.LineLoop(orbitGeo, orbitMat));
-
-      // electrons spaced evenly around the ring
-      var ep = new Float32Array(def.n * 3);
-      for (var k = 0; k < def.n; k++) {
-        var ea = (k / def.n) * Math.PI * 2;
-        ep[k * 3] = Math.cos(ea) * def.r;
-        ep[k * 3 + 1] = Math.sin(ea) * def.r;
-        ep[k * 3 + 2] = 0;
-      }
-      var eGeo = new THREE.BufferGeometry();
-      eGeo.setAttribute("position", new THREE.BufferAttribute(ep, 3));
-      ring.add(new THREE.Points(eGeo, ptMat));
-
-      group.add(ring);
-      rings.push({ group: ring, speed: def.speed, dir: def.dir });
-    }
-
-    return { group: group, rings: rings, ptMat: ptMat, orbitMat: orbitMat };
-  }
-
   function readAccents() {
     return {
       base: cssColor("--sk-accent-secondary", "#7c93ff"),
-      particle: cssColor("--sk-accent-primary", "#b07cff"),
-      edge: cssColor("--sk-accent-tertiary", "#7cffd6"),
+      light: cssColor("--sk-accent-primary", "#b07cff"),
+      // Edges are brightened toward white for strong contrast against the faces.
+      edge: cssColor("--sk-accent-tertiary", "#7cffd6").lerp(new THREE.Color(0xffffff), 0.35),
     };
   }
 
-  // Re-pull theme accents into an existing orb. The per-frame loop derives the
-  // mesh color/emissive from baseColor, so updating baseColor is enough there.
+  // Re-pull theme accents into an existing orb (theme picker swaps live).
   function applyTheme(v) {
     var a = readAccents();
     v.baseColor.copy(a.base);
     v.edgeMat.color.copy(a.edge);
-    v.ptMat.color.copy(a.particle);
-    v.orbitMat.color.copy(a.particle);
-    v.keyLight.color.copy(a.particle);
+    v.keyLight.color.copy(a.light);
     v.rimLight.color.copy(a.edge);
   }
 
   function buildView(el) {
     var acc = readAccents();
-    var accent = acc.base;
-    var accent2 = acc.particle;
-    var accent3 = acc.edge;
 
     var scene = new THREE.Scene();
     var camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
     camera.position.set(0, 0, BASE_Z * PAD);
 
-    // Faceted 3D polygon
-    var geo = new THREE.IcosahedronGeometry(1, 0);
+    var geo = new THREE.BoxGeometry(CUBE, CUBE, CUBE);
     var mat = new THREE.MeshStandardMaterial({
-      color: accent.clone(),
-      emissive: accent.clone(),
-      emissiveIntensity: 0.45,
+      color: acc.base.clone(),
+      emissive: acc.base.clone(),
+      emissiveIntensity: 0.3,
       metalness: 0.35,
-      roughness: 0.35,
+      roughness: 0.5,
       flatShading: true,
       transparent: true,
-      opacity: 0.92,
+      opacity: 0.95,
     });
     var mesh = new THREE.Mesh(geo, mat);
     scene.add(mesh);
 
-    // Edge wireframe over the facets
     var edgeMat = new THREE.LineBasicMaterial({
-      color: accent3.clone(),
+      color: acc.edge.clone(),
       transparent: true,
-      opacity: 0.6,
+      opacity: 1,
     });
     var edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat);
     mesh.add(edges);
 
-    var electrons = makeElectrons(accent2);
-    scene.add(electrons.group);
-
-    scene.add(new THREE.AmbientLight(0xffffff, 0.35));
-    var key = new THREE.PointLight(accent2.clone(), 2.2, 12);
-    key.position.set(2.5, 2.5, 3);
-    scene.add(key);
-    var rim = new THREE.PointLight(accent3.clone(), 1.4, 12);
+    // Dimmer ambient so the (darker) faces contrast harder with the bright edges.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.28));
+    var keyLight = new THREE.PointLight(acc.light.clone(), 2.0, 12);
+    keyLight.position.set(2.5, 2.5, 3);
+    scene.add(keyLight);
+    var rim = new THREE.PointLight(acc.edge.clone(), 1.2, 12);
     rim.position.set(-3, -1.5, 1.5);
     scene.add(rim);
 
-    var view = {
+    // Clickable dashboard orbs steer on click (via document delegation); just
+    // give them the pointer cursor. Nothing is draggable.
+    if (el.dataset.zenNoDrag === "1" && el.hasAttribute("data-mc-agent-tile")) {
+      el.style.cursor = "pointer";
+    }
+
+    // Per-agent tumble seed (stable across re-renders → deterministic pose).
+    var seedStr = el.getAttribute("data-zen-agent") || el.getAttribute("data-agent-name") || el.id || "orb";
+    var rng = mulberry32(hashStr(seedStr));
+
+    return {
       el: el,
+      seed: seedStr,
       scene: scene,
       camera: camera,
       mesh: mesh,
       edges: edges,
       mat: mat,
       edgeMat: edgeMat,
-      particles: electrons.group,
-      rings: electrons.rings,
-      ptMat: electrons.ptMat,
-      orbitMat: electrons.orbitMat,
-      keyLight: key,
+      keyLight: keyLight,
       rimLight: rim,
-      baseColor: accent.clone(),
-      gray: new THREE.Color(0x5a6072),
-      lerp: el.classList.contains("zen-orb--active") ? 1 : 0,
-      dragging: false,
-      velY: 0,
-      velX: 0,
+      baseColor: acc.base.clone(),
+      gray: new THREE.Color(0x4a4f60),
+      spin: { x: makeAxis(rng), y: makeAxis(rng), z: makeAxis(rng) },
+      // Resume the in-flight transition value across DOM re-renders so a rebuilt
+      // cube eases smoothly instead of snapping. First-ever view starts flat (0).
+      lerp: seedStr in lerpState ? lerpState[seedStr] : 0,
     };
-    attachDrag(el, view);
-    return view;
-  }
-
-  // Click-drag to rotate; a quick flick on release spins it with decaying momentum.
-  function attachDrag(el, v) {
-    var SENS = 0.01; // radians of rotation per pixel dragged
-    var lastX = 0;
-    var lastY = 0;
-    el.style.cursor = "grab";
-    el.style.touchAction = "none";
-
-    el.addEventListener("pointerdown", function (e) {
-      v.dragging = true;
-      v.velY = 0;
-      v.velX = 0;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      el.style.cursor = "grabbing";
-      try { el.setPointerCapture(e.pointerId); } catch (_) {}
-      e.preventDefault();
-    });
-
-    el.addEventListener("pointermove", function (e) {
-      if (!v.dragging) return;
-      var dx = e.clientX - lastX;
-      var dy = e.clientY - lastY;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      v.mesh.rotation.y += dx * SENS;
-      v.mesh.rotation.x += dy * SENS;
-      v.velY = dx * SENS; // last delta carries over as spin momentum
-      v.velX = dy * SENS;
-      e.preventDefault();
-    });
-
-    function end(e) {
-      if (!v.dragging) return;
-      v.dragging = false;
-      el.style.cursor = "grab";
-      try { el.releasePointerCapture(e.pointerId); } catch (_) {}
-    }
-    el.addEventListener("pointerup", end);
-    el.addEventListener("pointercancel", end);
   }
 
   function disposeView(v) {
@@ -252,11 +193,6 @@
     v.mat.dispose();
     v.edges.geometry.dispose();
     v.edgeMat.dispose();
-    v.particles.traverse(function (o) {
-      if (o.geometry) o.geometry.dispose();
-    });
-    v.ptMat.dispose();
-    v.orbitMat.dispose();
   }
 
   function scan() {
@@ -279,10 +215,12 @@
     renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setClearColor(0x000000, 0);
-    // We clear once per frame and only clear depth per orb, so padded orb regions
-    // can overlap and blend additively instead of wiping each other.
+    // Clear once per frame; only clear depth per orb so padded regions can overlap.
     renderer.autoClear = false;
     clock = new THREE.Clock();
+    scratchEuler = new THREE.Euler();
+    scratchQuat = new THREE.Quaternion();
+    identQuat = new THREE.Quaternion();
   }
 
   function loop() {
@@ -294,8 +232,8 @@
     renderer.setSize(w, h, false);
 
     var dt = Math.min(clock.getDelta(), 0.05);
+    var t = clock.elapsedTime;
 
-    // One full clear, then each orb only clears its own depth (see initRenderer).
     renderer.setScissorTest(false);
     renderer.clear(true, true, false);
     renderer.setScissorTest(true);
@@ -310,49 +248,36 @@
 
       var rect = v.el.getBoundingClientRect();
       if (rect.width < 1 || rect.bottom < 0 || rect.top > h || rect.right < 0 || rect.left > w) {
-        continue; // offscreen, skip draw
+        continue; // offscreen
       }
 
-      // ease toward active/inactive target
+      // Ease toward active/inactive target, persisting the value by seed so the
+      // next rebuilt view resumes it (see lerpState) instead of cutting.
       var target = v.el.classList.contains("zen-orb--active") ? 1 : 0;
       v.lerp += (target - v.lerp) * Math.min(dt * 4, 1);
+      // Snap once inside a deadzone: the ease is asymptotic, so without this
+      // `a` lingers as a tiny sliver and slerping it against the always-advancing
+      // tumble pose gives a settled cube perpetual sub-pixel jitter.
+      if (Math.abs(v.lerp - target) < 0.002) v.lerp = target;
+      lerpState[v.seed] = v.lerp;
       var a = v.lerp;
 
-      // Rotation: drag drives it directly; otherwise momentum + a gentle idle spin.
-      if (!v.dragging) {
-        var idle = (0.25 + 0.85 * a) * dt;
-        v.mesh.rotation.y += v.velY + idle;
-        v.mesh.rotation.x += v.velX;
-        v.velY *= 0.94;
-        v.velX *= 0.94;
-        if (Math.abs(v.velY) < 1e-4) v.velY = 0;
-        if (Math.abs(v.velX) < 1e-4) v.velX = 0;
-      }
-      // Keep the vertical tumble sane so it never locks upside down.
-      var maxX = Math.PI / 2;
-      if (v.mesh.rotation.x > maxX) v.mesh.rotation.x = maxX;
-      if (v.mesh.rotation.x < -maxX) v.mesh.rotation.x = -maxX;
+      // Tumble pose is a pure function of the shared clock + per-agent seed, so a
+      // re-render never jumps. Slerp from the identity (flat square facing the
+      // camera, inactive) toward the tumbling pose by `a`, which keeps the
+      // active↔inactive transition smooth despite large tumble angles.
+      scratchEuler.set(axisAngle(v.spin.x, t), axisAngle(v.spin.y, t), axisAngle(v.spin.z, t));
+      scratchQuat.setFromEuler(scratchEuler);
+      v.mesh.quaternion.slerpQuaternions(identQuat, scratchQuat, a);
 
-      // Gentle overall tumble, plus each ring orbiting on its own plane.
-      v.particles.rotation.y -= dt * (0.05 + 0.12 * a);
-      v.particles.rotation.x += dt * 0.03;
-      for (var r = 0; r < v.rings.length; r++) {
-        var ring = v.rings[r];
-        ring.group.rotation.z += dt * ring.speed * ring.dir * (0.4 + 0.9 * a);
-      }
-
-      var pulse = 1 + 0.06 * a * Math.sin(clock.elapsedTime * 2.5);
-      v.mesh.scale.setScalar(pulse);
-
+      // Colour/emissive fade in/out with the active transition; edges stay bright
+      // + opaque for contrast. The cube stays put (no bob).
       v.mat.color.copy(v.gray).lerp(v.baseColor, 0.25 + 0.75 * a);
       v.mat.emissive.copy(v.baseColor);
-      v.mat.emissiveIntensity = 0.12 + 0.7 * a;
-      v.edgeMat.opacity = 0.2 + 0.55 * a;
-      v.ptMat.opacity = 0.35 + 0.55 * a;
-      v.ptMat.size = 0.1 + 0.06 * a;
-      v.orbitMat.opacity = 0.07 + 0.2 * a;
+      v.mat.emissiveIntensity = 0.06 + 0.32 * a;
+      v.edgeMat.opacity = 0.85 + 0.15 * a;
 
-      // Padded square region centered on the orb so particles aren't clipped.
+      // Padded square region centred on the orb.
       var size = Math.max(rect.width, rect.height) * PAD;
       var cx = rect.left + rect.width / 2;
       var cy = rect.top + rect.height / 2;
@@ -360,7 +285,7 @@
       var bottom = h - (cy + size / 2);
       renderer.setViewport(left, bottom, size, size);
       renderer.setScissor(left, bottom, size, size);
-      renderer.clearDepth(); // depth-only, confined to this orb's scissor box
+      renderer.clearDepth();
       renderer.render(v.scene, v.camera);
     }
   }

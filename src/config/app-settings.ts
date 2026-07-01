@@ -2,7 +2,6 @@ import type { Database } from "bun:sqlite";
 
 export const SETTING_PARALLEL_TASKS = "parallel_task_execution";
 export const SETTING_LOG_RETENTION_HOURS = "log_retention_hours";
-export const SETTING_ZEN_MODE = "zen_mode_view";
 
 export const SETTING_SKIPPER_CONNECT_ENABLED = "skipper_connect_enabled";
 export const SETTING_SKIPPER_CONNECT_GUID = "skipper_connect_global_id_guid";

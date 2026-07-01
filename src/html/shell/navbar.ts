@@ -1,6 +1,5 @@
 // escapeHtml import kept for the commented-out daemon strip; re-enable when restoring.
 // import { escapeHtml } from "../atoms/escape-html";
-import { escalationCountFragment } from "../fragments/escalation-count.fragment";
 import { themePickerFragment } from "../styles/themes";
 import { isExperimental } from "../../config/feature-flags";
 
@@ -10,7 +9,6 @@ export interface NavbarData {
   daemonUptime: number;
   escalationCount: number;
   showChatToggle?: boolean;
-  zenModeEnabled?: boolean;
   skipperConnectEnabled?: boolean;
 }
 
@@ -22,7 +20,6 @@ export function navbar(data: NavbarData): string {
   const navItems = [
     { href: "/", label: "Dashboard", match: "/" },
     { href: "/tasks", label: "Tasks", match: "/tasks" },
-    { href: "/escalations", label: "Escalations", match: "/escalations" },
     { href: "/config", label: "Config", match: "/config" },
     ...(isExperimental() ? [{ href: "/global-store", label: "Store", match: "/global-store" }] : []),
     { href: "/logs", label: "Logs", match: "/logs" },
@@ -48,14 +45,9 @@ export function navbar(data: NavbarData): string {
       <a href="/" class="sk-navbar__brand" style="display:flex;align-items:center;"><img src="/icon2.png" alt="Skipper" style="height:24px;vertical-align:middle;margin-right:0.5rem;"><h2 style="display:inline;margin:0;text-transform:lowercase">Skipper</h2></a>
     </div>
     <div class="sk-navbar__right">
-      ${escalationCountFragment(data.escalationCount)}
       <a href="/games/asteroids" class="sk-navbar__game-btn" title="Asteroids">🎲</a>
       <span class="sk-navbar__monkey-toggle mc-mobile-hide" id="monkey-toggle" title="Toggle Greg"
         onclick="const on=this.dataset.enabled!=='false';this.dataset.enabled=on?'false':'true';this.style.opacity=on?'0.5':'1';window.dispatchEvent(new CustomEvent('monkey-toggle',{detail:{enabled:!on}}));localStorage.setItem('monkey-enabled',!on)">🐒</span>
-      ${data.zenModeEnabled !== undefined ? `<span class="sk-navbar__monkey-toggle mc-mobile-hide" id="zen-mode-toggle" title="Zen Mode"
-        style="opacity:${data.zenModeEnabled ? "1" : "0.5"}"
-        hx-post="/api/settings/zen-mode" hx-vals='${JSON.stringify({ enabled: data.zenModeEnabled ? "false" : "true" })}'
-        hx-swap="none" hx-on::after-request="window.location.reload()">🪷</span>` : ""}
       ${data.skipperConnectEnabled !== undefined ? `<span class="sk-connect mc-mobile-hide" title="Skipper Connect" style="opacity:${data.skipperConnectEnabled ? "1" : "0.5"}"><span class="sk-connect__status" data-status="disabled" hx-get="/api/settings/skipper-connect/status" hx-trigger="load, every 5s" hx-swap="outerHTML"></span><span class="sk-connect__icon" id="skipper-connect-toggle" role="button"
         hx-post="/api/settings/skipper-connect" hx-vals='${JSON.stringify({ enabled: data.skipperConnectEnabled ? "false" : "true" })}'
         hx-swap="none" hx-on::after-request="window.location.reload()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg></span></span>` : ""}

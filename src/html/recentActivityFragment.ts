@@ -1,6 +1,6 @@
 import { RecentLogEntry, parseJsonLine, escapeHtml } from "./components";
 import { formatTimestamp } from "./formatTimestamp";
-import { terminalJsonSummary } from "./terminalJsonSummary";
+import { terminalJsonSummary, stripThinking } from "./terminalJsonSummary";
 
 // --- Dashboard: Recent Activity ---
 
@@ -64,15 +64,19 @@ export function recentActivityFragment(logs: RecentLogEntry[]): string {
             const kindLabel = kind === "tool" ? "tool" : kind === "message" ? "message" : "event";
             const parsed = parseJsonLine(entry.data.trim());
             const summary = parsed ? terminalJsonSummary(parsed) : "";
-            const display = summary ||
+            const rawDisplay = summary ||
                 (entry.data.length > 140
                     ? entry.data.slice(0, 140) + "..."
                     : entry.data);
+            // Messages view drops reasoning/thinking noise.
+            const display = kind === "message" ? stripThinking(rawDisplay) : rawDisplay;
+            if (kind === "message" && !display) return "";
             return `<div class="cmd-feed-item cmd-feed-item-${kind}">
       <span class="cmd-feed-agent"><span class="cmd-feed-kind cmd-feed-kind-${kind}">${kindLabel}</span><a href="/agents/${escapeHtml(entry.agent_id)}" hx-get="/agents/${escapeHtml(entry.agent_id)}" hx-target="body" hx-push-url="true">${escapeHtml(entry.agent_name)}</a></span>
       <span class="cmd-feed-data">${escapeHtml(display)}</span>
       <span class="cmd-feed-time">${formatTimestamp(entry.created_at)}</span>
     </div>`;
         })
+        .filter(Boolean)
         .join("");
 }

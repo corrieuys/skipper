@@ -147,50 +147,15 @@ describe("fragment polling routes", () => {
     expect(html).toContain("Investigate issue");
   });
 
-  it("GET /fragments/agents/list returns agent names and model", async () => {
-    const res = await fetch(`${baseUrl}/fragments/agents/list`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain('id="agent-list"');
-    expect(html).toContain("Lead Agent");
-    expect(html).toContain("Model");
-  });
+  // The v1 agent/team fragment routes (/fragments/agents/list,
+  // /fragments/agents/:id/summary, /fragments/teams/list,
+  // /fragments/teams/:id/members) were removed — config now edits agents/teams
+  // inline. Their tests were removed with them.
 
-  it("GET /fragments/agents/:id/summary returns instance count", async () => {
-    const db = getDb();
-    db.prepare(
-      `INSERT INTO agent_instances (id, task_id, template_agent_id, status)
-       VALUES (?, ?, ?, ?)`,
-    ).run("inst-1", "task-1", "agent-2", "running");
-
-    const res = await fetch(`${baseUrl}/fragments/agents/agent-2/summary`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain('id="agent-summary-fragment"');
-    expect(html).toContain("1 running");
-  });
-
-  it("GET /fragments/teams/list returns entrypoint and phase count", async () => {
-    const res = await fetch(`${baseUrl}/fragments/teams/list`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain('id="team-list"');
-    expect(html).toContain("Platform Team");
-    expect(html).toContain(">2<");
-  });
-
-  it("GET /teams/new redirects to /config (v1 page removed)", async () => {
+  it("GET /teams/new redirects to the config team-create page (v1 page removed)", async () => {
     const res = await fetch(`${baseUrl}/teams/new`, { redirect: "manual" });
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/config");
-  });
-
-  it("GET /fragments/teams/:id/members returns member rows", async () => {
-    const res = await fetch(`${baseUrl}/fragments/teams/team-1/members`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain('id="team-members-fragment"');
-    expect(html).toContain("analysis, research");
+    expect(res.headers.get("location")).toBe("/config/teams/new");
   });
 
   it("fragment routes return content without polling attributes", async () => {
@@ -263,21 +228,5 @@ describe("fragment polling routes", () => {
     expect(html).toContain('onclick="openTaskArtifactModal(); return false;"');
     expect(html).toContain('hx-target="#task-artifact-modal-body"');
     expect(html).not.toContain('hx-target="#artifact-detail"');
-  });
-
-  it("GET /escalations renders escalation card with agent_id, task_id, and status badge", async () => {
-    const db = getDb();
-    db.prepare(
-      `INSERT INTO escalations (id, agent_id, task_id, type, question, response, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run("esc-1", "agent-1", "task-1", "approval", "Should I proceed?", null, "open", "2026-01-01T00:00:00Z");
-
-    const res = await fetch(`${baseUrl}/escalations`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("sk-badge--danger\">open");
-    expect(html).toContain("agent-1".slice(0, 8));
-    expect(html).toContain("task-1".slice(0, 8));
-    expect(html).toContain("Should I proceed?");
   });
 });

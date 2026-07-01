@@ -411,11 +411,11 @@ export function baseStyles(): string {
       background: linear-gradient(135deg, var(--primary) 0%, var(--primary-container) 100%);
       color: var(--on-primary);
       border: none;
-      padding: 0.42rem 0.82rem;
-      border-radius: var(--sk-radius-sm);
+      padding: var(--sk-btn-pad-y) var(--sk-btn-pad-x);
+      border-radius: var(--sk-btn-radius);
       cursor: pointer;
       font-family: "Inter", sans-serif;
-      font-size: 0.8rem;
+      font-size: var(--sk-btn-font);
       font-weight: 600;
       line-height: 1.1;
       letter-spacing: 0.02em;
@@ -424,7 +424,7 @@ export function baseStyles(): string {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-height: 2rem;
+      min-height: var(--sk-btn-height);
       white-space: nowrap;
     }
     button:hover, .btn:hover, .btn-link:hover {
@@ -432,7 +432,7 @@ export function baseStyles(): string {
       color: var(--on-primary);
     }
     button:active, .btn:active { opacity: 0.85; }
-    .btn-sm { padding: 0.3rem 0.68rem; font-size: 0.75rem; min-height: 1.75rem; }
+    .btn-sm { padding: var(--sk-btn-pad-y-sm) var(--sk-btn-pad-x-sm); font-size: var(--sk-btn-font-sm); min-height: var(--sk-btn-height-sm); }
     .toggle-btn { padding: 0.25rem 0.65rem; font-size: 0.72rem; min-height: 1.5rem; border-radius: 1rem; cursor: pointer; transition: background 0.15s, color 0.15s; }
     .toggle-on { background: var(--running, #22c55e) !important; color: #fff !important; }
     .toggle-off { background: var(--surface-bright) !important; color: var(--muted) !important; border: 1px solid rgba(173,170,170,0.2); }
@@ -492,15 +492,7 @@ export function baseStyles(): string {
     .sk-md pre code { background: none; padding: 0; }
     .sk-md blockquote { border-left: 3px solid var(--secondary); margin: 0.4rem 0; padding: 0.2rem 0.6rem; color: var(--muted); }
     .esc-q { position: relative; }
-    .esc-q__cb { position: absolute; opacity: 0; pointer-events: none; }
-    .esc-q__body { max-height: 7.5em; overflow: hidden; position: relative; }
-    .esc-q__body::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1.6em; background: linear-gradient(to bottom, transparent, var(--surface-mid, var(--sk-surface-1, rgba(0,0,0,0.4)))); pointer-events: none; }
-    .esc-q__cb:checked ~ .esc-q__body { max-height: none; overflow: visible; }
-    .esc-q__cb:checked ~ .esc-q__body::after { display: none; }
-    .esc-q__toggle { display: inline-block; margin-top: 0.35rem; cursor: pointer; color: var(--muted); font-size: 0.75rem; user-select: none; }
-    .esc-q__toggle:hover { color: var(--sk-text, var(--text, inherit)); }
-    .esc-q__toggle::before { content: "Show more ▾"; }
-    .esc-q__cb:checked ~ .esc-q__toggle::before { content: "Show less ▴"; }
+    .esc-q__body { max-height: 22em; overflow-y: auto; position: relative; }
     .note-item {
       padding: 0.7rem 0.9rem;
       background: var(--surface-mid);
@@ -630,7 +622,7 @@ export function baseStyles(): string {
     .task-row-description { margin-top: 0.2rem; line-height: 1.45; }
     .table-actions { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
     .action-dropdown { position: relative; display: inline-block; }
-    .action-dropdown-toggle { cursor: pointer; padding: 0.3rem 0.68rem; font-size: 0.75rem; min-height: 1.75rem; background: var(--surface-bright); color: var(--on-surface-variant); border: 1px solid rgba(173,170,170,0.32); border-radius: var(--sk-radius-sm); white-space: nowrap; box-shadow:none; }
+    .action-dropdown-toggle { display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: var(--sk-btn-pad-y-sm) var(--sk-btn-pad-x-sm); font-size: var(--sk-btn-font-sm); min-height: var(--sk-btn-height-sm); background: var(--surface-bright); color: var(--on-surface-variant); border: 1px solid rgba(173,170,170,0.32); border-radius: var(--sk-btn-radius); white-space: nowrap; box-shadow:none; }
     .action-dropdown-toggle:hover { background: rgba(173,170,170,0.14); border-color: rgba(173,170,170,0.5); color: var(--on-surface); box-shadow:none; }
     .action-dropdown-toggle::after { content: " \u25BE"; font-size: 0.6rem; }
     .action-dropdown-menu { display: none; position: absolute; right: 0; top: 100%; margin-top: 2px; min-width: 130px; background: var(--surface-bright); border: 1px solid var(--outline-variant); border-radius: var(--sk-radius-sm); box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6); z-index: 100; overflow: hidden; backdrop-filter: blur(12px); }

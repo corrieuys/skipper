@@ -24,8 +24,6 @@ import { dashboardSteerPanelSlotFragment } from "../html/dashboardSteerPanelFrag
 import { dashboardActiveTaskFragment } from "../html/dashboardActiveTaskFragment";
 import { recentActivityFragment } from "../html/recentActivityFragment";
 import { chatPartFragment, chatUserBubble, chatAssistantMessage } from "../html/chatPartFragment";
-import { escalationCountFragment } from "../html/fragments/escalation-count.fragment";
-import { sidebarEscalationFooter } from "../html/pages/command-center.page";
 import { renderSidebarListBody } from "../html/pages/command-center.page";
 import { buildCommandCenterViewModel } from "../html/view-models/command-center.vm";
 import type {
@@ -46,6 +44,7 @@ import type {
 import { notesPanel } from "../html/panels/notes.panel";
 import { escalationCardPanel, type EscalationCardData } from "../html/panels/escalation-card.panel";
 import { dashboardSteerListFragment, steerCardInfoMarkup, type SteeringOption } from "../html/dashboardLatestSteerFragment";
+import { buildTeamAgentTiles } from "../data/queries";
 import { dashboardNotesFragment } from "../html/dashboardNotesFragment";
 import type { TaskNoteData } from "../html/components";
 import { renderPhaseStripFragment, parseTerminalActivity, parseRealtimeActivity } from "../html/pages/command-center.page";
@@ -441,14 +440,12 @@ export class UIWebSocketManager {
     // --- Escalation ---
     eventBus.on("escalation:created", (event) => {
       this.pushDashboardEscalations();
-      this.pushEscalationCount();
-      this.pushSidebarEscalationFooter();
+      this.pushCommandCenterSidebar();
       if (event.taskId) this.pushV2TaskEscalations(event.taskId);
     });
     eventBus.on("escalation:resolved", (event) => {
       this.pushDashboardEscalations();
-      this.pushEscalationCount();
-      this.pushSidebarEscalationFooter();
+      this.pushCommandCenterSidebar();
       // Resolve may have respawned the parent agent (sendResumeMessage / spawnAgentInstance
       // fallbacks in EscalationManager.injectResponse) — refresh running instances so the
       // dashboard count reflects the latest state and the user isn't misled into a second resolve.
@@ -544,33 +541,6 @@ export class UIWebSocketManager {
     ).all() as NonNullable<DashboardData["openEscalations"]>;
     this.broadcast(`<div id="dashboard-escalations">${dashboardEscalationsFragment(escalations)}</div>`, ["dashboard"]);
     this.broadcastJson("updated", "dashboard:escalations", null, { escalations });
-  }
-
-  /**
-   * Push the navbar escalation count badge to every connected client so the badge
-   * clears immediately on resolve regardless of which route or page issued the resolve.
-   * The fragment id matches `escalation-count.fragment.ts:FRAGMENT_ID` and we inject
-   * `hx-swap-oob="outerHTML"` so htmx replaces the existing span on every page.
-   */
-  private pushEscalationCount(): void {
-    const row = this.db.prepare(
-      "SELECT COUNT(*) as c FROM escalations WHERE status = 'open'",
-    ).get() as { c: number };
-    const html = escalationCountFragment(row.c).replace(
-      'id="sk-nav-escalation-count"',
-      'id="sk-nav-escalation-count" hx-swap-oob="outerHTML"',
-    );
-    this.broadcastRaw(html, []);
-  }
-
-  private pushSidebarEscalationFooter(): void {
-    const row = this.db.prepare(
-      "SELECT COUNT(*) as c FROM escalations WHERE status = 'open'",
-    ).get() as { c: number };
-    this.broadcast(
-      `<div id="mc-sidebar-escalations" hx-swap-oob="outerHTML">${sidebarEscalationFooter(row.c)}</div>`,
-      ["dashboard"],
-    );
   }
 
   private pushDashboardInstances(): void {
@@ -989,7 +959,8 @@ export class UIWebSocketManager {
     if (currentIds === previousIds && steerable.length > 0) {
       this.broadcastRaw(steerable.map(o => oob(steerCardInfoMarkup(o))).join("\n"), topics);
     } else {
-      this.broadcast(`<div id="mc-steer-${esc(taskId)}">${dashboardSteerListFragment(options)}</div>`, topics);
+      const tiles = buildTeamAgentTiles(this.db, taskId);
+      this.broadcast(`<div id="mc-steer-${esc(taskId)}">${dashboardSteerListFragment(tiles, taskId)}</div>`, topics);
     }
   }
 

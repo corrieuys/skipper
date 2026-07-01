@@ -132,15 +132,15 @@ export function missionControlStyles(): string {
       white-space: nowrap;
     }
 
-    .mc-sidebar__escalations {
-      padding: 8px 12px;
-      border-top: 1px solid var(--sk-border);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: var(--sk-text-xs);
+    /* Attention dot on a task item: an open escalation or a pending phase review
+       is waiting on the operator. Yellow so it reads as "needs input", distinct
+       from the status dot on the left. */
+    .mc-sidebar__item-attention {
+      width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+      background: var(--sk-accent-warning);
+      box-shadow: 0 0 5px var(--sk-accent-warning);
+      animation: mc-pulse 2s ease-in-out infinite;
     }
-    .mc-sidebar__escalations a { color: var(--sk-accent-danger); font-weight: 600; }
 
     #mc-task-escalations:empty {
       display: none;
@@ -187,8 +187,9 @@ export function missionControlStyles(): string {
     .mc-task-header {
       display: flex;
       align-items: center;
-      gap: var(--sk-space-4);
-      padding: var(--sk-space-4) var(--sk-space-6);
+      gap: var(--sk-space-6);
+      padding: var(--sk-space-3) var(--sk-space-6);
+      min-height: 78px;
       background: var(--sk-surface-1);
       border-bottom: 1px solid var(--sk-border);
     }
@@ -201,22 +202,34 @@ export function missionControlStyles(): string {
     .mc-task-header__actions {
       display: flex;
       gap: var(--sk-space-2);
+      /* Pushed to the far right; title + phases + orbs stay grouped on the left. */
+      margin-left: auto;
     }
     .mc-task-header--with-phases .mc-task-header__title {
-      flex: 0 0 auto;
+      flex: 0 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      /* Extra breathing room between the title and the phase indicator. */
+      margin-right: var(--sk-space-3);
     }
+    /* Phase indicator sizes to its content (same in running and completed
+       states) so the layout is consistent and the orbs can dock next to it. */
     .mc-task-header__phases {
-      flex: 1;
+      flex: 0 0 auto;
       min-width: 0;
       display: flex;
       align-items: center;
       overflow: hidden;
+      /* Extra breathing room between the phase indicator and the cubes. */
+      margin-right: var(--sk-space-3);
     }
     .mc-task-header__phases .mc-phase-stepper {
       padding: 0;
       background: transparent;
       border-bottom: none;
-      flex: 1;
+      flex: 0 0 auto;
     }
     .mc-task-header__phases .mc-phase-step__dot {
       width: 18px;
@@ -227,6 +240,35 @@ export function missionControlStyles(): string {
     .mc-task-header__phases .mc-phase-step__connector {
       min-width: 18px;
     }
+    /* Agent orbs dock directly against the phase indicator (natural gap from the
+       header's flex gap), not centered in the bar. */
+    .mc-task-header__orbs {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+    }
+    /* overflow:visible so the active orb's glow halo isn't clipped (overflow-x
+       on a flex row forces overflow-y clipping too). nowrap keeps the bar height
+       stable; a large team just extends horizontally within the centered slot. */
+    .mc-task-header__orbs .mc-agent-orbs { gap: var(--sk-space-2); padding: 0; min-height: 0; flex-wrap: nowrap; overflow: visible; }
+    .mc-task-header__orbs .mc-agent-orb-wrapper { width: 64px; gap: 2px; }
+    .mc-task-header__orbs .zen-orb { width: 28px; height: 28px; }
+    /* Agent name under the orb. Small; kept compact so the orb stays clear of
+       the navbar and running/idle bar heights match. */
+    .mc-task-header__orbs .zen-view__orb-label {
+      display: block; width: 64px; max-width: 64px; font-size: 9px; line-height: 1.15;
+      text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* Count badge on the orb's top-right corner (orb is centered in the 64px
+       wrapper, so anchor to the wrapper centre rather than its edge). */
+    .mc-task-header__orbs .mc-agent-orb__count {
+      box-sizing: border-box;
+      top: -3px; left: calc(50% + 2px); right: auto;
+      min-width: 1.2rem; height: 1.2rem; padding: 0 0.18rem;
+      font-size: 0.78rem; font-weight: 800; line-height: 1;
+    }
+    /* No glow halo on taskbar orbs (removed per design). */
+    .mc-task-header__orbs .zen-orb.zen-orb--active { box-shadow: none; }
 
     /* ── Tabbed content below the graph ── */
     .mc-tabs {
@@ -235,7 +277,7 @@ export function missionControlStyles(): string {
       background: var(--sk-surface-1);
       backdrop-filter: blur(16px) saturate(1.3);
       padding: var(--sk-space-2) var(--sk-space-3);
-      margin-top: var(--sk-space-4);
+      margin-top: 0; /* flush against the task bar */
       margin-bottom: 0;
     }
     .mc-tab {
@@ -247,7 +289,7 @@ export function missionControlStyles(): string {
       cursor: pointer;
       background: transparent;
       border: 1px solid transparent;
-      border-radius: var(--sk-radius-md);
+      border-radius: var(--sk-btn-radius);
     }
     .mc-tab:hover {
       color: var(--sk-text-muted);
@@ -259,6 +301,31 @@ export function missionControlStyles(): string {
       border-color: rgba(0, 251, 251, 0.35);
       background: rgba(0, 251, 251, 0.06);
     }
+    /* Count badge on the User Input tab when a review/escalation is pending. */
+    .mc-tab--attention { color: var(--sk-accent-warning); }
+    .mc-tab__badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 15px;
+      height: 15px;
+      margin-left: 6px;
+      padding: 0 4px;
+      font-size: 0.6rem;
+      font-weight: 700;
+      line-height: 1;
+      color: var(--sk-surface-0);
+      background: var(--sk-accent-warning);
+      border-radius: 999px;
+      vertical-align: middle;
+      box-shadow: 0 0 6px color-mix(in srgb, var(--sk-accent-warning) 55%, transparent);
+      animation: mc-pulse 1.5s ease-in-out infinite;
+    }
+    .mc-tab__badge[hidden] { display: none; }
+    /* Hide the "nothing needs input" hint once a review/recovery gate
+       ([data-mc-pending]) or an escalation card (id^="escalation-") lands. */
+    #mc-tab-input:has([data-mc-pending]) .mc-userinput__empty,
+    #mc-tab-input:has([id^="escalation-"]) .mc-userinput__empty { display: none; }
     .mc-tab-panel { display: none; flex: 1; overflow-y: auto; padding: var(--sk-space-3); }
     .mc-tab-panel--active { display: flex; flex-direction: column; }
 
@@ -527,7 +594,7 @@ export function missionControlStyles(): string {
       padding: 4px 10px;
       background: var(--sk-surface-2);
       border: 1px solid var(--sk-border);
-      border-radius: var(--sk-radius-sm);
+      border-radius: var(--sk-btn-radius);
       color: var(--sk-text-subtle);
       font-size: 10px;
       text-transform: uppercase;
@@ -675,6 +742,68 @@ export function missionControlStyles(): string {
       background: rgba(0, 0, 0, 0.35);
     }
     .mc-steer-card__btn { flex: 0 0 auto; }
+    .mc-steer-card__task {
+      flex: 0 0 auto;
+      max-width: 40%;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 0.72rem;
+      color: var(--sk-text-subtle);
+    }
+
+    /* --- Agent orbs (zen 3D gems on the dashboard; click → instance modal) --- */
+    /* Reuses .zen-orb / .zen-view__orb-wrapper / .zen-view__orb-label so the
+       zen-orbs-3d.js scanner upgrades these to 3D. Compact sizing for the panel. */
+    .mc-agent-orbs {
+      gap: var(--sk-space-4);
+      padding: var(--sk-space-2) 0;
+      min-height: 0;
+    }
+    .mc-agent-orb-wrapper { width: 92px; position: relative; }
+    .mc-agent-orb-wrapper .zen-orb { width: 64px; height: 64px; }
+    .mc-agent-orb-wrapper .zen-view__orb-label { width: 92px; font-size: 12px; }
+    .mc-agent-orb--clickable { cursor: pointer; }
+    /* Count badge — on the wrapper (not the orb, which is overflow:hidden in the
+       CSS fallback) and above the z-index:5 WebGL orb canvas. */
+    .mc-agent-orb__count {
+      position: absolute;
+      top: 2px;
+      right: 12px;
+      z-index: 7;
+      min-width: 1.05rem;
+      height: 1.05rem;
+      padding: 0 0.28rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.62rem;
+      font-weight: 700;
+      line-height: 1;
+      color: var(--sk-surface-0);
+      background: var(--sk-accent-primary);
+      border-radius: 999px;
+      box-shadow: 0 0 6px color-mix(in srgb, var(--sk-accent-primary) 45%, transparent);
+    }
+
+    /* --- Agent instance modal --- */
+    .mc-agent-modal__content {
+      width: min(560px, 94vw);
+      max-height: 82vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .mc-agent-modal__content .sk-modal__body { padding: 0.75rem; overflow: hidden; display: flex; }
+    .mc-agent-instances {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sk-space-2);
+      overflow-y: auto;
+      max-height: 68vh;
+      width: 100%;
+      padding-right: 0.25rem;
+    }
     .mc-activity__text {
       color: var(--sk-text-muted);
       overflow: hidden;
@@ -1025,13 +1154,19 @@ export function missionControlStyles(): string {
 
     /* ── Chat toggle button in navbar ── */
     .mc-chat-toggle {
-      padding: 4px 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: var(--sk-btn-height-sm);
+      padding: var(--sk-btn-pad-y-sm) var(--sk-btn-pad-x-sm);
       background: var(--sk-surface-2);
       border: 1px solid var(--sk-border);
-      border-radius: var(--sk-radius-sm);
+      border-radius: var(--sk-btn-radius);
       color: var(--sk-text-muted);
-      font-size: var(--sk-text-xs);
+      font-size: var(--sk-btn-font-sm);
       font-weight: 600;
+      line-height: 1.1;
+      white-space: nowrap;
       cursor: pointer;
     }
     .mc-chat-toggle:hover {

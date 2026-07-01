@@ -48,14 +48,18 @@ export function componentStyles(): string {
     .sk-btn {
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 0.4em;
-      padding: 0.4rem 0.75rem;
+      min-height: var(--sk-btn-height);
+      padding: var(--sk-btn-pad-y) var(--sk-btn-pad-x);
       border: 1px solid var(--sk-border-subtle);
-      border-radius: var(--sk-radius-md);
+      border-radius: var(--sk-btn-radius);
       background: var(--sk-surface-3);
       color: var(--sk-text-muted);
       cursor: pointer;
-      font-size: var(--sk-text-sm);
+      font-size: var(--sk-btn-font);
+      line-height: 1.1;
+      white-space: nowrap;
       transition: background 0.15s, color 0.15s, border-color 0.15s;
     }
     .sk-btn:hover { background: var(--sk-surface-4); color: var(--sk-text); border-color: var(--sk-border-active); }
@@ -63,8 +67,8 @@ export function componentStyles(): string {
     .sk-btn--primary:hover { background: var(--sk-accent-primary-container); }
     .sk-btn--danger { border-color: var(--sk-accent-danger); color: var(--sk-accent-danger); }
     .sk-btn--danger:hover { background: rgba(255, 107, 107, 0.1); }
-    .sk-btn--sm { padding: 0.25rem 0.5rem; font-size: var(--sk-text-xs); }
-    .sk-btn--link { background: none; border: none; color: var(--sk-accent-primary); padding: 0; }
+    .sk-btn--sm { min-height: var(--sk-btn-height-sm); padding: var(--sk-btn-pad-y-sm) var(--sk-btn-pad-x-sm); font-size: var(--sk-btn-font-sm); }
+    .sk-btn--link { min-height: 0; background: none; border: none; color: var(--sk-accent-primary); padding: 0; }
     .sk-btn--link:hover { color: var(--sk-text); background: none; border: none; }
 
     /* ── Forms ── */

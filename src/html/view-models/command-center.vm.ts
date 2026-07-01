@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { isTeamVisible, isExperimental } from "../../config/feature-flags";
 import {
-  getBoolSetting, SETTING_PARALLEL_TASKS, SETTING_ZEN_MODE,
+  getBoolSetting, SETTING_PARALLEL_TASKS,
   SETTING_SKIPPER_CONNECT_ENABLED, getStringSetting, SETTING_SKIPPER_CONNECT_GUID,
 } from "../../config/app-settings";
 import type { ActiveMissionData } from "../panels/active-mission.panel";
@@ -24,6 +24,8 @@ export interface TaskSummary {
   result_summary: string | null;
   needs_review: number;
   source_scheduled_task_id: string | null;
+  /** True when the task has an open escalation or a pending phase review — drives the sidebar attention dot. */
+  has_attention: boolean;
   tokens: {
     input: number;
     output: number;
@@ -63,7 +65,6 @@ export interface CommandCenterViewModel {
   daemonState: string;
   daemonUptime: number;
   parallelExecution: boolean;
-  zenModeEnabled: boolean;
   skipperConnectEnabled: boolean;
   realtimeSessionActive: Map<string, boolean>;
 }
@@ -200,7 +201,12 @@ export function buildCommandCenterViewModel(
     .filter((t) => !rtTeam || t.id !== rtTeam.id)
     .filter((t) => isTeamVisible(t.id));
 
-  // Escalation count
+  // Escalation count + per-task open-escalation set (drives the sidebar
+  // attention dot alongside pending phase reviews).
+  const openEscalationTaskIds = new Set(
+    (db.prepare("SELECT DISTINCT task_id FROM escalations WHERE status = 'open'").all() as Array<{ task_id: string }>)
+      .map((r) => r.task_id),
+  );
   const escalationCount = (db.prepare("SELECT COUNT(*) as count FROM escalations WHERE status = 'open'").get() as { count: number }).count;
 
   // Daemon
@@ -251,6 +257,7 @@ export function buildCommandCenterViewModel(
       result_summary: resultSummary,
       needs_review: t.needs_review ?? 0,
       source_scheduled_task_id: t.source_scheduled_task_id ?? null,
+      has_attention: t.needs_review === 1 || openEscalationTaskIds.has(t.id),
       tokens: tokensByTask.get(t.id) ?? { input: 0, output: 0, cache_creation: 0, cache_read: 0 },
     };
   });
@@ -304,7 +311,6 @@ export function buildCommandCenterViewModel(
     daemonState,
     daemonUptime: process.uptime(),
     parallelExecution: getBoolSetting(db, SETTING_PARALLEL_TASKS, true),
-    zenModeEnabled: isExperimental() && getBoolSetting(db, SETTING_ZEN_MODE, false),
     skipperConnectEnabled: !!getStringSetting(db, SETTING_SKIPPER_CONNECT_GUID, "") && getBoolSetting(db, SETTING_SKIPPER_CONNECT_ENABLED, false),
     realtimeSessionActive,
   };
