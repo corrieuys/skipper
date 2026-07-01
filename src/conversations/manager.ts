@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { eventBus } from "../events/bus";
 import type { MessagePart } from "../events/bus";
 import type { AgentManager, PermissionMode } from "../agents/manager";
+import { getChatModelOverride } from "../config/model-settings";
 import { logError } from "../logging";
 
 const PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set([
@@ -301,12 +302,23 @@ export class ConversationManager {
         .get(conv.template_agent_id) as { model: string } | null;
       model = row?.model ?? undefined;
     }
+    // The machine-scoped chat override (config page) wins for the displayed model.
+    model = this.chatSpawnOverride().modelOverride ?? model;
     eventBus.emit("conversation:busy_changed", { conversationId, busy, model });
   }
 
   /** Public: snapshot the current busy state for a conversation (used by initial render). */
   isBusy(conversationId: string): boolean {
     return this.busy.get(conversationId) === true;
+  }
+
+  /**
+   * Machine-scoped provider/model override for the chat agent (config page).
+   * Empty fields fall through to the chat-skipper agent row at spawn time.
+   */
+  private chatSpawnOverride(): { agentTypeOverride?: string; modelOverride?: string } {
+    const o = getChatModelOverride(this.db);
+    return { agentTypeOverride: o.agent_type, modelOverride: o.model };
   }
 
   /**
@@ -431,6 +443,7 @@ export class ConversationManager {
         sessionId: resumeSession,
         taskId: null,
         permissionMode: conv.permission_mode,
+        ...this.chatSpawnOverride(),
       });
       this.agentManager.sendInput(newRuntimeId, content, true);
       this.activeAgents.set(conversationId, newRuntimeId);
@@ -447,6 +460,7 @@ export class ConversationManager {
         sessionId: conv.session_id,
         taskId: null,
         permissionMode: conv.permission_mode,
+        ...this.chatSpawnOverride(),
       });
       this.agentManager.sendInput(runtimeId, content, true);
       this.activeAgents.set(conversationId, runtimeId);
@@ -463,6 +477,7 @@ export class ConversationManager {
         workingDir: process.cwd(),
         taskId: null,
         permissionMode: conv.permission_mode,
+        ...this.chatSpawnOverride(),
       });
       const initialPrompt = conv.system_prompt
         ? `${conv.system_prompt}\n\n${content}`

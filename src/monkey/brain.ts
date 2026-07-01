@@ -3,8 +3,22 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentSpawnPath } from "../paths";
 
-const HAIKU_MODEL = "claude-haiku-4-5";
 const MAX_RESPONSE_TIMEOUT = 20_000;
+
+// Greg's provider + model. Defaults to the plain `claude` CLI on Haiku — fast and
+// cheap, which the 20s timeout + no-thinking spawn below assume. The operator can
+// override these from the config page (machine-scoped app_settings); tick.ts
+// resolves the choice and calls setGregModelConfig() so changes take effect live.
+// NOTE: the arg scaffold in callClaude() is claude-CLI-shaped, so non-claude
+// providers are best-effort and may not honor the flags or timeout.
+let gregCommand = "claude";
+let gregModel = "claude-haiku-4-5";
+let gregModelFlag: string | null = "--model";
+export function setGregModelConfig(cfg: { command: string; model: string; modelFlag: string | null }): void {
+  gregCommand = cfg.command || "claude";
+  gregModel = cfg.model || "claude-haiku-4-5";
+  gregModelFlag = cfg.modelFlag ?? null;
+}
 
 // Greg is a tool-less persona bot. Run the CLI fully isolated from the user's
 // environment: no MCP servers (some are failed/needs-auth and stall startup for
@@ -169,7 +183,7 @@ export function getConversationLength(): number {
 async function callClaude(prompt: string, requestType: "tick" | "reply"): Promise<string | null> {
   const args = [
     "-p",
-    "--model", HAIKU_MODEL,
+    ...(gregModelFlag ? [gregModelFlag, gregModel] : []),
     "--output-format", "stream-json",
     "--verbose",
     "--max-turns", "1",
@@ -185,7 +199,7 @@ async function callClaude(prompt: string, requestType: "tick" | "reply"): Promis
   }
 
   try {
-    const proc = Bun.spawn(["claude", ...args], {
+    const proc = Bun.spawn([gregCommand, ...args], {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",

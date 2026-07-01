@@ -8,6 +8,8 @@ import type { AgentExitEvent } from "../events/bus";
 import { logError } from "../logging";
 import { buildMcpSpawnOverrides, injectDaemonMcpServer, cleanupMcpTempFiles } from "./mcp-spawn-helper";
 import { signalBridge } from "../mcp/signal-bridge";
+import { getStringSetting } from "../config/app-settings";
+import { SETTING_SKIPPER_AGENT_TYPE, SETTING_SKIPPER_MODEL } from "../config/model-settings";
 
 const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB
 
@@ -142,6 +144,16 @@ export interface SpawnAgentOptions {
    * commands (codex, etc.) — they have their own approval mechanisms.
    */
   permissionMode?: PermissionMode;
+  /**
+   * Machine-scoped provider (agent type) / model override applied at spawn
+   * instead of the agent row's committed `type` / `model`. Used to honor the
+   * config-page settings for the chat agent without editing the committed
+   * `agents` table. The root Skipper resolves its own override centrally in
+   * spawnRuntimeAgent (see SETTING_SKIPPER_*), so callers there need not thread
+   * these through. An unset field falls back to the agent row.
+   */
+  agentTypeOverride?: string;
+  modelOverride?: string;
 }
 
 export interface SpawnAgentInstanceOptions extends SpawnAgentOptions {
@@ -482,9 +494,27 @@ export class AgentManager {
       throw new Error(`Agent not found: ${templateAgentId}`);
     }
 
-    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    // Resolve provider (agent type) + model, layering machine-scoped overrides
+    // over the agent row's committed values. Explicit options win (chat passes
+    // them); otherwise the root Skipper (a template runtime) reads its own
+    // app_settings override so every skipper spawn path — initial, resume,
+    // recovery, idle-poke, realtime — honors the config-page choice.
+    let overrideType = options.agentTypeOverride;
+    let overrideModel = options.modelOverride;
+    if (isTemplateRuntime) {
+      if (overrideType === undefined) {
+        overrideType = getStringSetting(this.db, SETTING_SKIPPER_AGENT_TYPE, "") || undefined;
+      }
+      if (overrideModel === undefined) {
+        overrideModel = getStringSetting(this.db, SETTING_SKIPPER_MODEL, "") || undefined;
+      }
+    }
+    const resolvedType = overrideType || agent.type;
+    const resolvedModel = overrideModel || agent.model;
+
+    const typeDef = getAgentTypeDefinition(resolvedType, this.db);
     if (!typeDef) {
-      throw new Error(`Unknown agent type: ${agent.type}`);
+      throw new Error(`Unknown agent type: ${resolvedType}`);
     }
 
     const usesInlinePrompt = agentTypeUsesInlinePrompt(typeDef, options.sessionId);
@@ -523,8 +553,8 @@ export class AgentManager {
         }
       }
     }
-    if (agent.model !== "default" && typeDef.model_flag) {
-      args.push(typeDef.model_flag, agent.model);
+    if (resolvedModel !== "default" && typeDef.model_flag) {
+      args.push(typeDef.model_flag, resolvedModel);
     }
 
     // Claude Code --permission-mode override (chat conversation picker).

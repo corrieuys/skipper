@@ -1,0 +1,143 @@
+import type { Database } from "bun:sqlite";
+import { getStringSetting, setStringSetting } from "./app-settings";
+import { listAgentTypes } from "./store";
+import { getSkipperConfig } from "../agents/skipper";
+
+/**
+ * Machine-scoped provider + model overrides for the three first-class agents the
+ * operator cares about: the root Skipper orchestrator, the Skipper chat agent,
+ * and the Greg heckler bot.
+ *
+ * These live in `app_settings` (the on-disk `skipper-runtime.db`), NOT in the
+ * SHARED config tables (`skipper_config` / `agents`) which are seeded from — and
+ * re-seeded on restart from — the committed `config/*.json`. Storing them here
+ * keeps the choice per-machine and out of version control.
+ *
+ * Semantics: an empty override means "use the shipped default source" (Skipper's
+ * `skipper_config`, chat's `chat-skipper` agent row, Greg's built-in Haiku). A
+ * set override wins at spawn time. "Provider" is the app's agent-type concept.
+ */
+
+export const SETTING_SKIPPER_AGENT_TYPE = "skipper_agent_type";
+export const SETTING_SKIPPER_MODEL = "skipper_model";
+export const SETTING_CHAT_AGENT_TYPE = "chat_agent_type";
+export const SETTING_CHAT_MODEL = "chat_model";
+export const SETTING_GREG_AGENT_TYPE = "greg_agent_type";
+export const SETTING_GREG_MODEL = "greg_model";
+
+export interface ModelChoice {
+  agent_type: string;
+  model: string;
+}
+
+/** Greg's shipped default: the plain `claude` CLI on Haiku (see monkey/brain.ts). */
+export const GREG_DEFAULT: ModelChoice = { agent_type: "claude-code", model: "claude-haiku-4-5" };
+
+export interface AgentTypeOption {
+  name: string;
+  model_flag: string | null;
+  /** "default" is always offered first so the operator can defer to the CLI's own default. */
+  models: string[];
+}
+
+/** Agent types + their selectable models, for the config-page dropdowns. */
+export function listModelOptions(): AgentTypeOption[] {
+  return listAgentTypes().map((t) => ({
+    name: t.name,
+    model_flag: t.model_flag,
+    models: ["default", ...t.available_models.filter((m) => m !== "default")],
+  }));
+}
+
+/** Look up the chat agent row (same query conversations/manager.ts uses). */
+function chatAgentDefault(db: Database): ModelChoice {
+  const row = db
+    .prepare(
+      "SELECT type, model FROM agents WHERE name LIKE '%chat%skipper%' OR name LIKE '%skipper%chat%' ORDER BY created_at ASC LIMIT 1",
+    )
+    .get() as { type: string; model: string } | null;
+  return { agent_type: row?.type ?? "claude-code", model: row?.model ?? "default" };
+}
+
+function skipperDefault(db: Database): ModelChoice {
+  const cfg = getSkipperConfig(db);
+  return { agent_type: cfg.agent_type, model: cfg.model };
+}
+
+/**
+ * A stored override, or undefined when unset. Kept separate from the effective
+ * value so spawn code can tell "operator picked this" from "fall back to the
+ * committed default".
+ */
+export function getSkipperModelOverride(db: Database): Partial<ModelChoice> {
+  const agent_type = getStringSetting(db, SETTING_SKIPPER_AGENT_TYPE, "");
+  const model = getStringSetting(db, SETTING_SKIPPER_MODEL, "");
+  return { agent_type: agent_type || undefined, model: model || undefined };
+}
+
+export function getChatModelOverride(db: Database): Partial<ModelChoice> {
+  const agent_type = getStringSetting(db, SETTING_CHAT_AGENT_TYPE, "");
+  const model = getStringSetting(db, SETTING_CHAT_MODEL, "");
+  return { agent_type: agent_type || undefined, model: model || undefined };
+}
+
+/** Greg always resolves to a concrete choice (override wins, else the built-in). */
+export function getGregModelChoice(db: Database): ModelChoice {
+  return {
+    agent_type: getStringSetting(db, SETTING_GREG_AGENT_TYPE, "") || GREG_DEFAULT.agent_type,
+    model: getStringSetting(db, SETTING_GREG_MODEL, "") || GREG_DEFAULT.model,
+  };
+}
+
+/** Effective (override-or-default) choices for all three, for the config UI. */
+export function getModelSettingsView(db: Database): {
+  skipper: ModelChoice;
+  chat: ModelChoice;
+  greg: ModelChoice;
+  options: AgentTypeOption[];
+} {
+  const skOverride = getSkipperModelOverride(db);
+  const skDefault = skipperDefault(db);
+  const chOverride = getChatModelOverride(db);
+  const chDefault = chatAgentDefault(db);
+  return {
+    skipper: {
+      agent_type: skOverride.agent_type ?? skDefault.agent_type,
+      model: skOverride.model ?? skDefault.model,
+    },
+    chat: {
+      agent_type: chOverride.agent_type ?? chDefault.agent_type,
+      model: chOverride.model ?? chDefault.model,
+    },
+    greg: getGregModelChoice(db),
+    options: listModelOptions(),
+  };
+}
+
+const VALID_KEYS = {
+  skipper: [SETTING_SKIPPER_AGENT_TYPE, SETTING_SKIPPER_MODEL],
+  chat: [SETTING_CHAT_AGENT_TYPE, SETTING_CHAT_MODEL],
+  greg: [SETTING_GREG_AGENT_TYPE, SETTING_GREG_MODEL],
+} as const;
+
+/**
+ * Persist one subsystem's provider + model. Validates the type exists and the
+ * model belongs to it (or is "default"). Returns an error string on rejection.
+ */
+export function saveModelSetting(
+  db: Database,
+  target: "skipper" | "chat" | "greg",
+  agentType: string,
+  model: string,
+): string | null {
+  const options = listModelOptions();
+  const opt = options.find((o) => o.name === agentType);
+  if (!opt) return `Unknown provider: ${agentType}`;
+  if (model !== "default" && !opt.models.includes(model)) {
+    return `Model "${model}" is not available for provider "${agentType}"`;
+  }
+  const [typeKey, modelKey] = VALID_KEYS[target];
+  setStringSetting(db, typeKey, agentType);
+  setStringSetting(db, modelKey, model);
+  return null;
+}

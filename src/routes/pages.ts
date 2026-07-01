@@ -1346,6 +1346,7 @@ function registerV2PageRoutes(): void {
     const { listLocalTeams } = require("../teams/local-teams");
     const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
     const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
+    const { getModelSettingsView } = require("../config/model-settings");
     return html(configPage({
       teams: listLocalTeams(db),
       notificationPreferences: listPreferences(db),
@@ -1356,7 +1357,30 @@ function registerV2PageRoutes(): void {
       skipperConnectGuid: getStringSetting(db, SETTING_SKIPPER_CONNECT_GUID, ""),
       skipperConnectHasKey: !!getSetting(db, SETTING_SKIPPER_CONNECT_KEY),
       skipperConnectUrl: getStringSetting(db, SETTING_SKIPPER_CONNECT_URL, "wss://connect.letskipper.work"),
+      modelSettings: getModelSettingsView(db),
     }));
+  });
+
+  // Persist a subsystem's provider + model (machine-scoped app_settings).
+  addRoute("POST", "/api/config/model-settings", async (req) => {
+    const { saveModelSetting } = require("../config/model-settings");
+    const contentType = req.headers.get("content-type") ?? "";
+    let target = "", agentType = "", model = "";
+    if (contentType.includes("application/x-www-form-urlencoded")) {
+      const fd = await req.formData();
+      target = String(fd.get("target") ?? "");
+      agentType = String(fd.get("agent_type") ?? "");
+      model = String(fd.get("model") ?? "");
+    } else {
+      const body = await req.json() as { target?: string; agent_type?: string; model?: string };
+      target = body.target ?? ""; agentType = body.agent_type ?? ""; model = body.model ?? "";
+    }
+    if (target !== "skipper" && target !== "chat" && target !== "greg") {
+      return new Response("target must be skipper|chat|greg", { status: 400 });
+    }
+    const err = saveModelSetting(db, target, agentType, model);
+    if (err) return new Response(err, { status: 400 });
+    return new Response(null, { status: 204 });
   });
 
   // Log retention setting + purge

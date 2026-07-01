@@ -2,8 +2,10 @@ import type { Database } from "bun:sqlite";
 import type { Server, ServerWebSocket } from "bun";
 import type { WSData } from "../ws/types";
 import type { MonkeyState, Perch, MonkeyAction, UserEvent, TaskDetail, DOMSection, DashboardContext, ScheduledTaskInfo, RecentTaskInfo, NewNote } from "./types";
-import { askMonkeyBrain, replyViaBrain, getLastUsage, resetConversation, getPersona } from "./brain";
+import { askMonkeyBrain, replyViaBrain, getLastUsage, resetConversation, getPersona, setGregModelConfig } from "./brain";
 import { terminalJsonSummary } from "../html/terminalJsonSummary";
+import { getGregModelChoice } from "../config/model-settings";
+import { getAgentTypeDefinition } from "../agents/types";
 
 const TICK_ACTIVE_MS = 10_000;
 const TICK_IDLE_MS = 30_000;
@@ -154,7 +156,23 @@ export class MonkeyEngine {
     return `USER TYPING in "${f.field}": ${val}`;
   }
 
+  /**
+   * Push Greg's machine-scoped provider/model choice (config page) into the
+   * brain before each call, so edits take effect on the next tick without a
+   * restart. Resolves the CLI command + model flag from the agent type.
+   */
+  private syncGregModelConfig(): void {
+    const choice = getGregModelChoice(this.db);
+    const typeDef = getAgentTypeDefinition(choice.agent_type, this.db);
+    setGregModelConfig({
+      command: typeDef?.command || "claude",
+      model: choice.model,
+      modelFlag: typeDef?.model_flag ?? null,
+    });
+  }
+
   private async handleUserReply(reply: string, grugSaid: string): Promise<void> {
+    this.syncGregModelConfig();
     const reaction = await replyViaBrain(reply, grugSaid, this.lastTaskDetail, this.lastPerches);
     this.recordUsage();
     // Reflect whatever greg actually chose (a reply can be a slide/jump, not
@@ -187,6 +205,7 @@ export class MonkeyEngine {
       this.isIdle = fp === this.lastContextFingerprint && !hasNewNotes;
       this.lastContextFingerprint = fp;
 
+      this.syncGregModelConfig();
       const action = await askMonkeyBrain(
         this.state,
         this.lastPerches,

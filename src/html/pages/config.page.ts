@@ -4,6 +4,7 @@ import { escapeHtml } from "../atoms/escape-html";
 import { NOTIFICATION_EVENTS } from "../../notifications/types";
 import type { NotificationPreference } from "../../notifications/store";
 import type { LocalTeam } from "../../teams/local-teams";
+import type { ModelChoice, AgentTypeOption } from "../../config/model-settings";
 
 export interface ConfigPageViewModel {
   teams: LocalTeam[];
@@ -15,6 +16,88 @@ export interface ConfigPageViewModel {
   skipperConnectGuid: string;
   skipperConnectHasKey: boolean;
   skipperConnectUrl: string;
+  modelSettings: {
+    skipper: ModelChoice;
+    chat: ModelChoice;
+    greg: ModelChoice;
+    options: AgentTypeOption[];
+  };
+}
+
+/** One provider (agent type) + model row for a subsystem. Model list is filtered
+ *  client-side when the provider changes (see the script in modelSettingsPanel). */
+function modelSettingRow(
+  target: "skipper" | "chat" | "greg",
+  label: string,
+  hint: string,
+  current: ModelChoice,
+  options: AgentTypeOption[],
+): string {
+  const typeOpts = options
+    .map((o) => `<option value="${escapeHtml(o.name)}"${o.name === current.agent_type ? " selected" : ""}>${escapeHtml(o.name)}</option>`)
+    .join("");
+  const activeType = options.find((o) => o.name === current.agent_type) ?? options[0];
+  const modelList = activeType ? activeType.models : ["default"];
+  const modelOpts = modelList
+    .map((m) => `<option value="${escapeHtml(m)}"${m === current.model ? " selected" : ""}>${escapeHtml(m)}</option>`)
+    .join("");
+  // If the stored model isn't in the current provider's list (e.g. a legacy
+  // value), surface it so it isn't silently dropped on next save.
+  const orphan = !modelList.includes(current.model)
+    ? `<option value="${escapeHtml(current.model)}" selected>${escapeHtml(current.model)} (custom)</option>`
+    : "";
+  return `<form class="sk-model-row" data-model-target="${target}"
+      hx-post="/api/config/model-settings" hx-swap="none"
+      hx-on::after-request="if(event.detail.successful){var b=this.querySelector('button');b.textContent='Saved';setTimeout(function(){b.textContent='Save';},1200);}"
+      style="display:flex;align-items:center;gap:var(--sk-space-3);padding:var(--sk-space-2) 0;flex-wrap:wrap;">
+    <input type="hidden" name="target" value="${target}">
+    <div style="min-width:150px;">
+      <div class="sk-text-sm" style="color:var(--sk-text);">${escapeHtml(label)}</div>
+      <div class="sk-text-xs sk-muted">${escapeHtml(hint)}</div>
+    </div>
+    <label class="sk-text-xs sk-muted" for="model-type-${target}">Provider</label>
+    <select id="model-type-${target}" name="agent_type" class="sk-input sk-input--sm" data-model-type style="min-width:150px;">${typeOpts}</select>
+    <label class="sk-text-xs sk-muted" for="model-model-${target}">Model</label>
+    <select id="model-model-${target}" name="model" class="sk-input sk-input--sm" data-model-model style="min-width:180px;">${orphan}${modelOpts}</select>
+    <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Save</button>
+  </form>`;
+}
+
+function modelSettingsPanel(ms: ConfigPageViewModel["modelSettings"]): string {
+  // Options map drives the client-side provider → model filtering. Kept as data
+  // so a provider change repopulates the model dropdown without a round trip.
+  const optionsJson = JSON.stringify(
+    ms.options.reduce<Record<string, string[]>>((acc, o) => { acc[o.name] = o.models; return acc; }, {}),
+  );
+  return `<div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
+    <div class="sk-panel__header">
+      <span class="sk-panel__title">Agent Models</span>
+    </div>
+    <div class="sk-panel__body">
+      <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
+        Provider + model for each core agent. Stored on this machine only (not committed). Greg is tuned for the <code>claude</code> CLI; other providers are best-effort.
+      </p>
+      ${modelSettingRow("skipper", "Skipper", "Root task orchestrator", ms.skipper, ms.options)}
+      ${modelSettingRow("chat", "Skipper Chat", "Conversational chat agent", ms.chat, ms.options)}
+      ${modelSettingRow("greg", "Greg", "Heckler bot", ms.greg, ms.options)}
+    </div>
+    <script>
+      (function(){
+        var OPTS = ${optionsJson};
+        document.querySelectorAll('.sk-model-row').forEach(function(row){
+          var typeSel = row.querySelector('[data-model-type]');
+          var modelSel = row.querySelector('[data-model-model]');
+          if(!typeSel || !modelSel) return;
+          typeSel.addEventListener('change', function(){
+            var models = OPTS[typeSel.value] || ['default'];
+            modelSel.innerHTML = models.map(function(m){
+              return '<option value="'+m+'">'+m+'</option>';
+            }).join('');
+          });
+        });
+      })();
+    </script>
+  </div>`;
 }
 
 function teamsPanel(teams: LocalTeam[]): string {
@@ -124,6 +207,8 @@ export function configPage(vm: ConfigPageViewModel): string {
       </div>
 
       ${teamsPanel(vm.teams)}
+
+      ${modelSettingsPanel(vm.modelSettings)}
 
       <!-- Sound Notifications Section -->
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
