@@ -39,6 +39,24 @@
   var booting = false;
   var loopRunning = false;
 
+  // Set when an orb was added/removed from the DOM; the loop rescans on its next
+  // frame (not a timer) so a state-change DOM swap rebuilds cubes the same frame
+  // the old ones are disposed, leaving no visible gap.
+  var needScan = false;
+
+  // getBoundingClientRect forces layout, and the activity feed dirties layout
+  // constantly, so reading a rect every frame per cube reflows the whole page on
+  // the hot path. Instead we cache each cube's rect and only re-measure when the
+  // page could actually have moved them: scroll, resize, or a DOM mutation.
+  var rectsDirty = true;
+
+  // The canvas is sized/positioned to the bounding box of the currently-visible
+  // cubes, not the full screen. A full-screen transparent WebGL layer forces the
+  // browser to composite the entire viewport every frame; a tight region is a
+  // fraction of that. Recomputed only when rects are re-measured.
+  var regLeft = 0, regTop = 0, regW = 0, regH = 0;
+  var regionShown = false;
+
   // Reused scratch objects (set once THREE has loaded) to avoid per-frame allocs.
   var scratchEuler = null;
   var scratchQuat = null;
@@ -209,9 +227,13 @@
   function initRenderer() {
     canvas = document.createElement("canvas");
     canvas.id = "zen-orbs-3d-canvas";
+    // Starts collapsed; the loop sizes/positions it to the visible cubes' bbox.
     canvas.style.cssText =
-      "position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:5;";
+      "position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;z-index:5;";
     document.body.appendChild(canvas);
+    // Antialias on + retina DPR for crisp cube edges. Affordable because the
+    // canvas is sized to the small bbox of the visible cubes (see remeasure),
+    // not the full screen.
     renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setClearColor(0x000000, 0);
@@ -223,19 +245,63 @@
     identQuat = new THREE.Quaternion();
   }
 
+  // Re-measure every cube's rect and fit the canvas to the union of the visible
+  // ones' padded draw regions. Called only when rectsDirty (scroll/resize/DOM).
+  function remeasure() {
+    var w = window.innerWidth, h = window.innerHeight;
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
+    for (var i = 0; i < views.length; i++) {
+      var v = views[i];
+      if (!document.contains(v.el)) { v.rect = null; continue; }
+      var r = v.el.getBoundingClientRect();
+      v.rect = r;
+      if (r.width < 1 || r.bottom < 0 || r.top > h || r.right < 0 || r.left > w) continue;
+      var size = Math.max(r.width, r.height) * PAD;
+      var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      if (cx - size / 2 < minX) minX = cx - size / 2;
+      if (cy - size / 2 < minY) minY = cy - size / 2;
+      if (cx + size / 2 > maxX) maxX = cx + size / 2;
+      if (cy + size / 2 > maxY) maxY = cy + size / 2;
+      any = true;
+    }
+    regionShown = any;
+    if (any) {
+      regLeft = Math.floor(minX); regTop = Math.floor(minY);
+      regW = Math.ceil(maxX) - regLeft; regH = Math.ceil(maxY) - regTop;
+      canvas.style.left = regLeft + "px";
+      canvas.style.top = regTop + "px";
+      canvas.style.width = regW + "px";
+      canvas.style.height = regH + "px";
+      renderer.setSize(regW, regH, false);
+    } else {
+      canvas.style.width = "0px";
+      canvas.style.height = "0px";
+    }
+    rectsDirty = false;
+  }
+
   function loop() {
     if (!loopRunning) return;
 
     var w = window.innerWidth;
     var h = window.innerHeight;
-    renderer.setSize(w, h, false);
 
     var dt = Math.min(clock.getDelta(), 0.05);
     var t = clock.elapsedTime;
 
-    renderer.setScissorTest(false);
-    renderer.clear(true, true, false);
-    renderer.setScissorTest(true);
+    // Rebuild views for any newly-inserted orbs before drawing this frame, so a
+    // DOM swap never leaves a frame with the old cube gone and the new one absent.
+    if (needScan) { scan(); needScan = false; }
+
+    // Re-measure rects + refit the canvas region only when something could have
+    // moved the cubes. The spinning hot path never touches layout.
+    if (rectsDirty) remeasure();
+
+    if (regionShown) {
+      renderer.setScissorTest(false);
+      renderer.clear(true, true, false);
+      renderer.setScissorTest(true);
+    }
 
     // Track whether anything still needs animating.
     var busy = false;
@@ -261,9 +327,10 @@
       lerpState[v.seed] = v.lerp;
       if (target === 1 || v.lerp > 0.0001) busy = true;
 
-      var rect = v.el.getBoundingClientRect();
-      if (rect.width < 1 || rect.bottom < 0 || rect.top > h || rect.right < 0 || rect.left > w) {
-        continue; // offscreen — lerp already advanced above, skip only the draw
+      // Cached rect (measured in remeasure()); null or offscreen → no draw.
+      var rect = v.rect;
+      if (!rect || rect.width < 1 || rect.bottom < 0 || rect.top > h || rect.right < 0 || rect.left > w) {
+        continue; // lerp already advanced above, skip only the draw
       }
 
       var a = v.lerp;
@@ -283,12 +350,13 @@
       v.mat.emissiveIntensity = 0.06 + 0.32 * a;
       v.edgeMat.opacity = 0.85 + 0.15 * a;
 
-      // Padded square region centred on the orb.
+      // Padded square region centred on the orb, expressed in canvas-local
+      // coordinates (the canvas is offset to regLeft/regTop, GL y-axis is up).
       var size = Math.max(rect.width, rect.height) * PAD;
       var cx = rect.left + rect.width / 2;
       var cy = rect.top + rect.height / 2;
-      var left = cx - size / 2;
-      var bottom = h - (cy + size / 2);
+      var left = (cx - size / 2) - regLeft;
+      var bottom = regH - ((cy - regTop) + size / 2);
       renderer.setViewport(left, bottom, size, size);
       renderer.setScissor(left, bottom, size, size);
       renderer.clearDepth();
@@ -329,23 +397,37 @@
       });
   }
 
-  // Full-document rescan (querySelectorAll) is coalesced: the activity feed and
-  // WS pushes can fire dozens of mutations per second, and scanning on every one
-  // burned CPU for nothing. Wake the render loop instantly (so a freshly-active
-  // orb animates now) but defer the scan to the trailing edge.
-  var scanTimer = null;
-  function scheduleScan() {
-    if (scanTimer !== null) return;
-    scanTimer = setTimeout(function () {
-      scanTimer = null;
-      start();
-    }, 250);
+  // True if a mutation record added or removed an actual orb node. The activity
+  // feed and terminal output fire dozens of mutations/sec that never touch orbs;
+  // ignoring those keeps the render loop asleep during output bursts.
+  function nodesHaveOrb(nodes) {
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (n.nodeType !== 1) continue;
+      if (n.classList && n.classList.contains("zen-orb")) return true;
+      if (n.querySelector && n.querySelector(".zen-orb")) return true;
+    }
+    return false;
+  }
+  function touchesOrbs(records) {
+    for (var i = 0; i < records.length; i++) {
+      if (nodesHaveOrb(records[i].addedNodes) || nodesHaveOrb(records[i].removedNodes)) return true;
+    }
+    return false;
   }
 
-  // Orbs are injected via HTMX after page load and re-polled, so watch the DOM.
-  var observer = new MutationObserver(function () {
-    ensureLoop();
-    scheduleScan();
+  // Orbs are injected via HTMX after page load and re-swapped on state changes.
+  // Only orb-touching mutations matter: flag a rescan + re-measure and wake the
+  // loop, which rebuilds the new cubes on its next frame (no visible gap).
+  var observer = new MutationObserver(function (records) {
+    if (!touchesOrbs(records)) return;
+    rectsDirty = true;
+    if (booted) {
+      needScan = true;
+      ensureLoop();
+    } else {
+      start();
+    }
   });
 
   // Theme picker swaps <html data-theme> live (no reload), so recolor on change.
@@ -355,16 +437,20 @@
   });
 
   // The orb canvas is fixed full-screen; when the loop is idle and the page
-  // scrolls or resizes, the painted cubes would drift off their DOM slots. Wake
-  // the loop so it repaints them in place (it idles again next frame).
-  function wake() { ensureLoop(); }
-
+  // scrolls or resizes, the painted cubes would drift off their DOM slots. Flag
+  // the rects stale and wake the loop so it repaints them in place (then idles).
+  function wake() {
+    rectsDirty = true;
+    ensureLoop();
+  }
   function init() {
     observer.observe(document.body, { childList: true, subtree: true });
     themeObserver.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ["data-theme"],
     });
+    // remeasure() (triggered by rectsDirty) refits the canvas + draw buffer, so
+    // scroll and resize share the same wake path.
     window.addEventListener("scroll", wake, { passive: true, capture: true });
     window.addEventListener("resize", wake);
     start();
