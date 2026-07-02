@@ -2,7 +2,6 @@ import type { Database } from "bun:sqlite";
 import type { ServerWebSocket, Server } from "bun";
 import type { WSData, UiPushWSData } from "./types";
 import { eventBus } from "../events/bus";
-import type { EventName } from "../events/bus";
 import {
   taskDetailSummaryFragment,
   taskPhaseStepperFragment,
@@ -218,27 +217,6 @@ export class UIWebSocketManager {
     }
   }
 
-  /**
-   * Broadcast multiple HTML fragments as a single WebSocket message.
-   * Each fragment should already have hx-swap-oob attributes.
-   */
-  private broadcastBatch(fragments: Array<{ html: string; topics: string[] }>): void {
-    // Group fragments by topic overlap for efficient sending
-    for (const ws of this.clients) {
-      const data = ws.data as UiPushWSData;
-      if (data.format === "json") continue;
-
-      const matching = fragments.filter(f =>
-        f.topics.length === 0 || topicMatches(data.subscriptions, f.topics)
-      );
-      if (matching.length === 0) continue;
-
-      // Concatenate all matching fragments into one message
-      const combined = matching.map(f => oob(f.html)).join("\n");
-      try { ws.send(combined); } catch { this.clients.delete(ws); }
-    }
-  }
-
   private broadcastRaw(html: string, topics: string[] = []): void {
     for (const ws of this.clients) {
       const data = ws.data as UiPushWSData;
@@ -346,7 +324,7 @@ export class UIWebSocketManager {
     });
 
     // --- Agent exit ---
-    eventBus.on("agent:exit", (event) => {
+    eventBus.on("agent:exit", () => {
       this.pushDashboardTasks();
       this.pushDashboardInstances();
       this.pushDashboardSteering();

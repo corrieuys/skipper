@@ -111,7 +111,6 @@ addRoute("GET", STYLESHEET_PATH, () => {
   });
 });
 
-// Register built-in routes
 addRoute("GET", "/health", () => {
   return Response.json({
     status: "ok",
@@ -126,7 +125,6 @@ async function handleRequest(req: Request): Promise<Response> {
     const method = req.method.toUpperCase();
     const start = performance.now();
 
-    // Try matched routes first
     const matched = matchRoute(method, url.pathname);
     if (matched) {
       const resp = await matched.handler(req, matched.params);
@@ -134,7 +132,6 @@ async function handleRequest(req: Request): Promise<Response> {
       return resp;
     }
 
-    // Try static files for GET requests
     if (method === "GET") {
       const staticResponse = await serveStaticFile(url.pathname, req);
       if (staticResponse) return staticResponse;
@@ -173,7 +170,6 @@ export function startServer(port: number = Number(process.env.PORT) || 3000): Se
     port,
     idleTimeout: 255, // max value — long-lived WS connections
     fetch(req, server) {
-      // Try WebSocket upgrade first
       if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         for (const handler of wsUpgradeHandlers) {
           if (handler(req, server)) {

@@ -40,13 +40,23 @@ export interface AgentTypeOption {
   models: string[];
 }
 
-/** Agent types + their selectable models, for the config-page dropdowns. */
+// The only provider offered anywhere a model provider is selectable. Kept as an
+// allowlist so it's one place to widen later. Everything else is hidden.
+export const PROVIDER_ALLOWLIST = ["claude-code"] as const;
+
+export function isAllowedProvider(name: string): boolean {
+  return (PROVIDER_ALLOWLIST as readonly string[]).includes(name);
+}
+
+/** Selectable providers + their known models, for the config-page controls. */
 export function listModelOptions(): AgentTypeOption[] {
-  return listAgentTypes().map((t) => ({
-    name: t.name,
-    model_flag: t.model_flag,
-    models: ["default", ...t.available_models.filter((m) => m !== "default")],
-  }));
+  return listAgentTypes()
+    .filter((t) => isAllowedProvider(t.name))
+    .map((t) => ({
+      name: t.name,
+      model_flag: t.model_flag,
+      models: ["default", ...t.available_models.filter((m) => m !== "default")],
+    }));
 }
 
 /** Look up the chat agent row (same query conversations/manager.ts uses). */
@@ -130,14 +140,13 @@ export function saveModelSetting(
   agentType: string,
   model: string,
 ): string | null {
-  const options = listModelOptions();
-  const opt = options.find((o) => o.name === agentType);
+  const opt = listModelOptions().find((o) => o.name === agentType);
   if (!opt) return `Unknown provider: ${agentType}`;
-  if (model !== "default" && !opt.models.includes(model)) {
-    return `Model "${model}" is not available for provider "${agentType}"`;
-  }
+  // Model is free text — the operator may enter any model string the CLI accepts,
+  // including ones we don't know about. Empty falls back to the CLI default.
+  const resolvedModel = model.trim() || "default";
   const [typeKey, modelKey] = VALID_KEYS[target];
   setStringSetting(db, typeKey, agentType);
-  setStringSetting(db, modelKey, model);
+  setStringSetting(db, modelKey, resolvedModel);
   return null;
 }

@@ -11,6 +11,8 @@ Agent process runtime. Spawn external CLI, parse stdout, route signals.
 | `types.ts` | Agent-type lookup + cache. `clearAgentTypeCache()` for tests |
 | `skipper.ts` | `SKIPPER_AGENT_ID` constant + skipper config read/update |
 | `mcp-spawn-helper.ts` | Build MCP server config injection at spawn time |
+| `instance-status.ts` | Shared `agent_instances.status` writers: `updateInstanceStatus()`, `finalizeActiveInstancesForTask()` |
+| `signal-utils.ts` | `signalTextSnippet()` — dedup-fingerprint normalization shared with `mcp/signal-bridge.ts` |
 
 ## Agent types (seeded `db/connection.ts:seedAgentTypes()`)
 

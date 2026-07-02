@@ -4,7 +4,6 @@ export const SETTING_PARALLEL_TASKS = "parallel_task_execution";
 export const SETTING_LOG_RETENTION_HOURS = "log_retention_hours";
 
 export const SETTING_SKIPPER_CONNECT_ENABLED = "skipper_connect_enabled";
-export const SETTING_SKIPPER_CONNECT_GUID = "skipper_connect_global_id_guid";
 export const SETTING_SKIPPER_CONNECT_KEY = "skipper_connect_key";
 export const SETTING_SKIPPER_CONNECT_URL = "skipper_connect_url";
 

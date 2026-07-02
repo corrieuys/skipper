@@ -6,6 +6,7 @@ import type { TeamManager, Phase } from "../teams/manager";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
 import { TaskStateMachine } from "./state";
 import { logError } from "../logging";
+import { updateInstanceStatus, finalizeActiveInstancesForTask } from "../agents/instance-status";
 import { resolvePhaseConfig } from "./phase-config";
 import type { OrchestrationState, TaskCheckpoint } from "./types";
 
@@ -84,9 +85,7 @@ export class RecoveryManager {
             process.kill(inst.process_pid, 9);
           } catch { /* already dead */ }
 
-          this.db
-            .prepare("UPDATE agent_instances SET status = 'failed', process_pid = NULL, updated_at = datetime('now') WHERE id = ?")
-            .run(inst.id);
+          updateInstanceStatus(this.db, inst.id, "failed", { clearPid: true });
 
           this.emitRemediationEvent("startup_instance_cleanup", inst.template_agent_id, inst.task_id, {
             instanceId: inst.id,
@@ -170,11 +169,7 @@ export class RecoveryManager {
       }
 
       // Reconcile DB state so the new root starts clean.
-      this.db
-        .prepare(
-          "UPDATE agent_instances SET status = 'stopped', process_pid = NULL, updated_at = datetime('now') WHERE task_id = ? AND status IN ('running', 'waiting_delegation', 'pending')",
-        )
-        .run(taskId);
+      finalizeActiveInstancesForTask(this.db, taskId, "stopped");
       this.db
         .prepare(
           "UPDATE delegations SET status = 'failed', result = COALESCE(result, 'Reaped during task recovery'), completed_at = datetime('now') WHERE task_id = ? AND status IN ('pending', 'running')",
@@ -538,11 +533,7 @@ export class RecoveryManager {
         this.agentManager.killAgent(inst.id);
       }
 
-      this.db
-        .prepare(
-          "UPDATE agent_instances SET status = 'failed', process_pid = NULL, updated_at = datetime('now') WHERE task_id = ? AND status IN ('running', 'waiting_delegation', 'pending')",
-        )
-        .run(taskId);
+      finalizeActiveInstancesForTask(this.db, taskId, "failed");
 
       // Clean up the recovery attempt key
       this.db

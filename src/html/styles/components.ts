@@ -378,5 +378,39 @@ export function componentStyles(): string {
     .sk-table--compact td {
       padding: var(--sk-space-1) var(--sk-space-2);
     }
+
+    /* Agent Models config rows — each label is glued to its own control, and the
+       label+control pairs are spaced apart, so the "Provider"/"Model" labels read
+       against their select rather than floating between two of them. */
+    .sk-model-row {
+      display: flex;
+      align-items: center;
+      gap: var(--sk-space-5);
+      padding: var(--sk-space-2) 0;
+      flex-wrap: wrap;
+    }
+    .sk-model-row + .sk-model-row {
+      border-top: 1px solid var(--sk-border-subtle);
+    }
+    .sk-model-row__name {
+      width: 160px;
+      flex-shrink: 0;
+    }
+    .sk-model-row__field {
+      display: flex;
+      align-items: center;
+      gap: var(--sk-space-2);
+    }
+    .sk-model-row__label {
+      font-size: var(--sk-text-xs);
+      color: var(--sk-text-muted);
+      white-space: nowrap;
+    }
+    .sk-model-row__field select {
+      min-width: 160px;
+    }
+    .sk-model-row__save {
+      margin-left: auto;
+    }
   `;
 }

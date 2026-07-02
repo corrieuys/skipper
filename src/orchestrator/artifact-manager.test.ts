@@ -198,4 +198,68 @@ describe("ArtifactManager", () => {
     });
   });
 
+  describe("publish", () => {
+    it("publishArtifact generates a key and sets published_at", () => {
+      const taskId = seedTask(db);
+      const created = artifactManager.createArtifact({ taskId, name: "doc", kind: "plan", body: "v1" });
+      expect(created.publish_key).toBeNull();
+      expect(created.published_at).toBeNull();
+
+      const published = artifactManager.publishArtifact(created.id);
+      expect(published?.publish_key).toBeTruthy();
+      expect(published?.published_at).toBeTruthy();
+    });
+
+    it("keeps the same key across unpublish and republish", () => {
+      const taskId = seedTask(db);
+      const created = artifactManager.createArtifact({ taskId, name: "doc", kind: "plan", body: "v1" });
+      const first = artifactManager.publishArtifact(created.id);
+
+      const unpublished = artifactManager.unpublishArtifact(created.id);
+      expect(unpublished?.published_at).toBeNull();
+      expect(unpublished?.publish_key).toBe(first!.publish_key!);
+
+      const republished = artifactManager.publishArtifact(created.id);
+      expect(republished?.publish_key).toBe(first!.publish_key!);
+      expect(republished?.published_at).toBeTruthy();
+    });
+
+    it("publish is scoped to one version", () => {
+      const taskId = seedTask(db);
+      const v1 = artifactManager.createArtifact({ taskId, name: "doc", kind: "plan", body: "v1" });
+      const v2 = artifactManager.createArtifact({ taskId, name: "doc", kind: "plan", body: "v2" });
+
+      artifactManager.publishArtifact(v1.id);
+      expect(artifactManager.getArtifactById(v1.id)?.published_at).toBeTruthy();
+      expect(artifactManager.getArtifactById(v2.id)?.published_at).toBeNull();
+    });
+
+    it("publishArtifact returns null for unknown id", () => {
+      expect(artifactManager.publishArtifact("nope")).toBeNull();
+      expect(artifactManager.unpublishArtifact("nope")).toBeNull();
+    });
+
+    it("getPublishedArtifact returns the artifact only for the correct key", () => {
+      const taskId = seedTask(db);
+      const created = artifactManager.createArtifact({ taskId, name: "doc", kind: "plan", body: "public body" });
+      const published = artifactManager.publishArtifact(created.id)!;
+
+      const fetched = artifactManager.getPublishedArtifact(created.id, published.publish_key!);
+      expect(fetched?.body).toBe("public body");
+
+      expect(artifactManager.getPublishedArtifact(created.id, "wrong-key")).toBeNull();
+      expect(artifactManager.getPublishedArtifact(created.id, "")).toBeNull();
+      expect(artifactManager.getPublishedArtifact("unknown-id", published.publish_key!)).toBeNull();
+    });
+
+    it("getPublishedArtifact returns null after unpublish even with the right key", () => {
+      const taskId = seedTask(db);
+      const created = artifactManager.createArtifact({ taskId, name: "doc", kind: "plan", body: "v1" });
+      const published = artifactManager.publishArtifact(created.id)!;
+      artifactManager.unpublishArtifact(created.id);
+
+      expect(artifactManager.getPublishedArtifact(created.id, published.publish_key!)).toBeNull();
+    });
+  });
+
 });

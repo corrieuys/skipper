@@ -1,4 +1,4 @@
-import { getStringSetting, SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_GUID, SETTING_SKIPPER_CONNECT_URL } from "../config/app-settings";
+import { getStringSetting, SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_URL } from "../config/app-settings";
 import { getDb } from "../db/connection";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
@@ -10,7 +10,6 @@ import { executeCommand } from "./commands";
 import { handleResourceRequest, type ResourceDeps } from "./resources";
 import { subscribeConnectEvents } from "./events";
 
-const DEFAULT_URL = "wss://connect.letskipper.work";
 const MAX_BACKOFF_MS = 60_000;
 
 export type ConnectionStatus = "disabled" | "connecting" | "connected" | "auth_failed" | "error";
@@ -81,18 +80,17 @@ export class ConnectClient {
     if (!this.running) return;
 
     const db = getDb();
-    const baseUrl = getStringSetting(db, SETTING_SKIPPER_CONNECT_URL, DEFAULT_URL);
-    const guid = getStringSetting(db, SETTING_SKIPPER_CONNECT_GUID, "");
+    const baseUrl = getStringSetting(db, SETTING_SKIPPER_CONNECT_URL, "");
     const connectKey = getStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, "");
 
-    if (!guid || !connectKey) {
-      console.warn("[connect] Missing credentials (guid/key) — not connecting");
+    if (!connectKey || !baseUrl) {
+      console.warn("[connect] Missing connect URL or key, not connecting");
       this.running = false;
       this._connectionStatus = "disabled";
       return;
     }
 
-    const wsUrl = `${baseUrl}/connect?token=${encodeURIComponent(connectKey)}`;
+    const wsUrl = `${baseUrl.replace(/\/+$/, "")}/connect?token=${encodeURIComponent(connectKey)}`;
 
     let ws: WebSocket;
     try {
@@ -123,7 +121,6 @@ export class ConnectClient {
       if (msg.type === "auth_ok") {
         this._connectionStatus = "connected";
         console.log("[connect] Authenticated — Skipper Connect live");
-        // Start forwarding domain events to integrators
         this._eventUnsub?.();
         this._eventUnsub = subscribeConnectEvents((frame) => {
           if (ws.readyState === WebSocket.OPEN) ws.send(frame);
@@ -149,7 +146,7 @@ export class ConnectClient {
       if (event.code === 4001) {
         this.running = false;
         this._connectionStatus = "auth_failed";
-        console.error("[connect] Auth failed (code 4001) — check Integrator ID and Connect API Key in config. Reconnect stopped.");
+        console.error("[connect] Auth failed (code 4001), check the Connect API Key in config. Reconnect stopped.");
         return;
       }
       if (this.running) {

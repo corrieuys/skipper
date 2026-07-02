@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { timingSafeEqual } from "node:crypto";
 import { getDb } from "../db/connection";
 import { eventBus } from "../events/bus";
 
@@ -12,6 +13,8 @@ export interface TaskArtifact {
   body: string;
   created_by_agent_id: string | null;
   created_at: string;
+  publish_key: string | null;
+  published_at: string | null;
 }
 
 export type ArtifactKind = "transcript" | "summary" | "plan" | "other";
@@ -150,6 +153,37 @@ export class ArtifactManager {
          ORDER BY version DESC`,
       )
       .all(taskId, name) as Array<{ version: number; kind: string; description: string | null; created_at: string }>;
+  }
+
+  publishArtifact(id: string): TaskArtifact | null {
+    const artifact = this.getArtifactById(id);
+    if (!artifact) return null;
+    // Key is stable per version: generated on first publish, reused on
+    // republish so the public URL never changes for this version.
+    const key = artifact.publish_key ?? crypto.randomUUID();
+    this.db
+      .prepare("UPDATE task_artifacts SET publish_key = ?, published_at = datetime('now') WHERE id = ?")
+      .run(key, id);
+    return this.getArtifactById(id);
+  }
+
+  unpublishArtifact(id: string): TaskArtifact | null {
+    const artifact = this.getArtifactById(id);
+    if (!artifact) return null;
+    this.db.prepare("UPDATE task_artifacts SET published_at = NULL WHERE id = ?").run(id);
+    return this.getArtifactById(id);
+  }
+
+  getPublishedArtifact(id: string, key: string): TaskArtifact | null {
+    const artifact = this.db
+      .prepare("SELECT * FROM task_artifacts WHERE id = ? AND published_at IS NOT NULL")
+      .get(id) as TaskArtifact | null;
+    if (!artifact?.publish_key || !key) return null;
+    const expected = Buffer.from(artifact.publish_key);
+    const provided = Buffer.from(key);
+    if (expected.length !== provided.length) return null;
+    if (!timingSafeEqual(expected, provided)) return null;
+    return artifact;
   }
 
 }

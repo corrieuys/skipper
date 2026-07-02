@@ -9,6 +9,7 @@ import { EscalationManager } from "../escalations/manager";
 import { ConversationManager } from "../conversations/manager";
 import { HookManager } from "../hooks/manager";
 import { eventBus } from "../events/bus";
+import { updateInstanceStatus, finalizeActiveInstancesForTask } from "./instance-status";
 import type { AgentExitEvent, AgentSignalEvent } from "../events/bus";
 import { logError } from "../logging";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "./types";
@@ -630,145 +631,153 @@ export class ManagerDaemon {
       }
     };
 
+    const content = event.content ?? "";
     switch (event.signalType) {
-      case "conversation_query_tasks": {
-        const tasks = this.db
-          .prepare(
-            `SELECT id, title, status, current_phase, team_id, created_at, updated_at
-             FROM tasks
-             WHERE task_type != 'real_time'
-             ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'approved' THEN 1 WHEN 'draft' THEN 2 ELSE 3 END, updated_at DESC
-             LIMIT 20`,
-          )
-          .all() as { id: string; title: string; status: string; current_phase: number; team_id: string | null; created_at: string }[];
-        const lines = tasks.map((t) => `- [${t.id}] ${t.title} | status: ${t.status} | phase: ${t.current_phase}`);
-        await injectResult(lines.length > 0 ? lines.join("\n") : "No tasks found.");
+      case "conversation_query_tasks":
+        await this.conversationQueryTasks(injectResult);
         break;
-      }
-
-      case "conversation_query_task": {
-        if (!event.content) break;
-        const match = event.content.match(/\[QUERY_TASK\s+id:(\S+)\]/);
-        if (!match) break;
-        const taskId = match[1]!;
-        const task = this.taskScheduler.getTask(taskId);
-        if (!task) {
-          await injectResult(`Task not found: ${taskId}`);
-          break;
-        }
-        const notes = this.db
-          .prepare("SELECT content, agent_id, created_at FROM task_notes WHERE task_id = ? ORDER BY created_at DESC LIMIT 5")
-          .all(taskId) as { content: string; agent_id: string; created_at: string }[];
-        const noteLines = notes.map((n) => `  - [${n.agent_id}] ${n.content.slice(0, 200)}`).join("\n");
-        const result = [
-          `Task: ${task.title} (${task.id})`,
-          `Status: ${task.status}`,
-          `Phase: ${task.current_phase}`,
-          `Description: ${task.description ?? "(none)"}`,
-          notes.length > 0 ? `Recent notes:\n${noteLines}` : "Notes: none",
-        ].join("\n");
-        await injectResult(result);
+      case "conversation_query_task":
+        await this.conversationQueryTask(content, injectResult);
         break;
-      }
-
-      case "conversation_create_task": {
-        if (!event.content) break;
-        const match = event.content.match(/\[CREATE_TASK\s+title:(.+?)\s+team:(\S+)(?:\s+description:(.+))?\]/);
-        if (!match) break;
-        const title = match[1]!;
-        const teamId = match[2]!;
-        const description = match[3];
-        try {
-          const task = this.taskScheduler.createTask({
-            title: title.trim(),
-            description: description?.trim() || undefined,
-            teamId: teamId.trim(),
-            workingDirectory: process.cwd(),
-          });
-          await injectResult(`Task created: [${task.id}] ${task.title} | status: draft`);
-        } catch (err) {
-          await injectResult(`Failed to create task: ${err instanceof Error ? err.message : String(err)}`);
-        }
+      case "conversation_create_task":
+        await this.conversationCreateTask(content, injectResult);
         break;
-      }
-
-      case "conversation_task_status": {
-        if (!event.content) break;
-        const match = event.content.match(/\[TASK_STATUS\s+task:(\S+)\s+status:(\S+)\]/);
-        if (!match) break;
-        const taskId = match[1]!;
-        const newStatus = match[2]!;
-        try {
-          const validStatuses = ["draft", "approved", "completed", "failed"];
-          if (!validStatuses.includes(newStatus)) {
-            await injectResult(`Invalid status '${newStatus}'. Valid: ${validStatuses.join(", ")}`);
-            break;
-          }
-          if (newStatus === "approved") this.taskScheduler.approveTask(taskId);
-          else if (newStatus === "completed") this.taskScheduler.completeTask(taskId);
-          else if (newStatus === "failed") this.taskScheduler.failTask(taskId, "Set via conversation Skipper");
-          else {
-            this.db.prepare("UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE id = ?").run(newStatus, taskId);
-          }
-          await injectResult(`Task ${taskId} status updated to: ${newStatus}`);
-        } catch (err) {
-          await injectResult(`Failed to update task status: ${err instanceof Error ? err.message : String(err)}`);
-        }
+      case "conversation_task_status":
+        await this.conversationTaskStatus(content, injectResult);
         break;
-      }
-
-      case "conversation_steer": {
-        if (!event.content) break;
-        const match = event.content.match(/\[STEER\s+agent:(\S+)\s+message:(.+)\]/);
-        if (!match) break;
-        const targetRuntimeId = match[1]!;
-        const steerMessage = match[2]!;
-        // Find the template agent for this runtime
-        const templateId = this.agentManager.getTemplateAgentId(targetRuntimeId);
-        if (!templateId) {
-          await injectResult(`Agent runtime not found: ${targetRuntimeId}`);
-          break;
-        }
-        try {
-          await this.steerRuntime(templateId, targetRuntimeId, steerMessage.trim());
-          await injectResult(`Steering message sent to agent ${targetRuntimeId}.`);
-        } catch (err) {
-          await injectResult(`Failed to steer agent: ${err instanceof Error ? err.message : String(err)}`);
-        }
+      case "conversation_steer":
+        await this.conversationSteer(content, injectResult);
         break;
-      }
-
-      case "conversation_task_note": {
-        if (!event.content) break;
-        const match = event.content.match(/\[TASK_NOTE\s+task:(\S+)\s+content:(.+)\]/);
-        if (!match) break;
-        const taskId = match[1]!;
-        const noteContent = match[2]!;
-        const task = this.taskScheduler.getTask(taskId);
-        if (!task) {
-          await injectResult(`Task not found: ${taskId}`);
-          break;
-        }
-        try {
-          const noteId = crypto.randomUUID();
-          // Find entrypoint agent for FK constraint
-          let agentId = "user";
-          if (task.team_id) {
-            const teamRow = this.db.prepare("SELECT entrypoint_agent_id FROM teams WHERE id = ?").get(task.team_id) as { entrypoint_agent_id: string | null } | null;
-            if (teamRow?.entrypoint_agent_id) agentId = teamRow.entrypoint_agent_id;
-          }
-          this.db.prepare("INSERT INTO task_notes (id, task_id, agent_id, content, source) VALUES (?, ?, ?, ?, 'user')").run(noteId, taskId, agentId, noteContent.trim());
-          eventBus.emit("task:note_added", { noteId, taskId, agentId, content: noteContent.trim() });
-          await injectResult(`Note added to task ${taskId}.`);
-        } catch (err) {
-          await injectResult(`Failed to add note: ${err instanceof Error ? err.message : String(err)}`);
-        }
+      case "conversation_task_note":
+        await this.conversationTaskNote(content, injectResult);
         break;
-      }
-
       default:
         // Non-conversation signals from conversation agents are silently ignored
         break;
+    }
+  }
+
+  private async conversationQueryTasks(inject: (result: string) => Promise<void>): Promise<void> {
+    const tasks = this.db
+      .prepare(
+        `SELECT id, title, status, current_phase, team_id, created_at, updated_at
+         FROM tasks
+         WHERE task_type != 'real_time'
+         ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'approved' THEN 1 WHEN 'draft' THEN 2 ELSE 3 END, updated_at DESC
+         LIMIT 20`,
+      )
+      .all() as { id: string; title: string; status: string; current_phase: number; team_id: string | null; created_at: string }[];
+    const lines = tasks.map((t) => `- [${t.id}] ${t.title} | status: ${t.status} | phase: ${t.current_phase}`);
+    await inject(lines.length > 0 ? lines.join("\n") : "No tasks found.");
+  }
+
+  private async conversationQueryTask(content: string, inject: (result: string) => Promise<void>): Promise<void> {
+    const match = content.match(/\[QUERY_TASK\s+id:(\S+)\]/);
+    if (!match) return;
+    const taskId = match[1]!;
+    const task = this.taskScheduler.getTask(taskId);
+    if (!task) {
+      await inject(`Task not found: ${taskId}`);
+      return;
+    }
+    const notes = this.db
+      .prepare("SELECT content, agent_id, created_at FROM task_notes WHERE task_id = ? ORDER BY created_at DESC LIMIT 5")
+      .all(taskId) as { content: string; agent_id: string; created_at: string }[];
+    const noteLines = notes.map((n) => `  - [${n.agent_id}] ${n.content.slice(0, 200)}`).join("\n");
+    const result = [
+      `Task: ${task.title} (${task.id})`,
+      `Status: ${task.status}`,
+      `Phase: ${task.current_phase}`,
+      `Description: ${task.description ?? "(none)"}`,
+      notes.length > 0 ? `Recent notes:\n${noteLines}` : "Notes: none",
+    ].join("\n");
+    await inject(result);
+  }
+
+  private async conversationCreateTask(content: string, inject: (result: string) => Promise<void>): Promise<void> {
+    const match = content.match(/\[CREATE_TASK\s+title:(.+?)\s+team:(\S+)(?:\s+description:(.+))?\]/);
+    if (!match) return;
+    const title = match[1]!;
+    const teamId = match[2]!;
+    const description = match[3];
+    try {
+      const task = this.taskScheduler.createTask({
+        title: title.trim(),
+        description: description?.trim() || undefined,
+        teamId: teamId.trim(),
+        workingDirectory: process.cwd(),
+      });
+      await inject(`Task created: [${task.id}] ${task.title} | status: draft`);
+    } catch (err) {
+      await inject(`Failed to create task: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async conversationTaskStatus(content: string, inject: (result: string) => Promise<void>): Promise<void> {
+    const match = content.match(/\[TASK_STATUS\s+task:(\S+)\s+status:(\S+)\]/);
+    if (!match) return;
+    const taskId = match[1]!;
+    const newStatus = match[2]!;
+    try {
+      const validStatuses = ["draft", "approved", "completed", "failed"];
+      if (!validStatuses.includes(newStatus)) {
+        await inject(`Invalid status '${newStatus}'. Valid: ${validStatuses.join(", ")}`);
+        return;
+      }
+      if (newStatus === "approved") this.taskScheduler.approveTask(taskId);
+      else if (newStatus === "completed") this.taskScheduler.completeTask(taskId);
+      else if (newStatus === "failed") this.taskScheduler.failTask(taskId, "Set via conversation Skipper");
+      else {
+        this.db.prepare("UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE id = ?").run(newStatus, taskId);
+      }
+      await inject(`Task ${taskId} status updated to: ${newStatus}`);
+    } catch (err) {
+      await inject(`Failed to update task status: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async conversationSteer(content: string, inject: (result: string) => Promise<void>): Promise<void> {
+    const match = content.match(/\[STEER\s+agent:(\S+)\s+message:(.+)\]/);
+    if (!match) return;
+    const targetRuntimeId = match[1]!;
+    const steerMessage = match[2]!;
+    // Find the template agent for this runtime
+    const templateId = this.agentManager.getTemplateAgentId(targetRuntimeId);
+    if (!templateId) {
+      await inject(`Agent runtime not found: ${targetRuntimeId}`);
+      return;
+    }
+    try {
+      await this.steerRuntime(templateId, targetRuntimeId, steerMessage.trim());
+      await inject(`Steering message sent to agent ${targetRuntimeId}.`);
+    } catch (err) {
+      await inject(`Failed to steer agent: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async conversationTaskNote(content: string, inject: (result: string) => Promise<void>): Promise<void> {
+    const match = content.match(/\[TASK_NOTE\s+task:(\S+)\s+content:(.+)\]/);
+    if (!match) return;
+    const taskId = match[1]!;
+    const noteContent = match[2]!;
+    const task = this.taskScheduler.getTask(taskId);
+    if (!task) {
+      await inject(`Task not found: ${taskId}`);
+      return;
+    }
+    try {
+      const noteId = crypto.randomUUID();
+      // Find entrypoint agent for FK constraint
+      let agentId = "user";
+      if (task.team_id) {
+        const teamRow = this.db.prepare("SELECT entrypoint_agent_id FROM teams WHERE id = ?").get(task.team_id) as { entrypoint_agent_id: string | null } | null;
+        if (teamRow?.entrypoint_agent_id) agentId = teamRow.entrypoint_agent_id;
+      }
+      this.db.prepare("INSERT INTO task_notes (id, task_id, agent_id, content, source) VALUES (?, ?, ?, ?, 'user')").run(noteId, taskId, agentId, noteContent.trim());
+      eventBus.emit("task:note_added", { noteId, taskId, agentId, content: noteContent.trim() });
+      await inject(`Note added to task ${taskId}.`);
+    } catch (err) {
+      await inject(`Failed to add note: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -965,11 +974,7 @@ export class ManagerDaemon {
       // the escalation, at which point injectResponse resumes the escalating
       // runtime (not Skipper).
       if (taskId && this.hasOpenEscalations(taskId)) {
-        this.db
-          .prepare(
-            "UPDATE agent_instances SET status = 'stopped', process_pid = NULL, updated_at = datetime('now') WHERE id = ?",
-          )
-          .run(event.agentId);
+        updateInstanceStatus(this.db, event.agentId, "stopped", { clearPid: true });
         logError(this.db, "agent_exit_bail", { agentId: event.agentId, taskId, reason: "open_escalation", method: "handleAgentExit" }, new Error("bail"));
         return;
       }
@@ -1003,11 +1008,7 @@ export class ManagerDaemon {
         this.db
           .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
           .run(templateId);
-        this.db
-          .prepare(
-            "UPDATE agent_instances SET status = ?, updated_at = datetime('now') WHERE id = ?",
-          )
-          .run(event.code === 0 ? "completed" : "failed", event.agentId);
+        updateInstanceStatus(this.db, event.agentId, event.code === 0 ? "completed" : "failed");
         return;
       }
 
@@ -1073,11 +1074,7 @@ export class ManagerDaemon {
         this.db
           .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
           .run(templateId);
-        this.db
-          .prepare(
-            "UPDATE agent_instances SET status = ?, updated_at = datetime('now') WHERE id = ?",
-          )
-          .run(event.code === 0 ? "completed" : "failed", event.agentId);
+        updateInstanceStatus(this.db, event.agentId, event.code === 0 ? "completed" : "failed");
       }
     } catch (err) {
       logError(this.db, "agent_exit_handler", { agentId: event.agentId, method: "handleAgentExit" }, err);
@@ -1280,11 +1277,7 @@ export class ManagerDaemon {
 
     // Mark the task's live instances stopped (NOT failed) and clear pids so the
     // startup orphan sweep won't touch them after a restart.
-    this.db
-      .prepare(
-        "UPDATE agent_instances SET status = 'stopped', process_pid = NULL, updated_at = datetime('now') WHERE task_id = ? AND status IN ('running', 'waiting_delegation', 'pending')",
-      )
-      .run(taskId);
+    finalizeActiveInstancesForTask(this.db, taskId, "stopped");
     this.db
       .prepare("UPDATE agents SET process_pid = NULL, status = 'stopped', updated_at = datetime('now') WHERE current_task_id = ?")
       .run(taskId);

@@ -10,6 +10,7 @@ import type { OrchestrationState } from "./types";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
+import { updateInstanceStatus } from "../agents/instance-status";
 import { MAX_DELEGATION_RESULT_CHARS, truncateResult } from "./delegation-manager";
 import { resolvePhaseConfig } from "./phase-config";
 
@@ -183,9 +184,7 @@ export class ConsensusManager {
         this.db
           .prepare("UPDATE delegations SET status = 'running' WHERE id = ?")
           .run(delegationId);
-        this.db
-          .prepare("UPDATE agent_instances SET status = 'running' WHERE id = ?")
-          .run(instanceId);
+        updateInstanceStatus(this.db, instanceId, "running");
 
         // Send prompt if not inline
         if (!usesInlinePrompt) {
@@ -210,7 +209,7 @@ export class ConsensusManager {
       } catch (err) {
         logError(this.db, "consensus_spawn_agent", { taskId: task.id, instanceId, workerIndex: i }, err);
         this.db.prepare("UPDATE delegations SET status = 'failed' WHERE id = ?").run(delegationId);
-        this.db.prepare("UPDATE agent_instances SET status = 'failed' WHERE id = ?").run(instanceId);
+        updateInstanceStatus(this.db, instanceId, "failed");
       }
     }
 
@@ -292,9 +291,7 @@ export class ConsensusManager {
     }
 
     // Update agent instance
-    this.db
-      .prepare("UPDATE agent_instances SET status = ?, updated_at = datetime('now') WHERE id = ?")
-      .run(failed ? "failed" : "completed", instanceId);
+    updateInstanceStatus(this.db, instanceId, failed ? "failed" : "completed");
 
     // Update group progress
     const group = this.db

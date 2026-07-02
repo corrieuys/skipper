@@ -6,6 +6,7 @@ import { setBoolSetting, SETTING_PARALLEL_TASKS, SETTING_SKIPPER_CONNECT_ENABLED
 import { getConnectClient, type ConnectionStatus } from "../connect/client";
 import { buildSkillsPromptAddition as _buildSkillsPromptAddition } from "../config-readers/skills";
 import { getPollIntervalSeconds } from "./pages";
+import { finalizeActiveInstancesForTask } from "../agents/instance-status";
 import type {
   DelegationData,
   TaskData,
@@ -297,7 +298,6 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       // the task-create form fields. See src/routes/phase-overrides.ts.
       const { overrides: phaseOverrides } = parsePhaseOverridesFromForm(formData, resolvedTeamId);
 
-      // Store phase_overrides in task_config
       if (Object.keys(phaseOverrides).length > 0) {
         const currentConfig = created.task_config as unknown as Record<string, unknown>;
         const updatedConfig: Record<string, unknown> = { ...currentConfig, phase_overrides: phaseOverrides };
@@ -736,12 +736,8 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
   addRoute("POST", "/api/tasks/:id/clear-stale", (_req, params) => {
     try {
       const db = getDb();
-      // Clear stale agent assignments for this task
       db.prepare("UPDATE agents SET current_task_id = NULL, process_pid = NULL WHERE current_task_id = ?").run(params.id);
-      // Fail active instances
-      db.prepare(
-        "UPDATE agent_instances SET status = 'failed', process_pid = NULL, updated_at = datetime('now') WHERE task_id = ? AND status IN ('running', 'waiting_delegation', 'pending')",
-      ).run(params.id);
+      finalizeActiveInstancesForTask(db, params.id, "failed");
 
       if (_req.headers.get("HX-Request")) {
         return taskDetailResponse(params.id, daemon?.getStatus());

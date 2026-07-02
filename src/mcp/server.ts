@@ -118,7 +118,6 @@ export class DaemonMcpServer {
   private async handlePost(req: Request, identity: AgentIdentity): Promise<Response> {
     const sessionId = req.headers.get("mcp-session-id");
 
-    // Existing session
     if (sessionId && this.sessions.has(sessionId)) {
       const session = this.sessions.get(sessionId)!;
       session.identity = identity;

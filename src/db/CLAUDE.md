@@ -6,7 +6,8 @@ SQLite via `bun:sqlite`. Split architecture.
 
 | file | use |
 |---|---|
-| `connection.ts` | `initializeDatabase()`, `getDb()`, `closeDb()`, `resetDb()`. Split or single mode, legacy migrations, `seedAgentTypes()` |
+| `connection.ts` | `initializeDatabase()`, `getDb()`, `closeDb()`, `resetDb()`. Split or single mode, `seedAgentTypes()` |
+| `legacy-migrations.ts` | One-shot guarded schema migrations (`migrateLegacySchema()`), run on every init. New migrations go in `migrations/` unless they need a table rebuild |
 | `schema.sql` | Monolith schema. Tests only (explicit DB path) |
 | `schema.config.sql` | Config tables — applied to in-memory ATTACH |
 | `schema.runtime.sql` | Runtime tables — applied to on-disk DB |

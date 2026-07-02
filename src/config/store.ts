@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import type { AgentTypeDefinition } from "../agents/types";
 import { BUILTIN_REALTIME_AGENTS, BUILTIN_REALTIME_TEAMS } from "./builtin-realtime";
+import { BUILTIN_INFRA_AGENTS } from "./builtin-infra";
 
 export interface AgentDefinition {
   id: string;
@@ -62,8 +63,6 @@ const CONFIG_DIR = process.env.SKIPPER_CONFIG_DIR
 
 const CONFIG_FILES = {
   agent_types: resolve(CONFIG_DIR, "agent_types.json"),
-  agents: resolve(CONFIG_DIR, "agents.json"),
-  teams: resolve(CONFIG_DIR, "teams.json"),
   skipper_config: resolve(CONFIG_DIR, "skipper_config.json"),
   realtime_config: resolve(CONFIG_DIR, "realtime_config.json"),
   appearance: resolve(CONFIG_DIR, "appearance.json"),
@@ -138,34 +137,6 @@ function loadAgentTypes(): Map<string, AgentTypeDefinition> {
       supports_stdin: row.supports_stdin === true,
       supports_resume: row.supports_resume === true,
       resume_flag: row.resume_flag == null ? null : String(row.resume_flag),
-    });
-  }
-  return map;
-}
-
-// Skipper and the chat agent. All other agents are defined on teams.
-const INFRA_AGENT_IDS = new Set(["skipper", "chat-skipper"]);
-
-function loadAgents(): Map<string, AgentDefinition> {
-  const raw = readJson(CONFIG_FILES.agents);
-  const rows = parseContainer<Record<string, unknown>>(raw, "agents");
-  const map = new Map<string, AgentDefinition>();
-  for (const row of rows) {
-    const id = String(row.id ?? "");
-    if (!id || !INFRA_AGENT_IDS.has(id)) continue;
-    map.set(id, {
-      id,
-      name: String(row.name ?? ""),
-      type: String(row.type ?? "claude-code"),
-      model: String(row.model ?? "default"),
-      instruction: typeof row.instruction === "string" ? row.instruction : undefined,
-      environment: row.environment && typeof row.environment === "object"
-        ? toStringRecord(row.environment)
-        : undefined,
-      constraints: row.constraints && typeof row.constraints === "object"
-        ? toStringRecord(row.constraints)
-        : undefined,
-      capabilities: toStringArray(row.capabilities),
     });
   }
   return map;
@@ -265,10 +236,13 @@ function loadAppearance(): AppearanceConfig {
 
 export function initializeConfigStore(): void {
   agentTypes = loadAgentTypes();
-  agents = loadAgents();
-  // Teams are stored in the runtime DB and registered into this Map at boot.
+  // Agents and teams are not read from JSON: infra + realtime agents are code
+  // defaults (per-machine model overrides live in runtime app_settings), and
+  // teams are stored in the runtime DB and registered into this Map at boot.
   // The built-in "Real Time" team and its agents are always present.
+  agents = new Map();
   teams = new Map();
+  for (const agent of BUILTIN_INFRA_AGENTS) agents.set(agent.id, agent);
   for (const agent of BUILTIN_REALTIME_AGENTS) agents.set(agent.id, agent);
   for (const team of BUILTIN_REALTIME_TEAMS) teams.set(team.id, team);
   skipperConfig = loadSkipperConfig();
@@ -384,9 +358,9 @@ export function setAppearanceConfig(config: AppearanceConfig): void {
   }
 }
 
-// Mutation helpers — used by AgentManager/TeamManager for in-process state
-// updates (e.g., test fixtures). These do NOT persist to disk; config is
-// read-only at runtime as far as the JSON files are concerned.
+// Mutation helpers used by AgentManager/TeamManager for in-process state
+// updates (e.g. test fixtures). They mutate the in-memory Maps only and never
+// write back to the config/*.json files.
 export function setAgent(agent: AgentDefinition): void {
   ensureInitialized();
   agents.set(agent.id, agent);

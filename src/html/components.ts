@@ -1,5 +1,6 @@
 // Server-rendered HTML components for HTMX UI
 import type { RealtimeConfig } from "../realtime/config";
+import { escapeHtml } from "./atoms/escape-html";
 import { taskDetailSummaryContent } from "./taskDetailSummaryContent";
 import { taskForensicsContent } from "./taskForensicsContent";
 import { phaseStepper } from "./phaseStepper";
@@ -141,7 +142,7 @@ export function parseDashboardTaskTime(input?: string): number {
 
 export function dashboardArtifactsFragment(
   task: { id: string } | null,
-  pollIntervalSeconds: PollIntervalSeconds,
+  _pollIntervalSeconds: PollIntervalSeconds,
 ): string {
   if (!task) {
     return `<div class="cmd-panel-body"><p class="muted">No active task selected.</p></div>`;
@@ -390,17 +391,6 @@ export function taskForensicsFragment(
   );
 }
 
-export function artifactPanelStandalone(task: TaskData): string {
-  const taskId = escapeHtml(task.id);
-  return `
-    <div class="card">
-      <div class="section-heading"><div><h2>Artifacts</h2><p class="muted">Versioned outputs from agent signals.</p></div></div>
-      <div hx-get="/fragments/tasks/${taskId}/artifacts" hx-trigger="load" hx-target="#artifact-list" hx-swap="innerHTML">
-        <div id="artifact-list" class="muted">Loading artifacts...</div>
-      </div>
-    </div>`;
-}
-
 export function taskTableRow(task: TaskData): string {
   const eid = escapeHtml(task.id);
   const menuItems: string[] = [];
@@ -567,28 +557,6 @@ export function buildAgentTypeModelMap(
     map[t.name] = parseAvailableModels(t.available_models);
   }
   return map;
-}
-
-export function filterVisibleAgentTypes(
-  agentTypes: AgentTypeOption[],
-): AgentTypeOption[] {
-  return agentTypes;
-}
-
-export function renderAgentTypeOptions(
-  agentTypes: AgentTypeOption[],
-  selectedType: string,
-): string {
-  const visibleTypes = filterVisibleAgentTypes(agentTypes);
-  if (visibleTypes.length === 0) {
-    return `<option value="claude-code"${selectedType === "claude-code" ? " selected" : ""}>claude-code</option>`;
-  }
-  return visibleTypes
-    .map(
-      (t) =>
-        `<option value="${escapeHtml(t.name)}"${t.name === selectedType ? " selected" : ""}>${escapeHtml(t.name)}</option>`,
-    )
-    .join("");
 }
 
 export function agentTableRow(agent: AgentData): string {
@@ -973,12 +941,4 @@ export function agentSkillToggleId(
 
 // --- Utility ---
 
-export function escapeHtml(str: string): string {
-  const value = str == null ? "" : String(str);
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
+export { escapeHtml };

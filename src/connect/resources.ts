@@ -5,6 +5,8 @@ import type { ArtifactManager } from "../orchestrator/artifact-manager";
 import type { PhaseManager } from "../orchestrator/phase-manager";
 import { fetchTaskNotes, fetchTaskArtifacts } from "../data/queries";
 import { getDb } from "../db/connection";
+import { looksLikeHtml } from "../html/atoms/sniff-html";
+import { getPublicArtifactUrl } from "./public-links";
 
 export interface ResourceDeps {
   taskScheduler: TaskScheduler;
@@ -50,10 +52,7 @@ export async function handleResourceRequest(
           case "run-recurring":
             return { ok: true, data: scheduledTaskScheduler.runTaskNow(String(params.id ?? ""), taskScheduler) };
           case "resume": {
-            // Resume a failed task (failed → approved, preserves context) or a paused task (paused → running).
-            // Mirrors: POST /api/tasks/:id/resume → scheduler.resumeTask
-            //          POST /api/tasks/:id/resume-from-pause → scheduler.resumeFromPause
-            // Note: paused→running via this path does NOT respawn agents (daemon not injected).
+            // Unlike the HTTP routes, paused->running via this path does NOT respawn agents (daemon not injected).
             const id = String(params.id ?? "");
             if (!id) return { ok: false, error: "id is required" };
             const task = taskScheduler.getTask(id);
@@ -63,24 +62,17 @@ export async function handleResourceRequest(
             return { ok: false, error: `Cannot resume task with status: ${task.status}` };
           }
           case "retry": {
-            // Retry a failed task from scratch: failed → draft, wipes context.
-            // Mirrors: POST /api/tasks/:id/retry → scheduler.retryTask (src/tasks/scheduler.ts:432)
             const id = String(params.id ?? "");
             if (!id) return { ok: false, error: "id is required" };
             return { ok: true, data: taskScheduler.retryTask(id) };
           }
           case "complete": {
-            // Manually complete a running task: running → completed.
-            // Mirrors: POST /api/tasks/:id/complete → scheduler.completeTask (src/tasks/scheduler.ts:317)
-            // Note: the route also kills live agent processes; that requires daemon which is not injected here.
+            // Unlike POST /api/tasks/:id/complete, this cannot kill live agent processes (daemon not injected).
             const id = String(params.id ?? "");
             if (!id) return { ok: false, error: "id is required" };
             return { ok: true, data: taskScheduler.completeTask(id, "Manually completed via Skipper Connect") };
           }
           case "iterate": {
-            // Re-open a completed task with additional input: completed → approved.
-            // Mirrors: POST /api/tasks/:id/iterate → scheduler.iterateTask(id, additionalInput) (src/tasks/scheduler.ts:487)
-            // params: { id: string, additionalInput: string }
             const id = String(params.id ?? "");
             const additionalInput = String(params.additionalInput ?? "");
             if (!id) return { ok: false, error: "id is required" };
@@ -185,6 +177,8 @@ export async function handleResourceRequest(
                 description: artifact.description ?? null,
                 body: artifact.body,
                 createdAt: artifact.created_at,
+                publishedAt: artifact.published_at,
+                publicUrl: artifact.published_at ? getPublicArtifactUrl(db, artifact) : null,
               },
             };
           }
@@ -205,6 +199,55 @@ export async function handleResourceRequest(
               description: artifact.description ?? null,
               body: artifact.body,
               createdAt: artifact.created_at,
+              publishedAt: artifact.published_at,
+              publicUrl: artifact.published_at ? getPublicArtifactUrl(db, artifact) : null,
+            },
+          };
+        }
+        if (action === "publish" || action === "unpublish") {
+          // params: { id } or { taskId, name, version? } — version omitted → latest.
+          const { artifactManager } = deps;
+          let target = params.id ? artifactManager.getArtifactById(String(params.id)) : null;
+          if (!target) {
+            const taskId = String(params.taskId ?? "");
+            const name = String(params.name ?? "");
+            if (!taskId || !name) return { ok: false, error: "id, or taskId and name, are required" };
+            const version = params.version != null ? (Number(params.version) as "latest" | number) : "latest";
+            target = artifactManager.getArtifact(taskId, name, version);
+          }
+          if (!target) return { ok: false, error: "Artifact not found" };
+          const updated = action === "publish"
+            ? artifactManager.publishArtifact(target.id)
+            : artifactManager.unpublishArtifact(target.id);
+          if (!updated) return { ok: false, error: "Artifact not found" };
+          return {
+            ok: true,
+            data: {
+              id: updated.id,
+              taskId: updated.task_id,
+              name: updated.name,
+              version: updated.version,
+              publishedAt: updated.published_at,
+              publicUrl: updated.published_at ? getPublicArtifactUrl(db, updated) : null,
+            },
+          };
+        }
+        if (action === "read-published") {
+          // Relay target for the integrator's unauthenticated public route
+          // (GET /p/:guid/:artifactId?key=...). Authed by the per-version
+          // publish key only; one opaque error for wrong id, wrong key, or
+          // unpublished so the public route cannot enumerate artifacts.
+          const { artifactManager } = deps;
+          const artifact = artifactManager.getPublishedArtifact(String(params.id ?? ""), String(params.key ?? ""));
+          if (!artifact) return { ok: false, error: "Not found or not published" };
+          return {
+            ok: true,
+            data: {
+              name: artifact.name,
+              kind: artifact.kind,
+              version: artifact.version,
+              body: artifact.body,
+              contentType: looksLikeHtml(artifact.body) ? "text/html; charset=utf-8" : "text/plain; charset=utf-8",
             },
           };
         }

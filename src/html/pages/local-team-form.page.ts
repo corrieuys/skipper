@@ -112,6 +112,18 @@ export function localTeamFormPage(vm: LocalTeamFormViewModel): string {
       function el(html){ var t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstChild; }
       function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+      // Enforce the ordering hard stops: the first phase can't move up, the last
+      // can't move down. Recomputed after every add / remove / reorder.
+      function refreshPhaseMoveButtons(){
+        var rows = phasesEl.querySelectorAll('fieldset');
+        rows.forEach(function(fs, i){
+          var up = fs.querySelector('[data-move-up]');
+          var down = fs.querySelector('[data-move-down]');
+          if (up) up.disabled = (i === 0);
+          if (down) down.disabled = (i === rows.length - 1);
+        });
+      }
+
       function phaseRow(p){
         p = p || {};
         var node = el(
@@ -119,12 +131,24 @@ export function localTeamFormPage(vm: LocalTeamFormViewModel): string {
             '<div style="display:flex;gap:var(--sk-space-2);align-items:flex-end;margin-bottom:var(--sk-space-2);">' +
               '<label class="sk-label" style="flex:1;">Phase name<input class="sk-input" data-f="name" type="text" value="' + esc(p.name) + '" placeholder="e.g. build"></label>' +
               '<label class="sk-label" style="display:flex;align-items:center;gap:4px;white-space:nowrap;"><input data-f="review" type="checkbox"' + (p.review ? ' checked' : '') + '> Review gate</label>' +
+              '<div style="display:flex;gap:2px;">' +
+                '<button type="button" class="sk-btn sk-btn--sm" data-move-up title="Move phase up" aria-label="Move phase up">▲</button>' +
+                '<button type="button" class="sk-btn sk-btn--sm" data-move-down title="Move phase down" aria-label="Move phase down">▼</button>' +
+              '</div>' +
               '<button type="button" class="sk-btn sk-btn--sm sk-btn--danger" data-remove>Remove</button>' +
             '</div>' +
             '<label class="sk-label">Prompt<textarea class="sk-textarea" data-f="prompt" rows="3" placeholder="What this phase should accomplish...">' + esc(p.prompt) + '</textarea></label>' +
           '</fieldset>'
         );
-        node.querySelector('[data-remove]').addEventListener('click', function(){ node.remove(); });
+        node.querySelector('[data-remove]').addEventListener('click', function(){ node.remove(); refreshPhaseMoveButtons(); });
+        node.querySelector('[data-move-up]').addEventListener('click', function(){
+          var prev = node.previousElementSibling;
+          if (prev) { phasesEl.insertBefore(node, prev); refreshPhaseMoveButtons(); }
+        });
+        node.querySelector('[data-move-down]').addEventListener('click', function(){
+          var next = node.nextElementSibling;
+          if (next) { phasesEl.insertBefore(next, node); refreshPhaseMoveButtons(); }
+        });
         return node;
       }
 
@@ -153,11 +177,12 @@ export function localTeamFormPage(vm: LocalTeamFormViewModel): string {
         return node;
       }
 
-      document.getElementById('lt-add-phase').addEventListener('click', function(){ phasesEl.appendChild(phaseRow({})); });
+      document.getElementById('lt-add-phase').addEventListener('click', function(){ phasesEl.appendChild(phaseRow({})); refreshPhaseMoveButtons(); });
       document.getElementById('lt-add-agent').addEventListener('click', function(){ agentsEl.appendChild(agentRow({})); });
 
       (INITIAL_PHASES.length ? INITIAL_PHASES : [{}]).forEach(function(p){ phasesEl.appendChild(phaseRow(p)); });
       INITIAL_AGENTS.forEach(function(a){ agentsEl.appendChild(agentRow(a)); });
+      refreshPhaseMoveButtons();
 
       function collectPhases(){
         var out = [];

@@ -6,10 +6,10 @@ Server-side HTML rendering. No framework — string templates from TS.
 
 | dir | use |
 |---|---|
-| `atoms/` | Smallest helpers: `escape-html`, `format-timestamp`, `format-tokens` |
+| `atoms/` | Smallest helpers: `escape-html`, `format-timestamp`, `format-tokens`, `sniff-html` |
 | `fragments/` | Single-element snippets (badge, metric, task-row, chat-message, tree-node, phase-step…) |
-| `panels/` | Larger composite cards (steer panel, agent tree, task queue, phase stepper, escalation, artifacts, notes) |
-| `pages/` | Full-page renderers (command-center, task-list, task-create, config, logs, grug, escalation-queue, agent-terminal). Recurring tasks use the same task-create form (Task Type = Recurring) |
+| `panels/` | Larger composite cards (steer panel, active mission, task queue, phase stepper, escalation bar/card, iterate, metrics bar, artifacts, notes) |
+| `pages/` | Full-page renderers (command-center, task-list, task-create, config, logs, grug, agent-terminal). Recurring tasks use the same task-create form (Task Type = Recurring) |
 | `shell/` | Layout + navbar wrappers |
 | `view-models/` | Data shape feeding renderers (e.g. `command-center.vm.ts`) |
 | `styles/` | CSS strings |

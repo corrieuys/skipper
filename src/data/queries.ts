@@ -460,6 +460,10 @@ export function fetchEscalations(
   ).all() as EscalationData[];
 }
 
+export function getOpenEscalationCount(db: ReturnType<typeof getDb>): number {
+  return (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------

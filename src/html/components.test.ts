@@ -13,8 +13,6 @@ import {
   terminalOutputFragment,
 } from "./components";
 import { formatTimestamp } from "./formatTimestamp";
-import { agentListFragment } from "./agentListFragment";
-import { agentListPollingFragment } from "./agentListPollingFragment";
 import { logsPage } from "./pages/logs.page";
 import { daemonControlFragment } from "./daemonControlFragment";
 import { recentActivityFragment } from "./recentActivityFragment";
@@ -124,7 +122,6 @@ describe("fragment containers", () => {
       process_pid: null,
       current_task_id: null,
     };
-    expect(agentListPollingFragment([agent])).toContain('id="agent-list"');
     expect(agentDetailSummaryFragment(agent)).toContain('id="agent-summary-fragment"');
   });
 
@@ -269,24 +266,6 @@ describe("realtimeTaskDetailPage", () => {
     expect(html).toContain('id="task-artifact-modal"');
     expect(html).toContain('id="task-artifact-modal-body"');
     expect(html).toContain("openTaskArtifactModal");
-  });
-});
-
-
-describe("agentListFragment", () => {
-  it("renders empty state without full page layout", () => {
-    const html = agentListFragment([]);
-    expect(html).toContain("No agents configured");
-    expect(html).not.toContain("<html");
-    expect(html).not.toContain("Skipper");
-  });
-
-  it("renders agent table without full page layout", () => {
-    const html = agentListFragment([
-      { id: "a1", name: "Agent One", type: "claude-code", model: "opus", status: "idle", capabilities: [], config: {}, process_pid: null, current_task_id: null },
-    ]);
-    expect(html).toContain("Agent One");
-    expect(html).not.toContain("<html");
   });
 });
 

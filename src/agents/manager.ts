@@ -6,6 +6,7 @@ import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "./types";
 import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
 import { logError } from "../logging";
+import { signalTextSnippet } from "./signal-utils";
 import { buildMcpSpawnOverrides, injectDaemonMcpServer, cleanupMcpTempFiles } from "./mcp-spawn-helper";
 import { signalBridge } from "../mcp/signal-bridge";
 import { getStringSetting } from "../config/app-settings";
@@ -244,7 +245,6 @@ function truncatePrompt(prompt: string, agentId: string, db: Database, method: s
   return truncateToByteLimit(prompt, MAX_PROMPT_BYTES) + TRUNCATION_MARKER;
 }
 
-// Signal regex patterns
 const SIGNAL_PATTERNS = {
   message: /^\[MSG:(\S+)\s+to:(\S+)\]\s*(.*)/,
   delegateComplete: /^\[DELEGATE_COMPLETE\]\s*(.*)/,
@@ -257,14 +257,8 @@ const SIGNAL_PATTERNS = {
   conversationQueryTask: /^\[QUERY_TASK\s+id:(\S+)\]$/,
 } as const;
 
-// Returns true if a line begins a new orchestrator signal marker
 function isSignalStart(line: string): boolean {
   return /^\[(MSG:|DELEGATE_COMPLETE\b|CREATE_TASK\b|TASK_STATUS\b|STEER\b|TASK_NOTE\b|QUERY_TASKS\b|QUERY_TASK\b)/.test(line);
-}
-
-function signalTextSnippet(value?: string): string {
-  if (!value) return "";
-  return value.trim().replace(/\s+/g, " ").slice(0, 260);
 }
 
 function buildSignalFingerprint(signal: ParsedSignal): string | null {
@@ -823,7 +817,6 @@ export class AgentManager {
           sequence: seq,
         });
 
-        // Buffer stdout for line-based parsing and signal detection
         if (streamType === "stdout") {
           runningAgent.stdoutBuffer += text;
           if (runningAgent.stdoutBuffer.length > MAX_BUFFER_SIZE) {
@@ -881,7 +874,7 @@ export class AgentManager {
     if (!fingerprint) return true;
 
     // Check MCP signal bridge — if this action was already handled via MCP tool call, suppress
-    const mcpContentSnippet = signal.content?.trim().replace(/\s+/g, " ").slice(0, 260) ?? "";
+    const mcpContentSnippet = signalTextSnippet(signal.content);
     if (signalBridge.hasMcpAction(agentId, signal.type, mcpContentSnippet)) {
       return false;
     }
@@ -1024,10 +1017,8 @@ export class AgentManager {
       return;
     }
 
-    // Persist session ID before removing from memory
     this.persistSessionId(agentId);
 
-    // Capture stderr snippet before cleanup (last 1KB for error detection)
     const runningAgent = this.agents.get(agentId);
     const stderrSnippet = runningAgent?.stderrBuffer
       ? runningAgent.stderrBuffer.slice(-1024)

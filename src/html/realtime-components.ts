@@ -3,14 +3,7 @@ import { formatTimestamp } from "./formatTimestamp";
 import { layout } from "./layout";
 import type { DaemonStatus } from "./components";
 import type { RealtimeConfig } from "../realtime/config";
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+import { escapeHtml } from "./atoms/escape-html";
 
 export interface RunningAgentInstance {
   id: string;
@@ -946,38 +939,6 @@ function realtimeOperationsPanel(
   </section>`;
 }
 
-function realtimePipelinePanel(pipelineStatus: PipelineStatus | null): string {
-  if (!pipelineStatus) {
-    return `<section class="card">
-      <div class="section-heading">
-        <div>
-          <h2>Pipeline</h2>
-          <p class="muted">No pipeline state yet.</p>
-        </div>
-      </div>
-    </section>`;
-  }
-
-  return `<section class="card">
-    <div class="section-heading">
-      <div>
-        <h2>Pipeline</h2>
-        <p class="muted">Processing state</p>
-      </div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:0.5rem;">
-      <div class="rt-pipeline-row"><span>Segments</span><strong>${pipelineStatus.total_segments ?? 0}</strong></div>
-      <div class="rt-pipeline-row"><span>Pending Transcription</span><strong>${pipelineStatus.pending_transcription ?? 0}</strong></div>
-      ${(pipelineStatus.failed_transcription ?? 0) > 0 ? `<div class="rt-pipeline-row" style="color:var(--danger,#e55);"><span>Failed Transcription</span><strong>${pipelineStatus.failed_transcription}</strong></div>` : ""}
-      <div class="rt-pipeline-row"><span>Pending Summarization</span><strong>${pipelineStatus.pending_summarization ?? 0}</strong></div>
-      <div class="rt-pipeline-row"><span>Timeline Entries</span><strong>${pipelineStatus.timeline_entry_count ?? 0}</strong></div>
-      <div class="rt-pipeline-divider"></div>
-      <div class="rt-pipeline-row"><span>Cadence Timer</span><span class="badge badge-${pipelineStatus.cadence_timer_active ? "running" : "default"}">${pipelineStatus.cadence_timer_active ? "Active" : "Inactive"}</span></div>
-      <div class="rt-pipeline-row"><span>Updated</span><span class="muted">${formatTimestamp(pipelineStatus.updated_at)}</span></div>
-    </div>
-  </section>`;
-}
-
 function pipelineSummaryContent(pipelineStatus: PipelineStatus | null): string {
   if (!pipelineStatus) {
     return `<p class="rt-sidebar-note">No pipeline state yet.</p>`;
@@ -993,51 +954,6 @@ function pipelineSummaryContent(pipelineStatus: PipelineStatus | null): string {
     <div class="rt-pipeline-row"><span>Cadence Timer</span><span class="badge badge-${pipelineStatus.cadence_timer_active ? "running" : "default"}">${pipelineStatus.cadence_timer_active ? "Active" : "Inactive"}</span></div>
     <div class="rt-pipeline-row"><span>Updated</span><span class="muted">${formatTimestamp(pipelineStatus.updated_at)}</span></div>
   </div>`;
-}
-
-function realtimeTeamAgentsPanel(
-  task: RealtimeTaskData,
-  teamAgents: TeamAssignedAgent[],
-  availableAgents: AvailableAgent[],
-): string {
-  const taskConfig = parseTaskConfig(task);
-  const assignedIds = taskConfig.assigned_agent_ids ?? [];
-  const summarizerId = taskConfig.summarizer_agent_id?.trim() || "realtime-summarizer";
-  const availableById = new Map(availableAgents.map((a) => [a.id, a]));
-  const teamById = new Map(teamAgents.map((a) => [a.id, a]));
-  const individualCandidates = [...assignedIds, summarizerId];
-  const individualAgents = individualCandidates
-    .filter((id, idx) => id && individualCandidates.indexOf(id) === idx)
-    .map((id) => teamById.get(id)
-      ? { id, name: teamById.get(id)!.name }
-      : { id, name: availableById.get(id)?.name ?? id });
-
-  return `<section class="card">
-    <div class="section-heading">
-      <div>
-        <h2>Team & Agents</h2>
-        <p class="muted">Assigned team and individual task agents</p>
-      </div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:0.7rem;">
-      <div>
-        <div class="muted" style="font-size:0.72rem;letter-spacing:0.03em;text-transform:uppercase;">Team</div>
-        <div style="margin-top:0.2rem;font-size:0.88rem;">${task.team_name ? escapeHtml(task.team_name) : "<span class=\"muted\">Unassigned</span>"}</div>
-      </div>
-      <div>
-        <div class="muted" style="font-size:0.72rem;letter-spacing:0.03em;text-transform:uppercase;">Team Agents</div>
-        ${teamAgents.length === 0
-      ? `<p class="muted" style="margin-top:0.25rem;">No team agents</p>`
-      : `<div style="display:flex;flex-direction:column;gap:0.35rem;margin-top:0.3rem;">${teamAgents.map((a) => `<div class="rt-agent-item"><span>${escapeHtml(a.name)}</span><span class="muted" style="font-size:0.72rem;">${escapeHtml(a.id)}</span></div>`).join("")}</div>`}
-      </div>
-      <div>
-        <div class="muted" style="font-size:0.72rem;letter-spacing:0.03em;text-transform:uppercase;">Individual Agents</div>
-        ${individualAgents.length === 0
-      ? `<p class="muted" style="margin-top:0.25rem;">No individual agents selected</p>`
-      : `<div style="display:flex;flex-direction:column;gap:0.35rem;margin-top:0.3rem;">${individualAgents.map((a) => `<div class="rt-agent-item"><span>${escapeHtml(a.name)}</span><span class="muted" style="font-size:0.72rem;">${escapeHtml(a.id)}</span></div>`).join("")}</div>`}
-      </div>
-    </div>
-  </section>`;
 }
 
 function teamAgentsSummaryContent(
@@ -1080,27 +996,6 @@ function parseTaskConfig(task: RealtimeTaskData): RealtimeTaskConfig {
   } catch {
     return {};
   }
-}
-
-function realtimeAgentAssignmentPanel(task: RealtimeTaskData, availableAgents: AvailableAgent[]): string {
-  const taskConfig = parseTaskConfig(task);
-  const assignedIds = taskConfig.assigned_agent_ids ?? [];
-  const summarizerId = taskConfig.summarizer_agent_id ?? "";
-
-  // Filter out system agents (skipper) from the available list
-  const selectableAgents = availableAgents.filter(a => a.id !== "skipper");
-
-  return `<section class="card">
-    <div class="section-heading">
-      <div>
-        <h2>Agent Assignment</h2>
-        <p class="muted">Agents available for this task</p>
-      </div>
-    </div>
-    <div id="rt-agent-assignment">
-      ${agentAssignmentFormHtml(task.id, selectableAgents, assignedIds, summarizerId)}
-    </div>
-  </section>`;
 }
 
 function agentAssignmentFormHtml(
@@ -1168,22 +1063,6 @@ export function agentAssignmentFragment(
   return agentAssignmentFormHtml(taskId, selectableAgents, assignedIds, summarizerId);
 }
 
-function realtimeAgentsPanel(task: RealtimeTaskData, agents: RunningAgentInstance[]): string {
-  void task;
-  const runningCount = agents.filter(a => a.status === "running" || a.status === "pending").length;
-  return `<section class="card">
-    <div class="section-heading">
-      <div>
-        <h2>Agents</h2>
-        <p class="muted">${runningCount > 0 ? `${runningCount} active` : "Idle"}</p>
-      </div>
-    </div>
-    <div id="rt-running-agents">
-      ${agentsListHtml(agents)}
-    </div>
-  </section>`;
-}
-
 function agentsListHtml(agents: RunningAgentInstance[]): string {
   if (agents.length === 0) {
     return `<div style="padding:0.75rem 0;text-align:center;">
@@ -1232,27 +1111,6 @@ function notesFragmentHtml(notes: TaskNote[]): string {
 
 export function notesFragment(notes: TaskNote[]): string {
   return notesFragmentHtml(notes);
-}
-
-function realtimeConfigPanel(config: RealtimeConfig): string {
-  const providerLabel = config.transcription_provider === "openai" ? "OpenAI API" : "Local whisper";
-  const providerDetail = config.transcription_provider === "openai"
-    ? config.openai_transcription_model
-    : (config.transcription_endpoint || "Not configured");
-  return `<section class="card">
-    <div class="section-heading">
-      <div>
-        <h2>Config</h2>
-        <p class="muted">Global settings</p>
-      </div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:0.5rem;">
-      <div class="rt-pipeline-row"><span>Transcription</span><span class="muted">${providerLabel}</span></div>
-      <div class="rt-pipeline-row"><span>${config.transcription_provider === "openai" ? "Model" : "Endpoint"}</span><span class="muted" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(providerDetail)}</span></div>
-      <div class="rt-pipeline-row"><span>Cadence</span><span class="muted">${config.cadence_seconds}s</span></div>
-      <div class="rt-pipeline-row"><span>Overlap</span><span class="muted">${config.overlap_seconds}s</span></div>
-    </div>
-  </section>`;
 }
 
 function configSummaryContent(config: RealtimeConfig): string {

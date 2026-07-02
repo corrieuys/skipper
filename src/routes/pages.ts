@@ -1,5 +1,9 @@
 import { addRoute } from "../server";
 import { getDb } from "../db/connection";
+import { escapeHtml } from "../html/atoms/escape-html";
+import { looksLikeHtml } from "../html/atoms/sniff-html";
+import { ArtifactManager } from "../orchestrator/artifact-manager";
+import { getConnectPublicBase, getPublicArtifactUrl } from "../connect/public-links";
 import { getRealtimeTeamId, listTeamsForStandardTasks } from "../config/teams";
 import { isTeamVisible, isExperimental } from "../config/feature-flags";
 import { listPreferences, setPreference } from "../notifications/store";
@@ -14,6 +18,7 @@ import {
   fetchDashboardRealtimeTimeline,
   fetchDashboardPhaseIndicatorTask,
   buildTeamAgentTiles,
+  getOpenEscalationCount,
 } from "../data/queries";
 export {
   fetchTasksWithTeams,
@@ -23,7 +28,6 @@ export {
   fetchDashboardRealtimeTimeline,
   fetchDashboardPhaseIndicatorTask,
 } from "../data/queries";
-// getRealtimeConfig import removed — was only used by v1 dashboard
 import {
   taskListPollingFragment,
   taskDetailSummaryFragment,
@@ -41,43 +45,34 @@ import { dashboardNotesFragment } from "../html/dashboardNotesFragment";
 import { dashboardChatCardFragment } from "../html/dashboardChatCardFragment";
 import { conversationListFragment } from "../html/conversationListFragment";
 import { chatFullscreenView } from "../html/chatFullscreenView";
-// dashboardPage import removed — v1 dashboard replaced by v2 command center
 import { dashboardRealtimeTimelineFragment } from "../html/dashboardRealtimeTimelineFragment";
 import { dashboardPhaseIndicatorFragment } from "../html/dashboardPhaseIndicatorFragment";
 import { dashboardActiveAgentsCountFragment } from "../html/dashboardActiveAgentsCountFragment";
 import { dashboardRunningInstancesFragment } from "../html/dashboardRunningInstancesFragment";
 import { selectDashboardFocusTasks } from "../html/selectDashboardFocusTasks";
-// v1 task page imports removed — replaced by v2 pages
 import { diagnosticCard } from "../html/diagnosticCard";
 import { dashboardActiveTaskFragment } from "../html/dashboardActiveTaskFragment";
-// configurationPage import removed — replaced by v2 config page
 import { helpPage } from "../html/pages/help.page";
 import { asteroidsPage } from "../html/pages/asteroids.page";
-import { dashboardSteerListFragment, type SteeringOption } from "../html/dashboardLatestSteerFragment";
+import { dashboardSteerListFragment, agentInstancesModalFragment, type SteeringOption } from "../html/dashboardLatestSteerFragment";
 import {
   getNumberSetting, setNumberSetting, SETTING_LOG_RETENTION_HOURS,
   getStringSetting, setStringSetting, getSetting,
-  SETTING_SKIPPER_CONNECT_GUID, SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_URL,
+  SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_URL,
 } from "../config/app-settings";
-import { dashboardSteerListFragment, agentInstancesModalFragment, type SteeringOption } from "../html/dashboardLatestSteerFragment";
-import { getNumberSetting, setNumberSetting, SETTING_LOG_RETENTION_HOURS } from "../config/app-settings";
 import { recentActivityFragment } from "../html/recentActivityFragment";
 import type {
   DashboardData,
   PollIntervalSeconds,
-  AgentData,
-  AgentInstanceSummary,
-  EscalationData,
   TaskNoteData,
   AuditEventData,
   AuditEventFilters,
   LogEntryData,
   LogFilters,
   RecentLogEntry,
-  RuntimeSteeringViewModel,
 } from "../html/components";
 import type { ManagerDaemon } from "../agents/manager-daemon";
-import { htmlResponse as html } from "./utils";
+import { htmlResponse as html, parseRequestBody } from "./utils";
 import { fetchLatestAssistantMessage } from "../ws/ui-push";
 
 const LOGS_PAGE_LIMIT = 1000;
@@ -93,63 +88,6 @@ export function getPollIntervalSeconds(db: ReturnType<typeof getDb>): PollInterv
   return (row.has_active_task === 1 || row.has_busy_agent === 1) ? 3 : 8;
 }
 
-
-function buildRuntimeSteeringViewModel(
-  agent: AgentData,
-  activeInstances: AgentInstanceSummary[],
-  daemon: Pick<ManagerDaemon, "listRuntimeSteeringOptions">,
-): RuntimeSteeringViewModel {
-  const steeringOptions = daemon.listRuntimeSteeringOptions(agent.id);
-  const steerableOptions = steeringOptions
-    .filter((option) => option.can_steer)
-    .map((option) => ({
-      id: option.id,
-      task_id: option.task_id,
-      task_title: option.task_title,
-      created_at: option.created_at,
-      session_id: option.session_id,
-    }));
-
-  const steeringById = new Map(steeringOptions.map((option) => [option.id, option]));
-  for (const instance of activeInstances) {
-    const steering = steeringById.get(instance.id);
-    instance.can_steer = steering?.can_steer ?? false;
-    instance.disabled_reason = steering?.disabled_reason ?? null;
-    instance.session_id = steering?.session_id ?? null;
-  }
-
-  if (steerableOptions.length > 0) {
-    return { enabled: true, reason: null, options: steerableOptions };
-  }
-
-  const disabledReason = steeringOptions.map((option) => option.disabled_reason).find((reason) => !!reason);
-  if (disabledReason) {
-    return { enabled: false, reason: disabledReason, options: [] };
-  }
-  if (activeInstances.length > 0) {
-    return { enabled: false, reason: "No active runtime is currently steerable.", options: [] };
-  }
-  return { enabled: false, reason: "No running runtime is available to steer.", options: [] };
-}
-
-function buildDashboardSteeringOptions(
-  agents: DashboardData["agents"],
-  daemon: Pick<ManagerDaemon, "listRuntimeSteeringOptions">,
-): NonNullable<DashboardData["dashboardSteeringOptions"]> {
-  return agents.flatMap((agent) =>
-    daemon.listRuntimeSteeringOptions(agent.id).map((option) => ({
-      template_agent_id: agent.id,
-      agent_name: agent.name,
-      runtime_id: option.id,
-      task_id: option.task_id,
-      task_title: option.task_title,
-      session_id: option.session_id,
-      can_steer: option.can_steer,
-      disabled_reason: option.disabled_reason,
-    })),
-  );
-}
-
 function getAgentRuntimeIds(db: ReturnType<typeof getDb>, templateAgentId: string): string[] {
   const runtimeRows = db.prepare(
     `SELECT id FROM agent_instances
@@ -163,8 +101,6 @@ function getAgentRuntimeIds(db: ReturnType<typeof getDb>, templateAgentId: strin
 export function registerPageRoutes(daemon: ManagerDaemon): void {
   const db = getDb();
 
-  // Old v1 Dashboard — replaced by v2 command center (now at /)
-  // addRoute("GET", "/", () => { ... });
 
   // Recent logs fragment (for SSE-triggered HTMX refresh fallback)
   addRoute("GET", "/api/logs/recent", () => {
@@ -195,10 +131,6 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return html(recentActivityFragment(recentLogs));
   });
 
-  // Old v1 Tasks routes — replaced by v2 (now at /tasks, /tasks/new, /tasks/:id)
-  // addRoute("GET", "/tasks", () => { ... });
-  // addRoute("GET", "/tasks/new", () => { ... });
-  // addRoute("GET", "/tasks/:id", () => { ... });
 
   addRoute("GET", "/fragments/tasks/list", () => {
     const tasks = fetchTasksWithTeams(db);
@@ -237,166 +169,47 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
   });
 
   // Artifact list fragment — shows only the latest version of each artifact name
-  addRoute("GET", "/fragments/tasks/:id/artifacts", (_req, params) => {
-    const taskId = params.id;
-    const rows = db.prepare(
-      `SELECT a.id, a.name, a.version, a.kind, a.description, a.created_at
-       FROM task_artifacts a
-       INNER JOIN (
-         SELECT name, MAX(version) AS max_version
-         FROM task_artifacts
-         WHERE task_id = ?
-         GROUP BY name
-       ) latest ON a.name = latest.name AND a.version = latest.max_version
-       WHERE a.task_id = ?
-       ORDER BY a.created_at DESC
-       LIMIT 50`,
-    ).all(taskId, taskId) as { id: string; name: string; version: number; kind: string; description: string | null; created_at: string }[];
+  const artifactManager = new ArtifactManager(db);
+  for (const variant of ARTIFACT_MODAL_VARIANTS) {
+    addRoute("GET", `${variant.routePrefix}/:id/artifacts`, (_req, params) =>
+      html(renderArtifactListFragment(db, params.id, variant)));
 
-    if (rows.length === 0) {
-      return html(`<p class="muted">No artifacts yet.</p>`);
+    addRoute("GET", `${variant.routePrefix}/:id/artifacts/:name`, (req, params) =>
+      html(renderArtifactDetailFragment(db, params.id, params.name, new URL(req.url).searchParams.get("version") ?? "latest", variant)));
+
+    for (const publishAction of ["publish", "unpublish"] as const) {
+      addRoute("POST", `${variant.routePrefix}/:id/artifacts/:name/${publishAction}`, (req, params) => {
+        const taskId = params.id ?? "";
+        const artifactName = params.name ?? "";
+        const versionParam = new URL(req.url).searchParams.get("version") ?? "latest";
+        const version = versionParam === "latest" ? "latest" : Number(versionParam);
+        const artifact = artifactManager.getArtifact(taskId, artifactName, version as "latest" | number);
+        // Publishing is experimental-only; ignore the action when the flag is off
+        // (the UI is hidden, this guards direct POSTs).
+        if (artifact && isExperimental()) {
+          if (publishAction === "publish") artifactManager.publishArtifact(artifact.id);
+          else artifactManager.unpublishArtifact(artifact.id);
+        }
+        // Swap the modal detail (primary target) AND re-render the artifacts list
+        // out-of-band, so its "published" badge stays in sync without a reload.
+        const detail = renderArtifactDetailFragment(db, taskId, artifactName, versionParam, variant);
+        const listOob = `<div id="${escapeHtml(variant.listId(taskId))}" hx-swap-oob="innerHTML">${renderArtifactListFragment(db, taskId, variant)}</div>`;
+        return html(detail + listOob);
+      });
     }
-
-    const tableRows = rows.map((r) =>
-      `<tr>
-        <td><a href="#" onclick="openTaskArtifactModal(); return false;" hx-get="/fragments/tasks/${escapeHtml(taskId)}/artifacts/${encodeURIComponent(r.name)}" hx-target="#task-artifact-modal-body" hx-swap="innerHTML">${escapeHtml(r.name)}</a></td>
-        <td>${escapeHtml(r.kind)}</td>
-        <td>v${r.version}</td>
-        <td>${formatTimestamp(r.created_at)}</td>
-      </tr>`,
-    ).join("");
-
-    return html(`<table class="data-table">
-      <thead><tr><th>Name</th><th>Kind</th><th>Version</th><th>Updated</th></tr></thead>
-      <tbody>${tableRows}</tbody>
-    </table>`);
-  });
-
-  // Artifact detail fragment
-  addRoute("GET", "/fragments/tasks/:id/artifacts/:name", (req, params) => {
-    const taskId = params.id;
-    const artifactName = params.name;
-    const url = new URL(req.url);
-    const versionParam = url.searchParams.get("version") ?? "latest";
-
-    let artifact: { id: string; name: string; version: number; kind: string; description: string | null; body: string | null; created_at: string } | null;
-    if (versionParam === "latest") {
-      artifact = db.prepare(
-        `SELECT * FROM task_artifacts WHERE task_id = ? AND name = ? ORDER BY version DESC LIMIT 1`,
-      ).get(taskId, artifactName) as typeof artifact;
-    } else {
-      artifact = db.prepare(
-        `SELECT * FROM task_artifacts WHERE task_id = ? AND name = ? AND version = ?`,
-      ).get(taskId, artifactName, Number(versionParam)) as typeof artifact;
-    }
-
-    if (!artifact) {
-      return html(`<p class="muted">Artifact not found.</p>`);
-    }
-
-    // Fetch all versions for navigation
-    const versions = db.prepare(
-      `SELECT version, created_at FROM task_artifacts WHERE task_id = ? AND name = ? ORDER BY version DESC`,
-    ).all(taskId, artifactName) as { version: number; created_at: string }[];
-
-    const versionLinks = versions.map((v) => {
-      const isCurrent = v.version === artifact!.version;
-      if (isCurrent) {
-        return `<span class="badge badge-info">v${v.version}</span>`;
-      }
-      return `<a href="#" onclick="openTaskArtifactModal(); return false;" hx-get="/fragments/tasks/${escapeHtml(taskId)}/artifacts/${encodeURIComponent(artifactName)}?version=${v.version}" hx-target="#task-artifact-modal-body" hx-swap="innerHTML" class="badge">v${v.version}</a>`;
-    }).join(" ");
-
-    return html(renderArtifactDetail(artifact, taskId, versionLinks));
-  });
-
-  // Dashboard artifact list (modal launcher)
-  addRoute("GET", "/fragments/dashboard/tasks/:id/artifacts", (_req, params) => {
-    const taskId = params.id;
-    const rows = db.prepare(
-      `SELECT a.id, a.name, a.version, a.kind, a.description, a.created_at
-       FROM task_artifacts a
-       INNER JOIN (
-         SELECT name, MAX(version) AS max_version
-         FROM task_artifacts
-         WHERE task_id = ?
-         GROUP BY name
-       ) latest ON a.name = latest.name AND a.version = latest.max_version
-       WHERE a.task_id = ?
-       ORDER BY a.created_at DESC
-       LIMIT 50`,
-    ).all(taskId, taskId) as { id: string; name: string; version: number; kind: string; description: string | null; created_at: string }[];
-
-    if (rows.length === 0) {
-      return html(`<p class="muted">No artifacts yet.</p>`);
-    }
-
-    const tableRows = rows.map((r) =>
-      `<tr>
-        <td><a href="#" onclick="openDashboardArtifactModal(); return false;" hx-get="/fragments/dashboard/tasks/${escapeHtml(taskId)}/artifacts/${encodeURIComponent(r.name)}" hx-target="#dashboard-artifact-modal-body" hx-swap="innerHTML">${escapeHtml(r.name)}</a></td>
-        <td>${escapeHtml(r.kind)}</td>
-        <td>v${r.version}</td>
-        <td>${formatTimestamp(r.created_at)}</td>
-      </tr>`,
-    ).join("");
-
-    return html(`<table class="data-table">
-      <thead><tr><th>Name</th><th>Kind</th><th>Version</th><th>Updated</th></tr></thead>
-      <tbody>${tableRows}</tbody>
-    </table>`);
-  });
-
-  // Dashboard artifact detail (modal body)
-  addRoute("GET", "/fragments/dashboard/tasks/:id/artifacts/:name", (req, params) => {
-    const taskId = params.id;
-    const artifactName = params.name;
-    const url = new URL(req.url);
-    const versionParam = url.searchParams.get("version") ?? "latest";
-
-    let artifact: { id: string; name: string; version: number; kind: string; description: string | null; body: string | null; created_at: string } | null;
-    if (versionParam === "latest") {
-      artifact = db.prepare(
-        `SELECT * FROM task_artifacts WHERE task_id = ? AND name = ? ORDER BY version DESC LIMIT 1`,
-      ).get(taskId, artifactName) as typeof artifact;
-    } else {
-      artifact = db.prepare(
-        `SELECT * FROM task_artifacts WHERE task_id = ? AND name = ? AND version = ?`,
-      ).get(taskId, artifactName, Number(versionParam)) as typeof artifact;
-    }
-
-    if (!artifact) {
-      return html(`<p class="muted">Artifact not found.</p>`);
-    }
-
-    const versions = db.prepare(
-      `SELECT version, created_at FROM task_artifacts WHERE task_id = ? AND name = ? ORDER BY version DESC`,
-    ).all(taskId, artifactName) as { version: number; created_at: string }[];
-
-    const versionLinks = versions.map((v) => {
-      const isCurrent = v.version === artifact!.version;
-      if (isCurrent) {
-        return `<span class="badge badge-info">v${v.version}</span>`;
-      }
-      return `<a href="#" onclick="openDashboardArtifactModal(); return false;" hx-get="/fragments/dashboard/tasks/${escapeHtml(taskId)}/artifacts/${encodeURIComponent(artifactName)}?version=${v.version}" hx-target="#dashboard-artifact-modal-body" hx-swap="innerHTML" class="badge">v${v.version}</a>`;
-    }).join(" ");
-
-    return html(renderArtifactDetail(artifact, taskId, versionLinks));
-  });
+  }
 
   addRoute("GET", "/fragments/tasks/:id/forensics", (_req, params) => {
     const forensics = fetchTaskForensics(db, params.id);
     return html(taskForensicsFragment(params.id, forensics, getPollIntervalSeconds(db)));
   });
 
-  // Old v1 Configuration page — replaced by v2 (now at /config)
-  // addRoute("GET", "/config", () => { ... });
 
   // Legacy redirects → unified config page
   addRoute("GET", "/skipper", () => {
     return new Response(null, { status: 302, headers: { Location: "/config" } });
   });
 
-  // Agents list (legacy redirect)
   addRoute("GET", "/agents", () => {
     return new Response(null, { status: 302, headers: { Location: "/config" } });
   });
@@ -406,7 +219,6 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return new Response(null, { status: 302, headers: { Location: `/agents/${params.id}/output` } });
   });
 
-  // Agent terminal output
   addRoute("GET", "/agents/:id/output", (req, params) => {
     const url = new URL(req.url);
     const sessionId = url.searchParams.get("session");
@@ -425,7 +237,6 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
         "SELECT stream, data, sequence FROM terminal_outputs WHERE agent_id = ? AND session_id = ? ORDER BY sequence",
       ).all(sessionOwner.agent_id, sessionId) as { stream: string; data: string; sequence: number }[];
     } else {
-      // Default: show latest session's output
       const latestSession = db.prepare(
         `SELECT id, agent_id
          FROM agent_sessions
@@ -466,99 +277,62 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return new Response(null, { status: 302, headers: { Location: "/config" } });
   });
 
-  // Old v1 Escalations page — replaced by v2 (now at /escalations)
-  // addRoute("GET", "/escalations", () => { ... });
 
-  // Escalation resolve
-  addRoute("POST", "/api/escalations/:id/resolve", async (req, params) => {
-    let body: Record<string, string>;
-    const contentType = req.headers.get("content-type") ?? "";
-    if (contentType.includes("application/x-www-form-urlencoded")) {
-      const formData = await req.formData();
-      body = {};
-      formData.forEach((value, key) => { body[key] = value.toString(); });
-    } else {
-      body = await req.json();
-    }
-    if (!body.response) {
-      return Response.json({ error: "response is required" }, { status: 400 });
-    }
-
+  // Escalation resolve/dismiss. Each action is registered twice: /api routes
+  // redirect home (full-page forms), /fragments routes return the single
+  // re-rendered card so htmx can swap #escalation-<id> in place. The navbar
+  // badge + dashboard panels are refreshed over WS by ui-push.ts.
+  const resolveEscalationAction = async (req: Request, id: string): Promise<string | null> => {
+    const body = await parseRequestBody<Record<string, string>>(req);
+    if (!body.response) return "response is required";
     try {
-      await daemon.resolveEscalation(params.id, body.response);
+      await daemon.resolveEscalation(id, body.response);
+      return null;
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Internal error";
-      return Response.json({ error: message }, { status: 400 });
+      return err instanceof Error ? err.message : "Internal error";
     }
+  };
 
+  const dismissEscalationAction = (id: string): string | null => {
+    try {
+      daemon.getEscalationManager().dismissEscalation(id);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : "Internal error";
+    }
+  };
+
+  const escalationRedirectResponse = (error: string | null): Response => {
+    if (error) return Response.json({ error }, { status: 400 });
     daemon.getEscalationManager().reconcileOpenEscalationsForInactiveTasks();
     return new Response(null, { status: 302, headers: { Location: "/" } });
-  });
+  };
 
-  addRoute("POST", "/api/escalations/:id/dismiss", (_req, params) => {
-    try {
-      daemon.getEscalationManager().dismissEscalation(params.id);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Internal error";
-      return Response.json({ error: message }, { status: 400 });
-    }
-
-    daemon.getEscalationManager().reconcileOpenEscalationsForInactiveTasks();
-    return new Response(null, { status: 302, headers: { Location: "/" } });
-  });
-
-  // Fragment routes: resolve/dismiss returning a single rendered card.
-  // Used by escalation-card.panel.ts on the task page and escalations queue page so
-  // htmx can swap just the card (#escalation-<id>) instead of the full page.
-  // The navbar badge + dashboard panels are refreshed over WS by ui-push.ts so we do
-  // not need to return any additional fragments here.
-  const fetchEscalationCard = (id: string): EscalationCardData | null => {
-    return db.prepare(
+  const escalationCardResponse = (error: string | null, id: string): Response => {
+    if (error) return new Response(error, { status: 400 });
+    const card = db.prepare(
       `SELECT e.id, e.agent_id, e.task_id, t.title AS task_title,
               e.type, e.question, e.status, e.response, e.created_at, e.resolved_at
        FROM escalations e
        LEFT JOIN tasks t ON t.id = e.task_id
        WHERE e.id = ?`,
     ).get(id) as EscalationCardData | null;
+    if (!card) return new Response("", { status: 200 });
+    return html(escalationCardPanel(card));
   };
 
-  addRoute("POST", "/fragments/escalations/:id/resolve", async (req, params) => {
-    let body: Record<string, string>;
-    const contentType = req.headers.get("content-type") ?? "";
-    if (contentType.includes("application/x-www-form-urlencoded")) {
-      const formData = await req.formData();
-      body = {};
-      formData.forEach((value, key) => { body[key] = value.toString(); });
-    } else {
-      body = await req.json();
-    }
-    if (!body.response) {
-      return new Response("response is required", { status: 400 });
-    }
-    try {
-      await daemon.resolveEscalation(params.id, body.response);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Internal error";
-      return new Response(message, { status: 400 });
-    }
-    const card = fetchEscalationCard(params.id);
-    if (!card) return new Response("", { status: 200 });
-    return html(escalationCardPanel(card));
-  });
+  addRoute("POST", "/api/escalations/:id/resolve", async (req, params) =>
+    escalationRedirectResponse(await resolveEscalationAction(req, params.id)));
 
-  addRoute("POST", "/fragments/escalations/:id/dismiss", (_req, params) => {
-    try {
-      daemon.getEscalationManager().dismissEscalation(params.id);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Internal error";
-      return new Response(message, { status: 400 });
-    }
-    const card = fetchEscalationCard(params.id);
-    if (!card) return new Response("", { status: 200 });
-    return html(escalationCardPanel(card));
-  });
+  addRoute("POST", "/api/escalations/:id/dismiss", (_req, params) =>
+    escalationRedirectResponse(dismissEscalationAction(params.id)));
 
-  // Agent Logs page
+  addRoute("POST", "/fragments/escalations/:id/resolve", async (req, params) =>
+    escalationCardResponse(await resolveEscalationAction(req, params.id), params.id));
+
+  addRoute("POST", "/fragments/escalations/:id/dismiss", (_req, params) =>
+    escalationCardResponse(dismissEscalationAction(params.id), params.id));
+
   addRoute("GET", "/logs", (req) => {
     const url = new URL(req.url);
     const filters: LogFilters = {};
@@ -586,7 +360,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
 
     const agents = db.prepare("SELECT id, name FROM agents ORDER BY name").all() as { id: string; name: string }[];
     const status = daemon.getStatus();
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+    const escalationCount = getOpenEscalationCount(db);
 
     return html(logsPage({
       entries,
@@ -598,21 +372,18 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     }));
   });
 
-  // Skipper config page
-  // Help page
   addRoute("GET", "/help", () => {
     const status = daemon.getStatus();
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+    const escalationCount = getOpenEscalationCount(db);
     return html(helpPage({ daemonState: status.state, daemonUptime: status.uptime, escalationCount }));
   });
 
   addRoute("GET", "/games/asteroids", () => {
     const status = daemon.getStatus();
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+    const escalationCount = getOpenEscalationCount(db);
     return html(asteroidsPage({ daemonState: status.state, daemonUptime: status.uptime, escalationCount }));
   });
 
-  // Events audit log
   addRoute("GET", "/audit-events", (req) => {
     const url = new URL(req.url);
     const filters: AuditEventFilters = {};
@@ -752,7 +523,6 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return html(recentActivityFragment(recentLogs));
   });
 
-  // Metrics fragment
   addRoute("GET", "/fragments/metrics", () => {
     const mttrRow = db.prepare(
       `SELECT AVG((julianday(completed_at) - julianday(started_at)) * 24 * 60) as mttr
@@ -973,7 +743,6 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return html(chatFullscreenView(conversations, params.id, messages));
   });
 
-  // Diagnostic route
   addRoute("GET", "/api/tasks/:id/diagnostic", (_req, params) => {
     const diagnostic = daemon.getHealthMonitor().generateWhyStuckDiagnostic(params.id);
     if (!diagnostic) {
@@ -992,10 +761,8 @@ function registerV2PageRoutes(): void {
   const { commandCenterPage, renderScheduledTaskDetail, renderScheduledRuns } = require("../html/pages/command-center.page");
   const { buildCommandCenterViewModel } = require("../html/view-models/command-center.vm");
   const { taskListPage } = require("../html/pages/task-list.page");
-  // task-execution.page and task-execution.vm removed — /tasks/:id redirects to dashboard
   const { agentTerminalPage } = require("../html/pages/agent-terminal.page");
   const { configPage } = require("../html/pages/config.page");
-  // agent-detail.page and team-detail.page removed — config uses inline edit fragments
   const { taskCreatePage } = require("../html/pages/task-create.page");
 
   const fetchScheduledOverride = (scheduledId: string) => {
@@ -1011,7 +778,6 @@ function registerV2PageRoutes(): void {
     return { scheduledTask: st, teams, runs };
   };
 
-  // Command Center (dashboard)
   addRoute("GET", "/", (req) => {
     const url = new URL(req.url);
     const selectedTask = url.searchParams.get("task") ?? undefined;
@@ -1045,7 +811,7 @@ function registerV2PageRoutes(): void {
     if (task.status === "draft") return html(renderDraftEdit(task, vm.teams));
     if ((task as any).task_type === "real_time") {
       const isSessionActive = vm.realtimeSessionActive?.get(task.id);
-      return html(realtimeTaskContent(task, isSessionActive));
+      return html(realtimeTaskContent(vm, task, isSessionActive));
     }
     return html(taskMainContent(vm, task));
   });
@@ -1091,7 +857,6 @@ function registerV2PageRoutes(): void {
     const url = new URL(req.url, "http://localhost");
     const instanceId = url.searchParams.get("instance");
 
-    // Find agent instances for this task
     let agentId: string | null = instanceId;
     if (!agentId) {
       const instances = db.prepare(
@@ -1283,7 +1048,7 @@ function registerV2PageRoutes(): void {
   addRoute("GET", "/tasks/new", () => {
     const teams = (db.prepare("SELECT id, name FROM teams ORDER BY name").all() as Array<{ id: string; name: string }>)
       .filter(t => isTeamVisible(t.id));
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+    const escalationCount = getOpenEscalationCount(db);
     const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
     return html(taskCreatePage({
       teams,
@@ -1301,7 +1066,7 @@ function registerV2PageRoutes(): void {
        FROM tasks t LEFT JOIN teams tm ON tm.id = t.team_id
        ORDER BY t.created_at DESC`
     ).all() as Array<{ id: string; title: string; status: string; current_phase: number; task_type: string; created_at: string; team_name: string | null }>;
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+    const escalationCount = getOpenEscalationCount(db);
     const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
     return html(taskListPage({ tasks, escalationCount, daemonState: pausedRow?.value === "true" ? "paused" : "running", daemonUptime: process.uptime() }));
   });
@@ -1324,7 +1089,7 @@ function registerV2PageRoutes(): void {
 
     const task = db.prepare("SELECT title FROM tasks WHERE id = ?").get(inst.task_id) as { title: string } | null;
     const lineCount = (db.prepare("SELECT COUNT(*) as c FROM terminal_outputs WHERE agent_id = ?").get(inst.id) as { c: number }).c;
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+    const escalationCount = getOpenEscalationCount(db);
     const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
 
     return html(agentTerminalPage({
@@ -1344,7 +1109,7 @@ function registerV2PageRoutes(): void {
   // Configuration Overview
   addRoute("GET", "/config", () => {
     const { listLocalTeams } = require("../teams/local-teams");
-    const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+    const escalationCount = getOpenEscalationCount(db);
     const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
     const { getModelSettingsView } = require("../config/model-settings");
     return html(configPage({
@@ -1354,9 +1119,8 @@ function registerV2PageRoutes(): void {
       daemonState: pausedRow?.value === "true" ? "paused" : "running",
       daemonUptime: process.uptime(),
       escalationCount,
-      skipperConnectGuid: getStringSetting(db, SETTING_SKIPPER_CONNECT_GUID, ""),
       skipperConnectHasKey: !!getSetting(db, SETTING_SKIPPER_CONNECT_KEY),
-      skipperConnectUrl: getStringSetting(db, SETTING_SKIPPER_CONNECT_URL, "wss://connect.letskipper.work"),
+      skipperConnectUrl: getStringSetting(db, SETTING_SKIPPER_CONNECT_URL, ""),
       modelSettings: getModelSettingsView(db),
     }));
   });
@@ -1412,11 +1176,9 @@ function registerV2PageRoutes(): void {
   addRoute("POST", "/api/config/skipper-connect", async (req) => {
     const formData = await req.formData();
     const url = (formData.get("url") ?? "").toString().trim();
-    const guid = (formData.get("guid") ?? "").toString().trim();
     const key = (formData.get("key") ?? "").toString().trim();
 
     if (url) setStringSetting(db, SETTING_SKIPPER_CONNECT_URL, url);
-    if (guid) setStringSetting(db, SETTING_SKIPPER_CONNECT_GUID, guid);
     if (key) setStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, key);
 
     return new Response(null, { status: 204 });
@@ -1446,7 +1208,7 @@ function registerV2PageRoutes(): void {
     const globalStore = new GlobalStoreManager(db);
 
     addRoute("GET", "/global-store", () => {
-      const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+      const escalationCount = getOpenEscalationCount(db);
       const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
       return html(globalStorePage({
         rows: globalStore.query({}),
@@ -1496,7 +1258,7 @@ function registerV2PageRoutes(): void {
     const { listAgentTypes } = require("../config/store");
 
     const daemonMeta = () => {
-      const escalationCount = (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+      const escalationCount = getOpenEscalationCount(db);
       const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
       return {
         escalationCount,
@@ -1505,11 +1267,14 @@ function registerV2PageRoutes(): void {
       };
     };
 
+    const { isAllowedProvider } = require("../config/model-settings");
     const agentTypeChoices = () =>
-      (listAgentTypes() as Array<{ name: string; available_models: string[] }>).map((t) => ({
-        name: t.name,
-        models: Array.isArray(t.available_models) ? t.available_models : [],
-      }));
+      (listAgentTypes() as Array<{ name: string; available_models: string[] }>)
+        .filter((t) => isAllowedProvider(t.name))
+        .map((t) => ({
+          name: t.name,
+          models: Array.isArray(t.available_models) ? t.available_models : [],
+        }));
 
     // Redirect the old list path to the Config page where teams now live.
     addRoute("GET", "/local-teams", () => {
@@ -1638,28 +1403,168 @@ function registerV2PageRoutes(): void {
 
 }
 
+// The task page and dashboard render the same artifact modal; only the route
+// prefix, the JS opener, and the swap target differ.
+interface ArtifactModalVariant {
+  routePrefix: string;
+  openFn: string;
+  target: string;
+  /** DOM id of the artifacts list container for this surface, so publish /
+   *  unpublish can re-render it out-of-band (the badge lives in the list). */
+  listId: (taskId: string) => string;
+}
+
+const ARTIFACT_MODAL_VARIANTS: ArtifactModalVariant[] = [
+  { routePrefix: "/fragments/tasks", openFn: "openTaskArtifactModal", target: "#task-artifact-modal-body", listId: (id) => `mc-artifacts-${id}` },
+  { routePrefix: "/fragments/dashboard/tasks", openFn: "openDashboardArtifactModal", target: "#dashboard-artifact-modal-body", listId: () => "dashboard-artifact-list" },
+];
+
+interface ArtifactRow {
+  id: string;
+  name: string;
+  version: number;
+  kind: string;
+  description: string | null;
+  created_at: string;
+}
+
+interface ArtifactListRow extends ArtifactRow {
+  has_published: number;
+}
+
+function artifactModalLink(variant: ArtifactModalVariant, taskId: string, name: string, version?: number): string {
+  const versionQuery = version === undefined ? "" : `?version=${version}`;
+  return `onclick="${variant.openFn}(); return false;" hx-get="${variant.routePrefix}/${escapeHtml(taskId)}/artifacts/${encodeURIComponent(name)}${versionQuery}" hx-target="${variant.target}" hx-swap="innerHTML"`;
+}
+
+function renderArtifactListFragment(db: ReturnType<typeof getDb>, taskId: string, variant: ArtifactModalVariant): string {
+  const rows = db.prepare(
+    `SELECT a.id, a.name, a.version, a.kind, a.description, a.created_at,
+       EXISTS(
+         SELECT 1 FROM task_artifacts p
+         WHERE p.task_id = a.task_id AND p.name = a.name AND p.published_at IS NOT NULL
+       ) AS has_published
+     FROM task_artifacts a
+     INNER JOIN (
+       SELECT name, MAX(version) AS max_version
+       FROM task_artifacts
+       WHERE task_id = ?
+       GROUP BY name
+     ) latest ON a.name = latest.name AND a.version = latest.max_version
+     WHERE a.task_id = ?
+     ORDER BY a.created_at DESC
+     LIMIT 50`,
+  ).all(taskId, taskId) as ArtifactListRow[];
+
+  if (rows.length === 0) {
+    return `<p class="muted">No artifacts yet.</p>`;
+  }
+
+  const showPublished = isExperimental();
+  const tableRows = rows.map((r) =>
+    `<tr>
+      <td><a href="#" ${artifactModalLink(variant, taskId, r.name)}>${escapeHtml(r.name)}</a>${showPublished && r.has_published ? ` <span class="badge badge-published" title="Has a published version">published</span>` : ""}</td>
+      <td>${escapeHtml(r.kind)}</td>
+      <td>v${r.version}</td>
+      <td>${formatTimestamp(r.created_at)}</td>
+    </tr>`,
+  ).join("");
+
+  return `<table class="data-table">
+    <thead><tr><th>Name</th><th>Kind</th><th>Version</th><th>Updated</th></tr></thead>
+    <tbody>${tableRows}</tbody>
+  </table>`;
+}
+
+function renderArtifactDetailFragment(
+  db: ReturnType<typeof getDb>,
+  taskId: string,
+  artifactName: string,
+  versionParam: string,
+  variant: ArtifactModalVariant,
+): string {
+  let artifact: (ArtifactRow & { body: string | null; publish_key: string | null; published_at: string | null }) | null;
+  if (versionParam === "latest") {
+    artifact = db.prepare(
+      `SELECT * FROM task_artifacts WHERE task_id = ? AND name = ? ORDER BY version DESC LIMIT 1`,
+    ).get(taskId, artifactName) as typeof artifact;
+  } else {
+    artifact = db.prepare(
+      `SELECT * FROM task_artifacts WHERE task_id = ? AND name = ? AND version = ?`,
+    ).get(taskId, artifactName, Number(versionParam)) as typeof artifact;
+  }
+
+  if (!artifact) {
+    return `<p class="muted">Artifact not found.</p>`;
+  }
+
+  const versions = db.prepare(
+    `SELECT version, created_at, published_at FROM task_artifacts WHERE task_id = ? AND name = ? ORDER BY version DESC`,
+  ).all(taskId, artifactName) as { version: number; created_at: string; published_at: string | null }[];
+
+  const versionsShowPublished = isExperimental();
+  const versionLinks = versions.map((v) => {
+    const publishedMark = versionsShowPublished && v.published_at ? `<span title="Published">&#128279;</span>` : "";
+    if (v.version === artifact!.version) {
+      return `<span class="badge badge-info">v${v.version}${publishedMark}</span>`;
+    }
+    return `<a href="#" ${artifactModalLink(variant, taskId, artifactName, v.version)} class="badge">v${v.version}${publishedMark}</a>`;
+  }).join(" ");
+
+  const publish = {
+    isPublished: artifact.published_at != null,
+    publicUrl: artifact.published_at != null ? getPublicArtifactUrl(db, artifact) : null,
+    connectConfigured: getConnectPublicBase(db) != null,
+  };
+
+  return renderArtifactDetail(artifact, taskId, versionLinks, variant, publish);
+}
+
 function renderArtifactDetail(
   artifact: { id: string; name: string; version: number; kind: string; description: string | null; body: string | null; created_at: string },
   taskId: string,
   versionLinks: string,
+  variant: ArtifactModalVariant,
+  publish: { isPublished: boolean; publicUrl: string | null; connectConfigured: boolean },
 ): string {
   const bodyContent = artifact.body ? escapeHtml(artifact.body) : "(empty)";
   const rawBody = artifact.body ?? "";
-  const isHtml = /^\s*<[a-zA-Z]/.test(rawBody) || /<(h[1-6]|p|div|table|ul|ol|blockquote|pre|section|article|header|footer|nav|figure|details)\b/i.test(rawBody);
-  const renderedBody = isHtml
+  const renderedBody = looksLikeHtml(rawBody)
     ? rawBody.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
     : `<div class="artifact-body-markdown" data-artifact-md>${escapeHtml(rawBody)}</div>`;
 
+  // Artifact publishing (public Skipper Connect links) is experimental-only; the
+  // whole surface (button, badge, public URL) is hidden unless the flag is on.
+  const publishEnabled = isExperimental();
+  const publishRoute = (action: "publish" | "unpublish") =>
+    `hx-post="${variant.routePrefix}/${escapeHtml(taskId)}/artifacts/${encodeURIComponent(artifact.name)}/${action}?version=${artifact.version}" hx-target="${variant.target}" hx-swap="innerHTML"`;
+  const publishButton = !publishEnabled
+    ? ""
+    : publish.isPublished
+      ? `<button type="button" class="btn-sm" ${publishRoute("unpublish")}>Unpublish</button>`
+      : publish.connectConfigured
+        ? `<button type="button" class="btn-sm" ${publishRoute("publish")}>Publish</button>`
+        : `<button type="button" class="btn-sm" disabled title="Configure Skipper Connect first">Publish</button>`;
+  const publishedBadge = publishEnabled && publish.isPublished ? ` <span class="badge badge-published">Published</span>` : "";
+  const publicUrlRow = publishEnabled && publish.isPublished && publish.publicUrl
+    ? `<div class="artifact-public-url" style="display:flex;gap:var(--sk-space-2);align-items:center;margin:var(--sk-space-2) 0;">
+        <input type="text" readonly class="sk-input" style="flex:1;font-size:0.75rem;" value="${escapeHtml(publish.publicUrl)}" onclick="this.select();">
+        <button type="button" class="btn-sm" onclick="navigator.clipboard.writeText(this.previousElementSibling.value); this.textContent='Copied';">Copy link</button>
+      </div>`
+    : "";
+
   return `<div class="artifact-detail">
     <div class="artifact-detail-header">
-      <h3>${escapeHtml(artifact.name)} <span class="badge badge-info">v${artifact.version}</span></h3>
+      <h3>${escapeHtml(artifact.name)} <span class="badge badge-info">v${artifact.version}</span>${publishedBadge}</h3>
       <div style="display:flex;gap:0.5rem;align-items:center;">
+        ${publishButton}
         <button type="button" class="btn-sm" data-sk-artifact-toggle data-mode="rendered">Raw</button>
         <button type="button" class="btn-sm" data-sk-artifact-edit>Edit</button>
       </div>
     </div>
     <p class="muted">${escapeHtml(artifact.kind)} &middot; ${formatTimestamp(artifact.created_at)}${artifact.description ? ` &middot; ${escapeHtml(artifact.description)}` : ""}</p>
     <div class="artifact-versions">Versions: ${versionLinks}</div>
+    ${publicUrlRow}
     <div class="artifact-body artifact-rendered">${renderedBody}</div>
     <pre class="artifact-body artifact-raw" style="display:none;"><code>${bodyContent}</code></pre>
     <div class="artifact-edit" style="display:none;">
@@ -1672,13 +1577,4 @@ function renderArtifactDetail(
       </div>
     </div>
   </div>`;
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }

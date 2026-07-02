@@ -31,7 +31,6 @@ export class MonkeyEngine {
   private seenNotesInitialized = false;
   private lastContextFingerprint = "";
   private isIdle = false;
-  // Where the user is typing right now — fed to greg so he can roast it.
   private currentFocus: { field: string; value: string; at: number } | null = null;
 
   constructor(private readonly db: Database, private readonly gregDb: Database) {}
@@ -147,7 +146,6 @@ export class MonkeyEngine {
     this.tick().catch(() => {});
   }
 
-  // Format the live typing signal for the brain, if recent (<20s old).
   private currentFocusLine(): string | null {
     const f = this.currentFocus;
     if (!f) return null;
@@ -191,11 +189,9 @@ export class MonkeyEngine {
       this.lastTaskDetail = this.lastDashboard.activeTask;
       let taskContext = this.formatDashboardContext(this.lastDashboard);
 
-      // What the user is typing right now (recent only) — prime roast material.
       const focus = this.currentFocusLine();
       if (focus) taskContext += `\n${focus}`;
 
-      // Detect idle: nothing changed in DOM, task context, or events
       const fp = JSON.stringify([
         this.lastDOMSections.map(s => s.id + s.label + (s.content || "").slice(0, 30)),
         taskContext,
@@ -247,7 +243,6 @@ export class MonkeyEngine {
     };
 
     try {
-      // All running tasks (full detail, scoped per task)
       const tasks = this.db.prepare(
         "SELECT id, title, status, current_phase FROM tasks WHERE status = 'running' ORDER BY updated_at DESC LIMIT 5",
       ).all() as { id: string; title: string; status: string; current_phase: number }[];
@@ -261,7 +256,6 @@ export class MonkeyEngine {
           "SELECT COUNT(*) as c FROM delegation_groups WHERE task_id = ? AND status = 'running'",
         ).get(task.id) as { c: number })?.c ?? 0;
 
-        // Scoped to this task's agent instances
         const recentOutputRow = this.db.prepare(
           `SELECT data FROM terminal_outputs
            WHERE agent_id IN (SELECT id FROM agent_instances WHERE task_id = ?) AND stream = 'stdout'
@@ -307,14 +301,12 @@ export class MonkeyEngine {
       // Keep activeTask as first running task for backward compat (reply context etc.)
       ctx.activeTask = ctx.activeTasks[0] ?? null;
 
-      // Recent tasks (completed/failed — grug can comment on what just happened)
       ctx.recentTasks = this.db.prepare(
         `SELECT title, status, updated_at AS updatedAt FROM tasks
          WHERE status IN ('completed', 'failed', 'approved', 'draft')
          ORDER BY updated_at DESC LIMIT 5`,
       ).all() as RecentTaskInfo[];
 
-      // Scheduled tasks
       try {
         ctx.scheduledTasks = this.db.prepare(
           `SELECT title, status, schedule_amount, schedule_unit, next_run_at, last_run_at
@@ -329,17 +321,14 @@ export class MonkeyEngine {
         })) as ScheduledTaskInfo[];
       } catch { }
 
-      // Global agent count
       ctx.totalAgentsRunning = (this.db.prepare(
         "SELECT COUNT(*) as c FROM agent_instances WHERE status = 'running'",
       ).get() as { c: number })?.c ?? 0;
 
-      // Open escalations
       ctx.openEscalations = (this.db.prepare(
         "SELECT COUNT(*) as c FROM escalations WHERE status = 'open'",
       ).get() as { c: number })?.c ?? 0;
 
-      // New notes since last tick
       try {
         const allRecent = this.db.prepare(
           `SELECT n.id, COALESCE(a.name, n.agent_id) AS agent, n.content, n.created_at,

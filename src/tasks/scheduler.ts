@@ -26,7 +26,7 @@ export interface Task {
   description: string | null;
   team_id: string | null;
   working_directory: string;
-  status: "draft" | "approved" | "running" | "completed" | "failed";
+  status: "draft" | "approved" | "running" | "paused" | "completed" | "failed";
   current_phase: number;
   result: unknown | null;
   orchestration_state: Record<string, unknown>;
@@ -151,12 +151,23 @@ export class TaskScheduler {
     return rows.map(rowToTask);
   }
 
-  updateTask(id: string, input: UpdateTaskInput): Task {
+  private requireTask(id: string): Task {
     const task = this.getTask(id);
     if (!task) throw new Error(`Task not found: ${id}`);
-    if (task.status !== "draft") {
-      throw new Error(`Can only edit draft tasks, current status: ${task.status}`);
+    return task;
+  }
+
+  /** Guard shared by every lifecycle transition: task exists and is in `status`. */
+  private requireTaskStatus(id: string, status: Task["status"], action: string): Task {
+    const task = this.requireTask(id);
+    if (task.status !== status) {
+      throw new Error(`Can only ${action}, current status: ${task.status}`);
     }
+    return task;
+  }
+
+  updateTask(id: string, input: UpdateTaskInput): Task {
+    const task = this.requireTaskStatus(id, "draft", "edit draft tasks");
 
     const taskType = input.taskType ?? task.task_type;
     const taskConfig = input.taskConfig ? JSON.stringify(input.taskConfig) : JSON.stringify(task.task_config);
@@ -183,11 +194,7 @@ export class TaskScheduler {
   }
 
   approveTask(id: string): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
-    if (task.status !== "draft") {
-      throw new Error(`Can only approve draft tasks, current status: ${task.status}`);
-    }
+    const task = this.requireTaskStatus(id, "draft", "approve draft tasks");
     if (task.task_type !== "real_time" && !task.team_id) {
       throw new Error("Task must have a team assigned before approval");
     }
@@ -213,11 +220,7 @@ export class TaskScheduler {
   }
 
   unapproveTask(id: string): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
-    if (task.status !== "approved") {
-      throw new Error(`Can only unapprove approved tasks, current status: ${task.status}`);
-    }
+    this.requireTaskStatus(id, "approved", "unapprove approved tasks");
 
     const changes = this.db
       .prepare(
@@ -240,8 +243,7 @@ export class TaskScheduler {
   }
 
   deleteTask(id: string): boolean {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
+    const task = this.requireTask(id);
     if (task.status === "running") {
       throw new Error("Cannot delete a running task");
     }
@@ -288,11 +290,7 @@ export class TaskScheduler {
   }
 
   startTask(id: string): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
-    if (task.status !== "approved") {
-      throw new Error(`Can only start approved tasks, current status: ${task.status}`);
-    }
+    this.requireTaskStatus(id, "approved", "start approved tasks");
 
     const changes = this.db
       .prepare(
@@ -315,11 +313,7 @@ export class TaskScheduler {
   }
 
   completeTask(id: string, result?: unknown): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
-    if (task.status !== "running") {
-      throw new Error(`Can only complete running tasks, current status: ${task.status}`);
-    }
+    const task = this.requireTaskStatus(id, "running", "complete running tasks");
 
     // Instrumentation: log the call site of every completeTask so we can
     // identify which path completed a task when something looks wrong
@@ -339,32 +333,14 @@ export class TaskScheduler {
            WHERE id = ?`,
         )
         .run(result ? JSON.stringify(result) : null, id);
-      this.db
-        .prepare(
-          `UPDATE agent_instances
-           SET status = CASE WHEN status IN ('running', 'waiting_delegation', 'pending') THEN 'completed' ELSE status END,
-               updated_at = datetime('now')
-           WHERE task_id = ?`,
-        )
-        .run(id);
-      this.db
-        .prepare(
-          `UPDATE delegations
-           SET status = CASE WHEN status IN ('running', 'waiting_delegation', 'pending') THEN 'completed' ELSE status END,
-               completed_at = COALESCE(completed_at, datetime('now')),
-               result = COALESCE(result, '(auto-closed: task completed before delegation settled)')
-           WHERE task_id = ?`,
-        )
-        .run(id);
-      this.db
-        .prepare(
-          "UPDATE delegation_groups SET status = 'completed', completed_at = datetime('now') WHERE task_id = ? AND status = 'running'",
-        )
-        .run(id);
-      this.db
-        .prepare("UPDATE agents SET current_task_id = NULL WHERE current_task_id = ?")
-        .run(id);
-      this.resolveOpenEscalationsForTask(id, "Auto-resolved: task completed.");
+      this.finalizeTaskRuntime(id, {
+        instanceStatus: "completed",
+        delegationStatus: "completed",
+        delegationActiveStatuses: ["running", "waiting_delegation", "pending"],
+        delegationResult: "(auto-closed: task completed before delegation settled)",
+        clearAgentPointer: true,
+        escalationResponse: "Auto-resolved: task completed.",
+      });
     })();
 
     const updated = this.getTask(id)!;
@@ -377,11 +353,7 @@ export class TaskScheduler {
   }
 
   failTask(id: string, error?: string): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
-    if (task.status !== "running") {
-      throw new Error(`Can only fail running tasks, current status: ${task.status}`);
-    }
+    this.requireTaskStatus(id, "running", "fail running tasks");
 
     const result = error ? JSON.stringify({ error }) : null;
 
@@ -392,32 +364,14 @@ export class TaskScheduler {
            WHERE id = ?`,
         )
         .run(result, id);
-      this.db
-        .prepare(
-          `UPDATE agent_instances
-           SET status = CASE WHEN status IN ('running', 'waiting_delegation', 'pending') THEN 'failed' ELSE status END,
-               updated_at = datetime('now')
-           WHERE task_id = ?`,
-        )
-        .run(id);
-      this.db
-        .prepare(
-          `UPDATE delegations
-           SET status = CASE WHEN status IN ('pending', 'running') THEN 'failed' ELSE status END,
-               completed_at = COALESCE(completed_at, datetime('now')),
-               result = COALESCE(result, 'Task cancelled before delegation settled')
-           WHERE task_id = ?`,
-        )
-        .run(id);
-      this.db
-        .prepare(
-          "UPDATE delegation_groups SET status = 'completed', completed_at = datetime('now') WHERE task_id = ? AND status = 'running'",
-        )
-        .run(id);
-      this.db
-        .prepare("UPDATE agents SET current_task_id = NULL WHERE current_task_id = ?")
-        .run(id);
-      this.resolveOpenEscalationsForTask(id, "Auto-resolved: task failed.");
+      this.finalizeTaskRuntime(id, {
+        instanceStatus: "failed",
+        delegationStatus: "failed",
+        delegationActiveStatuses: ["pending", "running"],
+        delegationResult: "Task cancelled before delegation settled",
+        clearAgentPointer: true,
+        escalationResponse: "Auto-resolved: task failed.",
+      });
     })();
 
     const updated = this.getTask(id)!;
@@ -430,11 +384,7 @@ export class TaskScheduler {
   }
 
   retryTask(id: string): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
-    if (task.status !== "failed") {
-      throw new Error(`Can only retry failed tasks, current status: ${task.status}`);
-    }
+    this.requireTaskStatus(id, "failed", "retry failed tasks");
     this.resetTaskRuntimeData(id);
 
     this.db
@@ -455,11 +405,7 @@ export class TaskScheduler {
   }
 
   resumeTask(id: string): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
-    if (task.status !== "failed") {
-      throw new Error(`Can only resume failed tasks, current status: ${task.status}`);
-    }
+    this.requireTaskStatus(id, "failed", "resume failed tasks");
     // Resume MUST keep notes, escalations, checkpoints, and events — the
     // resumed Skipper relies on them (and on the artifact list) to figure
     // out what was already done. retryTask still wipes them for a clean
@@ -485,18 +431,13 @@ export class TaskScheduler {
   }
 
   iterateTask(id: string, additionalInput: string): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
-    if (task.status !== "completed") {
-      throw new Error(`Can only iterate completed tasks, current status: ${task.status}`);
-    }
+    const task = this.requireTaskStatus(id, "completed", "iterate completed tasks");
     if (!additionalInput.trim()) {
       throw new Error("Additional input is required for iteration");
     }
 
     const newIteration = (task.iteration_count ?? 0) + 1;
 
-    // Preserve previous result as a note
     if (task.result) {
       // Find a valid agent_id to attribute the note to (entrypoint or first team member)
       const noteAgent = this.db.prepare(
@@ -520,7 +461,6 @@ export class TaskScheduler {
       }
     }
 
-    // Append iteration input to description
     const separator = `\n\n---\nITERATION ${newIteration} (${new Date().toISOString()}):\n`;
     const newDescription = (task.description ?? "") + separator + additionalInput;
 
@@ -528,7 +468,6 @@ export class TaskScheduler {
       // Clear stale checkpoints only (not notes, not instances, not delegations)
       this.db.prepare("DELETE FROM task_checkpoints WHERE task_id = ?").run(id);
 
-      // Update task state
       this.db.prepare(
         `UPDATE tasks SET
            status = 'approved',
@@ -545,7 +484,6 @@ export class TaskScheduler {
          WHERE id = ?`,
       ).run(newDescription, newIteration, id);
 
-      // Clear agent assignments
       this.db.prepare(
         `UPDATE agents SET current_task_id = NULL
          WHERE current_task_id = ?`,
@@ -573,8 +511,7 @@ export class TaskScheduler {
   }
 
   cancelTask(id: string): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
+    const task = this.requireTask(id);
     if (task.status === "completed" || task.status === "failed") {
       throw new Error(`Cannot cancel a ${task.status} task`);
     }
@@ -588,29 +525,14 @@ export class TaskScheduler {
            WHERE id = ?`,
         )
         .run(JSON.stringify({ error: "Cancelled by user" }), id);
-      this.db
-        .prepare(
-          `UPDATE agent_instances
-           SET status = CASE WHEN status IN ('running', 'waiting_delegation', 'pending') THEN 'failed' ELSE status END,
-               updated_at = datetime('now')
-           WHERE task_id = ?`,
-        )
-        .run(id);
-      this.db
-        .prepare(
-          `UPDATE delegations
-           SET status = CASE WHEN status IN ('pending', 'running') THEN 'failed' ELSE status END,
-               completed_at = COALESCE(completed_at, datetime('now')),
-               result = COALESCE(result, 'Task failed before delegation settled')
-           WHERE task_id = ?`,
-        )
-        .run(id);
-      this.db
-        .prepare(
-          "UPDATE delegation_groups SET status = 'completed', completed_at = datetime('now') WHERE task_id = ? AND status = 'running'",
-        )
-        .run(id);
-      this.resolveOpenEscalationsForTask(id, "Auto-resolved: task cancelled.");
+      this.finalizeTaskRuntime(id, {
+        instanceStatus: "failed",
+        delegationStatus: "failed",
+        delegationActiveStatuses: ["pending", "running"],
+        delegationResult: "Task failed before delegation settled",
+        clearAgentPointer: false,
+        escalationResponse: "Auto-resolved: task cancelled.",
+      });
     })();
 
     const updated = this.getTask(id)!;
@@ -627,11 +549,7 @@ export class TaskScheduler {
   // a terminal state so the resumed root re-drives delegation fresh. Escalations
   // and result are deliberately left intact — this is NOT a terminal cancel.
   pauseTask(id: string): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
-    if (task.status !== "running") {
-      throw new Error(`Can only pause a running task, current status: ${task.status}`);
-    }
+    this.requireTaskStatus(id, "running", "pause a running task");
 
     let changed = 0;
     this.db.transaction(() => {
@@ -672,11 +590,7 @@ export class TaskScheduler {
   // Resume a paused task: flips status paused→running (the daemon respawns the
   // snapshotted agents with --resume separately).
   resumeFromPause(id: string): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
-    if (task.status !== "paused") {
-      throw new Error(`Can only resume a paused task, current status: ${task.status}`);
-    }
+    this.requireTaskStatus(id, "paused", "resume a paused task");
 
     const changed = this.db
       .prepare(
@@ -705,8 +619,7 @@ export class TaskScheduler {
   }
 
   advancePhase(id: string): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
+    const task = this.requireTask(id);
     if (task.status !== "running") {
       throw new Error(`Can only advance phase on running tasks`);
     }
@@ -734,8 +647,7 @@ export class TaskScheduler {
   }
 
   setNeedsReview(id: string, value: boolean, phaseContext?: { phaseName: string; phaseIndex: number }): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
+    const task = this.requireTask(id);
     if (task.status !== "running") {
       throw new Error(`Can only set review on running tasks`);
     }
@@ -762,8 +674,7 @@ export class TaskScheduler {
   }
 
   regressPhase(id: string, targetPhase: number): Task {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
+    const task = this.requireTask(id);
     if (task.status !== "running") {
       throw new Error(`Can only regress phase on running tasks`);
     }
@@ -782,8 +693,7 @@ export class TaskScheduler {
   }
 
   updateOrchestrationState(id: string, key: string, value: unknown): void {
-    const task = this.getTask(id);
-    if (!task) throw new Error(`Task not found: ${id}`);
+    const task = this.requireTask(id);
 
     const state = { ...task.orchestration_state, [key]: value };
 
@@ -892,6 +802,54 @@ export class TaskScheduler {
            )`,
       )
       .run();
+  }
+
+  /**
+   * Close out live instances, delegations, and delegation groups when a task
+   * reaches a terminal state. Runs inside the caller's transaction. The
+   * delegation active-status sets and result messages differ per transition
+   * and are preserved verbatim from the original per-method SQL.
+   */
+  private finalizeTaskRuntime(
+    id: string,
+    opts: {
+      instanceStatus: "completed" | "failed";
+      delegationStatus: "completed" | "failed";
+      delegationActiveStatuses: readonly ("pending" | "running" | "waiting_delegation")[];
+      delegationResult: string;
+      clearAgentPointer: boolean;
+      escalationResponse: string;
+    },
+  ): void {
+    const activeIn = opts.delegationActiveStatuses.map((s) => `'${s}'`).join(", ");
+    this.db
+      .prepare(
+        `UPDATE agent_instances
+         SET status = CASE WHEN status IN ('running', 'waiting_delegation', 'pending') THEN '${opts.instanceStatus}' ELSE status END,
+             updated_at = datetime('now')
+         WHERE task_id = ?`,
+      )
+      .run(id);
+    this.db
+      .prepare(
+        `UPDATE delegations
+         SET status = CASE WHEN status IN (${activeIn}) THEN '${opts.delegationStatus}' ELSE status END,
+             completed_at = COALESCE(completed_at, datetime('now')),
+             result = COALESCE(result, ?)
+         WHERE task_id = ?`,
+      )
+      .run(opts.delegationResult, id);
+    this.db
+      .prepare(
+        "UPDATE delegation_groups SET status = 'completed', completed_at = datetime('now') WHERE task_id = ? AND status = 'running'",
+      )
+      .run(id);
+    if (opts.clearAgentPointer) {
+      this.db
+        .prepare("UPDATE agents SET current_task_id = NULL WHERE current_task_id = ?")
+        .run(id);
+    }
+    this.resolveOpenEscalationsForTask(id, opts.escalationResponse);
   }
 
   private resolveOpenEscalationsForTask(taskId: string, response: string): void {

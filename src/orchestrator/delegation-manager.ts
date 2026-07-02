@@ -6,6 +6,7 @@ import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/typ
 import { getEntrypointAgentId } from "../agents/skipper";
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
+import { updateInstanceStatus } from "../agents/instance-status";
 import { resolvePhaseConfig } from "./phase-config";
 
 const CHILD_RETRY_LIMIT = 1;
@@ -64,6 +65,19 @@ interface DelegationBatchItem {
   label?: string;
 }
 
+/** Validated parent/task context every delegation-batch step operates on. */
+interface DelegationBatchContext {
+  parentTemplateId: string;
+  parentInstanceId: string;
+  taskId: string;
+  isRealtime: boolean;
+}
+
+interface EligibleDelegationItem {
+  item: DelegationBatchItem;
+  childAgent: NonNullable<ReturnType<AgentManager["getAgent"]>>;
+}
+
 interface DelegationGroupRow {
   id: string;
   task_id: string;
@@ -112,70 +126,103 @@ export class DelegationManager {
 
     if (normalized.length === 0) return [];
 
-    const parentTemplateId = this.agentManager.getTemplateAgentId(parentRuntimeId) ?? parentRuntimeId;
-    const parentInstanceId = this.resolveRuntimeParentInstance(parentRuntimeId, parentTemplateId);
-    const parentTask = this.getTaskForRuntime(parentInstanceId);
-    if (!parentTask?.task_id) return [];
+    const ctx = this.resolveDelegationBatchContext(parentRuntimeId);
+    if (!ctx) return [];
 
-    const taskId = parentTask.task_id;
-    const task = this.taskScheduler.getTask(taskId);
-    if (!task || task.status !== "running") return [];
-    if (task.needs_review) return [];
-
-    const parentAgent = this.agentManager.getAgent(parentTemplateId);
-    if (!parentAgent) return [];
-    const parentTypeDef = getAgentTypeDefinition(parentAgent.type, this.db);
-    if (!parentTypeDef || (!parentTypeDef.supports_stdin && !parentTypeDef.supports_resume)) {
-      return [];
-    }
-
-    const existingGroup = this.getActiveDelegationGroupForParent(parentInstanceId);
-    if (existingGroup) return [];
-
-    const eligibleItems: Array<{ item: DelegationBatchItem; childAgent: NonNullable<ReturnType<AgentManager["getAgent"]>> }> = [];
-    for (const item of normalized) {
-      const childAgent = this.resolveDelegationTarget(item.to);
-      if (!childAgent) continue;
-      if (!this.isDelegationTargetAllowed(parentInstanceId, parentTemplateId, childAgent.id, taskId)) continue;
-      if (task.task_type === "real_time") {
-        if (!this.isRealtimeDelegationTargetAllowed(taskId, childAgent.id)) {
-          this.emitDelegationEvent("delegation:realtime_target_not_assigned", {
-            taskId,
-            target: childAgent.id,
-            hint: "Assign this agent in realtime task agent assignment before delegating.",
-          });
-          continue;
-        }
-      } else if (!this.agentsInSameTeam(parentTemplateId, childAgent.id)) {
-        continue;
-      }
-      this.validateDelegationRole(parentTemplateId, childAgent.id, taskId);
-      eligibleItems.push({ item, childAgent });
-    }
+    const eligibleItems = this.filterEligibleDelegationTargets(ctx, normalized);
     if (eligibleItems.length === 0) {
-      if (task.task_type === "real_time") {
+      if (ctx.isRealtime) {
         this.routeResultToParent(
-          parentInstanceId,
-          parentInstanceId,
+          ctx.parentInstanceId,
+          ctx.parentInstanceId,
           "[DELEGATION_FAILED] No eligible realtime delegation targets. Assign the target agent to this realtime task first.",
-          taskId,
+          ctx.taskId,
         );
       }
       return [];
     }
 
-    const rootInstanceId = this.getRootInstanceId(parentInstanceId, taskId);
+    const rootInstanceId = this.getRootInstanceId(ctx.parentInstanceId, ctx.taskId);
     const groupId = crypto.randomUUID();
     this.db
       .prepare(
         `INSERT INTO delegation_groups (id, task_id, parent_instance_id, policy, expected_count, settled_count, failed_count, status)
          VALUES (?, ?, ?, 'wait_all_mixed', ?, 0, 0, 'running')`,
       )
-      .run(groupId, taskId, parentInstanceId, eligibleItems.length);
+      .run(groupId, ctx.taskId, ctx.parentInstanceId, eligibleItems.length);
 
+    const started = await this.spawnDelegationGroupChildren(ctx, groupId, rootInstanceId, eligibleItems);
+
+    if (started.length === 0) {
+      this.db
+        .prepare("UPDATE delegation_groups SET status = 'completed', completed_at = datetime('now') WHERE id = ?")
+        .run(groupId);
+      return [];
+    }
+
+    this.markParentWaitingOnGroup(ctx, groupId, rootInstanceId, started.length, eligibleItems.length);
+    return started;
+  }
+
+  /** Resolve parent template/instance/task and check every batch precondition. */
+  private resolveDelegationBatchContext(parentRuntimeId: string): DelegationBatchContext | null {
+    const parentTemplateId = this.agentManager.getTemplateAgentId(parentRuntimeId) ?? parentRuntimeId;
+    const parentInstanceId = this.resolveRuntimeParentInstance(parentRuntimeId, parentTemplateId);
+    const parentTask = this.getTaskForRuntime(parentInstanceId);
+    if (!parentTask?.task_id) return null;
+
+    const taskId = parentTask.task_id;
+    const task = this.taskScheduler.getTask(taskId);
+    if (!task || task.status !== "running") return null;
+    if (task.needs_review) return null;
+
+    const parentAgent = this.agentManager.getAgent(parentTemplateId);
+    if (!parentAgent) return null;
+    const parentTypeDef = getAgentTypeDefinition(parentAgent.type, this.db);
+    if (!parentTypeDef || (!parentTypeDef.supports_stdin && !parentTypeDef.supports_resume)) {
+      return null;
+    }
+
+    if (this.getActiveDelegationGroupForParent(parentInstanceId)) return null;
+
+    return { parentTemplateId, parentInstanceId, taskId, isRealtime: task.task_type === "real_time" };
+  }
+
+  private filterEligibleDelegationTargets(
+    ctx: DelegationBatchContext,
+    normalized: DelegationBatchItem[],
+  ): EligibleDelegationItem[] {
+    const eligibleItems: EligibleDelegationItem[] = [];
+    for (const item of normalized) {
+      const childAgent = this.resolveDelegationTarget(item.to);
+      if (!childAgent) continue;
+      if (!this.isDelegationTargetAllowed(ctx.parentInstanceId, ctx.parentTemplateId, childAgent.id, ctx.taskId)) continue;
+      if (ctx.isRealtime) {
+        if (!this.isRealtimeDelegationTargetAllowed(ctx.taskId, childAgent.id)) {
+          this.emitDelegationEvent("delegation:realtime_target_not_assigned", {
+            taskId: ctx.taskId,
+            target: childAgent.id,
+            hint: "Assign this agent in realtime task agent assignment before delegating.",
+          });
+          continue;
+        }
+      } else if (!this.agentsInSameTeam(ctx.parentTemplateId, childAgent.id)) {
+        continue;
+      }
+      this.validateDelegationRole(ctx.parentTemplateId, childAgent.id, ctx.taskId);
+      eligibleItems.push({ item, childAgent });
+    }
+    return eligibleItems;
+  }
+
+  private async spawnDelegationGroupChildren(
+    ctx: DelegationBatchContext,
+    groupId: string,
+    rootInstanceId: string,
+    eligibleItems: EligibleDelegationItem[],
+  ): Promise<Delegation[]> {
     const started: Delegation[] = [];
     for (const { item, childAgent } of eligibleItems) {
-
       const delegationId = crypto.randomUUID();
       const childInstanceId = crypto.randomUUID();
 
@@ -187,19 +234,19 @@ export class DelegationManager {
         )
         .run(
           delegationId,
-          parentTemplateId,
+          ctx.parentTemplateId,
           childAgent.id,
-          parentInstanceId,
+          ctx.parentInstanceId,
           childInstanceId,
           groupId,
-          taskId,
+          ctx.taskId,
           item.work,
         );
 
       const spawned = await this.spawnChildInstance({
-        taskId,
+        taskId: ctx.taskId,
         delegationId,
-        parentRuntimeId: parentInstanceId,
+        parentRuntimeId: ctx.parentInstanceId,
         rootInstanceId,
         childTemplateId: childAgent.id,
         childInstanceId,
@@ -212,53 +259,52 @@ export class DelegationManager {
       if (spawned) {
         started.push(this.getDelegation(delegationId)!);
       } else {
-        this.settleDelegationFailure(delegationId, parentInstanceId, childInstanceId, taskId, "Failed to spawn delegated child instance");
+        this.settleDelegationFailure(delegationId, ctx.parentInstanceId, childInstanceId, ctx.taskId, "Failed to spawn delegated child instance");
       }
     }
+    return started;
+  }
 
-    if (started.length === 0) {
-      this.db
-        .prepare("UPDATE delegation_groups SET status = 'completed', completed_at = datetime('now') WHERE id = ?")
-        .run(groupId);
-      return [];
-    }
-
-    this.setAgentState(parentTemplateId, "waiting_delegation", { delegation_group_id: groupId });
-    this.db
-      .prepare("UPDATE agent_instances SET status = 'waiting_delegation', updated_at = datetime('now') WHERE id = ?")
-      .run(parentInstanceId);
+  /** Flip parent to waiting_delegation and record the group in orchestration state. */
+  private markParentWaitingOnGroup(
+    ctx: DelegationBatchContext,
+    groupId: string,
+    rootInstanceId: string,
+    startedCount: number,
+    expectedCount: number,
+  ): void {
+    this.setAgentState(ctx.parentTemplateId, "waiting_delegation", { delegation_group_id: groupId });
+    updateInstanceStatus(this.db, ctx.parentInstanceId, "waiting_delegation");
     eventBus.emit("instance:state_changed", {
-      instanceId: parentInstanceId,
-      templateAgentId: parentTemplateId,
-      taskId,
+      instanceId: ctx.parentInstanceId,
+      templateAgentId: ctx.parentTemplateId,
+      taskId: ctx.taskId,
       parentInstanceId: null,
       rootInstanceId: rootInstanceId,
       status: "waiting_delegation",
     });
 
-    this.updateOrchestrationState(taskId, {
+    this.updateOrchestrationState(ctx.taskId, {
       step: "WAITING_DELEGATION",
       last_checkpoint_ts: new Date().toISOString(),
-      session_id: this.agentManager.getSessionId(parentInstanceId),
+      session_id: this.agentManager.getSessionId(ctx.parentInstanceId),
       active_delegation_group_id: groupId,
-      active_delegation_child_count: started.length,
+      active_delegation_child_count: startedCount,
       active_delegation_settled_count: 0,
-      phase_guards: Array.from(this.getPhaseCompleteHandled()).filter((k) => k.startsWith(`${taskId}:`)),
+      phase_guards: Array.from(this.getPhaseCompleteHandled()).filter((k) => k.startsWith(`${ctx.taskId}:`)),
       pending_regression: null,
       checkpoint_prompt_hash: null,
     });
 
     eventBus.emit("delegation_group:progress", {
       groupId,
-      taskId,
-      parentInstanceId: parentInstanceId,
+      taskId: ctx.taskId,
+      parentInstanceId: ctx.parentInstanceId,
       settledCount: 0,
-      expectedCount: eligibleItems.length,
+      expectedCount,
       failedCount: 0,
       status: "running",
     });
-
-    return started;
   }
 
   async handleResumeDelegation(
@@ -375,9 +421,7 @@ export class DelegationManager {
     }
 
     this.setAgentState(parentTemplateId, "waiting_delegation", { delegation_group_id: groupId });
-    this.db
-      .prepare("UPDATE agent_instances SET status = 'waiting_delegation', updated_at = datetime('now') WHERE id = ?")
-      .run(parentInstanceId);
+    updateInstanceStatus(this.db, parentInstanceId, "waiting_delegation");
     eventBus.emit("instance:state_changed", {
       instanceId: parentInstanceId,
       templateAgentId: parentTemplateId,
@@ -417,9 +461,7 @@ export class DelegationManager {
 
       this.agentManager.killAgent(childRuntimeId);
 
-      this.db
-        .prepare("UPDATE agent_instances SET status = 'completed', updated_at = datetime('now') WHERE id = ?")
-        .run(childRuntimeId);
+      updateInstanceStatus(this.db, childRuntimeId, "completed");
       this.clearTemplateTaskIfNoActive(delegation.child_agent_id);
 
       this.handleGroupProgress(delegation, childRuntimeId, false);
@@ -437,9 +479,7 @@ export class DelegationManager {
             "UPDATE delegations SET status = 'completed', result = ?, completed_at = datetime('now') WHERE id = ?",
           )
           .run(result, delegation.id);
-        this.db
-          .prepare("UPDATE agent_instances SET status = 'completed', updated_at = datetime('now') WHERE id = ?")
-          .run(event.agentId);
+        updateInstanceStatus(this.db, event.agentId, "completed");
         this.clearTemplateTaskIfNoActive(delegation.child_agent_id);
         this.handleGroupProgress(delegation, event.agentId, false);
       } else {
@@ -451,9 +491,7 @@ export class DelegationManager {
             "UPDATE delegations SET status = 'failed', result = ?, completed_at = datetime('now') WHERE id = ?",
           )
           .run(`Child agent exited with code ${event.code}`, delegation.id);
-        this.db
-          .prepare("UPDATE agent_instances SET status = 'failed', updated_at = datetime('now') WHERE id = ?")
-          .run(event.agentId);
+        updateInstanceStatus(this.db, event.agentId, "failed");
         this.clearTemplateTaskIfNoActive(delegation.child_agent_id);
         this.handleGroupProgress(delegation, event.agentId, true);
       }
@@ -491,9 +529,7 @@ export class DelegationManager {
 
         if (delegation.child_instance_id) {
           this.agentManager.killAgent(delegation.child_instance_id);
-          this.db
-            .prepare("UPDATE agent_instances SET status = 'failed', updated_at = datetime('now') WHERE id = ?")
-            .run(delegation.child_instance_id);
+          updateInstanceStatus(this.db, delegation.child_instance_id, "failed");
         }
         this.clearTemplateTaskIfNoActive(delegation.child_agent_id);
 
@@ -539,9 +575,7 @@ export class DelegationManager {
             .run(del.id);
           if (del.child_instance_id) {
             this.agentManager.killAgent(del.child_instance_id);
-            this.db
-              .prepare("UPDATE agent_instances SET status = 'failed', updated_at = datetime('now') WHERE id = ?")
-              .run(del.child_instance_id);
+            updateInstanceStatus(this.db, del.child_instance_id, "failed");
           }
           this.clearTemplateTaskIfNoActive(del.child_agent_id);
         }
@@ -1067,9 +1101,7 @@ export class DelegationManager {
     // the old process already exited (handleChildExit caller).
     this.agentManager.killAgent(childInstanceId);
 
-    this.db
-      .prepare("UPDATE agent_instances SET status = 'failed', updated_at = datetime('now') WHERE id = ?")
-      .run(childInstanceId);
+    updateInstanceStatus(this.db, childInstanceId, "failed");
 
     const nextInstanceId = crypto.randomUUID();
     const nextAttempt = row.attempt + 1;
@@ -1130,9 +1162,7 @@ export class DelegationManager {
       .run(reason, delegationId);
 
     if (delegation.child_instance_id) {
-      this.db
-        .prepare("UPDATE agent_instances SET status = 'failed', updated_at = datetime('now') WHERE id = ?")
-        .run(delegation.child_instance_id);
+      updateInstanceStatus(this.db, delegation.child_instance_id, "failed");
     }
 
     this.handleGroupProgress(delegation, childRuntimeId, true);

@@ -195,7 +195,6 @@ export class TeamManager {
     const team = this.getTeam(teamId);
     if (!team) throw new Error(`Team not found: ${teamId}`);
 
-    // Validate agent is a team member
     const membership = this.db
       .prepare("SELECT id FROM team_agents WHERE team_id = ? AND agent_id = ?")
       .get(teamId, agentId);
@@ -212,13 +211,11 @@ export class TeamManager {
     const team = this.getTeam(teamId);
     if (!team) throw new Error(`Team not found: ${teamId}`);
 
-    // Validate agent exists
     const agent = this.db
       .prepare("SELECT id FROM agents WHERE id = ?")
       .get(input.agent_id);
     if (!agent) throw new Error(`Agent not found: ${input.agent_id}`);
 
-    // Validate parent agent if specified
     if (input.parent_agent_id) {
       const parentMembership = this.db
         .prepare(

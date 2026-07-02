@@ -3,6 +3,7 @@ import type { AgentManager } from "../agents/manager";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { StateTracker } from "../agents/state-tracker";
 import { logError } from "../logging";
+import { updateInstanceStatus } from "../agents/instance-status";
 import { eventBus } from "../events/bus";
 
 const EXIT_CODE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
@@ -136,9 +137,7 @@ export class HealthMonitor {
         }
       }
 
-      this.db
-        .prepare("UPDATE agent_instances SET status = 'failed', process_pid = NULL, updated_at = datetime('now') WHERE id = ?")
-        .run(inst.id);
+      updateInstanceStatus(this.db, inst.id, "failed", { clearPid: true });
 
       this.emitRemediationEvent("instance_process_dead", inst.template_agent_id, inst.task_id, {
         instanceId: inst.id,
@@ -167,9 +166,7 @@ export class HealthMonitor {
 
       if (childDelegations.length === 0) {
         // No delegation records at all — orphaned waiting state
-        this.db
-          .prepare("UPDATE agent_instances SET status = 'failed', updated_at = datetime('now') WHERE id = ?")
-          .run(inst.id);
+        updateInstanceStatus(this.db, inst.id, "failed");
         this.emitRemediationEvent("waiting_delegation_no_children", inst.template_agent_id, inst.task_id, {
           instanceId: inst.id,
         });
@@ -208,9 +205,7 @@ export class HealthMonitor {
             .run(groupId);
         }
 
-        this.db
-          .prepare("UPDATE agent_instances SET status = 'failed', updated_at = datetime('now') WHERE id = ?")
-          .run(inst.id);
+        updateInstanceStatus(this.db, inst.id, "failed");
 
         this.emitRemediationEvent("delegation_orphan_cleanup", inst.template_agent_id, inst.task_id, {
           instanceId: inst.id,

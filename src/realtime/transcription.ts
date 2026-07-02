@@ -2,9 +2,7 @@ import { unlinkSync, writeFileSync } from "fs";
 import type { RealtimeConfig } from "./config";
 
 export interface TranscriptionAdapter {
-  /** Whether this adapter has enough configuration to operate */
   isConfigured(): boolean;
-  /** Human-readable reason why the adapter is not configured */
   notConfiguredReason(): string;
   /** Transcribe base64-encoded audio data and return text */
   transcribe(audioData: string, format: string): Promise<string>;

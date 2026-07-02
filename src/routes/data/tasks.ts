@@ -8,6 +8,7 @@ import {
   fetchTaskForensics,
 } from "../../data/queries";
 import { TaskScheduler } from "../../tasks/scheduler";
+import { finalizeActiveInstancesForTask } from "../../agents/instance-status";
 import type { TaskType, RealtimeTaskConfig } from "../../tasks/scheduler";
 import { ArtifactManager } from "../../orchestrator/artifact-manager";
 import { parseRequestBody } from "../utils";
@@ -244,9 +245,7 @@ export function registerDataTaskRoutes(
       db.prepare(
         "UPDATE agents SET current_task_id = NULL, process_pid = NULL WHERE current_task_id = ?",
       ).run(params.id);
-      db.prepare(
-        "UPDATE agent_instances SET status = 'failed', process_pid = NULL, updated_at = datetime('now') WHERE task_id = ? AND status IN ('running', 'waiting_delegation', 'pending')",
-      ).run(params.id);
+      finalizeActiveInstancesForTask(db, params.id, "failed");
       return ok({ id: params.id, cleared: true });
     } catch (e: unknown) {
       return err(e instanceof Error ? e.message : "Internal error");

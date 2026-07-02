@@ -100,7 +100,6 @@ function loadSystemPrompt(): string {
     console.warn("[monkey-brain] could not read %s — using fallback prompt", PROMPT_PATH);
     base = FALLBACK_PROMPT;
   }
-  // Fill the active persona's species + flavour into the prompt tokens.
   const p = PERSONAS[persona];
   base = base.split("{{ANIMAL_FLAVOR}}").join(p.flavor).split("{{ANIMAL}}").join(p.animal);
   return unhinged ? `${base}\n\n${UNHINGED_BLOCK}` : base;
@@ -391,7 +390,6 @@ function buildTickMessage(
   // --- DOM: delta ---
   const domFP = fingerprint(domSections.map(s => s.id + s.label + s.content?.slice(0, 50)));
   if (domFP !== lastDOMFingerprint) {
-    // Something changed — figure out what
     const oldIds = new Set(lastSentDOMSections.map(s => s.id));
     const newIds = new Set(domSections.map(s => s.id));
 

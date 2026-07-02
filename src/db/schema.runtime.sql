@@ -226,6 +226,8 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
   body TEXT NOT NULL,
   created_by_agent_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  publish_key TEXT,
+  published_at TEXT,
   UNIQUE(task_id, name, version)
 );
 CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_kind ON task_artifacts(task_id, kind, created_at);

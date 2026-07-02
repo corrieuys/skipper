@@ -50,6 +50,7 @@ No build. Bun runs TS direct.
 | greg/grug heckler bot | [src/monkey/CLAUDE.md](src/monkey/CLAUDE.md) |
 | query helpers for HTML view-models | [src/data/CLAUDE.md](src/data/CLAUDE.md) |
 | global cross-task shared key/value store | [src/global-store/CLAUDE.md](src/global-store/CLAUDE.md) |
+| skipper connect (outbound WS to integrator, remote control + public artifact links) | [src/connect/CLAUDE.md](src/connect/CLAUDE.md) |
 | external config file readers (MCP, skills) | [src/config-readers/CLAUDE.md](src/config-readers/CLAUDE.md) |
 | prompt templates loaded at runtime | [prompts/CLAUDE.md](prompts/CLAUDE.md) |
 | JSON config snapshots | [config/CLAUDE.md](config/CLAUDE.md) |

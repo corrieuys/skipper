@@ -95,6 +95,18 @@ afterAll(() => {
   resetDb();
 });
 
+// Artifact publishing is gated behind --experimental (isExperimental reads
+// process.argv). Toggle the flag for the duration of a test, then restore it.
+async function withExperimental(fn: () => Promise<void>): Promise<void> {
+  process.argv.push("--experimental");
+  try {
+    await fn();
+  } finally {
+    const i = process.argv.indexOf("--experimental");
+    if (i !== -1) process.argv.splice(i, 1);
+  }
+}
+
 describe("fragment polling routes", () => {
   it("GET /tasks/new renders the dedicated task creation page", async () => {
     const res = await fetch(`${baseUrl}/tasks/new`);
@@ -228,5 +240,67 @@ describe("fragment polling routes", () => {
     expect(html).toContain('onclick="openTaskArtifactModal(); return false;"');
     expect(html).toContain('hx-target="#task-artifact-modal-body"');
     expect(html).not.toContain('hx-target="#artifact-detail"');
+  });
+
+  it("POST /fragments/tasks/:id/artifacts/:name/publish publishes the version and shows the public URL", () => withExperimental(async () => {
+    const db = getDb();
+    const connectKey = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ gid: "guid-test", kind: "connect" })).toString("base64url")}.sig`;
+    db.prepare(
+      "INSERT INTO app_settings (key, value, value_type) VALUES ('skipper_connect_key', ?, 'string')",
+    ).run(connectKey);
+    // Public links require an operator-supplied remote URL (no built-in default).
+    db.prepare(
+      "INSERT INTO app_settings (key, value, value_type) VALUES ('skipper_connect_url', 'wss://connect.example.test', 'string')",
+    ).run();
+
+    const detailBefore = await (await fetch(`${baseUrl}/fragments/tasks/task-1/artifacts/plan?version=2`)).text();
+    expect(detailBefore).toContain(">Publish<");
+    expect(detailBefore).not.toContain("Unpublish");
+
+    const res = await fetch(`${baseUrl}/fragments/tasks/task-1/artifacts/plan/publish?version=2`, { method: "POST" });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Unpublish");
+    expect(html).toContain('class="badge badge-published"');
+    expect(html).toContain("https://connect.example.test/p/guid-test/artifact-2?key=");
+
+    // Scoped to v2 only
+    const v1 = db.prepare("SELECT published_at FROM task_artifacts WHERE id = 'artifact-1'").get() as { published_at: string | null };
+    expect(v1.published_at).toBeNull();
+
+    const unpublished = await (await fetch(`${baseUrl}/fragments/tasks/task-1/artifacts/plan/unpublish?version=2`, { method: "POST" })).text();
+    expect(unpublished).toContain(">Publish<");
+    expect(unpublished).not.toContain("badge-published");
+  }));
+
+  it("artifact list marks names that have any published version", () => withExperimental(async () => {
+    const listBefore = await (await fetch(`${baseUrl}/fragments/tasks/task-1/artifacts`)).text();
+    expect(listBefore).not.toContain("badge-published");
+
+    const db = getDb();
+    // Publish v1 only; the list shows latest (v2) but should still flag the name.
+    db.prepare(
+      "UPDATE task_artifacts SET publish_key = 'k1', published_at = datetime('now') WHERE id = 'artifact-1'",
+    ).run();
+
+    const listAfter = await (await fetch(`${baseUrl}/fragments/tasks/task-1/artifacts`)).text();
+    expect(listAfter).toContain('title="Has a published version"');
+  }));
+
+  it("publish button is disabled when Skipper Connect is not configured", () => withExperimental(async () => {
+    const db = getDb();
+    db.exec("DELETE FROM app_settings WHERE key = 'skipper_connect_key'");
+    const html = await (await fetch(`${baseUrl}/fragments/tasks/task-1/artifacts/plan`)).text();
+    expect(html).toContain('disabled title="Configure Skipper Connect first"');
+  }));
+
+  it("hides the publish surface entirely when not experimental", async () => {
+    const db = getDb();
+    db.prepare(
+      "INSERT INTO app_settings (key, value, value_type) VALUES ('skipper_connect_key', ?, 'string')",
+    ).run(`eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ gid: "guid-test", kind: "connect" })).toString("base64url")}.sig`);
+    const html = await (await fetch(`${baseUrl}/fragments/tasks/task-1/artifacts/plan`)).text();
+    expect(html).not.toContain(">Publish<");
+    expect(html).not.toContain("Unpublish");
   });
 });

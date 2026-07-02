@@ -190,7 +190,7 @@ function renderTaskView(vm: CommandCenterViewModel, task: TaskSummary): string {
   const taskRow = vm.allTasks.find(t => t.id === task.id);
   if (taskRow && (taskRow as any).task_type === "real_time") {
     const isSessionActive = vm.realtimeSessionActive.get(task.id);
-    return realtimeTaskContent(task, isSessionActive);
+    return realtimeTaskContent(vm, task, isSessionActive);
   }
   return taskMainContent(vm, task);
 }
@@ -254,116 +254,130 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
 }
 
 /** Real-time task view — shows timeline, session controls, and audio pipeline */
-export function realtimeTaskContent(task: TaskSummary, isSessionActive?: boolean): string {
+export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummary, isSessionActive?: boolean): string {
   const eid = escapeHtml(task.id);
   const isRunning = task.status === "running";
   const sessionActive = isRunning && isSessionActive !== false;
   const isPaused = isRunning && isSessionActive === false;
 
+  // Reuse the shared task chrome: phase stepper inlined into the task bar, agent
+  // orbs beside it, and the review/escalation prompts inside a User Input tab —
+  // exactly like the standard task view.
+  const mission = vm.missionsByTask.get(task.id) ?? (vm.mission?.taskId === task.id ? vm.mission : null);
+  const needsReview = mission?.needsReview ?? false;
+  const phaseStepper = mission && mission.phases.length > 0 ? renderPhaseStepper(mission.phases, task.id, isRunning) : "";
+
+  const reload = `if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}`;
+  const reloadStopAudio = `${reload}if(typeof stopRealtimeAudio==='function')stopRealtimeAudio();`;
   let headerButtons = "";
   if (sessionActive) {
     headerButtons = `
           <button class="sk-btn sk-btn--sm"
                   hx-post="/api/tasks/${eid}/realtime/session/stop" hx-swap="none"
-                  hx-on::after-request="if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}if(typeof stopRealtimeAudio==='function')stopRealtimeAudio();">Pause Session</button>
+                  hx-on::after-request="${reloadStopAudio}">Pause Session</button>
           <button class="sk-btn sk-btn--sm"
                   hx-post="/api/tasks/${eid}/complete" hx-swap="none"
                   hx-confirm="Complete this task? The session will be stopped."
-                  hx-on::after-request="if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}if(typeof stopRealtimeAudio==='function')stopRealtimeAudio();">Complete</button>
+                  hx-on::after-request="${reloadStopAudio}">Complete</button>
           <button class="sk-btn sk-btn--danger sk-btn--sm"
                   hx-post="/api/tasks/${eid}/cancel" hx-swap="none"
                   hx-confirm="Archive this real-time task? This will permanently stop the session."
-                  hx-on::after-request="if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}if(typeof stopRealtimeAudio==='function')stopRealtimeAudio();">Archive</button>`;
+                  hx-on::after-request="${reloadStopAudio}">Archive</button>`;
   } else if (isPaused) {
     headerButtons = `
           <button class="sk-btn sk-btn--primary sk-btn--sm"
                   hx-post="/api/tasks/${eid}/realtime/session/start" hx-swap="none"
-                  hx-on::after-request="if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}">Resume Session</button>
+                  hx-on::after-request="${reload}">Resume Session</button>
           <button class="sk-btn sk-btn--sm"
                   hx-post="/api/tasks/${eid}/complete" hx-swap="none"
                   hx-confirm="Mark this task as completed?"
-                  hx-on::after-request="if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}">Complete</button>
+                  hx-on::after-request="${reload}">Complete</button>
           <button class="sk-btn sk-btn--danger sk-btn--sm"
                   hx-post="/api/tasks/${eid}/cancel" hx-swap="none"
                   hx-confirm="Archive this real-time task? This will permanently stop the session."
-                  hx-on::after-request="if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}if(typeof stopRealtimeAudio==='function')stopRealtimeAudio();">Archive</button>`;
+                  hx-on::after-request="${reloadStopAudio}">Archive</button>`;
   } else if (task.status === "approved") {
     headerButtons = `
           <button class="sk-btn sk-btn--primary sk-btn--sm"
                   hx-post="/api/tasks/${eid}/realtime/session/start" hx-swap="none"
-                  hx-on::after-request="if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}">Start Session</button>
+                  hx-on::after-request="${reload}">Start Session</button>
           <button class="sk-btn sk-btn--sm"
                   hx-post="/api/tasks/${eid}/cancel" hx-swap="none"
                   hx-confirm="Cancel this real-time task?"
-                  hx-on::after-request="if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}">Cancel</button>`;
+                  hx-on::after-request="${reload}">Cancel</button>`;
   } else if (task.status === "completed") {
     headerButtons = `
           <button class="sk-btn sk-btn--sm"
                   hx-post="/api/realtime-tasks/${eid}/unarchive" hx-swap="none"
-                  hx-on::after-request="if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}">Reopen</button>`;
+                  hx-on::after-request="${reload}">Reopen</button>`;
   } else if (task.status === "failed") {
     headerButtons = `
           <button class="sk-btn sk-btn--sm"
                   hx-post="/api/realtime-tasks/${eid}/unarchive" hx-swap="none"
-                  hx-on::after-request="if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}">Retry</button>`;
+                  hx-on::after-request="${reload}">Retry</button>`;
   }
 
+  // Review gate / recovery banner lives in the User Input tab (matches standard).
+  const reviewGate = task.status === "failed" && task.needs_review
+    ? renderRecoveryPausedBanner(task)
+    : needsReview ? renderReviewBanner(task) : "";
+  const inputHasContent = !!reviewGate;
+  const defaultTab = inputHasContent ? "input" : "outputs";
+  const tabCls = (name: string) => name === defaultTab ? "mc-tab mc-tab--active" : "mc-tab";
+  const panelCls = (name: string) => name === defaultTab ? "mc-tab-panel mc-tab-panel--active" : "mc-tab-panel";
+
   return `
-    <div class="mc-task-header">
-      <span class="mc-node__indicator mc-node__indicator--${task.status}"></span>
+    <!-- Task bar — phase stepper + agent orbs inlined (shared chrome) -->
+    <div class="mc-task-header mc-task-header--with-phases${isRunning ? " mc-task-header--running" : ""}">
+      <span class="mc-node__indicator mc-node__indicator--${isPaused ? "paused" : task.status}"></span>
       <span class="mc-task-header__title">${escapeHtml(task.title)}</span>
-      <span class="sk-badge sk-badge--${isPaused ? "paused" : task.status}">${isPaused ? "paused" : task.status}</span>
-      ${task.team_name ? `<span class="sk-muted sk-text-xs">${escapeHtml(task.team_name)}</span>` : ""}
+      ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
+      ${isRunning ? `<div class="mc-task-header__orbs">
+        <div id="mc-steer-${eid}"
+          hx-get="/fragments/dashboard/latest-steer?task=${eid}"
+          hx-trigger="load"
+          hx-target="this"
+          hx-swap="innerHTML"></div>
+      </div>` : ""}
       <div class="mc-task-header__actions">${headerButtons}</div>
     </div>
 
-    <!-- Real-time input panel (text + audio) — shown when session is active -->
+    <!-- Real-time composer (text + audio) — the primary input, kept directly
+         under the task bar so it stays reachable on any tab. -->
     ${sessionActive ? `
-    <div class="sk-panel">
-      <div class="sk-panel__body">
-        <div style="display:flex;gap:var(--sk-space-3);align-items:center;flex-wrap:wrap;">
-          <form hx-post="/api/realtime-tasks/${eid}/input" hx-swap="none"
-                hx-on::after-request="if(event.detail.successful){this.querySelector('input[name=text]').value='';}" style="flex:1;min-width:220px;display:flex;gap:var(--sk-space-3);align-items:center;">
-            <input type="text" name="text" placeholder="Type a message or cue..." required autocomplete="off"
-                   style="flex:1;padding:0.5rem 0.75rem;background:transparent;border:1px solid var(--sk-border);border-radius:var(--sk-radius);color:var(--sk-text);outline:none;" />
-            <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary" style="align-self:center;">Send</button>
-          </form>
-          <div id="rt-audio-controls" style="display:flex;gap:0.5rem;align-items:center;flex-shrink:0;">
-            <button id="btn-start-recording" onclick="startRealtimeAudio('${eid}', 60, 5)" class="sk-btn sk-btn--sm" title="Start audio recording (auto-starts whisper)" style="display:inline-flex;align-items:center;gap:0.35rem;">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-              Record
-            </button>
-            <button id="btn-stop-recording" onclick="stopRealtimeAudio()" class="sk-btn sk-btn--sm sk-btn--danger sk-animate-pulse" title="Stop recording and whisper" style="display:none;align-items:center;gap:0.35rem;">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
-              Stop
-            </button>
-            <span id="audio-status" class="sk-muted sk-text-xs"></span>
-          </div>
-        </div>
-        <div id="audio-visualizer-wrap" style="display:none;margin-top:var(--sk-space-2);overflow:hidden;background:var(--sk-surface-0);border:1px solid var(--sk-border-subtle);border-radius:var(--sk-radius);">
-          <canvas id="audio-visualizer" width="600" height="80" style="width:100%;height:72px;display:block;"></canvas>
-        </div>
+    <div class="mc-rt-composer">
+      <form hx-post="/api/realtime-tasks/${eid}/input" hx-swap="none"
+            hx-on::after-request="if(event.detail.successful){this.querySelector('input[name=text]').value='';}" class="mc-rt-composer__form">
+        <input type="text" name="text" placeholder="Type a message or cue..." required autocomplete="off" class="mc-rt-composer__input" />
+        <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Send</button>
+      </form>
+      <div id="rt-audio-controls" class="mc-rt-composer__audio">
+        <button id="btn-start-recording" onclick="startRealtimeAudio('${eid}', 60, 5)" class="sk-btn sk-btn--sm" title="Start audio recording (auto-starts whisper)" style="display:inline-flex;align-items:center;gap:0.35rem;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          Record
+        </button>
+        <button id="btn-stop-recording" onclick="stopRealtimeAudio()" class="sk-btn sk-btn--sm sk-btn--danger sk-animate-pulse" title="Stop recording and whisper" style="display:none;align-items:center;gap:0.35rem;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+          Stop
+        </button>
+        <span id="audio-status" class="sk-muted sk-text-xs"></span>
+      </div>
+      <div id="audio-visualizer-wrap" class="mc-rt-composer__viz" style="display:none;">
+        <canvas id="audio-visualizer" width="600" height="80" style="width:100%;height:72px;display:block;"></canvas>
       </div>
     </div>
     <script src="/realtime-audio.js"></script>
     ` : ""}
 
-    ${isRunning ? `
-      <div id="mc-steer-${eid}"
-        hx-get="/fragments/dashboard/latest-steer?task=${eid}"
-        hx-trigger="load"
-        hx-target="this"
-        hx-swap="innerHTML">
-      </div>
-    ` : ""}
-
+    <!-- Tabs flush against the composer / task bar -->
     <div class="mc-tabs">
-      <button class="mc-tab mc-tab--active" onclick="Skipper.tabs.show('outputs')">Outputs</button>
-      <button class="mc-tab" onclick="Skipper.tabs.show('details')">Details</button>
+      <button class="${tabCls("outputs")}" data-mc-tab="outputs" onclick="Skipper.tabs.show('outputs')">Outputs</button>
+      <button class="${tabCls("details")}" data-mc-tab="details" onclick="Skipper.tabs.show('details')">Details</button>
+      <button class="${tabCls("input")}${reviewGate ? " mc-tab--attention" : ""}" data-mc-tab="input" onclick="Skipper.tabs.show('input')">User Input<span class="mc-tab__badge" data-mc-tab-badge${reviewGate ? "" : " hidden"}>${reviewGate ? "1" : ""}</span></button>
     </div>
 
     <!-- Outputs tab — Timeline+Activity | Notes | Artifacts side-by-side -->
-    <div class="mc-tab-panel mc-tab-panel--active" id="mc-tab-outputs">
+    <div class="${panelCls("outputs")}" id="mc-tab-outputs">
       <div class="mc-outputs" id="mc-outputs">
         <!-- Unified feed column (timeline entries + agent activity merged) -->
         <div class="mc-outputs__col" data-outputs-col="activity">
@@ -406,9 +420,36 @@ export function realtimeTaskContent(task: TaskSummary, isSessionActive?: boolean
       </div>
     </div>
 
-    <div class="mc-tab-panel" id="mc-tab-details"
+    <!-- Details tab -->
+    <div class="${panelCls("details")}" id="mc-tab-details"
          hx-get="/workspace/task/${eid}/details" hx-trigger="revealed" hx-swap="innerHTML">
       <span class="sk-muted" style="padding: var(--sk-space-4);">Loading...</span>
+    </div>
+
+    <!-- User Input tab — review gate + escalation prompts -->
+    <div class="${panelCls("input")}" id="mc-tab-input">
+      ${reviewGate}
+      <div id="mc-task-escalations-${eid}"
+           hx-get="/fragments/tasks/${eid}/escalations"
+           hx-trigger="load"
+           hx-swap="innerHTML"></div>
+      ${!reviewGate
+        ? `<div class="mc-userinput__empty sk-muted" style="padding: var(--sk-space-4); text-align:center;">Nothing needs your input right now.</div>`
+        : ""}
+    </div>
+
+    <!-- Activity detail modal -->
+    <div id="activity-detail-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
+      <div class="sk-modal__content" style="width:min(900px, 95vw); max-height:85vh; display:flex; flex-direction:column;">
+        <div class="sk-modal__header" style="padding:0.5rem 1rem; gap:0.75rem;">
+          <span id="activity-detail-modal-title" style="font-weight:600;">Activity</span>
+          <span id="activity-detail-modal-meta" class="sk-muted sk-text-xs" style="flex:1;"></span>
+          <button class="sk-btn sk-btn--sm" data-sk-modal-close="activity-detail-modal">Close</button>
+        </div>
+        <div class="sk-modal__body" style="flex:1; min-height:0; overflow:auto; padding:0.75rem 1rem;">
+          <pre id="activity-detail-modal-body" style="margin:0; white-space:pre-wrap; word-break:break-word; font-family:var(--sk-font-mono); font-size:12px; line-height:1.45;"></pre>
+        </div>
+      </div>
     </div>
 
     <!-- Artifact modal (used by v1 fragment onclick handlers) -->

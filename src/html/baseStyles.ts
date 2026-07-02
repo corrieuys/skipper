@@ -348,7 +348,7 @@ export function baseStyles(): string {
     .badge-stopped { background: rgba(173, 170, 170, 0.08); color: var(--muted); border-color: rgba(173, 170, 170, 0.2); }
     .badge-review { background: rgba(255, 200, 50, 0.08); color: #ffc832; border-color: rgba(255, 200, 50, 0.3); box-shadow: 0 0 0.6rem rgba(255, 200, 50, 0.12); }
     .badge-draft, .badge-pending { background: rgba(173, 170, 170, 0.06); color: var(--on-surface-variant); border-color: rgba(173, 170, 170, 0.2); }
-    .badge-approved, .badge-completed, .badge-resolved { background: rgba(176, 255, 150, 0.08); color: var(--success); border-color: rgba(176, 255, 150, 0.25); }
+    .badge-approved, .badge-completed, .badge-resolved, .badge-published { background: rgba(176, 255, 150, 0.08); color: var(--success); border-color: rgba(176, 255, 150, 0.25); }
     .badge-open { background: rgba(255, 137, 171, 0.08); color: var(--primary); border-color: rgba(255, 137, 171, 0.3); }
     .badge-system { background: rgba(0, 251, 251, 0.06); color: var(--secondary); border-color: rgba(0, 251, 251, 0.2); }
     .badge-paused { background: rgba(255, 208, 128, 0.08); color: #ffd080; border-color: rgba(255, 208, 128, 0.25); }

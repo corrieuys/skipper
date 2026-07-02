@@ -270,6 +270,32 @@ export function missionControlStyles(): string {
     /* No glow halo on taskbar orbs (removed per design). */
     .mc-task-header__orbs .zen-orb.zen-orb--active { box-shadow: none; }
 
+    /* ── Realtime composer — sits flush under the task bar (realtime tasks) ── */
+    .mc-rt-composer {
+      display: flex;
+      align-items: center;
+      gap: var(--sk-space-3);
+      flex-wrap: wrap;
+      padding: var(--sk-space-2) var(--sk-space-4);
+      background: var(--sk-surface-1);
+      border-bottom: 1px solid var(--sk-border);
+    }
+    .mc-rt-composer__form { flex: 1; min-width: 220px; display: flex; gap: var(--sk-space-2); align-items: center; }
+    .mc-rt-composer__input {
+      flex: 1; padding: 0.5rem 0.75rem; background: var(--sk-surface-0);
+      border: 1px solid var(--sk-border); border-radius: var(--sk-radius);
+      color: var(--sk-text); outline: none;
+    }
+    .mc-rt-composer__input:focus {
+      border-color: color-mix(in srgb, var(--sk-accent-secondary) 60%, transparent);
+      box-shadow: 0 0 10px color-mix(in srgb, var(--sk-accent-secondary) 18%, transparent);
+    }
+    .mc-rt-composer__audio { display: flex; gap: 0.5rem; align-items: center; flex-shrink: 0; }
+    .mc-rt-composer__viz {
+      flex-basis: 100%; overflow: hidden; background: var(--sk-surface-0);
+      border: 1px solid var(--sk-border-subtle); border-radius: var(--sk-radius);
+    }
+
     /* ── Tabbed content below the graph ── */
     .mc-tabs {
       display: flex;

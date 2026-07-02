@@ -227,7 +227,6 @@ export class ConversationManager {
         try {
           const json = JSON.parse(trimmed) as Record<string, unknown>;
 
-          // Persist session_id as soon as we see it
           const sessionId =
             (json.session_id ?? json.thread_id ?? json.sessionID) as string | undefined;
           if (sessionId) {
@@ -267,7 +266,6 @@ export class ConversationManager {
       }
     });
 
-    // Clean up tracking on agent exit
     eventBus.on("agent:exit", (event) => {
       if (event.isRespawn) return;
       const conversationId = this.isConversationAgent(event.agentId);
@@ -400,7 +398,6 @@ export class ConversationManager {
     if (conv.status === "archived") throw new Error("Conversation is archived");
     if (!conv.template_agent_id) throw new Error("Conversation has no agent template configured");
 
-    // Store user message
     const messageId = randomUUID();
     this.db
       .prepare(
@@ -412,7 +409,6 @@ export class ConversationManager {
       .run(conversationId);
     eventBus.emit("conversation:message", { conversationId, messageId, role: "user", content });
 
-    // Check if agent is still running (e.g. previous turn still processing)
     const currentRuntimeId = this.activeAgents.get(conversationId);
     const isStillRunning =
       currentRuntimeId !== undefined &&

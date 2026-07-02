@@ -2,6 +2,7 @@ import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
 import { NOTIFICATION_EVENTS } from "../../notifications/types";
+import { isExperimental } from "../../config/feature-flags";
 import type { NotificationPreference } from "../../notifications/store";
 import type { LocalTeam } from "../../teams/local-teams";
 import type { ModelChoice, AgentTypeOption } from "../../config/model-settings";
@@ -13,7 +14,6 @@ export interface ConfigPageViewModel {
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
-  skipperConnectGuid: string;
   skipperConnectHasKey: boolean;
   skipperConnectUrl: string;
   modelSettings: {
@@ -36,30 +36,28 @@ function modelSettingRow(
   const typeOpts = options
     .map((o) => `<option value="${escapeHtml(o.name)}"${o.name === current.agent_type ? " selected" : ""}>${escapeHtml(o.name)}</option>`)
     .join("");
-  const activeType = options.find((o) => o.name === current.agent_type) ?? options[0];
-  const modelList = activeType ? activeType.models : ["default"];
-  const modelOpts = modelList
-    .map((m) => `<option value="${escapeHtml(m)}"${m === current.model ? " selected" : ""}>${escapeHtml(m)}</option>`)
-    .join("");
-  // If the stored model isn't in the current provider's list (e.g. a legacy
-  // value), surface it so it isn't silently dropped on next save.
-  const orphan = !modelList.includes(current.model)
-    ? `<option value="${escapeHtml(current.model)}" selected>${escapeHtml(current.model)} (custom)</option>`
-    : "";
   return `<form class="sk-model-row" data-model-target="${target}"
       hx-post="/api/config/model-settings" hx-swap="none"
-      hx-on::after-request="if(event.detail.successful){var b=this.querySelector('button');b.textContent='Saved';setTimeout(function(){b.textContent='Save';},1200);}"
-      style="display:flex;align-items:center;gap:var(--sk-space-3);padding:var(--sk-space-2) 0;flex-wrap:wrap;">
+      hx-on::after-request="if(event.detail.successful){var b=this.querySelector('button');b.textContent='Saved';setTimeout(function(){b.textContent='Save';},1200);}">
     <input type="hidden" name="target" value="${target}">
-    <div style="min-width:150px;">
+    <div class="sk-model-row__name">
       <div class="sk-text-sm" style="color:var(--sk-text);">${escapeHtml(label)}</div>
       <div class="sk-text-xs sk-muted">${escapeHtml(hint)}</div>
     </div>
-    <label class="sk-text-xs sk-muted" for="model-type-${target}">Provider</label>
-    <select id="model-type-${target}" name="agent_type" class="sk-input sk-input--sm" data-model-type style="min-width:150px;">${typeOpts}</select>
-    <label class="sk-text-xs sk-muted" for="model-model-${target}">Model</label>
-    <select id="model-model-${target}" name="model" class="sk-input sk-input--sm" data-model-model style="min-width:180px;">${orphan}${modelOpts}</select>
-    <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Save</button>
+    <div class="sk-model-row__field">
+      <label class="sk-model-row__label" for="model-type-${target}">Provider</label>
+      <select id="model-type-${target}" name="agent_type" class="sk-input sk-input--sm" data-model-type>${typeOpts}</select>
+    </div>
+    <div class="sk-model-row__field">
+      <label class="sk-model-row__label" for="model-model-${target}">Model</label>
+      <input id="model-model-${target}" type="text" name="model" class="sk-input sk-input--sm" data-model-model
+             value="${escapeHtml(current.model)}" placeholder="default" autocomplete="off"
+             list="model-suggestions-${target}">
+      <datalist id="model-suggestions-${target}">${(options.find((o) => o.name === current.agent_type) ?? options[0])?.models
+      .map((m) => `<option value="${escapeHtml(m)}"></option>`).join("") ?? ""
+    }</datalist>
+    </div>
+    <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary sk-model-row__save">Save</button>
   </form>`;
 }
 
@@ -86,12 +84,16 @@ function modelSettingsPanel(ms: ConfigPageViewModel["modelSettings"]): string {
         var OPTS = ${optionsJson};
         document.querySelectorAll('.sk-model-row').forEach(function(row){
           var typeSel = row.querySelector('[data-model-type]');
-          var modelSel = row.querySelector('[data-model-model]');
-          if(!typeSel || !modelSel) return;
+          var modelInput = row.querySelector('[data-model-model]');
+          if(!typeSel || !modelInput) return;
+          var listEl = modelInput.list;
           typeSel.addEventListener('change', function(){
-            var models = OPTS[typeSel.value] || ['default'];
-            modelSel.innerHTML = models.map(function(m){
-              return '<option value="'+m+'">'+m+'</option>';
+            // Model is free text; refresh the datalist suggestions to the new
+            // provider's known models. Whatever is typed still saves.
+            if(!listEl) return;
+            var models = OPTS[typeSel.value] || [];
+            listEl.innerHTML = models.map(function(m){
+              return '<option value="'+m+'"></option>';
             }).join('');
           });
         });
@@ -244,15 +246,18 @@ export function configPage(vm: ConfigPageViewModel): string {
         </div>
       </div>
 
-      <!-- Skipper Connect Section -->
+      <!-- Skipper Connect Section (experimental only) -->
+      ${isExperimental() ? `
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
         <div class="sk-panel__header">
           <span class="sk-panel__title">Skipper Connect</span>
         </div>
         <div class="sk-panel__body">
           <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
-            Connect to <code>connect.letskipper.work</code> to expose task operations as webhooks.
-            Create a user in the dashboard to get an Integrator ID and generate a Connect API key.
+            Link this instance to a remote Skipper Connect service to control it from anywhere:
+            its web app, REST API, and webhooks, plus public links for published artifacts. The daemon
+            dials out over a single WebSocket and never exposes an inbound port. Provide the remote
+            instance URL and paste its Connect API key (the instance identity is embedded in the key).
             Use the navbar toggle to enable or disable the live connection.
           </p>
           <form hx-post="/api/config/skipper-connect" hx-swap="none"
@@ -262,13 +267,7 @@ export function configPage(vm: ConfigPageViewModel): string {
                 <label class="sk-muted sk-text-xs" style="width:130px;" for="sc-url">Connect URL</label>
                 <input type="text" id="sc-url" name="url"
                   value="${escapeHtml(vm.skipperConnectUrl)}"
-                  class="sk-input sk-input--sm" style="flex:1;">
-              </div>
-              <div style="display:flex;align-items:center;gap:var(--sk-space-3);">
-                <label class="sk-muted sk-text-xs" style="width:130px;" for="sc-guid">Integrator ID</label>
-                <input type="text" id="sc-guid" name="guid"
-                  value="${escapeHtml(vm.skipperConnectGuid)}"
-                  placeholder="Paste Integrator ID from dashboard"
+                  placeholder="Remote instance URL, e.g. wss://your-instance.example"
                   class="sk-input sk-input--sm" style="flex:1;">
               </div>
               <div style="display:flex;align-items:center;gap:var(--sk-space-3);">
@@ -288,6 +287,7 @@ export function configPage(vm: ConfigPageViewModel): string {
           </form>
         </div>
       </div>
+      ` : ""}
 
       <!-- System Section -->
       <div class="sk-panel">

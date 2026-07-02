@@ -1,3 +1,5 @@
+import { signalTextSnippet } from "../agents/signal-utils";
+
 const DEDUP_WINDOW_MS = 15_000;
 const CACHE_LIMIT = 256;
 
@@ -18,7 +20,7 @@ class SignalBridge {
   private actions: Map<string, McpAction[]> = new Map(); // runtimeId -> actions
 
   registerMcpAction(runtimeId: string, actionType: string, contentSnippet: string): void {
-    const fingerprint = `${actionType}|${contentSnippet.trim().replace(/\s+/g, " ").slice(0, 260)}`;
+    const fingerprint = `${actionType}|${signalTextSnippet(contentSnippet)}`;
     const entry: McpAction = { type: actionType, fingerprint, timestamp: Date.now() };
 
     let list = this.actions.get(runtimeId);
@@ -43,7 +45,7 @@ class SignalBridge {
     if (!list) return false;
 
     const now = Date.now();
-    const fingerprint = `${signalType}|${contentSnippet.trim().replace(/\s+/g, " ").slice(0, 260)}`;
+    const fingerprint = `${signalType}|${signalTextSnippet(contentSnippet)}`;
 
     // Clean expired entries while checking
     let foundMatch = false;

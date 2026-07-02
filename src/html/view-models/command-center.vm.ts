@@ -2,8 +2,9 @@ import type { Database } from "bun:sqlite";
 import { isTeamVisible, isExperimental } from "../../config/feature-flags";
 import {
   getBoolSetting, SETTING_PARALLEL_TASKS,
-  SETTING_SKIPPER_CONNECT_ENABLED, getStringSetting, SETTING_SKIPPER_CONNECT_GUID,
+  SETTING_SKIPPER_CONNECT_ENABLED, getStringSetting, SETTING_SKIPPER_CONNECT_KEY,
 } from "../../config/app-settings";
+import { getOpenEscalationCount } from "../../data/queries";
 import type { ActiveMissionData } from "../panels/active-mission.panel";
 import type { MetricsData } from "../panels/metrics-bar.panel";
 import type { QueuedTask } from "../panels/task-queue.panel";
@@ -207,7 +208,7 @@ export function buildCommandCenterViewModel(
     (db.prepare("SELECT DISTINCT task_id FROM escalations WHERE status = 'open'").all() as Array<{ task_id: string }>)
       .map((r) => r.task_id),
   );
-  const escalationCount = (db.prepare("SELECT COUNT(*) as count FROM escalations WHERE status = 'open'").get() as { count: number }).count;
+  const escalationCount = getOpenEscalationCount(db);
 
   // Daemon
   const daemonRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'owner_pid'").get() as { value: string } | null;
@@ -311,7 +312,7 @@ export function buildCommandCenterViewModel(
     daemonState,
     daemonUptime: process.uptime(),
     parallelExecution: getBoolSetting(db, SETTING_PARALLEL_TASKS, true),
-    skipperConnectEnabled: !!getStringSetting(db, SETTING_SKIPPER_CONNECT_GUID, "") && getBoolSetting(db, SETTING_SKIPPER_CONNECT_ENABLED, false),
+    skipperConnectEnabled: !!getStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, "") && getBoolSetting(db, SETTING_SKIPPER_CONNECT_ENABLED, false),
     realtimeSessionActive,
   };
 }
