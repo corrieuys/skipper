@@ -225,7 +225,6 @@
 
   function loop() {
     if (!loopRunning) return;
-    requestAnimationFrame(loop);
 
     var w = window.innerWidth;
     var h = window.innerHeight;
@@ -238,6 +237,9 @@
     renderer.clear(true, true, false);
     renderer.setScissorTest(true);
 
+    // Track whether anything still needs animating.
+    var busy = false;
+
     for (var i = views.length - 1; i >= 0; i--) {
       var v = views[i];
       if (!document.contains(v.el)) {
@@ -246,13 +248,10 @@
         continue;
       }
 
-      var rect = v.el.getBoundingClientRect();
-      if (rect.width < 1 || rect.bottom < 0 || rect.top > h || rect.right < 0 || rect.left > w) {
-        continue; // offscreen
-      }
-
-      // Ease toward active/inactive target, persisting the value by seed so the
-      // next rebuilt view resumes it (see lerpState) instead of cutting.
+      // Ease toward active/inactive target for every view (cheap), persisting the
+      // value by seed so the next rebuilt view resumes it (see lerpState) instead
+      // of cutting. Done before the offscreen check so an orb that deactivates
+      // while scrolled out of view still settles and lets the loop idle.
       var target = v.el.classList.contains("zen-orb--active") ? 1 : 0;
       v.lerp += (target - v.lerp) * Math.min(dt * 4, 1);
       // Snap once inside a deadzone: the ease is asymptotic, so without this
@@ -260,6 +259,13 @@
       // tumble pose gives a settled cube perpetual sub-pixel jitter.
       if (Math.abs(v.lerp - target) < 0.002) v.lerp = target;
       lerpState[v.seed] = v.lerp;
+      if (target === 1 || v.lerp > 0.0001) busy = true;
+
+      var rect = v.el.getBoundingClientRect();
+      if (rect.width < 1 || rect.bottom < 0 || rect.top > h || rect.right < 0 || rect.left > w) {
+        continue; // offscreen — lerp already advanced above, skip only the draw
+      }
+
       var a = v.lerp;
 
       // Tumble pose is a pure function of the shared clock + per-agent seed, so a
@@ -288,10 +294,14 @@
       renderer.clearDepth();
       renderer.render(v.scene, v.camera);
     }
+
+    // Keep going only while something is animating; otherwise idle until woken.
+    if (busy) requestAnimationFrame(loop);
+    else loopRunning = false;
   }
 
   function ensureLoop() {
-    if (loopRunning) return;
+    if (!booted || loopRunning) return;
     loopRunning = true;
     requestAnimationFrame(loop);
   }
@@ -319,15 +329,35 @@
       });
   }
 
+  // Full-document rescan (querySelectorAll) is coalesced: the activity feed and
+  // WS pushes can fire dozens of mutations per second, and scanning on every one
+  // burned CPU for nothing. Wake the render loop instantly (so a freshly-active
+  // orb animates now) but defer the scan to the trailing edge.
+  var scanTimer = null;
+  function scheduleScan() {
+    if (scanTimer !== null) return;
+    scanTimer = setTimeout(function () {
+      scanTimer = null;
+      start();
+    }, 250);
+  }
+
   // Orbs are injected via HTMX after page load and re-polled, so watch the DOM.
   var observer = new MutationObserver(function () {
-    start();
+    ensureLoop();
+    scheduleScan();
   });
 
   // Theme picker swaps <html data-theme> live (no reload), so recolor on change.
   var themeObserver = new MutationObserver(function () {
     for (var i = 0; i < views.length; i++) applyTheme(views[i]);
+    ensureLoop(); // repaint once with the new accents even if idle
   });
+
+  // The orb canvas is fixed full-screen; when the loop is idle and the page
+  // scrolls or resizes, the painted cubes would drift off their DOM slots. Wake
+  // the loop so it repaints them in place (it idles again next frame).
+  function wake() { ensureLoop(); }
 
   function init() {
     observer.observe(document.body, { childList: true, subtree: true });
@@ -335,6 +365,8 @@
       attributes: true,
       attributeFilter: ["data-theme"],
     });
+    window.addEventListener("scroll", wake, { passive: true, capture: true });
+    window.addEventListener("resize", wake);
     start();
   }
 

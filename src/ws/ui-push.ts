@@ -324,11 +324,18 @@ export class UIWebSocketManager {
     });
 
     // --- Agent exit ---
-    eventBus.on("agent:exit", () => {
+    eventBus.on("agent:exit", (event) => {
       this.pushDashboardTasks();
       this.pushDashboardInstances();
       this.pushDashboardSteering();
       this.pushDashboardPhaseIndicator();
+      // Settle the V2 command-center orb roster the instant the process dies.
+      // agent:exit carries no taskId, so resolve it from the instance. Without
+      // this the 3D cube keeps its --active class (still tumbling) until the
+      // steer fragment's next 3s poll, reading as out of sync with a stopped
+      // agent.
+      const taskRow = this.db.prepare("SELECT task_id FROM agent_instances WHERE id = ?").get(event.agentId) as { task_id: string | null } | null;
+      if (taskRow?.task_id) this.pushV2SteerPanel(taskRow.task_id);
       // Don't push full workspace refresh on agent exit — it resets the active tab.
       // The activity feed polls for updates, and task:state_changed covers status/phase changes.
     });
