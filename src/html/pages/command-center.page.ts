@@ -317,12 +317,13 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
                   hx-on::after-request="${reload}">Retry</button>`;
   }
 
-  // Review gate / recovery banner lives in the User Input tab (matches standard).
+  // Review gate / recovery banner sits between the task bar and the tab strip
+  // (its historic home), not inside a tab. The Escalations tab holds only
+  // agent escalations now.
   const reviewGate = task.status === "failed" && task.needs_review
     ? renderRecoveryPausedBanner(task)
     : needsReview ? renderReviewBanner(task) : "";
-  const inputHasContent = !!reviewGate;
-  const defaultTab = inputHasContent ? "input" : "outputs";
+  const defaultTab = "outputs";
   const tabCls = (name: string) => name === defaultTab ? "mc-tab mc-tab--active" : "mc-tab";
   const panelCls = (name: string) => name === defaultTab ? "mc-tab-panel mc-tab-panel--active" : "mc-tab-panel";
 
@@ -369,11 +370,14 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
     <script src="/realtime-audio.js"></script>
     ` : ""}
 
+    <!-- Review gate / recovery banner — between the task bar and the tabs -->
+    ${reviewGate ? `<div class="mc-attention-slot">${reviewGate}</div>` : ""}
+
     <!-- Tabs flush against the composer / task bar -->
     <div class="mc-tabs">
       <button class="${tabCls("outputs")}" data-mc-tab="outputs" onclick="Skipper.tabs.show('outputs')">Outputs</button>
       <button class="${tabCls("details")}" data-mc-tab="details" onclick="Skipper.tabs.show('details')">Details</button>
-      <button class="${tabCls("input")}${reviewGate ? " mc-tab--attention" : ""}" data-mc-tab="input" onclick="Skipper.tabs.show('input')">User Input<span class="mc-tab__badge" data-mc-tab-badge${reviewGate ? "" : " hidden"}>${reviewGate ? "1" : ""}</span></button>
+      <button class="${tabCls("input")}" data-mc-tab="input" onclick="Skipper.tabs.show('input')">Escalations</button>
     </div>
 
     <!-- Outputs tab — Timeline+Activity | Notes | Artifacts side-by-side -->
@@ -426,16 +430,12 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
       <span class="sk-muted" style="padding: var(--sk-space-4);">Loading...</span>
     </div>
 
-    <!-- User Input tab — review gate + escalation prompts -->
+    <!-- Escalations tab — agent escalation prompts -->
     <div class="${panelCls("input")}" id="mc-tab-input">
-      ${reviewGate}
       <div id="mc-task-escalations-${eid}"
            hx-get="/fragments/tasks/${eid}/escalations"
            hx-trigger="load"
            hx-swap="innerHTML"></div>
-      ${!reviewGate
-        ? `<div class="mc-userinput__empty sk-muted" style="padding: var(--sk-space-4); text-align:center;">Nothing needs your input right now.</div>`
-        : ""}
     </div>
 
     <!-- Activity detail modal -->
@@ -489,14 +489,17 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
     </div>
   ` : "";
 
-  // Review gate / recovery banner — moved into the User Input tab.
+  // Review gate / recovery banner sits between the task bar and the tab strip
+  // (its historic home), not inside a tab.
   const reviewGate = task.status === "failed" && task.needs_review
     ? renderRecoveryPausedBanner(task)
     : needsReview ? renderReviewBanner(task) : "";
+  // The iterate panel sits in the same banner slot as the review gate (between
+  // the task bar and the tabs), not inside a tab.
   const iterate = task.status === "completed" ? iteratePanel(task.id) : "";
-  // Default to the User Input tab when it holds something worth seeing (a
-  // pending review, a result summary, or the iterate panel); else Outputs.
-  const inputHasContent = !!(reviewGate || resultHtml || iterate);
+  // Default to the Escalations tab when it holds a result summary worth seeing;
+  // else Outputs.
+  const inputHasContent = !!resultHtml;
   const defaultTab = inputHasContent ? "input" : "outputs";
   const tabCls = (name: string) => name === defaultTab ? "mc-tab mc-tab--active" : "mc-tab";
   const panelCls = (name: string) => name === defaultTab ? "mc-tab-panel mc-tab-panel--active" : "mc-tab-panel";
@@ -519,12 +522,15 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
       </div>
     </div>
 
-    <!-- Tabbed content — flush against the task bar (review/escalation prompts
-         now live inside the User Input tab, not stacked above the tabs). -->
+    <!-- Review gate / recovery banner + iterate panel — between the task bar
+         and the tabs -->
+    ${reviewGate || iterate ? `<div class="mc-attention-slot">${reviewGate}${iterate}</div>` : ""}
+
+    <!-- Tabbed content — flush against the task bar. -->
     <div class="mc-tabs">
       <button class="${tabCls("outputs")}" data-mc-tab="outputs" onclick="Skipper.tabs.show('outputs')">Outputs</button>
       <button class="${tabCls("details")}" data-mc-tab="details" onclick="Skipper.tabs.show('details')">Details</button>
-      <button class="${tabCls("input")}${reviewGate ? " mc-tab--attention" : ""}" data-mc-tab="input" onclick="Skipper.tabs.show('input')">User Input<span class="mc-tab__badge" data-mc-tab-badge${reviewGate ? "" : " hidden"}>${reviewGate ? "1" : ""}</span></button>
+      <button class="${tabCls("input")}" data-mc-tab="input" onclick="Skipper.tabs.show('input')">Escalations</button>
     </div>
 
     <!-- Outputs tab — Activity | Notes | Artifacts side-by-side -->
@@ -581,16 +587,14 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
       <span class="sk-muted" style="padding: var(--sk-space-4);">Loading...</span>
     </div>
 
-    <!-- User Input tab — review gate + escalation prompts + result/iterate -->
+    <!-- Escalations tab — agent escalation prompts + result summary -->
     <div class="${panelCls("input")}" id="mc-tab-input">
-      ${reviewGate}
       <div id="mc-task-escalations-${escapeHtml(task.id)}"
            hx-get="/fragments/tasks/${escapeHtml(task.id)}/escalations"
            hx-trigger="load"
            hx-swap="innerHTML"></div>
       ${resultHtml}
-      ${iterate}
-      ${!reviewGate && !resultHtml && !iterate
+      ${!resultHtml
         ? `<div class="mc-userinput__empty sk-muted" style="padding: var(--sk-space-4); text-align:center;">Nothing needs your input right now.</div>`
         : ""}
     </div>

@@ -533,7 +533,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         }
       }
       killRunningRuntimesForTask(params.id, daemon);
-      scheduler.completeTask(params.id, "Manually completed");
+      scheduler.completeTask(params.id);
       if (_req.headers.get("HX-Request")) {
         return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
       }

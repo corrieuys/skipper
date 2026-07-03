@@ -163,7 +163,7 @@ export function helpPage(vm: HelpPageViewModel): string {
     <p><strong>Escalations</strong> are how agents surface questions or decisions to the human operator when they cannot proceed autonomously.</p>
     <ul>
       <li>Any agent calls the <code>escalate</code> MCP tool with an HTML-formatted question. The task pauses.</li>
-      <li>The task opens with a <strong>User Input</strong> tab holding its open questions and review gates; the sidebar marks any task needing input with a yellow dot.</li>
+      <li>The task opens with an <strong>Escalations</strong> tab holding its open questions; a pending review gate shows as a banner between the task bar and the tabs. The sidebar marks any task needing input with a yellow dot.</li>
       <li>The operator types a response and submits. The orchestrator injects the response back into the paused agent, which resumes from where it stopped.</li>
       <li>Escalations can also be <strong>dismissed</strong> without a response — the agent resumes with a signal that the question was dismissed.</li>
       <li>If a task completes or fails while escalations are still open, those escalations are automatically reconciled (closed).</li>

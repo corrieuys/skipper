@@ -70,7 +70,7 @@ export async function handleResourceRequest(
             // Unlike POST /api/tasks/:id/complete, this cannot kill live agent processes (daemon not injected).
             const id = String(params.id ?? "");
             if (!id) return { ok: false, error: "id is required" };
-            return { ok: true, data: taskScheduler.completeTask(id, "Manually completed via Skipper Connect") };
+            return { ok: true, data: taskScheduler.completeTask(id) };
           }
           case "iterate": {
             const id = String(params.id ?? "");

@@ -297,6 +297,14 @@ export function missionControlStyles(): string {
     }
 
     /* ── Tabbed content below the graph ── */
+    /* Review gate / iterate panel slot between the task bar and the tabs. Equal
+       padding all round; the banner's own sk-mb-4 bottom margin is zeroed so the
+       slot's padding is the only spacing. */
+    .mc-attention-slot {
+      padding: var(--sk-space-3);
+      background: var(--sk-surface-1);
+    }
+    .mc-attention-slot > .sk-panel { margin-bottom: 0; }
     .mc-tabs {
       display: flex;
       gap: var(--sk-space-2);
@@ -327,30 +335,8 @@ export function missionControlStyles(): string {
       border-color: rgba(0, 251, 251, 0.35);
       background: rgba(0, 251, 251, 0.06);
     }
-    /* Count badge on the User Input tab when a review/escalation is pending. */
-    .mc-tab--attention { color: var(--sk-accent-warning); }
-    .mc-tab__badge {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 15px;
-      height: 15px;
-      margin-left: 6px;
-      padding: 0 4px;
-      font-size: 0.6rem;
-      font-weight: 700;
-      line-height: 1;
-      color: var(--sk-surface-0);
-      background: var(--sk-accent-warning);
-      border-radius: 999px;
-      vertical-align: middle;
-      box-shadow: 0 0 6px color-mix(in srgb, var(--sk-accent-warning) 55%, transparent);
-      animation: mc-pulse 1.5s ease-in-out infinite;
-    }
-    .mc-tab__badge[hidden] { display: none; }
-    /* Hide the "nothing needs input" hint once a review/recovery gate
-       ([data-mc-pending]) or an escalation card (id^="escalation-") lands. */
-    #mc-tab-input:has([data-mc-pending]) .mc-userinput__empty,
+    /* Hide the "nothing needs input" hint once an escalation card
+       (id^="escalation-") lands in the Escalations tab. */
     #mc-tab-input:has([id^="escalation-"]) .mc-userinput__empty { display: none; }
     .mc-tab-panel { display: none; flex: 1; overflow-y: auto; padding: var(--sk-space-3); }
     .mc-tab-panel--active { display: flex; flex-direction: column; }
