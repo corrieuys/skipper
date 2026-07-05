@@ -1,6 +1,18 @@
 import { escapeHtml } from "../atoms/escape-html";
 import { badgeFragment } from "../fragments/badge.fragment";
 import { formatTimestamp } from "../atoms/format-timestamp";
+import { looksLikeHtml } from "../atoms/sniff-html";
+
+// Agents sometimes author an escalation as an HTML snippet (a rendered table,
+// a formatted diff, etc.). Escaping it and leaning on the client markdown pass
+// can leave the raw tags visible. When the text looks like HTML, drop it into
+// the card as-is so it renders; otherwise keep the escape + `data-artifact-md`
+// markdown path. Same trust model as artifacts (see sniff-html).
+function renderAgentText(text: string): string {
+  return looksLikeHtml(text)
+    ? `<div class="sk-md">${text}</div>`
+    : `<div class="sk-md" data-artifact-md>${escapeHtml(text)}</div>`;
+}
 
 export interface EscalationCardData {
   id: string;
@@ -37,7 +49,7 @@ export function escalationCardPanel(esc: EscalationCardData): string {
     </div>
     <div class="sk-panel__body">
       <div class="esc-q sk-mb-2">
-        <div class="esc-q__body sk-md" data-artifact-md style="color: var(--sk-text);">${escapeHtml(esc.question)}</div>
+        <div class="esc-q__body" style="color: var(--sk-text);">${renderAgentText(esc.question)}</div>
       </div>
       <div class="sk-flex sk-gap-2 sk-text-xs sk-muted sk-mb-4">
         <span title="${escapeHtml(esc.agent_id)}">Agent: ${escapeHtml(agentLabel)}${runtimeHint ? ` <span class="sk-mono">(${escapeHtml(runtimeHint)})</span>` : ""}</span>
@@ -57,7 +69,7 @@ export function escalationCardPanel(esc: EscalationCardData): string {
       ` : `
         <div style="background: var(--sk-surface-0); padding: var(--sk-space-2) var(--sk-space-3); font-size: var(--sk-text-sm);">
           <span class="sk-text-xs sk-muted">Response:</span>
-          <div class="sk-md" data-artifact-md>${escapeHtml(esc.response ?? "Dismissed")}</div>
+          ${renderAgentText(esc.response ?? "Dismissed")}
         </div>
       `}
     </div>

@@ -203,7 +203,26 @@
       // Resume the in-flight transition value across DOM re-renders so a rebuilt
       // cube eases smoothly instead of snapping. First-ever view starts flat (0).
       lerp: seedStr in lerpState ? lerpState[seedStr] : 0,
+      // Nearest horizontally-scrollable ancestor. When an orb lives inside a
+      // scroll container (e.g. the task-bar phase/cube strip), its cube must be
+      // clipped to that container's left/right edges — the WebGL overlay is a
+      // fixed full-viewport layer that otherwise paints scrolled-out cubes over
+      // neighbouring elements (the title, the action buttons).
+      clipEl: findClipAncestor(el),
+      clipRect: null,
     };
+  }
+
+  // Walk up for the nearest ancestor that clips its overflow on the x-axis.
+  // null → orb isn't inside a scroll region, so no clipping is applied.
+  function findClipAncestor(el) {
+    var node = el.parentElement;
+    while (node && node !== document.body) {
+      var ov = getComputedStyle(node).overflowX;
+      if (ov === "auto" || ov === "scroll" || ov === "hidden") return node;
+      node = node.parentElement;
+    }
+    return null;
   }
 
   function disposeView(v) {
@@ -252,9 +271,10 @@
     var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
     for (var i = 0; i < views.length; i++) {
       var v = views[i];
-      if (!document.contains(v.el)) { v.rect = null; continue; }
+      if (!document.contains(v.el)) { v.rect = null; v.clipRect = null; continue; }
       var r = v.el.getBoundingClientRect();
       v.rect = r;
+      v.clipRect = v.clipEl && document.contains(v.clipEl) ? v.clipEl.getBoundingClientRect() : null;
       if (r.width < 1 || r.bottom < 0 || r.top > h || r.right < 0 || r.left > w) continue;
       var size = Math.max(r.width, r.height) * PAD;
       var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
@@ -357,8 +377,24 @@
       var cy = rect.top + rect.height / 2;
       var left = (cx - size / 2) - regLeft;
       var bottom = regH - ((cy - regTop) + size / 2);
+
+      // Viewport places the cube geometry; scissor decides which pixels survive.
+      // Clip the scissor's x-span to the orb's scroll container so a cube that
+      // has scrolled under a neighbouring element isn't painted over it. Only
+      // the x-axis is clipped (vertical padding room for the tumble/bob stays),
+      // and the viewport is left at the full square so the cube isn't squashed.
+      var scLeftVp = cx - size / 2;
+      var scRightVp = cx + size / 2;
+      if (v.clipRect) {
+        if (v.clipRect.left > scLeftVp) scLeftVp = v.clipRect.left;
+        if (v.clipRect.right < scRightVp) scRightVp = v.clipRect.right;
+      }
+      if (scRightVp - scLeftVp < 1) continue; // fully clipped out of the container
+      var scLeft = scLeftVp - regLeft;
+      var scWidth = scRightVp - scLeftVp;
+
       renderer.setViewport(left, bottom, size, size);
-      renderer.setScissor(left, bottom, size, size);
+      renderer.setScissor(scLeft, bottom, scWidth, size);
       renderer.clearDepth();
       renderer.render(v.scene, v.camera);
     }

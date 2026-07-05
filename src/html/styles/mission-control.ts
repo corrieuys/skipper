@@ -202,8 +202,27 @@ export function missionControlStyles(): string {
     .mc-task-header__actions {
       display: flex;
       gap: var(--sk-space-2);
-      /* Pushed to the far right; title + phases + orbs stay grouped on the left. */
+      /* Pinned to the far right; never shrinks, never scrolls out of view. */
+      flex: 0 0 auto;
       margin-left: auto;
+    }
+    /* Middle region holding the phase indicator + agent cubes. Takes the
+       remaining space and scrolls horizontally within itself, so a long phase
+       stepper or a big agent roster can't push the action buttons (right) or
+       the status dot + title (left) off screen. overflow-y is hidden because
+       an overflow-x:auto box forces its y axis to a non-visible value anyway;
+       the vertical padding gives the orbs' count badge room so it isn't
+       clipped. */
+    .mc-task-header__scroll {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: var(--sk-space-6);
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: var(--sk-space-2) 0;
+      scrollbar-width: thin;
     }
     .mc-task-header--with-phases .mc-task-header__title {
       flex: 0 1 auto;
@@ -238,7 +257,9 @@ export function missionControlStyles(): string {
       border-width: 1px;
     }
     .mc-task-header__phases .mc-phase-step__connector {
-      min-width: 18px;
+      width: 12px;
+      min-width: 12px;
+      margin: 0;
     }
     /* Agent orbs dock directly against the phase indicator (natural gap from the
        header's flex gap), not centered in the bar. */
@@ -800,19 +821,21 @@ export function missionControlStyles(): string {
 
     /* --- Agent instance modal --- */
     .mc-agent-modal__content {
-      width: min(560px, 94vw);
-      max-height: 82vh;
+      width: min(960px, 94vw);
+      height: min(88vh, 820px);
+      max-height: 88vh;
       display: flex;
       flex-direction: column;
       overflow: hidden;
     }
-    .mc-agent-modal__content .sk-modal__body { padding: 0.75rem; overflow: hidden; display: flex; }
+    .mc-agent-modal__content .sk-modal__body { padding: 0.75rem; overflow: hidden; display: flex; flex: 1; min-height: 0; }
     .mc-agent-instances {
       display: flex;
       flex-direction: column;
       gap: var(--sk-space-2);
       overflow-y: auto;
-      max-height: 68vh;
+      flex: 1;
+      min-height: 0;
       width: 100%;
       padding-right: 0.25rem;
     }
@@ -1714,9 +1737,14 @@ export function missionControlStyles(): string {
         flex: 1 1 0;
         min-width: 0;
       }
-      .mc-task-header__phases {
+      /* Phases + orbs share a full-width row of their own and scroll
+         horizontally within it (they live inside .mc-task-header__scroll now). */
+      .mc-task-header__scroll {
         flex: 1 1 100%;
         order: 2;
+      }
+      .mc-task-header__phases {
+        flex: 0 0 auto;
       }
       .mc-task-header__actions {
         flex: 1 1 100%;

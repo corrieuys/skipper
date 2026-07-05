@@ -937,11 +937,18 @@ export class UIWebSocketManager {
 
     const topics = [`dashboard`, `task:${taskId}`];
     const steerable = options.filter(o => o.can_steer);
-    const currentIds = steerable.map(o => o.runtime_id).sort().join(",");
-    const previousIds = this.lastV2SteerRuntimeIds.get(taskId) ?? "";
-    this.lastV2SteerRuntimeIds.set(taskId, currentIds);
+    // Change-detection key spans the full active roster (running AND
+    // waiting_delegation) plus each status — not just the steerable subset.
+    // The cube tiles reflect every active agent, so a parent flipping
+    // running<->waiting_delegation, or exiting while its children keep running,
+    // must force a full tile rebuild. Keying only off the running set let the
+    // fast path (which just refreshes steer-card text) run in that case,
+    // leaving a stale "active" cube lit until the next manual refresh.
+    const rosterKey = instances.map(i => `${i.runtime_id}:${i.status}`).sort().join(",");
+    const previousKey = this.lastV2SteerRuntimeIds.get(taskId) ?? "";
+    this.lastV2SteerRuntimeIds.set(taskId, rosterKey);
 
-    if (currentIds === previousIds && steerable.length > 0) {
+    if (rosterKey === previousKey && steerable.length > 0) {
       this.broadcastRaw(steerable.map(o => oob(steerCardInfoMarkup(o))).join("\n"), topics);
     } else {
       const tiles = buildTeamAgentTiles(this.db, taskId);
@@ -970,8 +977,11 @@ export class UIWebSocketManager {
        JOIN agent_instances ai ON ai.id = t.agent_id
        LEFT JOIN agents a ON a.id = ai.template_agent_id
        WHERE ai.task_id = ?
-       ORDER BY t.id DESC LIMIT 200`,
+       ORDER BY t.id DESC LIMIT 800`,
     ).all(taskId) as Array<{ stream: string; data: string; agent_name: string; created_at: string }>;
+    // Match the initial /activity route's wide pull. parseTerminalActivity keeps
+    // a per-kind budget, so this live OOB refresh must pull just as deep or it
+    // would re-starve the Messages filter every activity tick.
 
     const content = rows.length === 0
       ? `<div class="mc-activity__empty">No activity yet</div>`

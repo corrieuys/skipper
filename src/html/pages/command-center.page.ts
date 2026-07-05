@@ -332,14 +332,16 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
     <div class="mc-task-header mc-task-header--with-phases${isRunning ? " mc-task-header--running" : ""}">
       <span class="mc-node__indicator mc-node__indicator--${isPaused ? "paused" : task.status}"></span>
       <span class="mc-task-header__title">${escapeHtml(task.title)}</span>
-      ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
-      ${isRunning ? `<div class="mc-task-header__orbs">
-        <div id="mc-steer-${eid}"
-          hx-get="/fragments/dashboard/latest-steer?task=${eid}"
-          hx-trigger="load"
-          hx-target="this"
-          hx-swap="innerHTML"></div>
-      </div>` : ""}
+      <div class="mc-task-header__scroll">
+        ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
+        ${isRunning ? `<div class="mc-task-header__orbs">
+          <div id="mc-steer-${eid}"
+            hx-get="/fragments/dashboard/latest-steer?task=${eid}"
+            hx-trigger="load"
+            hx-target="this"
+            hx-swap="innerHTML"></div>
+        </div>` : ""}
+      </div>
       <div class="mc-task-header__actions">${headerButtons}</div>
     </div>
 
@@ -509,14 +511,16 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
     <div class="mc-task-header mc-task-header--with-phases${isRunning ? " mc-task-header--running" : ""}">
       <span class="mc-node__indicator mc-node__indicator--${task.status === "waiting_delegation" ? "waiting" : task.status}"></span>
       <span class="mc-task-header__title">${escapeHtml(task.title)}</span>
-      ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
-      ${isRunning ? `<div class="mc-task-header__orbs">
-        <div id="mc-steer-${escapeHtml(task.id)}"
-          hx-get="/fragments/dashboard/latest-steer?task=${escapeHtml(task.id)}"
-          hx-trigger="load"
-          hx-target="this"
-          hx-swap="innerHTML"></div>
-      </div>` : ""}
+      <div class="mc-task-header__scroll">
+        ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
+        ${isRunning ? `<div class="mc-task-header__orbs">
+          <div id="mc-steer-${escapeHtml(task.id)}"
+            hx-get="/fragments/dashboard/latest-steer?task=${escapeHtml(task.id)}"
+            hx-trigger="load"
+            hx-target="this"
+            hx-swap="innerHTML"></div>
+        </div>` : ""}
+      </div>
       <div class="mc-task-header__actions">
         ${actions}
       </div>
@@ -732,14 +736,12 @@ function renderPhaseStepper(phases: Array<{ name: string; status: string }>, tas
   const idAttr = taskId ? ` id="mc-phase-stepper-${escapeHtml(taskId)}"` : "";
   return `<div${idAttr} class="mc-phase-stepper"${pollAttrs}>
     ${phases.map((p, i) => {
-    const icon = p.status === "completed" ? "&#x2713;"
-      : p.status === "failed" ? "&#x2717;"
-        : p.status === "review" ? "&#x270E;"
-          : p.status === "current" ? `${i + 1}`
-            : `${i + 1}`;
+    // Space-optimised task bar: only the active phase (current, or paused for
+    // review) shows its name; every other phase collapses to just its number.
+    const isActive = p.status === "current" || p.status === "review";
     return `<div class="mc-phase-step mc-phase-step--${p.status}">
-        <span class="mc-phase-step__dot">${icon}</span>
-        <span class="mc-phase-step__name">${escapeHtml(p.name)}</span>
+        <span class="mc-phase-step__dot">${i + 1}</span>
+        ${isActive ? `<span class="mc-phase-step__name">${escapeHtml(p.name)}</span>` : ""}
       </div>${i < phases.length - 1 ? '<div class="mc-phase-step__connector"></div>' : ""}`;
   }).join("")}
   </div>`;
@@ -765,11 +767,25 @@ export function renderAgentList(agents: AgentTreeNode[]): string {
   </div>`;
 }
 
-/** Parse terminal output and return human-readable activity entries */
-export function parseTerminalActivity(lines: Array<{ stream: string; data: string; agent_name?: string; process_pid?: number | null; created_at?: string }>): string {
+/**
+ * Parse terminal output and return human-readable activity entries.
+ *
+ * The client filters kinds via CSS (msg / tool), so if the row window were a
+ * single shared cap, a burst of tool rows would starve the message filter:
+ * 18 tools + 2 messages in the window means the Messages tab shows just 2. To
+ * stop one kind from crowding out another, each kind gets its OWN budget.
+ * `lines` arrive newest-first, so keeping the first `perKindLimit` of each kind
+ * keeps the newest of each — and the Messages tab fills to `perKindLimit` even
+ * when tool rows dominate the raw stream (caller must pull a wide enough window).
+ */
+export function parseTerminalActivity(
+  lines: Array<{ stream: string; data: string; agent_name?: string; process_pid?: number | null; created_at?: string }>,
+  perKindLimit = 40,
+): string {
   if (lines.length === 0) return `<div class="mc-activity__empty">No activity yet</div>`;
 
-  return lines.map(line => {
+  const kindCounts: Record<string, number> = { message: 0, tool: 0, event: 0 };
+  const items = lines.map(line => {
     const data = line.data.trim();
     let kind: "message" | "tool" | "event" = "event";
     let summary = "";
@@ -817,6 +833,11 @@ export function parseTerminalActivity(lines: Array<{ stream: string; data: strin
     if (kind === "message") summary = stripThinking(summary);
     if (!summary) return "";
 
+    // Per-kind budget: once a kind is full, drop further (older) rows of that
+    // kind. Newest-first input means we keep the newest `perKindLimit` of each.
+    if (kindCounts[kind] >= perKindLimit) return "";
+    kindCounts[kind]++;
+
     const kindLabel = kind === "tool" ? "tool" : kind === "message" ? "msg" : "sys";
     const agentLabel = line.agent_name ? `<span class="mc-activity__agent">${escapeHtml(line.agent_name)}</span>` : "";
     const pidLabel = line.process_pid != null
@@ -836,6 +857,8 @@ export function parseTerminalActivity(lines: Array<{ stream: string; data: strin
       <span class="mc-activity__text">${escapeHtml(summary)}</span>
     </div>`;
   }).filter(Boolean).join("");
+
+  return items.length > 0 ? items : `<div class="mc-activity__empty">No activity yet</div>`;
 }
 
 export interface RealtimeActivityRow {
