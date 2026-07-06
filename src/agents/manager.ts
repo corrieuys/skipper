@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { Subprocess, FileSink } from "bun";
 import { getDb } from "../db/connection";
 import { agentSpawnPath } from "../paths";
-import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "./types";
+import { agentTypeUsesInlinePrompt, getAgentTypeDefinition, providerSupportsUsageTracking } from "./types";
 import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
 import { logError } from "../logging";
@@ -55,6 +55,8 @@ export interface AgentConfig {
 export interface RunningAgent {
   id: string;
   templateAgentId: string;
+  /** Resolved agent-type/provider (e.g. "claude-code") — gates usage tracking. */
+  providerType: string;
   taskId: string | null;
   parentInstanceId: string | null;
   rootInstanceId: string | null;
@@ -288,6 +290,8 @@ export class AgentManager {
   private queuedSignals: Map<string, ParsedSignal[]> = new Map();
   private recentSignalFingerprints: Map<string, Map<string, number>> = new Map();
   private resumeLocks: Map<string, Promise<void>> = new Map();
+  // agentId(runtime/instance id) -> resolved provider type, for usage-tracking gate.
+  private providerTypeCache: Map<string, string> = new Map();
   private spawnLocks: Set<string> = new Set();
   private closed = false;
   private decoder = new TextDecoder();
@@ -721,6 +725,7 @@ export class AgentManager {
     const runningAgent: RunningAgent = {
       id: runtimeId,
       templateAgentId,
+      providerType: resolvedType,
       taskId: options.taskId ?? null,
       parentInstanceId: options.parentInstanceId ?? null,
       rootInstanceId: options.rootInstanceId ?? runtimeId,
@@ -1465,6 +1470,12 @@ export class AgentManager {
 
     const base = { agentId, raw, type: "json" as const, jsonEvent: json };
 
+    // Usage/token tracking is provider-specific and allowlisted (claude-code only
+    // for now). Gate every usage-recording write on this so we never mis-parse a
+    // provider whose frame shape we haven't verified. Context-compaction detection
+    // stays ungated — it's operational, not usage reporting.
+    const usageTracked = providerSupportsUsageTracking(this.getAgentProviderType(agentId));
+
     // Handle by event type
     switch (json.type) {
       case "item.completed":
@@ -1476,7 +1487,7 @@ export class AgentManager {
         if (typeof json.usage?.input_tokens === "number" && json.usage.input_tokens >= this.contextCompactThreshold) {
           this.markContextCompactionNeeded(agentId, json.usage.input_tokens);
         }
-        if (json.usage) {
+        if (usageTracked && json.usage) {
           this.accumulateTokens(agentId, {
             input: json.usage.input_tokens,
             output: json.usage.output_tokens,
@@ -1491,13 +1502,24 @@ export class AgentManager {
 
       case "assistant":
         // Claude Code assistant responses
-        if (json.message?.usage) {
+        if (usageTracked && json.message?.usage) {
           this.accumulateTokens(agentId, {
             input: json.message.usage.input_tokens,
             output: json.message.usage.output_tokens,
             cacheCreation: json.message.usage.cache_creation_input_tokens,
             cacheRead: json.message.usage.cache_read_input_tokens,
           });
+        }
+        // Register internal sub-agents at spawn time: an Agent/Task tool_use block
+        // means this instance launched its own sub-agent (Explore, general-purpose,
+        // …) that Skipper's delegation graph never sees. Recording it here makes the
+        // count exact even if the sub-agent fails before emitting any usage frame.
+        if (usageTracked && Array.isArray(json.message?.content)) {
+          for (const block of json.message.content) {
+            if (block?.type === "tool_use" && (block.name === "Agent" || block.name === "Task")) {
+              this.recordSubagentSpawn(agentId, block);
+            }
+          }
         }
         return { ...base, content: text ?? undefined };
 
@@ -1518,7 +1540,7 @@ export class AgentManager {
         if (typeof json.part?.tokens?.input === "number" && json.part.tokens.input >= this.contextCompactThreshold) {
           this.markContextCompactionNeeded(agentId, json.part.tokens.input);
         }
-        if (json.part?.tokens) {
+        if (usageTracked && json.part?.tokens) {
           this.accumulateTokens(agentId, {
             input: json.part.tokens.input,
             output: json.part.tokens.output,
@@ -1527,6 +1549,13 @@ export class AgentManager {
         return { ...base, content: text ?? undefined };
 
       case "system":
+        // task_progress frames carry a running (CUMULATIVE) token total for an
+        // internal sub-agent, keyed by its tool_use_id. recordSubagentUsage takes
+        // MAX per id so re-emitted frames never double-count. Other system frames ignored.
+        if (usageTracked && json.subtype === "task_progress" && json.tool_use_id) {
+          this.recordSubagentUsage(agentId, json);
+        }
+        return base;
       case "rate_limit_event":
         // Silently ignored
         return base;
@@ -1563,6 +1592,85 @@ export class AgentManager {
         .run(input, output, cacheCreation, cacheRead, agentId);
     } catch (err) {
       logError(this.db, "agent.accumulate_tokens", { agentId, delta }, err);
+    }
+  }
+
+  /**
+   * Resolve an agent's provider type (e.g. "claude-code") from the running-agent
+   * record, falling back to a cached DB lookup (covers restart / test paths where
+   * the agent isn't tracked in memory). Used to gate provider-specific usage parsing.
+   */
+  private getAgentProviderType(agentId: string): string | undefined {
+    const running = this.getRunningAgent(agentId);
+    if (running) return running.providerType;
+    const cached = this.providerTypeCache.get(agentId);
+    if (cached !== undefined) return cached;
+    try {
+      const row = this.db
+        .prepare("SELECT a.type FROM agent_instances ai JOIN agents a ON a.id = ai.template_agent_id WHERE ai.id = ?")
+        .get(agentId) as { type: string } | undefined;
+      if (row?.type) {
+        this.providerTypeCache.set(agentId, row.type);
+        return row.type;
+      }
+    } catch { /* agents table may be unavailable in some contexts — skip */ }
+    return undefined;
+  }
+
+  /**
+   * Register (or refresh) an internal sub-agent at spawn time from an Agent/Task
+   * tool_use block. Upsert on tool_use_id so it composes with the usage writer;
+   * COALESCE keeps whichever writer arrives first from being clobbered.
+   */
+  private recordSubagentSpawn(
+    agentId: string,
+    block: { id?: string; input?: { subagent_type?: string; description?: string } },
+  ): void {
+    if (!block.id) return;
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO subagent_usage (tool_use_id, agent_instance_id, task_id, subagent_type, description)
+           VALUES (?, ?, (SELECT task_id FROM agent_instances WHERE id = ?), ?, ?)
+           ON CONFLICT(tool_use_id) DO UPDATE SET
+             subagent_type = COALESCE(subagent_type, excluded.subagent_type),
+             description    = COALESCE(description, excluded.description),
+             updated_at     = datetime('now')`,
+        )
+        .run(block.id, agentId, agentId, block.input?.subagent_type ?? null, block.input?.description ?? null);
+    } catch (err) {
+      logError(this.db, "agent.subagent_spawn", { agentId, toolUseId: block.id }, err);
+    }
+  }
+
+  /**
+   * Record an internal sub-agent's usage from a `system/task_progress` frame.
+   * total_tokens is cumulative-monotonic per tool_use_id, so we take MAX rather
+   * than sum — this is exactly what prevents the stream-frame double-count.
+   */
+  private recordSubagentUsage(
+    agentId: string,
+    json: { tool_use_id?: string; subagent_type?: string; last_tool_name?: string; usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number } },
+  ): void {
+    const id = json.tool_use_id;
+    if (!id) return;
+    const usage = json.usage ?? {};
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO subagent_usage (tool_use_id, agent_instance_id, task_id, subagent_type, total_tokens, tool_uses, duration_ms, last_tool_name)
+           VALUES (?, ?, (SELECT task_id FROM agent_instances WHERE id = ?), ?, ?, ?, ?, ?)
+           ON CONFLICT(tool_use_id) DO UPDATE SET
+             subagent_type  = COALESCE(subagent_type, excluded.subagent_type),
+             total_tokens   = MAX(total_tokens, excluded.total_tokens),
+             tool_uses      = excluded.tool_uses,
+             duration_ms    = excluded.duration_ms,
+             last_tool_name = excluded.last_tool_name,
+             updated_at     = datetime('now')`,
+        )
+        .run(id, agentId, agentId, json.subagent_type ?? null, usage.total_tokens ?? 0, usage.tool_uses ?? null, usage.duration_ms ?? null, json.last_tool_name ?? null);
+    } catch (err) {
+      logError(this.db, "agent.subagent_usage", { agentId, toolUseId: id }, err);
     }
   }
 

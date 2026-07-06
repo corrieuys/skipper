@@ -75,6 +75,20 @@ function addTaskNote(taskId: string, agentId: string, content: string): void {
   ).run(noteId, taskId, agentId, content);
 }
 
+// Helper: add a note with explicit source / created_at / deleted_at. Returns id.
+function insertNoteFull(
+  taskId: string,
+  agentId: string,
+  content: string,
+  opts: { source?: string; createdAt?: string; deletedAt?: string } = {},
+): string {
+  const noteId = crypto.randomUUID();
+  db.prepare(
+    "INSERT INTO task_notes (id, task_id, agent_id, content, source, created_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(noteId, taskId, agentId, content, opts.source ?? "agent", opts.createdAt ?? "2026-01-01 00:00:00.000", opts.deletedAt ?? null);
+  return noteId;
+}
+
 describe("buildInitialPrompt", () => {
   it("builds a simple task prompt without phases", () => {
     const agentId = createAgent("Dev Agent", "claude-code", "Build great software");
@@ -630,5 +644,68 @@ describe("buildPriorDelegationsSection", () => {
       isStreaming: true,
     });
     expect(prompt).not.toContain("PRIOR DELEGATIONS");
+  });
+});
+
+describe("note injection cap + soft-delete", () => {
+  // Seed a task with an operator note, a soft-deleted agent note, and 25 live
+  // agent notes with strictly increasing timestamps so newest-first is deterministic.
+  function seedNotes(taskId: string, agentId: string): { deletedId: string; oldestAgentId: string; newestAgentId: string } {
+    db.prepare("INSERT INTO tasks (id, title) VALUES (?, 'Notes Task')").run(taskId);
+    insertNoteFull(taskId, agentId, "OPERATOR: ship it", { source: "user", createdAt: "2026-01-01 00:00:00.500" });
+    const deletedId = insertNoteFull(taskId, agentId, "retracted advice", { createdAt: "2026-01-01 00:00:00.600", deletedAt: "2026-01-02 00:00:00.000" });
+    let oldestAgentId = "";
+    let newestAgentId = "";
+    for (let i = 1; i <= 25; i++) {
+      const ts = `2026-01-01 00:00:${String(i).padStart(2, "0")}.000`;
+      const id = insertNoteFull(taskId, agentId, `agent note ${i}`, { createdAt: ts });
+      if (i === 1) oldestAgentId = id;
+      if (i === 25) newestAgentId = id;
+    }
+    return { deletedId, oldestAgentId, newestAgentId };
+  }
+
+  it("caps agent notes at 20, always injects operator notes, excludes deleted", () => {
+    const agentId = createAgent("Worker", "claude-code");
+    const taskId = "task-cap";
+    const { deletedId, oldestAgentId, newestAgentId } = seedNotes(taskId, agentId);
+    const instanceId = crypto.randomUUID();
+
+    const { prompt, noteIds } = builder.buildInitialPromptTracked({
+      agent: { id: agentId, name: "Worker", type: "claude-code" },
+      task: { id: taskId, title: "Notes Task" },
+      isStreaming: true,
+    }, instanceId);
+
+    // 20 newest agent notes + 1 operator note = 21; deleted excluded.
+    expect(noteIds.length).toBe(21);
+    expect(noteIds).not.toContain(deletedId);
+    expect(noteIds).toContain(newestAgentId); // newest agent note kept
+    expect(noteIds).not.toContain(oldestAgentId); // oldest (note 1) dropped by the cap
+    expect(prompt).toContain("OPERATOR INSTRUCTIONS");
+    expect(prompt).toContain("OPERATOR: ship it");
+    expect(prompt).not.toContain("retracted advice");
+  });
+
+  it("delegate noteLimit override narrows the agent-note cap", () => {
+    const parentId = createAgent("Lead", "claude-code");
+    const childId = createAgent("Worker", "claude-code", "Do the work");
+    const taskId = "task-override";
+    createTeamWithAgents([
+      { id: parentId, role: "lead" },
+      { id: childId, role: "worker" },
+    ]);
+    seedNotes(taskId, parentId);
+    const instanceId = crypto.randomUUID();
+
+    const { noteIds } = builder.buildDelegationPromptTracked({
+      childAgent: { id: childId, name: "Worker", type: "claude-code", instruction: "Do the work" },
+      task: { id: taskId, title: "Notes Task" },
+      delegationPrompt: "review",
+      noteLimit: 5,
+    }, instanceId);
+
+    // 5 agent notes + 1 operator note.
+    expect(noteIds.length).toBe(6);
   });
 });

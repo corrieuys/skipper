@@ -63,6 +63,9 @@ interface DelegationBatchItem {
   to: string;
   work: string;
   label?: string;
+  // Override for the child's agent-note injection cap (default 20). Threaded from
+  // the delegate MCP tool's `note_limit` down to buildDelegationPromptTracked.
+  noteLimit?: number;
 }
 
 /** Validated parent/task context every delegation-batch step operates on. */
@@ -110,8 +113,9 @@ export class DelegationManager {
     parentRuntimeId: string,
     childAgentId: string,
     delegationPrompt: string,
+    noteLimit?: number,
   ): Promise<Delegation | null> {
-    const delegation = await this.handleDelegationBatch(parentRuntimeId, [{ to: childAgentId, work: delegationPrompt }]);
+    const delegation = await this.handleDelegationBatch(parentRuntimeId, [{ to: childAgentId, work: delegationPrompt, noteLimit }]);
     return delegation.length > 0 ? delegation[0] : null;
   }
 
@@ -121,6 +125,7 @@ export class DelegationManager {
         to: item.to?.trim(),
         work: item.work?.trim(),
         label: item.label?.trim(),
+        noteLimit: item.noteLimit,
       }))
       .filter((item) => item.to && item.work) as DelegationBatchItem[];
 
@@ -252,6 +257,7 @@ export class DelegationManager {
         childInstanceId,
         work: item.work,
         label: item.label,
+        noteLimit: item.noteLimit,
         attempt: 1,
         workingDir: undefined, // Agents spawn in orchestrator cwd; task.working_directory is for worktrees
       });
@@ -718,6 +724,7 @@ export class DelegationManager {
     childInstanceId: string;
     work: string;
     label?: string;
+    noteLimit?: number;
     attempt: number;
     workingDir?: string;
     resumeSessionId?: string;
@@ -754,6 +761,7 @@ export class DelegationManager {
       phase: this.getCurrentPhaseInfo(input.taskId),
       consensusShortId,
       consensusWorktree: !!consensusWorktreePath,
+      noteLimit: input.noteLimit,
     }, input.childInstanceId);
     const usesInlinePrompt = childTypeDef ? agentTypeUsesInlinePrompt(childTypeDef) : false;
 

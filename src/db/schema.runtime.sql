@@ -108,6 +108,29 @@ CREATE TABLE IF NOT EXISTS agent_instances (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_instances_task ON agent_instances(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_instances_template ON agent_instances(template_agent_id, created_at);
+
+-- Internal sub-agents spawned by an agent via its own Agent/Task tool (e.g. Claude
+-- Code's Explore / general-purpose sub-agents). These are invisible to Skipper's
+-- delegation graph. One row per sub-agent, keyed by the tool-call id so re-emitted
+-- stream frames dedupe naturally. total_tokens is CUMULATIVE-monotonic in the source
+-- stream, so writers take MAX(existing, new) rather than summing. Kept separate from
+-- agent_instances token columns: sub-agents run in their own context windows and must
+-- not inflate the parent's context-compaction accounting.
+CREATE TABLE IF NOT EXISTS subagent_usage (
+  tool_use_id       TEXT PRIMARY KEY,
+  agent_instance_id TEXT NOT NULL,
+  task_id           TEXT NOT NULL,
+  subagent_type     TEXT,
+  description       TEXT,
+  total_tokens      INTEGER NOT NULL DEFAULT 0,
+  tool_uses         INTEGER,
+  duration_ms       INTEGER,
+  last_tool_name    TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_usage_task ON subagent_usage(task_id);
+CREATE INDEX IF NOT EXISTS idx_subagent_usage_instance ON subagent_usage(agent_instance_id);
 CREATE INDEX IF NOT EXISTS idx_agent_instances_status ON agent_instances(status, updated_at);
 
 CREATE INDEX IF NOT EXISTS idx_delegations_task_status ON delegations(task_id, status);
@@ -138,7 +161,10 @@ CREATE TABLE IF NOT EXISTS task_notes (
   task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   agent_id TEXT NOT NULL,
   content TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+  -- Soft-delete: NULL = live, non-null timestamp = retracted. Deleted notes stay
+  -- visible in the UI (annotated) but are excluded from agent context injection.
+  deleted_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_notes_task ON task_notes(task_id, created_at);
@@ -228,6 +254,9 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   publish_key TEXT,
   published_at TEXT,
+  -- Soft-delete: set on ALL versions of a name at once. Deleted artifacts stay
+  -- visible in the list (annotated) but are excluded from agent context injection.
+  deleted_at TEXT,
   UNIQUE(task_id, name, version)
 );
 CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_kind ON task_artifacts(task_id, kind, created_at);

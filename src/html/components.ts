@@ -192,6 +192,7 @@ export interface TaskNoteData {
   content: string;
   source?: string;
   created_at: string;
+  deleted_at?: string | null;
 }
 
 export interface DelegationData {

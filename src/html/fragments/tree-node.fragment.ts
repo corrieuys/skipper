@@ -32,8 +32,7 @@ export function treeNodeFragment(node: AgentTreeNode): string {
   ${node.tokens && totalTokens(node.tokens) > 0 ? `<span class="sk-tree__meta" title="${escapeHtml(`input ${node.tokens.input.toLocaleString()} · output ${node.tokens.output.toLocaleString()} · cache write ${node.tokens.cache_creation.toLocaleString()} · cache read ${node.tokens.cache_read.toLocaleString()}`)}" style="font-variant-numeric: tabular-nums;">${formatTokenCount(totalTokens(node.tokens))} tok</span>` : ""}
   ${node.delegation ? `<button type="button" class="sk-tree__delegation"
        title="${escapeHtml(node.delegation.promptPreview)}"
-       data-sk-delegation-open="${escapeHtml(node.delegation.id)}"
-       onclick="event.stopPropagation()">
+       data-sk-delegation-open="${escapeHtml(node.delegation.id)}">
      <span class="sk-tree__delegation-badge sk-tree__delegation-badge--${escapeHtml(node.delegation.status)}">${escapeHtml(node.delegation.status)}</span>
      <span class="sk-tree__delegation-preview">${escapeHtml(node.delegation.promptPreview)}</span>
    </button>` : ""}

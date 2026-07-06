@@ -41,7 +41,7 @@ import type {
   RunningAgentInstance,
 } from "../html/realtime-components";
 import { notesPanel } from "../html/panels/notes.panel";
-import { escalationCardPanel, type EscalationCardData } from "../html/panels/escalation-card.panel";
+import { taskEscalationsSection, type EscalationCardData } from "../html/panels/escalation-card.panel";
 import { dashboardSteerListFragment, steerCardInfoMarkup, type SteeringOption } from "../html/dashboardLatestSteerFragment";
 import { buildTeamAgentTiles } from "../data/queries";
 import { dashboardNotesFragment } from "../html/dashboardNotesFragment";
@@ -899,8 +899,7 @@ export class UIWebSocketManager {
        ORDER BY CASE WHEN e.status = 'open' THEN 0 ELSE 1 END, e.created_at DESC`,
     ).all(taskId) as EscalationCardData[];
 
-    const open = escalations.filter((e) => e.status === "open");
-    const content = open.length === 0 ? "" : open.map((e) => escalationCardPanel(e)).join("");
+    const content = taskEscalationsSection(escalations);
     this.broadcast(`<div id="mc-task-escalations-${esc(taskId)}">${content}</div>`, [`dashboard`, `task:${taskId}`]);
   }
 

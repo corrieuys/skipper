@@ -808,6 +808,27 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     return Response.json({ error: "note not found after insert" }, { status: 500 });
   });
 
+  // Soft-delete / restore a note. Deleted notes stay visible in the UI (rendered
+  // with a "deleted" annotation) but are excluded from agent context injection.
+  // Both return the re-rendered single row for htmx outerHTML swap.
+  for (const action of ["delete", "restore"] as const) {
+    addRoute("POST", `/api/tasks/:id/notes/:noteId/${action}`, (_req, params) => {
+      const db = getDb();
+      const deletedAt = action === "delete" ? "strftime('%Y-%m-%d %H:%M:%f','now')" : "NULL";
+      const result = db
+        .prepare(`UPDATE task_notes SET deleted_at = ${deletedAt} WHERE id = ? AND task_id = ?`)
+        .run(params.noteId, params.id);
+      if (result.changes === 0) {
+        return Response.json({ error: "note not found" }, { status: 404 });
+      }
+      const note = db
+        .prepare("SELECT n.*, a.name AS agent_name FROM task_notes n LEFT JOIN agents a ON a.id = n.agent_id WHERE n.id = ?")
+        .get(params.noteId) as TaskNoteData | null;
+      if (!note) return Response.json({ error: "note not found" }, { status: 404 });
+      return htmlResponse(noteItemFragment(note));
+    });
+  }
+
   // --- Artifact REST API ---
 
   const artifactManager = new ArtifactManager();

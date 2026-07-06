@@ -120,7 +120,10 @@ export class ArtifactManager {
   }
 
   listArtifacts(options: ListArtifactsOptions): ArtifactListItem[] {
-    const conditions = ["task_id = ?"];
+    // Soft-deleted artifacts are excluded from the list — this feeds agent
+    // context injection (buildArtifactSection), so retracted artifacts must not
+    // reach the "AVAILABLE ARTIFACTS" block. Direct getArtifact-by-name still works.
+    const conditions = ["task_id = ?", "deleted_at IS NULL"];
     const params: (string | number)[] = [options.taskId];
 
     if (options.kind) {

@@ -39,7 +39,7 @@ import {
 } from "../html/components";
 import { formatTimestamp } from "../html/formatTimestamp";
 import { metricsFragment } from "../html/metricsFragment";
-import { escalationCardPanel, type EscalationCardData } from "../html/panels/escalation-card.panel";
+import { escalationCardPanel, taskEscalationsSection, type EscalationCardData } from "../html/panels/escalation-card.panel";
 import { logsPage } from "../html/pages/logs.page";
 import { dashboardNotesFragment } from "../html/dashboardNotesFragment";
 import { dashboardChatCardFragment } from "../html/dashboardChatCardFragment";
@@ -156,6 +156,39 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return html(taskDelegationsFragment(params.id, delegations, getPollIntervalSeconds(db)));
   });
 
+  // Delegation detail — modal body for the agent-tree delegation pill
+  // (data-sk-delegation-open → #sk-delegation-modal-body, wired in skipper.js).
+  // Shows the full prompt that was sent to the child plus the returned result.
+  addRoute("GET", "/fragments/delegations/:id", (_req, params) => {
+    const d = db.prepare(
+      `SELECT d.id, d.status, d.prompt, d.result, d.created_at, d.completed_at,
+              COALESCE(pa.name, d.parent_agent_id) AS parent_agent_name,
+              COALESCE(ca.name, d.child_agent_id) AS child_agent_name
+       FROM delegations d
+       LEFT JOIN agents pa ON pa.id = d.parent_agent_id
+       LEFT JOIN agents ca ON ca.id = d.child_agent_id
+       WHERE d.id = ?`,
+    ).get(params.id) as {
+      id: string; status: string; prompt: string; result: string | null;
+      created_at: string; completed_at: string | null;
+      parent_agent_name: string; child_agent_name: string;
+    } | null;
+
+    if (!d) return html(`<p class="sk-muted">Delegation not found.</p>`);
+
+    const meta = [
+      `<span class="sk-badge sk-badge--${escapeHtml(d.status)}">${escapeHtml(d.status)}</span>`,
+      `<span class="sk-text-sm">${escapeHtml(d.parent_agent_name)} &rarr; ${escapeHtml(d.child_agent_name)}</span>`,
+      `<span class="sk-text-xs sk-muted">${formatTimestamp(d.created_at)}${d.completed_at ? ` &middot; done ${formatTimestamp(d.completed_at)}` : ""}</span>`,
+    ].join(" ");
+
+    return html(`<div class="sk-flex sk-items-center sk-gap-2 sk-mb-4" style="flex-wrap:wrap;">${meta}</div>
+      <h4 class="sk-text-sm sk-mb-2">Prompt sent</h4>
+      <pre style="white-space:pre-wrap;word-break:break-word;background:var(--sk-surface-0);padding:var(--sk-space-3);border-radius:var(--sk-radius-sm);margin:0;">${escapeHtml(d.prompt)}</pre>
+      ${d.result ? `<h4 class="sk-text-sm sk-mb-2" style="margin-top:var(--sk-space-4);">Result returned</h4>
+      <pre style="white-space:pre-wrap;word-break:break-word;background:var(--sk-surface-0);padding:var(--sk-space-3);border-radius:var(--sk-radius-sm);margin:0;">${escapeHtml(d.result)}</pre>` : ""}`);
+  });
+
   addRoute("GET", "/fragments/tasks/:id/notes", (_req, params) => {
     const notes = db.prepare(
       `SELECT n.*, a.name AS agent_name
@@ -176,6 +209,21 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
 
     addRoute("GET", `${variant.routePrefix}/:id/artifacts/:name`, (req, params) =>
       html(renderArtifactDetailFragment(db, params.id, params.name, new URL(req.url).searchParams.get("version") ?? "latest", variant)));
+
+    // Soft-delete / restore an artifact by NAME (all versions at once). Deleted
+    // artifacts stay listed (annotated) but are excluded from agent context
+    // injection (artifact-manager.listArtifacts filters deleted_at). Re-renders
+    // the list in place.
+    for (const deleteAction of ["delete", "restore"] as const) {
+      addRoute("POST", `${variant.routePrefix}/:id/artifacts/:name/${deleteAction}`, (_req, params) => {
+        const taskId = params.id ?? "";
+        const artifactName = params.name ?? "";
+        const deletedAt = deleteAction === "delete" ? "strftime('%Y-%m-%d %H:%M:%f','now')" : "NULL";
+        db.prepare(`UPDATE task_artifacts SET deleted_at = ${deletedAt} WHERE task_id = ? AND name = ?`)
+          .run(taskId, artifactName);
+        return html(renderArtifactListFragment(db, taskId, variant));
+      });
+    }
 
     for (const publishAction of ["publish", "unpublish"] as const) {
       addRoute("POST", `${variant.routePrefix}/:id/artifacts/:name/${publishAction}`, (req, params) => {
@@ -651,10 +699,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
        ORDER BY CASE WHEN e.status = 'open' THEN 0 ELSE 1 END, e.created_at DESC`,
     ).all(params.id) as EscalationCardData[];
 
-    const open = escalations.filter((e) => e.status === "open");
-    if (open.length === 0) return html("");
-
-    return html(open.map((e) => escalationCardPanel(e)).join(""));
+    return html(taskEscalationsSection(escalations));
   });
 
   // ── Chat / Conversation fragment routes ──────────────────────────────────
@@ -846,8 +891,24 @@ function registerV2PageRoutes(): void {
       status: string; process_pid: number | null; task_id: string;
     }>;
 
+    // Delegation pills: map each delegated instance to its delegation so the
+    // polled tree keeps the clickable prompt pill in sync (matches command-center.vm).
+    const instanceIds = instances.map((i) => i.id);
+    const delegationsByChild = new Map<string, { id: string; status: string; promptPreview: string }>();
+    if (instanceIds.length > 0) {
+      const placeholders = instanceIds.map(() => "?").join(",");
+      const delegationRows = db.prepare(
+        `SELECT id, child_instance_id, status, prompt FROM delegations WHERE child_instance_id IN (${placeholders})`,
+      ).all(...instanceIds) as Array<{ id: string; child_instance_id: string | null; status: string; prompt: string }>;
+      for (const d of delegationRows) {
+        if (!d.child_instance_id) continue;
+        const preview = d.prompt.length > 60 ? d.prompt.slice(0, 60) + "…" : d.prompt;
+        delegationsByChild.set(d.child_instance_id, { id: d.id, status: d.status, promptPreview: preview });
+      }
+    }
+
     const { buildAgentTree } = require("../html/view-models/command-center.vm");
-    const tree = buildAgentTree(instances);
+    const tree = buildAgentTree(instances, delegationsByChild);
     const { renderAgentList } = require("../html/pages/command-center.page");
     return html(renderAgentList(tree));
   });
@@ -981,23 +1042,66 @@ function registerV2PageRoutes(): void {
     ).get(params.id) as any;
     if (!task) return html(`<div style="padding:1rem; color:var(--sk-text-subtle);">Task not found</div>`);
 
-    const instances = db.prepare(
-      `SELECT ai.id, COALESCE(a.name, ai.template_agent_id) AS agent_name, ai.status, ai.created_at, ai.updated_at
-       FROM agent_instances ai LEFT JOIN agents a ON a.id = ai.template_agent_id
-       WHERE ai.task_id = ? ORDER BY ai.created_at`
-    ).all(params.id) as Array<{ id: string; agent_name: string; status: string; created_at: string; updated_at: string }>;
-
-    const delegations = db.prepare(
-      `SELECT d.id, COALESCE(pa.name, d.parent_agent_id) AS parent_name, COALESCE(ca.name, d.child_agent_id) AS child_name, d.status, d.prompt, d.result
-       FROM delegations d
+    // Unified agents + delegations list. Each agent instance is LEFT JOINed to the
+    // delegation that spawned it (delegations.child_instance_id = ai.id), so a single
+    // row shows the agent, who delegated to it, and a clickable prompt (opens the
+    // full prompt in #sk-delegation-modal via /fragments/delegations/:id).
+    const rows = db.prepare(
+      `SELECT ai.id, COALESCE(a.name, ai.template_agent_id) AS agent_name, ai.status,
+              ai.created_at,
+              d.id AS delegation_id, d.prompt AS delegation_prompt,
+              COALESCE(pa.name, d.parent_agent_id) AS parent_name
+       FROM agent_instances ai
+       LEFT JOIN agents a ON a.id = ai.template_agent_id
+       LEFT JOIN delegations d ON d.child_instance_id = ai.id
        LEFT JOIN agents pa ON pa.id = d.parent_agent_id
-       LEFT JOIN agents ca ON ca.id = d.child_agent_id
-       WHERE d.task_id = ? ORDER BY d.created_at`
-    ).all(params.id) as Array<{ id: string; parent_name: string; child_name: string; status: string; prompt: string; result: string | null }>;
+       WHERE ai.task_id = ? ORDER BY ai.created_at`
+    ).all(params.id) as Array<{
+      id: string; agent_name: string; status: string; created_at: string;
+      delegation_id: string | null; delegation_prompt: string | null; parent_name: string | null;
+    }>;
+
+    // Internal sub-agents each instance spawned via its own Agent/Task tool
+    // (recorded in subagent_usage by the stdout parser). Not part of Skipper's
+    // delegation graph, so surface the count + accurate token total per instance.
+    const subByInstance = new Map<string, { n: number; tok: number }>();
+    for (const s of db.prepare(
+      `SELECT agent_instance_id, COUNT(*) n, COALESCE(SUM(total_tokens),0) tok
+       FROM subagent_usage WHERE task_id = ? GROUP BY agent_instance_id`,
+    ).all(params.id) as Array<{ agent_instance_id: string; n: number; tok: number }>) {
+      subByInstance.set(s.agent_instance_id, { n: s.n, tok: s.tok });
+    }
+    const subTotal = db.prepare(
+      `SELECT COUNT(*) n, COALESCE(SUM(total_tokens),0) tok FROM subagent_usage WHERE task_id = ?`,
+    ).get(params.id) as { n: number; tok: number };
+    const fmtTok = (t: number) => t >= 1000 ? (t / 1000).toFixed(t >= 100000 ? 0 : 1) + "k" : String(t);
 
     const esc = escapeHtml;
-    const instanceRows = instances.map(i => `<tr><td class="sk-mono sk-text-xs">${esc(i.id.slice(0, 8))}</td><td>${esc(i.agent_name)}</td><td><span class="sk-badge sk-badge--${i.status}">${i.status}</span></td><td class="sk-muted sk-text-xs">${formatTimestamp(i.created_at)}</td></tr>`).join("");
-    const delegationRows = delegations.map(d => `<tr><td>${esc(d.parent_name)} → ${esc(d.child_name)}</td><td><span class="sk-badge sk-badge--${d.status}">${d.status}</span></td><td class="sk-text-xs sk-muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc((d.prompt ?? "").slice(0, 100))}</td></tr>`).join("");
+    const agentRows = rows.map(r => {
+      const fromCell = r.parent_name
+        ? `<span class="sk-muted sk-text-xs">&larr; ${esc(r.parent_name)}</span>`
+        : `<span class="sk-muted sk-text-xs">root</span>`;
+      const preview = r.delegation_prompt
+        ? (r.delegation_prompt.length > 90 ? r.delegation_prompt.slice(0, 90) + "…" : r.delegation_prompt)
+        : "";
+      const promptCell = r.delegation_id
+        ? `<button type="button" class="sk-btn--link sk-text-xs" style="text-align:left;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;background:none;border:none;padding:0;color:var(--sk-accent-secondary);"
+                 title="Click to read the full prompt"
+                 data-sk-delegation-open="${esc(r.delegation_id)}">${esc(preview)}</button>`
+        : `<span class="sk-muted sk-text-xs">—</span>`;
+      const sub = subByInstance.get(r.id);
+      const subCell = sub
+        ? `<span class="sk-text-xs" title="Internal sub-agents spawned by this agent (Explore, general-purpose, …)">${sub.n} &middot; ${fmtTok(sub.tok)} tok</span>`
+        : `<span class="sk-muted sk-text-xs">—</span>`;
+      return `<tr>
+        <td>${esc(r.agent_name)}</td>
+        <td>${fromCell}</td>
+        <td><span class="sk-badge sk-badge--${r.status}">${r.status}</span></td>
+        <td>${promptCell}</td>
+        <td>${subCell}</td>
+        <td class="sk-muted sk-text-xs">${formatTimestamp(r.created_at)}</td>
+      </tr>`;
+    }).join("");
 
     return html(`<div style="padding: var(--sk-space-4); overflow-y:auto;">
       <h3 style="color:var(--sk-text); margin-bottom:var(--sk-space-3); font-size:var(--sk-text-sm);">Task Info</h3>
@@ -1009,17 +1113,13 @@ function registerV2PageRoutes(): void {
         <tr><td class="sk-muted">Phase</td><td>${task.current_phase + 1}</td></tr>
         <tr><td class="sk-muted">Created</td><td>${formatTimestamp(task.created_at)}</td></tr>
         ${task.completed_at ? `<tr><td class="sk-muted">Completed</td><td>${formatTimestamp(task.completed_at)}</td></tr>` : ""}
+        ${subTotal.n > 0 ? `<tr><td class="sk-muted">Internal sub-agents</td><td>${subTotal.n} <span class="sk-muted">(${fmtTok(subTotal.tok)} tokens, not shown in the agent tree)</span></td></tr>` : ""}
         ${task.description ? `<tr><td class="sk-muted">Description</td><td style="white-space:pre-wrap;max-width:500px;">${esc(task.description)}</td></tr>` : ""}
       </table>
 
-      ${instances.length > 0 ? `
-        <h3 style="color:var(--sk-text); margin-bottom:var(--sk-space-3); font-size:var(--sk-text-sm);">Agent Instances (${instances.length})</h3>
-        <table class="sk-table" style="margin-bottom:var(--sk-space-6);"><thead><tr><th>ID</th><th>Agent</th><th>Status</th><th>Created</th></tr></thead><tbody>${instanceRows}</tbody></table>
-      ` : ""}
-
-      ${delegations.length > 0 ? `
-        <h3 style="color:var(--sk-text); margin-bottom:var(--sk-space-3); font-size:var(--sk-text-sm);">Delegations (${delegations.length})</h3>
-        <table class="sk-table"><thead><tr><th>Flow</th><th>Status</th><th>Prompt</th></tr></thead><tbody>${delegationRows}</tbody></table>
+      ${rows.length > 0 ? `
+        <h3 style="color:var(--sk-text); margin-bottom:var(--sk-space-3); font-size:var(--sk-text-sm);">Agents &amp; Delegations (${rows.length})</h3>
+        <table class="sk-table"><thead><tr><th>Agent</th><th>From</th><th>Status</th><th>Prompt</th><th>Sub-agents</th><th>Created</th></tr></thead><tbody>${agentRows}</tbody></table>
       ` : ""}
     </div>`);
   });
@@ -1433,6 +1533,7 @@ interface ArtifactRow {
 
 interface ArtifactListRow extends ArtifactRow {
   has_published: number;
+  deleted_at: string | null;
 }
 
 function artifactModalLink(variant: ArtifactModalVariant, taskId: string, name: string, version?: number): string {
@@ -1442,7 +1543,7 @@ function artifactModalLink(variant: ArtifactModalVariant, taskId: string, name: 
 
 function renderArtifactListFragment(db: ReturnType<typeof getDb>, taskId: string, variant: ArtifactModalVariant): string {
   const rows = db.prepare(
-    `SELECT a.id, a.name, a.version, a.kind, a.description, a.created_at,
+    `SELECT a.id, a.name, a.version, a.kind, a.description, a.created_at, a.deleted_at,
        EXISTS(
          SELECT 1 FROM task_artifacts p
          WHERE p.task_id = a.task_id AND p.name = a.name AND p.published_at IS NOT NULL
@@ -1463,18 +1564,28 @@ function renderArtifactListFragment(db: ReturnType<typeof getDb>, taskId: string
     return `<p class="muted">No artifacts yet.</p>`;
   }
 
+  // Delete/restore act on the whole name (all versions). Deleted rows stay listed
+  // (dimmed + "deleted" badge, Restore action) but are excluded from injection.
+  const listTarget = `#${escapeHtml(variant.listId(taskId))}`;
   const showPublished = isExperimental();
-  const tableRows = rows.map((r) =>
-    `<tr>
-      <td><a href="#" ${artifactModalLink(variant, taskId, r.name)}>${escapeHtml(r.name)}</a>${showPublished && r.has_published ? ` <span class="badge badge-published" title="Has a published version">published</span>` : ""}</td>
+  const tableRows = rows.map((r) => {
+    const isDeleted = !!r.deleted_at;
+    const actionAttrs = (action: "delete" | "restore") =>
+      `hx-post="${variant.routePrefix}/${escapeHtml(taskId)}/artifacts/${encodeURIComponent(r.name)}/${action}" hx-target="${listTarget}" hx-swap="innerHTML"`;
+    const rowAction = isDeleted
+      ? `<button type="button" class="sk-btn sk-btn--sm" title="Restore this artifact" ${actionAttrs("restore")}>Restore</button>`
+      : `<button type="button" class="sk-btn sk-btn--sm" title="Delete this artifact (removes it from agent context)" ${actionAttrs("delete")} style="opacity:0.7;">Delete</button>`;
+    return `<tr${isDeleted ? ' style="opacity:0.55;"' : ""}>
+      <td><a href="#" ${artifactModalLink(variant, taskId, r.name)}>${escapeHtml(r.name)}</a>${isDeleted ? ` <span class="badge" title="Deleted — excluded from agent context" style="color:var(--sk-accent-danger,#e06);border:1px solid currentColor;">deleted</span>` : ""}${showPublished && r.has_published ? ` <span class="badge badge-published" title="Has a published version">published</span>` : ""}</td>
       <td>${escapeHtml(r.kind)}</td>
       <td>v${r.version}</td>
       <td>${formatTimestamp(r.created_at)}</td>
-    </tr>`,
-  ).join("");
+      <td style="text-align:right;">${rowAction}</td>
+    </tr>`;
+  }).join("");
 
   return `<table class="data-table">
-    <thead><tr><th>Name</th><th>Kind</th><th>Version</th><th>Updated</th></tr></thead>
+    <thead><tr><th>Name</th><th>Kind</th><th>Version</th><th>Updated</th><th></th></tr></thead>
     <tbody>${tableRows}</tbody>
   </table>`;
 }

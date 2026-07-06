@@ -503,6 +503,10 @@ export function baseStyles(): string {
     .note-item:hover {
       border-color: rgba(173, 170, 170, 0.18);
     }
+    /* Subtle delete affordance: understated weight, but bright enough to read. */
+    .note-item .note-action--delete { opacity: 0.45 !important; }
+    .note-item:hover .note-action--delete { opacity: 0.7 !important; }
+    .note-item .note-action--delete:hover { opacity: 1 !important; color: var(--sk-accent-danger, #e06) !important; }
     .note-item-user {
       background: rgba(0, 251, 251, 0.04);
       border-color: rgba(0, 251, 251, 0.18);

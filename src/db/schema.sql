@@ -172,6 +172,25 @@ CREATE INDEX IF NOT EXISTS idx_agent_instances_task ON agent_instances(task_id, 
 CREATE INDEX IF NOT EXISTS idx_agent_instances_template ON agent_instances(template_agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_instances_status ON agent_instances(status, updated_at);
 
+-- Internal sub-agents spawned by an agent via its own Agent/Task tool (invisible to
+-- Skipper's delegation graph). One row per sub-agent keyed by tool-call id; total_tokens
+-- is cumulative-monotonic in the stream so writers take MAX, not SUM. See schema.runtime.sql.
+CREATE TABLE IF NOT EXISTS subagent_usage (
+  tool_use_id       TEXT PRIMARY KEY,
+  agent_instance_id TEXT NOT NULL,
+  task_id           TEXT NOT NULL,
+  subagent_type     TEXT,
+  description       TEXT,
+  total_tokens      INTEGER NOT NULL DEFAULT 0,
+  tool_uses         INTEGER,
+  duration_ms       INTEGER,
+  last_tool_name    TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_usage_task ON subagent_usage(task_id);
+CREATE INDEX IF NOT EXISTS idx_subagent_usage_instance ON subagent_usage(agent_instance_id);
+
 CREATE TABLE IF NOT EXISTS delegation_groups (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

@@ -43,6 +43,8 @@ export function migrateLegacySchema(database: Database): void {
   ensureColumn(database, "task_input_streams", "transcribed_text", "TEXT");
   ensureColumn(database, "task_input_streams", "summary_batch_id", "TEXT");
   ensureColumn(database, "task_notes", "source", "TEXT NOT NULL DEFAULT 'agent'");
+  ensureColumn(database, "task_notes", "deleted_at", "TEXT");
+  ensureColumn(database, "task_artifacts", "deleted_at", "TEXT");
   ensureColumn(database, "tasks", "working_directory", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(database, "agent_states", "last_signal_at", "TEXT");
   ensureColumn(database, "conversation_messages", "parts", "TEXT NOT NULL DEFAULT '[]'");

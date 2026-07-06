@@ -29,6 +29,28 @@ export interface EscalationCardData {
   resolved_at?: string | null;
 }
 
+/**
+ * Render a task's escalations for the command-center Escalations tab: open ones
+ * shown inline (with the respond/dismiss form), resolved/dismissed ones tucked
+ * into a collapsed <details> so the operator can review past questions and the
+ * responses given. Shared by the HTMX fragment route and the WS live-push so the
+ * two never drift. `escalations` should already be ordered open-first, newest-first.
+ */
+export function taskEscalationsSection(escalations: EscalationCardData[]): string {
+  const open = escalations.filter((e) => e.status === "open");
+  const previous = escalations.filter((e) => e.status !== "open");
+  if (open.length === 0 && previous.length === 0) return "";
+
+  const openHtml = open.map((e) => escalationCardPanel(e)).join("");
+  const previousHtml = previous.length > 0
+    ? `<details class="esc-previous" style="margin-top:${open.length > 0 ? "var(--sk-space-3)" : "0"};">
+         <summary class="sk-muted" style="cursor:pointer;font-size:var(--sk-text-sm);padding:var(--sk-space-2) 0;user-select:none;">Previous escalations (${previous.length})</summary>
+         <div style="margin-top:var(--sk-space-2);">${previous.map((e) => escalationCardPanel(e)).join("")}</div>
+       </details>`
+    : "";
+  return openHtml + previousHtml;
+}
+
 export function escalationCardPanel(esc: EscalationCardData): string {
   const isOpen = esc.status === "open";
   // Prefer the human-readable agent name; fall back to a short id when the

@@ -128,8 +128,27 @@ export function buildCommandCenterViewModel(
     cache_creation_tokens: number; cache_read_tokens: number;
   }>;
 
+  // Delegation-by-child map: unifies the agent tree with delegations so each
+  // delegated instance shows a clickable pill (prompt preview + status) that
+  // opens the full prompt in a modal. Keyed by the delegation's child_instance_id.
+  const treeInstanceIds = runningInstances.map((i) => i.id);
+  const delegationsByChild = new Map<string, { id: string; status: string; promptPreview: string }>();
+  if (treeInstanceIds.length > 0) {
+    const placeholders = treeInstanceIds.map(() => "?").join(",");
+    const delegationRows = db.prepare(
+      `SELECT id, child_instance_id, status, prompt
+       FROM delegations
+       WHERE child_instance_id IN (${placeholders})`,
+    ).all(...treeInstanceIds) as Array<{ id: string; child_instance_id: string | null; status: string; prompt: string }>;
+    for (const d of delegationRows) {
+      if (!d.child_instance_id) continue;
+      const preview = d.prompt.length > 60 ? d.prompt.slice(0, 60) + "…" : d.prompt;
+      delegationsByChild.set(d.child_instance_id, { id: d.id, status: d.status, promptPreview: preview });
+    }
+  }
+
   // Build agent tree
-  const agentTree = buildAgentTree(runningInstances);
+  const agentTree = buildAgentTree(runningInstances, delegationsByChild);
 
   // Delegation summary
   const groups = db.prepare(

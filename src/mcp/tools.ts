@@ -279,13 +279,14 @@ export function registerDaemonTools(
     {
       to: z.string().describe("Agent ID to delegate to"),
       prompt: z.string().describe("Description of work to delegate"),
+      note_limit: z.number().int().positive().optional().describe("Max agent-authored task notes to inject into the child's context (default 20; operator notes are always included). Raise it when the child needs deeper history."),
     },
-    async ({ to, prompt }) => {
+    async ({ to, prompt, note_limit }) => {
       const identity = getInternalIdentity();
       if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
 
       try {
-        const delegation = await delegationManager.handleDelegation(identity.runtimeId, to, prompt);
+        const delegation = await delegationManager.handleDelegation(identity.runtimeId, to, prompt, note_limit);
         if (!delegation) {
           return { content: [{ type: "text" as const, text: JSON.stringify({ error: "delegation_failed", message: "Could not create delegation" }) }] };
         }
@@ -387,6 +388,7 @@ export function registerDaemonTools(
         to: z.string().describe("Agent ID"),
         work: z.string().describe("Work description"),
         label: z.string().optional().describe("Optional label"),
+        note_limit: z.number().int().positive().optional().describe("Max agent-authored task notes to inject into this child (default 20; operator notes always included)"),
       })).describe("Array of delegation items"),
     },
     async ({ items }) => {
@@ -394,7 +396,10 @@ export function registerDaemonTools(
       if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
 
       try {
-        const delegations = await delegationManager.handleDelegationBatch(identity.runtimeId, items);
+        const delegations = await delegationManager.handleDelegationBatch(
+          identity.runtimeId,
+          items.map((i) => ({ to: i.to, work: i.work, label: i.label, noteLimit: i.note_limit })),
+        );
 
         signalBridge.registerMcpAction(identity.runtimeId, "delegate_batch", `${items.length} items`);
 

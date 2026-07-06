@@ -1425,3 +1425,57 @@ describe("detectSignalsInText", () => {
   });
 });
 
+
+describe("internal sub-agent recording (subagent_usage)", () => {
+  function seedInstance(type = "claude-code"): string {
+    const taskId = crypto.randomUUID();
+    const instanceId = crypto.randomUUID();
+    const agent = manager.createAgent({ name: "Tmpl", type });
+    db.prepare("INSERT INTO tasks (id, title) VALUES (?, 'Sub Task')").run(taskId);
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES (?, ?, ?, 'running')").run(instanceId, taskId, agent.id);
+    return instanceId;
+  }
+
+  it("registers a sub-agent from an Agent tool_use block and dedupes by tool_use_id (count)", () => {
+    const inst = seedInstance();
+    const line = JSON.stringify({ type: "assistant", message: { content: [
+      { type: "tool_use", id: "toolu_A", name: "Agent", input: { subagent_type: "Explore", description: "map repo" } },
+    ] } });
+    manager.parseAgentOutput(inst, line);
+    manager.parseAgentOutput(inst, line); // re-emitted frame must not create a second row
+
+    const row = db.prepare("SELECT * FROM subagent_usage WHERE tool_use_id='toolu_A'").get() as any;
+    expect(row.subagent_type).toBe("Explore");
+    expect(row.description).toBe("map repo");
+    expect((db.prepare("SELECT COUNT(*) c FROM subagent_usage").get() as any).c).toBe(1);
+  });
+
+  it("takes MAX of the cumulative total_tokens, never sums", () => {
+    const inst = seedInstance();
+    for (const t of [12000, 15000, 40000, 39000]) { // last is lower (out-of-order frame)
+      manager.parseAgentOutput(inst, JSON.stringify({ type: "system", subtype: "task_progress", tool_use_id: "toolu_B", subagent_type: "general-purpose", usage: { total_tokens: t, tool_uses: 3, duration_ms: 5000 } }));
+    }
+    const row = db.prepare("SELECT total_tokens, subagent_type FROM subagent_usage WHERE tool_use_id='toolu_B'").get() as any;
+    expect(row.total_tokens).toBe(40000); // max, NOT 106000 sum
+    expect(row.subagent_type).toBe("general-purpose");
+  });
+
+  it("spawn and progress frames compose on the same id", () => {
+    const inst = seedInstance();
+    manager.parseAgentOutput(inst, JSON.stringify({ type: "assistant", message: { content: [ { type: "tool_use", id: "toolu_C", name: "Agent", input: { subagent_type: "Explore", description: "d" } } ] } }));
+    manager.parseAgentOutput(inst, JSON.stringify({ type: "system", subtype: "task_progress", tool_use_id: "toolu_C", usage: { total_tokens: 5000 } }));
+    const row = db.prepare("SELECT * FROM subagent_usage WHERE tool_use_id='toolu_C'").get() as any;
+    expect(row.subagent_type).toBe("Explore");
+    expect(row.description).toBe("d");
+    expect(row.total_tokens).toBe(5000);
+    expect((db.prepare("SELECT COUNT(*) c FROM subagent_usage").get() as any).c).toBe(1);
+  });
+
+  it("does NOT record usage for non-allowlisted providers (gated to claude-code)", () => {
+    const inst = seedInstance("codex");
+    // Same frames a claude-code agent would emit — must be ignored for codex.
+    manager.parseAgentOutput(inst, JSON.stringify({ type: "assistant", message: { content: [ { type: "tool_use", id: "toolu_X", name: "Agent", input: { subagent_type: "Explore" } } ] } }));
+    manager.parseAgentOutput(inst, JSON.stringify({ type: "system", subtype: "task_progress", tool_use_id: "toolu_X", usage: { total_tokens: 9000 } }));
+    expect((db.prepare("SELECT COUNT(*) c FROM subagent_usage").get() as any).c).toBe(0);
+  });
+});

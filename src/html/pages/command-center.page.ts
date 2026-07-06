@@ -454,6 +454,19 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
       </div>
     </div>
 
+    <!-- Delegation prompt modal (Details tab prompt pills open here) -->
+    <div id="sk-delegation-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
+      <div class="sk-modal__content" style="width:min(900px, 95vw); max-height:85vh; display:flex; flex-direction:column;">
+        <div class="sk-modal__header" style="padding:0.5rem 1rem; gap:0.75rem;">
+          <span style="font-weight:600;">Delegation</span>
+          <button class="sk-btn sk-btn--sm" data-sk-modal-close="sk-delegation-modal">Close</button>
+        </div>
+        <div class="sk-modal__body" id="sk-delegation-modal-body" style="flex:1; min-height:0; overflow:auto; padding:0.75rem 1rem;">
+          <span class="sk-muted">Loading delegation...</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Artifact modal (used by v1 fragment onclick handlers) -->
     <div id="task-artifact-modal" class="sk-modal" data-sk-modal-backdrop style="padding:0.5rem;">
       <div class="sk-modal__content" style="width:99vw;height:99vh;max-width:none;max-height:none;display:flex;flex-direction:column;overflow:hidden;">

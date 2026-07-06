@@ -71,6 +71,12 @@ export interface TaskNote {
   source: "agent" | "user";
 }
 
+// Default cap on the number of AGENT-authored notes injected into a spawned
+// agent's context. Operator (source='user') notes are always injected in full
+// and are not counted against this cap. Overridable per delegation via the
+// `delegate` MCP tool's `note_limit` param.
+const DEFAULT_AGENT_NOTE_LIMIT = 20;
+
 export interface PromptOptions {
   agent: AgentInfo;
   task: TaskInfo;
@@ -94,6 +100,9 @@ export interface DelegationPromptOptions {
   phase?: PhaseInfo;
   consensusShortId?: string;
   consensusWorktree?: boolean;
+  // Override for the agent-note injection cap (default DEFAULT_AGENT_NOTE_LIMIT).
+  // Set from the delegate MCP tool so Skipper can widen/narrow a child's context.
+  noteLimit?: number;
 }
 
 export class PromptBuilder {
@@ -381,10 +390,11 @@ export class PromptBuilder {
       parts.push("");
     }
 
-    // Notes: unseen only when agentInstanceId provided
+    // Notes: unseen only when agentInstanceId provided. Delegate MCP override
+    // (options.noteLimit) can widen/narrow the agent-note cap for this child.
     const notes = agentInstanceId
-      ? this.getUnseenTaskNotes(options.task.id, agentInstanceId)
-      : this.getTaskNotes(options.task.id);
+      ? this.getUnseenTaskNotes(options.task.id, agentInstanceId, options.noteLimit)
+      : this.getTaskNotes(options.task.id, options.noteLimit);
     const noteIds = notes.map((n) => n.id);
     if (notes.length > 0) {
       this.appendNotesSections(parts, notes, !!agentInstanceId);
@@ -574,14 +584,28 @@ export class PromptBuilder {
     }
   }
 
-  private getTaskNotes(taskId: string): TaskNote[] {
+  private getTaskNotes(taskId: string, agentNoteLimit: number = DEFAULT_AGENT_NOTE_LIMIT): TaskNote[] {
+    // Soft-deleted notes are excluded from injection. Operator notes (source='user')
+    // are always included; agent notes are capped at the newest `agentNoteLimit`.
+    // The inner subquery picks the newest N agent notes; the outer ORDER BY keeps
+    // the final list oldest-first for readable chronology.
     const rows = this.db.prepare(
       `SELECT tn.id, tn.content, tn.created_at, tn.source, COALESCE(a.name, tn.agent_id) as agent_name
        FROM task_notes tn
        LEFT JOIN agents a ON tn.agent_id = a.id
        WHERE tn.task_id = ?
+         AND tn.deleted_at IS NULL
+         AND (
+           tn.source = 'user'
+           OR tn.id IN (
+             SELECT id FROM task_notes
+             WHERE task_id = ? AND deleted_at IS NULL AND source != 'user'
+             ORDER BY created_at DESC
+             LIMIT ?
+           )
+         )
        ORDER BY tn.created_at`,
-    ).all(taskId) as {
+    ).all(taskId, taskId, agentNoteLimit) as {
       id: string;
       content: string;
       agent_name: string;
@@ -598,7 +622,10 @@ export class PromptBuilder {
     }));
   }
 
-  private getUnseenTaskNotes(taskId: string, agentInstanceId: string): TaskNote[] {
+  private getUnseenTaskNotes(taskId: string, agentInstanceId: string, agentNoteLimit: number = DEFAULT_AGENT_NOTE_LIMIT): TaskNote[] {
+    // As getTaskNotes, but restricted to notes this instance hasn't been delivered
+    // (anti-join on agent_note_receipts). Soft-deleted excluded; operator notes
+    // always injected; unseen agent notes capped at the newest `agentNoteLimit`.
     const rows = this.db.prepare(
       `SELECT tn.id, tn.content, tn.created_at, tn.source, COALESCE(a.name, tn.agent_id) as agent_name
        FROM task_notes tn
@@ -607,8 +634,19 @@ export class PromptBuilder {
        LEFT JOIN agents a ON tn.agent_id = a.id
        WHERE tn.task_id = ?
          AND anr.note_id IS NULL
+         AND tn.deleted_at IS NULL
+         AND (
+           tn.source = 'user'
+           OR tn.id IN (
+             SELECT id FROM task_notes
+             WHERE task_id = ? AND deleted_at IS NULL AND source != 'user'
+               AND id NOT IN (SELECT note_id FROM agent_note_receipts WHERE agent_instance_id = ?)
+             ORDER BY created_at DESC
+             LIMIT ?
+           )
+         )
        ORDER BY tn.created_at`,
-    ).all(agentInstanceId, taskId) as {
+    ).all(agentInstanceId, taskId, taskId, agentInstanceId, agentNoteLimit) as {
       id: string;
       content: string;
       agent_name: string;
