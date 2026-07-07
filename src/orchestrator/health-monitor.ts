@@ -83,25 +83,10 @@ export class HealthMonitor {
         .prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = ?")
         .run(agent.id);
 
-      if (agent.current_task_id) {
-        const task = this.taskScheduler.getTask(agent.current_task_id);
-        if (task && task.status === "running") {
-          const activeDelegation = this.getActiveDelegationForChild(agent.id);
-          if (!activeDelegation) {
-            try {
-              this.taskScheduler.failTask(
-                agent.current_task_id,
-                "Agent process died unexpectedly",
-              );
-            } catch (err) {
-              logError(this.db, "health_check_fail_task", { agentId: agent.id, taskId: agent.current_task_id }, err);
-            }
-            this.db
-              .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
-              .run(agent.id);
-          }
-        }
-      }
+      // Task-level failure is decided by checkInstanceProcessHealth (per-instance),
+      // NOT here. The template `agents` row's process_pid/current_task_id are
+      // single-valued and get clobbered when two parallel tasks share one template
+      // (e.g. "skipper") — failing agent.current_task_id here failed the wrong task.
     }
   }
 
@@ -112,9 +97,9 @@ export class HealthMonitor {
   checkInstanceProcessHealth(): void {
     const instances = this.db
       .prepare(
-        "SELECT id, template_agent_id, process_pid, task_id, status FROM agent_instances WHERE process_pid IS NOT NULL AND status IN ('running', 'waiting_delegation')",
+        "SELECT id, template_agent_id, parent_instance_id, process_pid, task_id, status FROM agent_instances WHERE process_pid IS NOT NULL AND status IN ('running', 'waiting_delegation')",
       )
-      .all() as Array<{ id: string; template_agent_id: string; process_pid: number; task_id: string; status: string }>;
+      .all() as Array<{ id: string; template_agent_id: string; parent_instance_id: string | null; process_pid: number; task_id: string; status: string }>;
 
     for (const inst of instances) {
       const memTracked = !!this.agentManager.getRunningAgent(inst.id);
@@ -143,7 +128,39 @@ export class HealthMonitor {
         instanceId: inst.id,
         pid: inst.process_pid,
       });
+
+      // Fail the owning task only when the ENTRYPOINT (root) instance died — not a
+      // delegated child, and not an instance parked waiting on its children or on
+      // an open escalation. Per-instance task_id is accurate under parallel tasks,
+      // unlike the clobber-prone template row in checkProcessHealth.
+      if (inst.status === "running" && inst.parent_instance_id === null) {
+        const task = this.taskScheduler.getTask(inst.task_id);
+        if (
+          task &&
+          task.status === "running" &&
+          !this.hasOpenEscalation(inst.task_id) &&
+          !this.getActiveDelegationForChild(inst.id)
+        ) {
+          try {
+            this.taskScheduler.failTask(inst.task_id, "Agent process died unexpectedly");
+          } catch (err) {
+            logError(this.db, "health_check_fail_task", { agentId: inst.id, taskId: inst.task_id }, err);
+          }
+        }
+      }
     }
+  }
+
+  /**
+   * True if the task has any escalation still awaiting human response — the task
+   * is intentionally parked (EscalationManager.injectResponse will revive the
+   * escalating runtime on resolve). Must not fail it as a dead process.
+   */
+  private hasOpenEscalation(taskId: string): boolean {
+    const row = this.db
+      .prepare("SELECT 1 FROM escalations WHERE task_id = ? AND status = 'open' LIMIT 1")
+      .get(taskId);
+    return !!row;
   }
 
   /**

@@ -1541,7 +1541,11 @@ describe("checkProcessHealth", () => {
     expect(agentRow.status).toBe("idle");
   });
 
-  it("fails running task when dead agent had one (no active delegation)", () => {
+  it("does NOT fail a task off the shared template row (parallel-task safety)", () => {
+    // Task-fail authority moved to checkInstanceProcessHealth (per-instance) so
+    // two parallel tasks sharing a template can't clobber each other via the
+    // single-valued agents.current_task_id. checkProcessHealth now only does
+    // template-row process hygiene.
     const agentId = createAgent("Dead Agent With Task");
     const teamId = createTeamWithEntrypoint(agentId);
     const taskId = createRunningTask(teamId);
@@ -1553,8 +1557,24 @@ describe("checkProcessHealth", () => {
 
     daemon.checkProcessHealth();
 
-    const task = scheduler.getTask(taskId);
-    expect(task?.status).toBe("failed");
+    expect(scheduler.getTask(taskId)?.status).toBe("running");
+    const agentRow = db.prepare("SELECT process_pid FROM agents WHERE id = ?").get(agentId) as { process_pid: number | null };
+    expect(agentRow.process_pid).toBeNull(); // orphan cleanup still runs
+  });
+
+  it("fails running task when the entrypoint instance PID is dead (no active delegation)", () => {
+    const agentId = createAgent("Dead Agent With Task");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createRunningTask(teamId);
+
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, status, process_pid, attempt)
+       VALUES (?, ?, ?, NULL, 'running', 99999999, 1)`,
+    ).run(crypto.randomUUID(), taskId, agentId);
+
+    daemon.getHealthMonitor().checkInstanceProcessHealth();
+
+    expect(scheduler.getTask(taskId)?.status).toBe("failed");
   });
 
   it("does not fail task when dead agent has an active child delegation", async () => {

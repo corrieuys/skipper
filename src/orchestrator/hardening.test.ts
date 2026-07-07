@@ -204,6 +204,84 @@ describe("Health monitor — instance process health", () => {
   });
 });
 
+describe("Health monitor — parallel-task fail authority", () => {
+  // Two tasks sharing one template ('skipper') must not clobber each other's
+  // failure decision. Task-fail authority lives in the per-instance check
+  // (checkInstanceProcessHealth), keyed on agent_instances.task_id.
+
+  function runningInstance(
+    taskId: string,
+    template: string,
+    opts: { pid?: number | null; parent?: string | null; status?: string } = {},
+  ): string {
+    const id = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, status, process_pid, attempt)
+       VALUES (?, ?, ?, ?, ?, ?, 1)`,
+    ).run(id, taskId, template, opts.parent ?? null, opts.status ?? "running", opts.pid ?? null);
+    return id;
+  }
+
+  it("fails only the task whose entrypoint PID is dead, not its sibling", () => {
+    const teamId = createTeamWithEntrypoint("skipper");
+    const taskA = createRunningTask(teamId, "Task A");
+    const taskB = createRunningTask(teamId, "Task B");
+
+    // Both tasks run the same template. A's entrypoint died (pid 999999),
+    // B's is alive-but-untracked-here (no pid recorded → left alone).
+    runningInstance(taskA, "skipper", { pid: 999999 });
+    runningInstance(taskB, "skipper", { pid: null });
+
+    daemon.getHealthMonitor().checkInstanceProcessHealth();
+
+    expect(scheduler.getTask(taskA)!.status).toBe("failed");
+    expect(scheduler.getTask(taskB)!.status).toBe("running");
+  });
+
+  it("does not fail a task that is parked on an open escalation", () => {
+    const teamId = createTeamWithEntrypoint("skipper");
+    const taskId = createRunningTask(teamId);
+    runningInstance(taskId, "skipper", { pid: 999999 });
+
+    db.prepare(
+      `INSERT INTO escalations (id, agent_id, task_id, type, question, status)
+       VALUES (?, 'skipper', ?, 'agent_request', 'need input', 'open')`,
+    ).run(crypto.randomUUID(), taskId);
+
+    daemon.getHealthMonitor().checkInstanceProcessHealth();
+
+    expect(scheduler.getTask(taskId)!.status).toBe("running");
+  });
+
+  it("does not fail the task when only a delegated child instance dies", () => {
+    const teamId = createTeamWithEntrypoint("skipper");
+    const taskId = createRunningTask(teamId);
+    const root = runningInstance(taskId, "skipper", { pid: null });
+    runningInstance(taskId, "skipper", { pid: 999999, parent: root });
+
+    daemon.getHealthMonitor().checkInstanceProcessHealth();
+
+    expect(scheduler.getTask(taskId)!.status).toBe("running");
+  });
+
+  it("checkProcessHealth no longer fails a task off the shared template row", () => {
+    const teamId = createTeamWithEntrypoint("skipper");
+    const taskB = createRunningTask(teamId, "Task B");
+
+    // Template row clobbered: dead pid from task A's respawn, current_task_id
+    // now points at the innocent task B. Old code failed B here.
+    db.prepare(
+      "UPDATE agents SET process_pid = 999999, current_task_id = ? WHERE id = 'skipper'",
+    ).run(taskB);
+
+    daemon.getHealthMonitor().checkProcessHealth();
+
+    expect(scheduler.getTask(taskB)!.status).toBe("running");
+    const tmpl = db.prepare("SELECT process_pid FROM agents WHERE id = 'skipper'").get() as { process_pid: number | null };
+    expect(tmpl.process_pid).toBeNull(); // orphan cleanup still runs
+  });
+});
+
 describe("Health monitor — delegation orphan detection", () => {
   it("should fail waiting instances with no live children", () => {
     const agentId = createAgent("worker");
