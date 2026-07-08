@@ -410,6 +410,28 @@
     requestAnimationFrame(loop);
   }
 
+  // Cheap one-shot WebGL check. On GPU-less virtual desktops (software Mesa /
+  // llvmpipe under ANGLE) context creation fails; probing first lets us skip the
+  // three.js CDN fetch and the noisy THREE.WebGLRenderer error, keeping CSS orbs.
+  var webglOk = null; // null = unchecked, then boolean (cached)
+  function webglSupported() {
+    if (webglOk !== null) return webglOk;
+    webglOk = false;
+    try {
+      var c = document.createElement("canvas");
+      var gl = c.getContext("webgl2") || c.getContext("webgl");
+      if (gl) {
+        webglOk = true;
+        // Free the probe context immediately (browsers cap live GL contexts).
+        var lose = gl.getExtension("WEBGL_lose_context");
+        if (lose) lose.loseContext();
+      }
+    } catch (e) {
+      webglOk = false;
+    }
+    return webglOk;
+  }
+
   function start() {
     if (booted) {
       scan();
@@ -417,6 +439,10 @@
       return;
     }
     if (booting || !hasOrbs()) return;
+    if (!webglSupported()) {
+      console.info("zen-orbs-3d: WebGL unavailable, keeping CSS orbs");
+      return;
+    }
     booting = true;
     import(THREE_URL)
       .then(function (mod) {
