@@ -85,6 +85,9 @@ export interface PromptOptions {
   isResume?: boolean;
   regressionReason?: string;
   approvalNote?: string;
+  /** Optional one-off operator input (e.g. from a recurring task "Run Now"),
+   *  injected into the prompt directly below the task description. */
+  injectedInput?: string;
   consensusContext?: {
     agentIndex: number;
     totalAgents: number;
@@ -167,6 +170,13 @@ export class PromptBuilder {
     parts.push(`TASK: ${options.task.title}`);
     if (options.task.description) {
       parts.push(options.task.description);
+    }
+    // Optional one-off operator input for this run (e.g. recurring "Run Now"),
+    // injected directly below the description.
+    if (options.injectedInput) {
+      parts.push("--- ADDITIONAL INSTRUCTIONS FOR THIS RUN ---");
+      parts.push(options.injectedInput);
+      parts.push("--- END ADDITIONAL INSTRUCTIONS ---");
     }
     if (options.task.workingDirectory) {
       parts.push(`WORKING DIRECTORY: ${options.task.workingDirectory}`);

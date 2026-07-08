@@ -54,7 +54,7 @@ import { diagnosticCard } from "../html/diagnosticCard";
 import { dashboardActiveTaskFragment } from "../html/dashboardActiveTaskFragment";
 import { helpPage } from "../html/pages/help.page";
 import { asteroidsPage } from "../html/pages/asteroids.page";
-import { dashboardSteerListFragment, agentInstancesModalFragment, type SteeringOption } from "../html/dashboardLatestSteerFragment";
+import { dashboardSteerListFragment, agentInstancesModalFragment, oneshotResumeCardMarkup, type SteeringOption } from "../html/dashboardLatestSteerFragment";
 import {
   getNumberSetting, setNumberSetting, SETTING_LOG_RETENTION_HOURS,
   getStringSetting, setStringSetting, getSetting,
@@ -615,7 +615,11 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     const taskId = url.searchParams.get("task");
 
     if (taskId) {
-      return html(dashboardSteerListFragment(buildTeamAgentTiles(db, taskId), taskId));
+      // On a completed task, idle orbs stay clickable so the operator can resume
+      // an agent for a one-off run outside the workflow.
+      const taskRow = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null;
+      const allowIdleSpawn = taskRow?.status === "completed";
+      return html(dashboardSteerListFragment(buildTeamAgentTiles(db, taskId), taskId, { allowIdleSpawn }));
     }
 
     const rows = db.prepare(
@@ -682,6 +686,54 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
       disabled_reason: inst.status !== "running" ? "Agent is not in a steerable state" : null,
       latest_message: fetchLatestAssistantMessage(db, inst.runtime_id),
     }));
+
+    // Completed task: if no live instance, show the one-off resume card instead
+    // of the empty sentinel (which would close the modal). If a one-off is
+    // already running, the steer cards above render so it can be steered.
+    if (taskId && options.length === 0) {
+      const taskRow = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null;
+      if (taskRow?.status === "completed") {
+        const latest = db.prepare(
+          `SELECT ai.id, ai.session_id, ai.status,
+                  COALESCE(a.name, ai.template_agent_id) AS agent_name,
+                  at.supports_resume AS supports_resume
+           FROM agent_instances ai
+           LEFT JOIN agents a ON a.id = ai.template_agent_id
+           LEFT JOIN agent_types at ON at.name = a.type
+           WHERE ai.task_id = ? AND ai.template_agent_id = ?
+           ORDER BY ai.created_at DESC LIMIT 1`,
+        ).get(taskId, templateAgentId) as {
+          id: string; session_id: string | null; status: string;
+          agent_name: string; supports_resume: number | null;
+        } | null;
+
+        const activeOneshot = db.prepare(
+          `SELECT id FROM agent_instances
+           WHERE task_id = ? AND json_extract(state_metadata, '$.oneshot') = 1
+             AND status IN ('running', 'waiting_delegation', 'pending') LIMIT 1`,
+        ).get(taskId) as { id: string } | null;
+
+        let resumable = true;
+        let disabledReason: string | null = null;
+        if (!latest) {
+          resumable = false; disabledReason = "This agent never ran on this task.";
+        } else if (latest.supports_resume !== 1) {
+          resumable = false; disabledReason = "This agent's type does not support resume.";
+        } else if (!latest.session_id) {
+          resumable = false; disabledReason = "This agent has no resumable session on this task.";
+        } else if (activeOneshot) {
+          resumable = false; disabledReason = "A one-off run is already active on this task.";
+        }
+
+        return html(oneshotResumeCardMarkup({
+          template_agent_id: templateAgentId,
+          task_id: taskId,
+          agent_name: latest?.agent_name ?? templateAgentId,
+          resumable,
+          disabledReason,
+        }));
+      }
+    }
 
     return html(agentInstancesModalFragment(options));
   });

@@ -760,7 +760,7 @@ export function missionControlStyles(): string {
       flex: 1;
       min-width: 0;
       resize: vertical;
-      min-height: 1.8rem;
+      min-height: 4rem;
       font-size: 0.78rem;
       padding: 0.3rem 0.5rem;
       background: rgba(0, 0, 0, 0.25);
@@ -820,9 +820,11 @@ export function missionControlStyles(): string {
     }
 
     /* --- Agent instance modal --- */
+    /* Height is content-driven: the modal grows with the number of cards shown
+       (up to 88vh, then the instance list scrolls). No fixed height so a single
+       card doesn't render in an oversized box. */
     .mc-agent-modal__content {
       width: min(960px, 94vw);
-      height: min(88vh, 820px);
       max-height: 88vh;
       display: flex;
       flex-direction: column;

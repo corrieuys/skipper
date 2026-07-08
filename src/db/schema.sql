@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   task_type TEXT NOT NULL DEFAULT 'standard' CHECK (task_type IN ('standard', 'real_time')),
   task_config TEXT NOT NULL DEFAULT '{}',     -- JSON: real-time config
   source_scheduled_task_id TEXT,             -- links spawned runs back to their scheduled_tasks row
+  run_input TEXT,                            -- optional per-run operator input injected into the prompt (manual "Run Now")
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   approved_at TEXT,
   started_at TEXT,

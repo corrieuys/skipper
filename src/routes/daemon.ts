@@ -84,4 +84,30 @@ export function registerDaemonRoutes(daemon: ManagerDaemon): void {
       return Response.json({ error: messageText }, { status: 400 });
     }
   });
+
+  // One-off resume of an agent's latest instance on a completed task, outside
+  // the normal task workflow. See ManagerDaemon.resumeOneshotRun.
+  addRoute("POST", "/api/dashboard/resume-oneshot", async (req) => {
+    const body = await parseRequestBody<Record<string, string>>(req);
+    const templateAgentId = body.template_agent_id?.trim();
+    const taskId = body.task_id?.trim();
+    const message = body.message?.trim();
+    if (!templateAgentId) {
+      return Response.json({ error: "template_agent_id is required" }, { status: 400 });
+    }
+    if (!taskId) {
+      return Response.json({ error: "task_id is required" }, { status: 400 });
+    }
+    if (!message) {
+      return Response.json({ error: "message is required" }, { status: 400 });
+    }
+
+    try {
+      await daemon.resumeOneshotRun(templateAgentId, taskId, message);
+      return Response.json({ ok: true });
+    } catch (err: unknown) {
+      const messageText = err instanceof Error ? err.message : "Internal error";
+      return Response.json({ error: messageText }, { status: 400 });
+    }
+  });
 }

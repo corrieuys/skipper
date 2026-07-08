@@ -280,7 +280,7 @@ export class ScheduledTaskScheduler {
     return new Date(nextMs).toISOString().replace("T", " ").slice(0, 19);
   }
 
-  runTaskNow(id: string, taskScheduler: TaskScheduler): Task {
+  runTaskNow(id: string, taskScheduler: TaskScheduler, runInput?: string): Task {
     const scheduled = this.getScheduledTask(id);
     if (!scheduled) throw new Error(`Scheduled task not found: ${id}`);
     if (scheduled.status !== "approved") throw new Error("Scheduled task must be approved to run");
@@ -294,7 +294,12 @@ export class ScheduledTaskScheduler {
       taskConfig: scheduled.task_config as any,
     });
 
-    this.db.prepare("UPDATE tasks SET source_scheduled_task_id = ? WHERE id = ?").run(scheduled.id, task.id);
+    // Optional one-off operator input injected into the run's prompt (below the
+    // task description). Only manual "Run Now" carries this — cron firing does not.
+    const trimmedInput = runInput?.trim();
+    this.db
+      .prepare("UPDATE tasks SET source_scheduled_task_id = ?, run_input = ? WHERE id = ?")
+      .run(scheduled.id, trimmedInput || null, task.id);
     taskScheduler.approveTask(task.id);
     this.recordRun(scheduled.id);
     return task;

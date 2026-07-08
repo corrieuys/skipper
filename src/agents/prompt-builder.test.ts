@@ -109,6 +109,36 @@ describe("buildInitialPrompt", () => {
     expect(prompt).toContain("When you have completed this task");
   });
 
+  it("injects run input directly below the description when provided", () => {
+    const agentId = createAgent("Dev Agent", "claude-code", "Build software");
+    const prompt = builder.buildInitialPrompt({
+      agent: { id: agentId, name: "Dev Agent", type: "claude-code", instruction: "Build software" },
+      task: { id: "task-1", title: "Implement login", description: "Add user authentication", workingDirectory: "/repo" },
+      isStreaming: true,
+      injectedInput: "Focus only on the OAuth path",
+    });
+
+    expect(prompt).toContain("--- ADDITIONAL INSTRUCTIONS FOR THIS RUN ---");
+    expect(prompt).toContain("Focus only on the OAuth path");
+    // Ordering: description → injected input → working directory.
+    const descIdx = prompt.indexOf("Add user authentication");
+    const injectIdx = prompt.indexOf("--- ADDITIONAL INSTRUCTIONS FOR THIS RUN ---");
+    const wdIdx = prompt.indexOf("WORKING DIRECTORY:");
+    expect(descIdx).toBeLessThan(injectIdx);
+    expect(injectIdx).toBeLessThan(wdIdx);
+  });
+
+  it("omits the run-input block when no input is provided", () => {
+    const agentId = createAgent("Dev Agent", "claude-code", "Build software");
+    const prompt = builder.buildInitialPrompt({
+      agent: { id: agentId, name: "Dev Agent", type: "claude-code", instruction: "Build software" },
+      task: { id: "task-1", title: "Implement login", description: "Add user authentication" },
+      isStreaming: true,
+    });
+
+    expect(prompt).not.toContain("ADDITIONAL INSTRUCTIONS FOR THIS RUN");
+  });
+
   it("builds a phased task prompt", () => {
     const agentId = createAgent("Dev Agent", "claude-code", "Build software");
     const prompt = builder.buildInitialPrompt({

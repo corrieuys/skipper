@@ -178,7 +178,7 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
     return hxRedirect(`/?scheduled=${id}`);
   });
 
-  addRoute("POST", "/api/scheduled-tasks/:id/run-now", async (_req, params) => {
+  addRoute("POST", "/api/scheduled-tasks/:id/run-now", async (req, params) => {
     if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
@@ -187,8 +187,16 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
     const taskScheduler = daemon?.getTaskScheduler();
     if (!taskScheduler) return Response.json({ error: "daemon unavailable" }, { status: 500 });
 
+    // Optional per-run input injected into the spawned run's prompt.
+    let runInput: string | undefined;
     try {
-      scheduler.runTaskNow(id, taskScheduler);
+      const formData = await req.formData();
+      const raw = formData.get("input");
+      if (typeof raw === "string" && raw.trim()) runInput = raw.trim();
+    } catch { /* no body / not form-encoded — run without input */ }
+
+    try {
+      scheduler.runTaskNow(id, taskScheduler, runInput);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const status = msg.includes("not found") ? 404 : 400;

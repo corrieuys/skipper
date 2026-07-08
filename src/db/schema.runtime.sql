@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   task_type TEXT NOT NULL DEFAULT 'standard' CHECK (task_type IN ('standard', 'real_time')),
   task_config TEXT NOT NULL DEFAULT '{}',
   source_scheduled_task_id TEXT,
+  run_input TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   approved_at TEXT,
   started_at TEXT,

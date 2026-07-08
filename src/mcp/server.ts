@@ -46,9 +46,12 @@ export class DaemonMcpServer {
 
   private isDelegatedRuntime(runtimeId: string): boolean {
     const row = this.db
-      .prepare("SELECT parent_instance_id FROM agent_instances WHERE id = ?")
-      .get(runtimeId) as { parent_instance_id: string | null } | null;
-    return !!row?.parent_instance_id;
+      .prepare("SELECT parent_instance_id, json_extract(state_metadata, '$.oneshot') AS oneshot FROM agent_instances WHERE id = ?")
+      .get(runtimeId) as { parent_instance_id: string | null; oneshot: number | null } | null;
+    // One-off runs (operator resume on a completed task) are treated like a
+    // delegated session: phase-lifecycle tools are omitted so they cannot
+    // advance/regress phases or complete the task.
+    return !!row?.parent_instance_id || row?.oneshot === 1;
   }
 
   async handleRequest(req: Request): Promise<Response> {

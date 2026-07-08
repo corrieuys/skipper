@@ -273,6 +273,112 @@ describe("runtime steering", () => {
   });
 });
 
+describe("one-off resume (resumeOneshotRun)", () => {
+  function createCompletedTask(teamId: string, title = "Done Task"): string {
+    const taskId = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO tasks (id, title, team_id, status, completed_at)
+       VALUES (?, ?, ?, 'completed', datetime('now'))`,
+    ).run(taskId, title, teamId);
+    return taskId;
+  }
+
+  function insertInstance(
+    taskId: string,
+    agentId: string,
+    id: string,
+    opts: { sessionId?: string | null; status?: string; oneshot?: boolean } = {},
+  ): void {
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, session_id, state_metadata)
+       VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`,
+    ).run(
+      id, taskId, agentId, id,
+      opts.status ?? "completed",
+      opts.sessionId ?? null,
+      opts.oneshot ? '{"oneshot":true}' : "{}",
+    );
+  }
+
+  it("rejects when the task is not completed", async () => {
+    setupAgentType("os-resumable", true, true);
+    const agentId = createAgent("OS Agent", "os-resumable");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createRunningTask(teamId, "Still Running");
+    insertInstance(taskId, agentId, "os-inst-1", { sessionId: "s1" });
+    await expect(daemon.resumeOneshotRun(agentId, taskId, "go")).rejects.toThrow(
+      "only allowed on completed tasks",
+    );
+  });
+
+  it("rejects when the agent never ran on the task", async () => {
+    setupAgentType("os-resumable", true, true);
+    const agentId = createAgent("OS Agent", "os-resumable");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createCompletedTask(teamId);
+    await expect(daemon.resumeOneshotRun(agentId, taskId, "go")).rejects.toThrow("never ran");
+  });
+
+  it("rejects when the latest instance has no resumable session", async () => {
+    setupAgentType("os-resumable", true, true);
+    const agentId = createAgent("OS Agent", "os-resumable");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createCompletedTask(teamId);
+    insertInstance(taskId, agentId, "os-inst-1", { sessionId: null });
+    await expect(daemon.resumeOneshotRun(agentId, taskId, "go")).rejects.toThrow(
+      "no resumable session",
+    );
+  });
+
+  it("rejects for non-resumable agent types", async () => {
+    const agentId = createAgent("Plain Agent"); // default test-echo (no resume)
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createCompletedTask(teamId);
+    insertInstance(taskId, agentId, "os-inst-1", { sessionId: "s1" });
+    await expect(daemon.resumeOneshotRun(agentId, taskId, "go")).rejects.toThrow(
+      "does not support resume",
+    );
+  });
+
+  it("rejects when a one-off is already active on the task", async () => {
+    setupAgentType("os-resumable", true, true);
+    const agentA = createAgent("Agent A", "os-resumable");
+    const agentB = createAgent("Agent B", "os-resumable");
+    const teamId = createTeamWithEntrypoint(agentA);
+    addAgentToTeam(teamId, agentB);
+    const taskId = createCompletedTask(teamId);
+    insertInstance(taskId, agentA, "os-inst-a", { sessionId: "sa", status: "completed" });
+    insertInstance(taskId, agentB, "os-inst-b", { sessionId: "sb", status: "running", oneshot: true });
+    await expect(daemon.resumeOneshotRun(agentA, taskId, "go")).rejects.toThrow(
+      "already active",
+    );
+  });
+
+  it("flags the instance one-off and resumes it with the directive", async () => {
+    setupAgentType("os-resumable", true, true);
+    const agentId = createAgent("OS Agent", "os-resumable");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createCompletedTask(teamId);
+    insertInstance(taskId, agentId, "os-inst-1", { sessionId: "sess-1", status: "completed" });
+
+    const resumeSpy = spyOn(daemon.getAgentManager(), "sendResumeMessage").mockResolvedValue(undefined);
+    spyOn(daemon.getAgentManager(), "appendSyntheticOutput").mockImplementation(() => {});
+
+    await daemon.resumeOneshotRun(agentId, taskId, "Investigate the flaky test");
+
+    expect(resumeSpy).toHaveBeenCalledTimes(1);
+    const [calledId, calledMsg] = resumeSpy.mock.calls[0] as [string, string, boolean?];
+    expect(calledId).toBe("os-inst-1");
+    expect(calledMsg).toContain("OUTSIDE the normal task workflow");
+    expect(calledMsg).toContain("Investigate the flaky test");
+
+    const meta = db
+      .prepare("SELECT json_extract(state_metadata,'$.oneshot') AS o FROM agent_instances WHERE id = ?")
+      .get("os-inst-1") as { o: number | null };
+    expect(meta.o).toBe(1);
+  });
+});
+
 describe("tick", () => {
   it("records daemon run on each tick", async () => {
     await daemon.tick();
@@ -614,6 +720,43 @@ describe("handleAgentExit", () => {
       .prepare("SELECT value FROM daemon_state WHERE key = ?")
       .get(`idle_since:${taskId}`) as { value: string } | null;
     expect(idleRow).not.toBeNull();
+  });
+
+  it("finalizes a one-off instance on exit without touching the completed task", async () => {
+    setupAgentType("os-exit-resumable", true, true);
+    const agentId = createAgent("OS Exit Agent", "os-exit-resumable");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO tasks (id, title, team_id, status, completed_at)
+       VALUES (?, 'Done', ?, 'completed', datetime('now'))`,
+    ).run(taskId, teamId);
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, session_id, state_metadata)
+       VALUES ('os-exit-1', ?, ?, NULL, 'os-exit-1', 'running', 'sess', '{"oneshot":true}')`,
+    ).run(taskId, agentId);
+    db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run(taskId, agentId);
+
+    const exitEvent: AgentExitEvent = {
+      agentId: "os-exit-1",
+      code: 0,
+      isRespawn: false,
+      hasDelegation: false,
+    };
+    eventBus.emit("agent:exit", exitEvent);
+    eventBus.emit("agent:streams_drained", { agentId: "os-exit-1" });
+    await new Promise((r) => setTimeout(r, 100));
+
+    const inst = db.prepare("SELECT status FROM agent_instances WHERE id = 'os-exit-1'").get() as { status: string };
+    expect(inst.status).toBe("completed");
+    const ag = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as { current_task_id: string | null };
+    expect(ag.current_task_id).toBeNull();
+    // Task stays completed; no idle poke recorded.
+    expect(scheduler.getTask(taskId)?.status).toBe("completed");
+    const idleRow = db
+      .prepare("SELECT value FROM daemon_state WHERE key = ?")
+      .get(`idle_since:${taskId}`) as { value: string } | null;
+    expect(idleRow).toBeNull();
   });
 
   it("fails task on non-zero exit", async () => {

@@ -36,6 +36,7 @@ export interface Task {
   task_type: TaskType;
   task_config: RealtimeTaskConfig;
   source_scheduled_task_id: string | null;
+  run_input: string | null;
   created_at: string;
   approved_at: string | null;
   started_at: string | null;
@@ -59,6 +60,7 @@ interface TaskRow {
   task_type: string;
   task_config: string;
   source_scheduled_task_id: string | null;
+  run_input: string | null;
   created_at: string;
   approved_at: string | null;
   started_at: string | null;
@@ -88,6 +90,7 @@ function rowToTask(row: TaskRow): Task {
     task_type: (row.task_type as TaskType) ?? "standard",
     task_config: taskConfig,
     source_scheduled_task_id: row.source_scheduled_task_id ?? null,
+    run_input: row.run_input ?? null,
     created_at: row.created_at,
     approved_at: row.approved_at,
     started_at: row.started_at,

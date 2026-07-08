@@ -236,6 +236,7 @@ export class PhaseManager {
       phase: phaseInfo,
       isStreaming,
       regressionReason: reason,
+      injectedInput: task.run_input ?? undefined,
     }, entrypointAgentId);
     const usesInlinePrompt = typeDef ? agentTypeUsesInlinePrompt(typeDef, sessionId) : false;
 

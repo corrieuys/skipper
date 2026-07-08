@@ -407,6 +407,96 @@ export class ManagerDaemon {
     }
   }
 
+  /**
+   * Resume the latest instance of an agent on a COMPLETED task for a one-off,
+   * single-turn run outside the normal task workflow. Reuses the steer/resume
+   * path (`sendResumeMessage`) so the agent picks up its prior session context.
+   * The task stays `completed`; the daemon does no phase/complete/recovery logic
+   * for it (see `handleAgentExit`). The instance is flagged
+   * `state_metadata.oneshot=true` so the MCP session omits phase-lifecycle tools
+   * and the exit handler finalizes cleanly.
+   */
+  async resumeOneshotRun(templateAgentId: string, taskId: string, prompt: string): Promise<void> {
+    const normalized = prompt.trim();
+    if (!normalized) {
+      throw new Error("message is required");
+    }
+
+    const templateAgent = this.agentManager.getAgent(templateAgentId);
+    if (!templateAgent) {
+      throw new Error("Agent not found");
+    }
+
+    const task = this.db
+      .prepare("SELECT id, status FROM tasks WHERE id = ?")
+      .get(taskId) as { id: string; status: string } | null;
+    if (!task) throw new Error("Task not found");
+    if (task.status !== "completed") {
+      throw new Error("One-off runs are only allowed on completed tasks");
+    }
+
+    // Latest instance of this agent on this task.
+    const instance = this.db
+      .prepare(
+        `SELECT id, session_id, status FROM agent_instances
+         WHERE task_id = ? AND template_agent_id = ?
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(taskId, templateAgentId) as { id: string; session_id: string | null; status: string } | null;
+    if (!instance) {
+      throw new Error("This agent never ran on this task");
+    }
+
+    const typeDef = getAgentTypeDefinition(templateAgent.type, this.db);
+    if (!typeDef?.supports_resume) {
+      throw new Error("This agent's type does not support resume");
+    }
+    if (!instance.session_id) {
+      throw new Error("This agent has no resumable session on this task");
+    }
+
+    // One-off at a time: block if this instance is live, or any one-off is
+    // already active on the task.
+    if (["running", "waiting_delegation", "pending"].includes(instance.status)) {
+      throw new Error("This agent is already running on this task");
+    }
+    const activeOneshot = this.db
+      .prepare(
+        `SELECT id FROM agent_instances
+         WHERE task_id = ?
+           AND json_extract(state_metadata, '$.oneshot') = 1
+           AND status IN ('running', 'waiting_delegation', 'pending')
+         LIMIT 1`,
+      )
+      .get(taskId) as { id: string } | null;
+    if (activeOneshot) {
+      throw new Error("A one-off run is already active on this task");
+    }
+
+    // Mark the instance one-off BEFORE resume. The resume respawn's
+    // INSERT ... ON CONFLICT does not touch state_metadata, so this survives.
+    this.db
+      .prepare(
+        `UPDATE agent_instances
+         SET state_metadata = json_set(COALESCE(state_metadata, '{}'), '$.oneshot', json('true'))
+         WHERE id = ?`,
+      )
+      .run(instance.id);
+
+    const wrapped = `[SYSTEM] One-off operator run OUTSIDE the normal task workflow. This task is already COMPLETE and stays complete. You CANNOT advance/regress phases or complete the task — those tools are unavailable to you. You MAY read/create notes and artifacts, and delegate to teammates (the orchestrator resumes you when a delegate finishes). When your turn ends, the run simply stops.\n\n${normalized}`;
+    const closeStdin = this.shouldCloseStdinForAgent(instance.id);
+    await this.agentManager.sendResumeMessage(instance.id, wrapped, closeStdin);
+
+    try {
+      this.agentManager.appendSyntheticOutput(
+        instance.id,
+        `[SKIPPER] One-off operator run started on completed task: ${normalized}`,
+      );
+    } catch (err) {
+      logError(this.db, "oneshot.synthetic_output", { templateAgentId, taskId, instanceId: instance.id }, err);
+    }
+  }
+
   getReconciliationLoop(): ReconciliationLoop {
     return this.reconciliationLoop;
   }
@@ -990,6 +1080,21 @@ export class ManagerDaemon {
         logError(this.db, "agent_exit_bail", { agentId: event.agentId, templateId, reason: "no_task_id", method: "handleAgentExit" }, new Error("bail"));
         return;
       }
+      // One-off run: the operator resumed this instance on an already-completed
+      // task, outside the normal workflow. Finalize the instance cleanly and
+      // stop — no phase/complete/fail/idle logic. Its children (if it delegated)
+      // resume it via the normal delegation path before it reaches here.
+      const oneshotRow = this.db
+        .prepare("SELECT json_extract(state_metadata, '$.oneshot') AS oneshot FROM agent_instances WHERE id = ?")
+        .get(event.agentId) as { oneshot: number | null } | null;
+      if (oneshotRow?.oneshot === 1) {
+        const templateId = this.agentManager.getTemplateAgentId(event.agentId) ?? event.agentId;
+        updateInstanceStatus(this.db, event.agentId, event.code === 0 ? "completed" : "failed", { clearPid: true });
+        this.db.prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?").run(templateId);
+        logError(this.db, "agent_exit_bail", { agentId: event.agentId, taskId, reason: "oneshot_finalized", method: "handleAgentExit" }, new Error("bail"));
+        return;
+      }
+
       const task = this.taskScheduler.getTask(taskId);
       if (!task || task.status !== "running") {
         logError(this.db, "agent_exit_bail", { agentId: event.agentId, taskId, reason: !task ? "task_not_found" : `task_status_${task.status}`, method: "handleAgentExit" }, new Error("bail"));

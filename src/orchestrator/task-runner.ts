@@ -145,6 +145,7 @@ export class TaskRunner {
       phase: phaseInfo,
       isStreaming,
       isResume: resumeSessionId !== null,
+      injectedInput: startedTask.run_input ?? undefined,
     }, entrypointAgentId);
 
     const usesInlinePrompt = typeDef ? agentTypeUsesInlinePrompt(typeDef) : false;

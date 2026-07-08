@@ -526,7 +526,7 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
       <span class="mc-task-header__title">${escapeHtml(task.title)}</span>
       <div class="mc-task-header__scroll">
         ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
-        ${isRunning ? `<div class="mc-task-header__orbs">
+        ${isRunning || task.status === "completed" ? `<div class="mc-task-header__orbs">
           <div id="mc-steer-${escapeHtml(task.id)}"
             hx-get="/fragments/dashboard/latest-steer?task=${escapeHtml(task.id)}"
             hx-trigger="load"
@@ -1001,7 +1001,6 @@ export function renderScheduledTaskDetail(
       <span class="sk-badge sk-badge--waiting" style="font-size:9px;padding:1px 5px;">${badge}</span>
       ${st.team_name ? `<span class="sk-muted sk-text-xs">${escapeHtml(st.team_name)}</span>` : ""}
       <div class="mc-task-header__actions">
-        <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/run-now" hx-swap="none">Run Now</button>
         ${hasInterval ? `<button class="sk-btn sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/clear-schedule" hx-swap="none"
                 hx-confirm="Clear the interval? This task will become manual-only (Run Now).">Clear interval</button>` : ""}
         <button class="sk-btn sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/unapprove" hx-swap="none">Unapprove</button>
@@ -1011,6 +1010,13 @@ export function renderScheduledTaskDetail(
     </div>
 
     <div style="padding: var(--sk-space-4) var(--sk-space-6);">
+      <form hx-post="/api/scheduled-tasks/${eid}/run-now" hx-swap="none"
+            style="display:flex;gap:var(--sk-space-2);align-items:center;margin-bottom:var(--sk-space-6);">
+        <textarea name="input" class="sk-input" rows="2" placeholder="Optional: extra instructions injected into this run's prompt (leave blank for a plain run)..."
+                  style="flex:1; font-size:var(--sk-text-sm); resize:none;"></textarea>
+        <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm" style="flex-shrink:0;">Run Now</button>
+      </form>
+
       <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:var(--sk-space-4); margin-bottom:var(--sk-space-5);">
         <div>
           <div class="sk-muted sk-text-xs">Schedule</div>

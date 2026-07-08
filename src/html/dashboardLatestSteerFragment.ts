@@ -53,7 +53,11 @@ export function groupSteerOptionsToTiles(options: SteeringOption[]): AgentTile[]
  * instance modal (see `agentInstancesModalFragment`) where steering happens.
  * Idle members render as non-interactive orbs.
  */
-export function dashboardSteerListFragment(tiles: AgentTile[], taskId?: string | null): string {
+export function dashboardSteerListFragment(
+  tiles: AgentTile[],
+  taskId?: string | null,
+  opts?: { allowIdleSpawn?: boolean },
+): string {
   if (tiles.length === 0) {
     return `<div class="cmd-latest-steer cmd-latest-steer--empty" style="padding:0.6rem 0.85rem;color:var(--muted);font-size:0.78rem;">No team members</div>`;
   }
@@ -65,6 +69,18 @@ export function dashboardSteerListFragment(tiles: AgentTile[], taskId?: string |
     const stateCls = t.is_active ? "zen-orb--active" : "zen-orb--inactive";
 
     if (!t.is_active) {
+      // On a completed task (allowIdleSpawn) idle orbs are still clickable so the
+      // operator can resume that agent for a one-off run outside the workflow.
+      if (opts?.allowIdleSpawn) {
+        return `<div class="zen-view__orb-wrapper mc-agent-orb-wrapper">
+          <div class="zen-orb ${stateCls} mc-agent-orb--clickable" data-zen-agent="${name}" data-zen-no-drag="1"
+               data-mc-agent-tile data-template-id="${tid}" data-agent-name="${name}"${taskAttr}
+               role="button" tabindex="0" title="Run one-off ${name}">
+            <div class="zen-orb__shine"></div>
+          </div>
+          <span class="zen-view__orb-label">${name}</span>
+        </div>`;
+      }
       return `<div class="zen-view__orb-wrapper mc-agent-orb-wrapper">
         <div class="zen-orb ${stateCls}" data-zen-agent="${name}" data-zen-no-drag="1" title="${name} (idle)">
           <div class="zen-orb__shine"></div>
@@ -149,12 +165,52 @@ function steerCardMarkup(opt: SteeringOption): string {
       </div>
     </div>
     <form class="mc-steer-card__footer" hx-post="/api/dashboard/steer" hx-swap="none"
-      hx-on::after-request="if(event.detail.successful){var t=document.getElementById('steer-textarea-${eid}');if(t){t.value='';}}">
+      hx-on::after-request="if(event.detail.successful){var t=document.getElementById('steer-textarea-${eid}');if(t){t.value='';}if(window.Skipper&&Skipper.modal){Skipper.modal.close('mc-agent-modal');}}">
       <input type="hidden" name="template_agent_id" value="${tid}">
       <input type="hidden" name="runtime_id" value="${eid}">
-      <textarea id="steer-textarea-${eid}" name="message" rows="1" required placeholder="Steer this agent..." class="mc-steer-card__input"
+      <textarea id="steer-textarea-${eid}" name="message" rows="3" required placeholder="Steer this agent..." class="mc-steer-card__input"
         onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();this.form.requestSubmit();}"></textarea>
       <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm mc-steer-card__btn">Steer</button>
     </form>
   </div>`;
+}
+
+/**
+ * One-off resume card shown inside the agent modal for a COMPLETED task. Submits
+ * to /api/dashboard/resume-oneshot which resumes the agent's latest instance for
+ * a single turn outside the task workflow. When not resumable (no session, wrong
+ * type) or a one-off is already active, the form is disabled with a reason.
+ */
+export function oneshotResumeCardMarkup(input: {
+  template_agent_id: string;
+  task_id: string;
+  agent_name: string;
+  resumable: boolean;
+  disabledReason?: string | null;
+}): string {
+  const tid = escapeHtml(input.template_agent_id);
+  const taskId = escapeHtml(input.task_id);
+  const name = escapeHtml(input.agent_name);
+  const fid = `oneshot-textarea-${tid}`;
+  const disabled = !input.resumable;
+  const reason = input.disabledReason ? escapeHtml(input.disabledReason) : "";
+
+  return `<div class="mc-agent-instances"><div class="mc-steer-card">
+    <div class="mc-steer-card__info">
+      <div class="mc-steer-card__header">
+        <span class="cmd-agent-dot mc-steer-card__dot" title="Idle"></span>
+        <a class="mc-steer-card__name" href="/agents/${tid}" hx-get="/agents/${tid}" hx-target="body" hx-push-url="true">${name}</a>
+        <span class="mc-steer-card__task" title="One-off run">Resume once — outside the task workflow</span>
+      </div>
+      ${disabled && reason ? `<div class="sk-muted" style="padding:0.15rem 0 0 1.1rem;font-size:0.72rem;">${reason}</div>` : ""}
+    </div>
+    <form class="mc-steer-card__footer" hx-post="/api/dashboard/resume-oneshot" hx-swap="none"
+      hx-on::after-request="if(event.detail.successful){var t=document.getElementById('${fid}');if(t){t.value='';}if(window.Skipper&&Skipper.modal){Skipper.modal.close('mc-agent-modal');}}">
+      <input type="hidden" name="template_agent_id" value="${tid}">
+      <input type="hidden" name="task_id" value="${taskId}">
+      <textarea id="${fid}" name="message" rows="3" required placeholder="Give this agent a one-off instruction..." class="mc-steer-card__input"${disabled ? " disabled" : ""}
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();this.form.requestSubmit();}"></textarea>
+      <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm mc-steer-card__btn"${disabled ? " disabled" : ""}>Run once</button>
+    </form>
+  </div></div>`;
 }

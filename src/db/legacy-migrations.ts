@@ -55,6 +55,7 @@ export function migrateLegacySchema(database: Database): void {
   ensureColumn(database, "task_template_phases", "review_override", "TEXT DEFAULT NULL");
   ensureColumn(database, "task_template_phases", "consensus_override", "TEXT DEFAULT NULL");
   ensureColumn(database, "tasks", "source_scheduled_task_id", "TEXT");
+  ensureColumn(database, "tasks", "run_input", "TEXT");
   ensureColumn(database, "agent_instances", "input_tokens", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(database, "agent_instances", "output_tokens", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(database, "agent_instances", "cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0");
