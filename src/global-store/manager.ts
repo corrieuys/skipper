@@ -22,6 +22,7 @@ export interface SetGlobalValueInput {
 
 export interface GlobalStoreQuery {
   name?: string;
+  name_prefix?: string;
   type?: string;
   status?: string;
   data_contains?: string;
@@ -78,6 +79,10 @@ export class GlobalStoreManager {
     if (q.name !== undefined) {
       conditions.push("name = ?");
       params.push(q.name);
+    }
+    if (q.name_prefix !== undefined) {
+      conditions.push("name LIKE ? ESCAPE '\\'");
+      params.push(`${q.name_prefix.replace(/[\\%_]/g, "\\$&")}%`);
     }
     if (q.type !== undefined) {
       conditions.push("type = ?");

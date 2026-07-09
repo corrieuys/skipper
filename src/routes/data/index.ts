@@ -7,6 +7,8 @@ import { registerDataAgentRoutes } from "./agents";
 import { registerDataDashboardRoutes } from "./dashboard";
 import { registerDataEscalationRoutes } from "./escalations";
 import { registerDataDaemonRoutes } from "./daemon";
+import { registerDataGlobalStoreRoutes } from "./global-store";
+import { registerDataScheduledTaskRoutes } from "./scheduled-tasks";
 
 export function registerDataRoutes(db: Database, daemon: ManagerDaemon): void {
   // These two take only the daemon — passing (db, daemon) would put the
@@ -18,4 +20,6 @@ export function registerDataRoutes(db: Database, daemon: ManagerDaemon): void {
   registerDataDashboardRoutes(db, daemon);
   registerDataEscalationRoutes(db, daemon);
   registerDataDaemonRoutes(db, daemon);
+  registerDataGlobalStoreRoutes();
+  registerDataScheduledTaskRoutes(daemon);
 }
