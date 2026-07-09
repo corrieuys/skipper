@@ -6,6 +6,7 @@ import { askMonkeyBrain, replyViaBrain, getLastUsage, resetConversation, getPers
 import { terminalJsonSummary } from "../html/terminalJsonSummary";
 import { getGregModelChoice } from "../config/model-settings";
 import { getAgentTypeDefinition } from "../agents/types";
+import { logError } from "../logging";
 
 const TICK_ACTIVE_MS = 10_000;
 const TICK_IDLE_MS = 30_000;
@@ -143,7 +144,7 @@ export class MonkeyEngine {
     if (now - this.lastTypingReactAt < 6000) { this.typingTickPending = true; return; }
     this.lastTypingReactAt = now;
     this.typingTickPending = false;
-    this.tick().catch(() => {});
+    this.tick().catch((err) => logError(this.db, "monkey.tick", {}, err));
   }
 
   private currentFocusLine(): string | null {
@@ -226,7 +227,7 @@ export class MonkeyEngine {
       if (this.typingTickPending) {
         this.typingTickPending = false;
         this.lastTypingReactAt = Date.now();
-        queueMicrotask(() => { this.tick().catch(() => {}); });
+        queueMicrotask(() => { this.tick().catch((err) => logError(this.db, "monkey.tick", {}, err)); });
       }
     }
   }

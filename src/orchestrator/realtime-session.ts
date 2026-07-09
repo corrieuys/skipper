@@ -85,10 +85,11 @@ export class RealtimeSessionManager {
       const files = readdirSync("/tmp");
       for (const f of files) {
         if (f.startsWith("skipper-") && (f.endsWith(".webm") || f.endsWith(".wav"))) {
+          // Best effort: stale temp audio — another process may have removed it.
           try { unlinkSync(`/tmp/${f}`); } catch { }
         }
       }
-    } catch { }
+    } catch { /* best effort: /tmp unreadable — skip cleanup */ }
   }
 
   startSession(taskId: string): { session_id: string; state: string } {
@@ -567,7 +568,7 @@ export class RealtimeSessionManager {
         if (Array.isArray(caps) && caps.includes("summarization")) {
           return { id: row.id, name: row.name, type: row.type };
         }
-      } catch { }
+      } catch { /* malformed capabilities — skip candidate, fallback below */ }
     }
 
     const fallback = this.db
@@ -975,7 +976,7 @@ export class RealtimeSessionManager {
       rosterLines.push("AVAILABLE AGENTS (use these IDs for delegate({ target: \"<agent-id>\", work: \"...\" })):");
       for (const agent of agentRows) {
         let caps: string[] = [];
-        try { caps = JSON.parse(agent.capabilities); } catch { }
+        try { caps = JSON.parse(agent.capabilities); } catch { /* malformed — renders as "general" */ }
         const capStr = caps.length > 0 ? caps.join(", ") : "general";
         const roleStr = agent.instruction ? ` | Role: ${agent.instruction.slice(0, 120)}` : "";
         rosterLines.push(`- ID: ${agent.id} | Name: ${agent.name} | Capabilities: ${capStr}${roleStr}`);

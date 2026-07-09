@@ -179,6 +179,8 @@ export class DaemonMcpServer {
 
   close(): void {
     for (const [, session] of this.sessions) {
+      // Best effort: shutdown teardown — a transport that fails to close is
+      // going away with the process anyway.
       session.transport.close().catch(() => {});
     }
     this.sessions.clear();

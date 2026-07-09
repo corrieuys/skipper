@@ -81,6 +81,7 @@ export class LocalWhisperAdapter implements TranscriptionAdapter {
       console.log(`[transcription:local] result — ${result.length} chars: "${result.slice(0, 120)}${result.length > 120 ? "…" : ""}"`);
       return result;
     } finally {
+      // Best effort: temp audio cleanup — files may not exist if conversion failed.
       try { unlinkSync(tempPath); } catch {}
       try { unlinkSync(wavPath); } catch {}
     }

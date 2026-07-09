@@ -1285,6 +1285,7 @@ export class DelegationManager {
       if (assignedIds.length === 0) return true;
       return assignedIds.includes(childTemplateId);
     } catch {
+      // Malformed task_config — fail closed: disallow the delegation target.
       return false;
     }
   }
