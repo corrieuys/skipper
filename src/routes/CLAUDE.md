@@ -14,4 +14,5 @@ HTTP handlers. Registered in `index.ts` against `server.ts` router. Each gets `M
 | `conversations.ts` | Chat conversation API (see `../conversations/`) |
 | `scheduled-tasks.ts` | CRUD for scheduled (cron) tasks |
 | `utils.ts` | HTML response + body parse (form/json) helpers |
-| `data/` | Data-only route handlers returning JSON |
+| `api-keys.ts` | API-key CRUD under `/api/api-keys` (sk-… keys, hash-stored). Keys gate external MCP and the `/data/*` API |
+| `data/` | JSON data API (`{ok, data\|error}` envelope). Every route requires `Authorization: Bearer <api-key>` — register via `data/auth.ts:addDataRoute()`, never raw `addRoute` (auth.test.ts walks the route table and fails unguarded `/data/*`) |

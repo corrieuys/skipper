@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { addRoute } from "../../server";
+import { addDataRoute } from "./auth";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
 
 function ok(data: unknown): Response {
@@ -12,12 +12,12 @@ function err(message: string, status: number = 400): Response {
 
 export function registerDataDaemonRoutes(_db: Database, daemon: ManagerDaemon): void {
   // GET /data/daemon/status
-  addRoute("GET", "/data/daemon/status", () => {
+  addDataRoute("GET", "/data/daemon/status", () => {
     return ok(daemon.getStatus());
   });
 
   // POST /data/daemon/pause
-  addRoute("POST", "/data/daemon/pause", async () => {
+  addDataRoute("POST", "/data/daemon/pause", async () => {
     try {
       await daemon.pause();
       return ok(daemon.getStatus());
@@ -27,7 +27,7 @@ export function registerDataDaemonRoutes(_db: Database, daemon: ManagerDaemon): 
   });
 
   // POST /data/daemon/resume
-  addRoute("POST", "/data/daemon/resume", () => {
+  addDataRoute("POST", "/data/daemon/resume", () => {
     try {
       daemon.resume();
       return ok(daemon.getStatus());

@@ -22,6 +22,18 @@ export function hashApiKey(key: string): string {
 }
 
 /**
+ * Validate a plaintext API key (sk-...) against the api_keys table.
+ * Shared by MCP external auth and the JSON data API guard (routes/data/auth.ts).
+ */
+export function resolveApiKey(db: Database, token: string): { id: string; name: string } | null {
+  if (!token || token.length < 8) return null;
+  const keyHash = hashApiKey(token);
+  return db
+    .prepare("SELECT id, name FROM api_keys WHERE key_hash = ?")
+    .get(keyHash) as { id: string; name: string } | null;
+}
+
+/**
  * Resolves an agent identity from a Bearer token.
  * Checks: 1) agent_instances (running), 2) agents (busy), 3) api_keys (external).
  */
@@ -57,10 +69,7 @@ export function resolveAgentFromToken(db: Database, token: string): AgentIdentit
   }
 
   // Check API keys (external agents)
-  const keyHash = hashApiKey(token);
-  const apiKey = db
-    .prepare("SELECT id, name FROM api_keys WHERE key_hash = ?")
-    .get(keyHash) as { id: string; name: string } | null;
+  const apiKey = resolveApiKey(db, token);
 
   if (apiKey) {
     return {

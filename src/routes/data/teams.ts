@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { addRoute } from "../../server";
+import { addDataRoute } from "./auth";
 import { TeamManager } from "../../teams/manager";
 import { getAgent, getTeam } from "../../config/store";
 
@@ -14,18 +14,18 @@ function err(message: string, status: number = 400): Response {
 export function registerDataTeamRoutes(db: Database, _daemon?: unknown): void {
   const manager = new TeamManager(db);
 
-  addRoute("GET", "/data/teams", () => {
+  addDataRoute("GET", "/data/teams", () => {
     const teams = manager.listTeams();
     return ok(teams);
   });
 
-  addRoute("GET", "/data/teams/:id", (_req, params) => {
+  addDataRoute("GET", "/data/teams/:id", (_req, params) => {
     const team = manager.getTeam(params.id);
     if (!team) return err("Team not found", 404);
     return ok(team);
   });
 
-  addRoute("GET", "/data/teams/:id/members", (_req, params) => {
+  addDataRoute("GET", "/data/teams/:id/members", (_req, params) => {
     const team = getTeam(params.id);
     if (!team) return err("Team not found", 404);
     const members = team.members

@@ -46,13 +46,20 @@ function compilePattern(path: string): { regex: RegExp; paramNames: string[] } {
 
 export function addRoute(method: string, path: string, handler: RouteHandler): void {
   const { regex, paramNames } = compilePattern(path);
-  routes.push({
+  const route: Route = {
     method: method.toUpperCase(),
     pathPattern: path,
     regex,
     paramNames,
     handler,
-  });
+  };
+  // Re-registering the same method+pattern replaces the old handler instead of
+  // appending a shadowed duplicate — matchRoute returns the first hit, so an
+  // append would pin stale closures forever (bites tests that register routes
+  // per-file against fresh DBs/daemons).
+  const existing = routes.findIndex((r) => r.method === route.method && r.pathPattern === path);
+  if (existing >= 0) routes[existing] = route;
+  else routes.push(route);
 }
 
 function matchRoute(method: string, pathname: string): { handler: RouteHandler; params: Record<string, string> } | null {

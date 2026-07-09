@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { addRoute } from "../../server";
+import { addDataRoute } from "./auth";
 import { AgentManager } from "../../agents/manager";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
 import { parseRequestBody } from "../utils";
@@ -19,13 +19,13 @@ export function registerDataAgentRoutes(
   const manager = new AgentManager(db);
 
   // GET /data/agents — list agents
-  addRoute("GET", "/data/agents", () => {
+  addDataRoute("GET", "/data/agents", () => {
     const agents = manager.listAgents();
     return ok(agents);
   });
 
   // GET /data/agents/:id — agent detail
-  addRoute("GET", "/data/agents/:id", (_req, params) => {
+  addDataRoute("GET", "/data/agents/:id", (_req, params) => {
     const row = db.prepare(
       `SELECT a.*,
          (SELECT COUNT(*) FROM agent_instances ai WHERE ai.template_agent_id = a.id AND ai.status IN ('running', 'waiting_delegation')) AS running_instance_count
@@ -41,7 +41,7 @@ export function registerDataAgentRoutes(
   });
 
   // GET /data/agents/:id/instances — active instances
-  addRoute("GET", "/data/agents/:id/instances", (_req, params) => {
+  addDataRoute("GET", "/data/agents/:id/instances", (_req, params) => {
     const rows = db.prepare(
       `SELECT ai.id, ai.status, ai.task_id, t.title AS task_title, ai.created_at
        FROM agent_instances ai
@@ -68,7 +68,7 @@ export function registerDataAgentRoutes(
   });
 
   // GET /data/agents/:id/output — terminal output
-  addRoute("GET", "/data/agents/:id/output", (req, params) => {
+  addDataRoute("GET", "/data/agents/:id/output", (req, params) => {
     const url = new URL(req.url);
     const sessionId = url.searchParams.get("session");
 
@@ -109,7 +109,7 @@ export function registerDataAgentRoutes(
   });
 
   // POST /data/agents/:id/steer — steering message
-  addRoute("POST", "/data/agents/:id/steer", async (req, params) => {
+  addDataRoute("POST", "/data/agents/:id/steer", async (req, params) => {
     if (!daemon) return err("Runtime steering is unavailable", 503);
     const body = await parseRequestBody<Record<string, string>>(req);
     const runtimeId = body.runtime_id?.trim();

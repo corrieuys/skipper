@@ -1,4 +1,4 @@
-import { addRoute } from "../../server";
+import { addDataRoute } from "./auth";
 import { getDb } from "../../db/connection";
 import { TaskScheduler } from "../../tasks/scheduler";
 import { getRealtimeTeamId } from "../../config/teams";
@@ -27,7 +27,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
   // GET routes
   // ---------------------------------------------------------------------------
 
-  addRoute("GET", "/data/realtime-tasks", () => {
+  addDataRoute("GET", "/data/realtime-tasks", () => {
     const db = getDb();
     const tasks = db
       .prepare("SELECT * FROM tasks WHERE task_type = 'real_time' ORDER BY created_at DESC")
@@ -35,7 +35,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     return ok(tasks);
   });
 
-  addRoute("GET", "/data/realtime-tasks/:id", (_req, params) => {
+  addDataRoute("GET", "/data/realtime-tasks/:id", (_req, params) => {
     const db = getDb();
     const task = db
       .prepare(
@@ -50,7 +50,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     return ok(task);
   });
 
-  addRoute("GET", "/data/realtime-tasks/:id/timeline", (_req, params) => {
+  addDataRoute("GET", "/data/realtime-tasks/:id/timeline", (_req, params) => {
     const db = getDb();
     const timeline = db
       .prepare("SELECT * FROM realtime_timeline WHERE task_id = ? ORDER BY created_at DESC")
@@ -58,7 +58,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     return ok(timeline);
   });
 
-  addRoute("GET", "/data/realtime-tasks/:id/notes", (_req, params) => {
+  addDataRoute("GET", "/data/realtime-tasks/:id/notes", (_req, params) => {
     const db = getDb();
     const notes = db.prepare(
       `SELECT n.id, n.agent_id, COALESCE(a.name, n.agent_id) AS agent_name, n.content, n.created_at
@@ -71,7 +71,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     return ok(notes);
   });
 
-  addRoute("GET", "/data/realtime-tasks/:id/agents", (_req, params) => {
+  addDataRoute("GET", "/data/realtime-tasks/:id/agents", (_req, params) => {
     const db = getDb();
     const agents = db.prepare(
       `SELECT ai.id, ai.template_agent_id, a.name AS agent_name, ai.status, ai.created_at
@@ -89,7 +89,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     return ok(agents);
   });
 
-  addRoute("GET", "/data/realtime-tasks/:id/pipeline-status", (_req, params) => {
+  addDataRoute("GET", "/data/realtime-tasks/:id/pipeline-status", (_req, params) => {
     const db = getDb();
     const pipelineStatus = db
       .prepare("SELECT * FROM realtime_pipeline_state WHERE task_id = ?")
@@ -123,7 +123,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
   // POST/mutation routes
   // ---------------------------------------------------------------------------
 
-  addRoute("POST", "/data/realtime-tasks", async (req) => {
+  addDataRoute("POST", "/data/realtime-tasks", async (req) => {
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const title = typeof body.title === "string" ? body.title.trim() : null;
     const description = typeof body.description === "string" ? body.description.trim() : null;
@@ -165,7 +165,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     }
   });
 
-  addRoute("POST", "/data/realtime-tasks/:id", async (req, params) => {
+  addDataRoute("POST", "/data/realtime-tasks/:id", async (req, params) => {
     const db = getDb();
     const task = db
       .prepare("SELECT id, task_type FROM tasks WHERE id = ?")
@@ -186,7 +186,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     return ok(updated);
   });
 
-  addRoute("POST", "/data/realtime-tasks/:id/start", (_req, params) => {
+  addDataRoute("POST", "/data/realtime-tasks/:id/start", (_req, params) => {
     try {
       const task = scheduler.getTask(params.id);
       if (!task || task.task_type !== "real_time") return err("Task not found", 404);
@@ -203,7 +203,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     }
   });
 
-  addRoute("POST", "/data/realtime-tasks/:id/stop", async (_req, params) => {
+  addDataRoute("POST", "/data/realtime-tasks/:id/stop", async (_req, params) => {
     try {
       if (daemon) {
         const rtMgr = daemon.getRealtimeSessionManager();
@@ -217,7 +217,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     }
   });
 
-  addRoute("POST", "/data/realtime-tasks/:id/resume", (_req, params) => {
+  addDataRoute("POST", "/data/realtime-tasks/:id/resume", (_req, params) => {
     try {
       if (!daemon) return err("Daemon not available", 503);
       daemon.getRealtimeSessionManager().resumeSession(params.id);
@@ -227,7 +227,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     }
   });
 
-  addRoute("POST", "/data/realtime-tasks/:id/close", (_req, params) => {
+  addDataRoute("POST", "/data/realtime-tasks/:id/close", (_req, params) => {
     try {
       if (daemon) {
         daemon.getRealtimeSessionManager().closeSession(params.id);
@@ -242,7 +242,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     }
   });
 
-  addRoute("POST", "/data/realtime-tasks/:id/delete", (_req, params) => {
+  addDataRoute("POST", "/data/realtime-tasks/:id/delete", (_req, params) => {
     try {
       const task = scheduler.getTask(params.id);
       if (!task) return err("Task not found", 404);
@@ -260,7 +260,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     }
   });
 
-  addRoute("POST", "/data/realtime-tasks/:id/unarchive", (_req, params) => {
+  addDataRoute("POST", "/data/realtime-tasks/:id/unarchive", (_req, params) => {
     try {
       const db = getDb();
       const task = scheduler.getTask(params.id);
@@ -285,7 +285,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     }
   });
 
-  addRoute("POST", "/data/realtime-tasks/:id/input", async (req, params) => {
+  addDataRoute("POST", "/data/realtime-tasks/:id/input", async (req, params) => {
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const text = typeof body.text === "string" ? body.text.trim() : null;
 
@@ -305,7 +305,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     }
   });
 
-  addRoute("POST", "/data/realtime-tasks/:id/config", async (req, params) => {
+  addDataRoute("POST", "/data/realtime-tasks/:id/config", async (req, params) => {
     const db = getDb();
     const task = db
       .prepare("SELECT id, task_config FROM tasks WHERE id = ? AND task_type = 'real_time'")

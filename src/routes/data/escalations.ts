@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { addRoute } from "../../server";
+import { addDataRoute } from "./auth";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
 import { parseRequestBody } from "../utils";
 
@@ -26,14 +26,14 @@ function fetchOpenEscalations(db: Database) {
 export function registerDataEscalationRoutes(db: Database, daemon: ManagerDaemon): void {
 
   // GET /data/escalations — list open escalations
-  addRoute("GET", "/data/escalations", () => {
+  addDataRoute("GET", "/data/escalations", () => {
     daemon.getEscalationManager().reconcileOpenEscalationsForInactiveTasks();
     const escalations = fetchOpenEscalations(db);
     return ok(escalations);
   });
 
   // POST /data/escalations/:id/resolve — resolve escalation
-  addRoute("POST", "/data/escalations/:id/resolve", async (req, params) => {
+  addDataRoute("POST", "/data/escalations/:id/resolve", async (req, params) => {
     const body = await parseRequestBody<Record<string, string>>(req);
     if (!body.response) return err("response is required");
     try {
@@ -47,7 +47,7 @@ export function registerDataEscalationRoutes(db: Database, daemon: ManagerDaemon
   });
 
   // POST /data/escalations/:id/dismiss — dismiss escalation
-  addRoute("POST", "/data/escalations/:id/dismiss", (_req, params) => {
+  addDataRoute("POST", "/data/escalations/:id/dismiss", (_req, params) => {
     try {
       daemon.getEscalationManager().dismissEscalation(params.id);
       daemon.getEscalationManager().reconcileOpenEscalationsForInactiveTasks();

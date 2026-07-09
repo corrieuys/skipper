@@ -1,4 +1,4 @@
-import { addRoute } from "../../server";
+import { addDataRoute } from "./auth";
 import { getDb } from "../../db/connection";
 import {
   fetchTasksWithTeams,
@@ -32,38 +32,38 @@ export function registerDataTaskRoutes(
   // GET routes
   // ---------------------------------------------------------------------------
 
-  addRoute("GET", "/data/tasks", () => {
+  addDataRoute("GET", "/data/tasks", () => {
     const db = getDb();
     return ok(fetchTasksWithTeams(db));
   });
 
-  addRoute("GET", "/data/tasks/:id", (_req, params) => {
+  addDataRoute("GET", "/data/tasks/:id", (_req, params) => {
     const db = getDb();
     const task = fetchTaskById(db, params.id);
     if (!task) return err("Task not found", 404);
     return ok(task);
   });
 
-  addRoute("GET", "/data/tasks/:id/phases", (_req, params) => {
+  addDataRoute("GET", "/data/tasks/:id/phases", (_req, params) => {
     const db = getDb();
     const task = fetchTaskById(db, params.id);
     if (!task) return err("Task not found", 404);
     return ok({ phases: (task as unknown as Record<string, unknown>).phases ?? [] });
   });
 
-  addRoute("GET", "/data/tasks/:id/delegations", (_req, params) => {
+  addDataRoute("GET", "/data/tasks/:id/delegations", (_req, params) => {
     const db = getDb();
     const task = fetchTaskById(db, params.id);
     if (!task) return err("Task not found", 404);
     return ok(fetchTaskDelegations(db, params.id));
   });
 
-  addRoute("GET", "/data/tasks/:id/notes", (_req, params) => {
+  addDataRoute("GET", "/data/tasks/:id/notes", (_req, params) => {
     const db = getDb();
     return ok(fetchTaskNotes(db, params.id));
   });
 
-  addRoute("GET", "/data/tasks/:id/artifacts", (req, params) => {
+  addDataRoute("GET", "/data/tasks/:id/artifacts", (req, params) => {
     const url = new URL(req.url);
     const kind = url.searchParams.get("kind") ?? undefined;
     const name = url.searchParams.get("name") ?? undefined;
@@ -73,7 +73,7 @@ export function registerDataTaskRoutes(
     return ok(artifacts);
   });
 
-  addRoute("GET", "/data/tasks/:id/artifacts/:name", (req, params) => {
+  addDataRoute("GET", "/data/tasks/:id/artifacts/:name", (req, params) => {
     const url = new URL(req.url);
     const versionParam = url.searchParams.get("version") ?? "latest";
     const version: "latest" | number = versionParam === "latest" ? "latest" : parseInt(versionParam, 10);
@@ -82,7 +82,7 @@ export function registerDataTaskRoutes(
     return ok(artifact);
   });
 
-  addRoute("GET", "/data/tasks/:id/forensics", (_req, params) => {
+  addDataRoute("GET", "/data/tasks/:id/forensics", (_req, params) => {
     const db = getDb();
     const task = fetchTaskById(db, params.id);
     if (!task) return err("Task not found", 404);
@@ -93,7 +93,7 @@ export function registerDataTaskRoutes(
   // POST/mutation routes
   // ---------------------------------------------------------------------------
 
-  addRoute("POST", "/data/tasks", async (req) => {
+  addDataRoute("POST", "/data/tasks", async (req) => {
     const body = await parseRequestBody<Record<string, string>>(req);
 
     if (!body.title || !body.title.trim()) {
@@ -127,7 +127,7 @@ export function registerDataTaskRoutes(
     }
   });
 
-  addRoute("POST", "/data/tasks/:id", async (req, params) => {
+  addDataRoute("POST", "/data/tasks/:id", async (req, params) => {
     const body = await parseRequestBody<Record<string, string>>(req);
 
     if (!body.title || !body.title.trim()) {
@@ -158,7 +158,7 @@ export function registerDataTaskRoutes(
     }
   });
 
-  addRoute("POST", "/data/tasks/:id/approve", (_req, params) => {
+  addDataRoute("POST", "/data/tasks/:id/approve", (_req, params) => {
     try {
       scheduler.approveTask(params.id);
       return ok({ id: params.id, status: "approved" });
@@ -167,7 +167,7 @@ export function registerDataTaskRoutes(
     }
   });
 
-  addRoute("POST", "/data/tasks/:id/unapprove", (_req, params) => {
+  addDataRoute("POST", "/data/tasks/:id/unapprove", (_req, params) => {
     try {
       scheduler.unapproveTask(params.id);
       return ok({ id: params.id, status: "draft" });
@@ -176,7 +176,7 @@ export function registerDataTaskRoutes(
     }
   });
 
-  addRoute("POST", "/data/tasks/:id/cancel", (_req, params) => {
+  addDataRoute("POST", "/data/tasks/:id/cancel", (_req, params) => {
     try {
       if (_daemon) {
         const rtMgr = _daemon.getRealtimeSessionManager();
@@ -198,7 +198,7 @@ export function registerDataTaskRoutes(
     }
   });
 
-  addRoute("POST", "/data/tasks/:id/retry", (_req, params) => {
+  addDataRoute("POST", "/data/tasks/:id/retry", (_req, params) => {
     try {
       scheduler.retryTask(params.id);
       return ok({ id: params.id });
@@ -207,7 +207,7 @@ export function registerDataTaskRoutes(
     }
   });
 
-  addRoute("POST", "/data/tasks/:id/resume", (_req, params) => {
+  addDataRoute("POST", "/data/tasks/:id/resume", (_req, params) => {
     try {
       scheduler.resumeTask(params.id);
       return ok({ id: params.id });
@@ -216,7 +216,7 @@ export function registerDataTaskRoutes(
     }
   });
 
-  addRoute("POST", "/data/tasks/:id/iterate", async (req, params) => {
+  addDataRoute("POST", "/data/tasks/:id/iterate", async (req, params) => {
     try {
       const body = await parseRequestBody<Record<string, string>>(req);
       const additionalInput = body.additionalInput || body.additional_input;
@@ -230,7 +230,7 @@ export function registerDataTaskRoutes(
     }
   });
 
-  addRoute("POST", "/data/tasks/:id/delete", (_req, params) => {
+  addDataRoute("POST", "/data/tasks/:id/delete", (_req, params) => {
     try {
       scheduler.deleteTask(params.id);
       return ok({ id: params.id, deleted: true });
@@ -239,7 +239,7 @@ export function registerDataTaskRoutes(
     }
   });
 
-  addRoute("POST", "/data/tasks/:id/clear-stale", (_req, params) => {
+  addDataRoute("POST", "/data/tasks/:id/clear-stale", (_req, params) => {
     try {
       const db = getDb();
       db.prepare(

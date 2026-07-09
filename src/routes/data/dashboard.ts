@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { addRoute } from "../../server";
+import { addDataRoute } from "./auth";
 import {
   fetchDashboardPhaseIndicatorTask,
   getPollIntervalSeconds,
@@ -26,7 +26,7 @@ function ok(data: unknown): Response {
 export function registerDataDashboardRoutes(db: Database, _daemon?: unknown): void {
 
   // GET /data/dashboard/active-tasks
-  addRoute("GET", "/data/dashboard/active-tasks", () => {
+  addDataRoute("GET", "/data/dashboard/active-tasks", () => {
     const tasks = db.prepare(
       `SELECT id, title, status, task_type, created_at
        FROM tasks
@@ -37,19 +37,19 @@ export function registerDataDashboardRoutes(db: Database, _daemon?: unknown): vo
   });
 
   // GET /data/dashboard/running-instances
-  addRoute("GET", "/data/dashboard/running-instances", () => {
+  addDataRoute("GET", "/data/dashboard/running-instances", () => {
     const runningInstances = fetchDashboardRunningInstances(db);
     return ok({ running_instances: runningInstances });
   });
 
   // GET /data/dashboard/running-instances-count
-  addRoute("GET", "/data/dashboard/running-instances-count", () => {
+  addDataRoute("GET", "/data/dashboard/running-instances-count", () => {
     const runningInstances = fetchDashboardRunningInstances(db);
     return ok({ total: runningInstances.length, active_count: runningInstances.length });
   });
 
   // GET /data/dashboard/metrics
-  addRoute("GET", "/data/dashboard/metrics", () => {
+  addDataRoute("GET", "/data/dashboard/metrics", () => {
     const mttrRow = db.prepare(
       `SELECT AVG((julianday(completed_at) - julianday(started_at)) * 24 * 60) as mttr
        FROM tasks
@@ -86,7 +86,7 @@ export function registerDataDashboardRoutes(db: Database, _daemon?: unknown): vo
   });
 
   // GET /data/dashboard/realtime-timeline
-  addRoute("GET", "/data/dashboard/realtime-timeline", () => {
+  addDataRoute("GET", "/data/dashboard/realtime-timeline", () => {
     const activeRealtimeTask = db.prepare(
       `SELECT id, title
        FROM tasks
@@ -114,13 +114,13 @@ export function registerDataDashboardRoutes(db: Database, _daemon?: unknown): vo
   });
 
   // GET /data/dashboard/phase-indicator
-  addRoute("GET", "/data/dashboard/phase-indicator", () => {
+  addDataRoute("GET", "/data/dashboard/phase-indicator", () => {
     const phaseIndicatorTask = fetchDashboardPhaseIndicatorTask(db);
     return ok(phaseIndicatorTask);
   });
 
   // GET /data/dashboard/notes
-  addRoute("GET", "/data/dashboard/notes", () => {
+  addDataRoute("GET", "/data/dashboard/notes", () => {
     const notes = db.prepare(
       `SELECT n.*, a.name AS agent_name
        FROM task_notes n
@@ -132,7 +132,7 @@ export function registerDataDashboardRoutes(db: Database, _daemon?: unknown): vo
   });
 
   // GET /data/dashboard/active-agents-count
-  addRoute("GET", "/data/dashboard/active-agents-count", () => {
+  addDataRoute("GET", "/data/dashboard/active-agents-count", () => {
     const pollInterval = getPollIntervalSeconds(db);
     const runningInstances = fetchDashboardRunningInstances(db);
     return ok({ running_instances: runningInstances, active_count: runningInstances.length, poll_interval_seconds: pollInterval });
