@@ -133,6 +133,7 @@ function shutdown() {
   notificationManager.destroy();
   daemon.stop();
   whisperManager.stop(getDb());
+  uiPush.destroy();
   server.stop(true);
   closeDb();
   process.exit(0);

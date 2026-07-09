@@ -202,6 +202,14 @@ export class UIWebSocketManager {
     }
   }
 
+  /** Full teardown: heartbeat, pending debounce timers, client set. */
+  destroy(): void {
+    this.stopHeartbeat();
+    for (const timer of this.debounceTimers.values()) clearTimeout(timer);
+    this.debounceTimers.clear();
+    this.clients.clear();
+  }
+
   /**
    * Broadcast HTML fragment to clients subscribed to the given topics.
    * Injects hx-swap-oob="true" for htmx auto-swap.

@@ -372,6 +372,15 @@ export class AgentManager {
     }
     this.agents.clear();
     this.templateToInstances.clear();
+    // Per-agent state normally cleaned on process exit — a closed manager
+    // never sees those exits, so drop it all here (matters for tests and any
+    // embedder that constructs more than one manager per process).
+    this.respawningAgents.clear();
+    this.queuedSignals.clear();
+    this.recentSignalFingerprints.clear();
+    this.resumeLocks.clear();
+    this.providerTypeCache.clear();
+    this.spawnLocks.clear();
   }
 
   getRunningInstancesForTemplate(templateAgentId: string): string[] {
