@@ -32,6 +32,32 @@ export function registerDataEscalationRoutes(db: Database, daemon: ManagerDaemon
     return ok(escalations);
   });
 
+  // GET /data/escalations/:id — single escalation, any status
+  addDataRoute("GET", "/data/escalations/:id", (_req, params) => {
+    const escalation = db.prepare(
+      `SELECT e.*, t.status as task_status, t.title as task_title,
+              a.name as agent_name
+       FROM escalations e
+       LEFT JOIN tasks t ON t.id = e.task_id
+       LEFT JOIN agents a ON a.id = e.agent_id
+       WHERE e.id = ?`,
+    ).get(params.id);
+    if (!escalation) return err("Escalation not found", 404);
+    return ok(escalation);
+  });
+
+  // GET /data/tasks/:id/escalations — full history for a task, incl. resolved
+  addDataRoute("GET", "/data/tasks/:id/escalations", (_req, params) => {
+    const escalations = db.prepare(
+      `SELECT e.*, a.name as agent_name
+       FROM escalations e
+       LEFT JOIN agents a ON a.id = e.agent_id
+       WHERE e.task_id = ?
+       ORDER BY e.created_at DESC`,
+    ).all(params.id);
+    return ok(escalations);
+  });
+
   // POST /data/escalations/:id/resolve — resolve escalation
   addDataRoute("POST", "/data/escalations/:id/resolve", async (req, params) => {
     const body = await parseRequestBody<Record<string, string>>(req);

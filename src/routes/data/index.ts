@@ -9,6 +9,7 @@ import { registerDataEscalationRoutes } from "./escalations";
 import { registerDataDaemonRoutes } from "./daemon";
 import { registerDataGlobalStoreRoutes } from "./global-store";
 import { registerDataScheduledTaskRoutes } from "./scheduled-tasks";
+import { registerDataLogRoutes } from "./logs";
 
 export function registerDataRoutes(db: Database, daemon: ManagerDaemon): void {
   // These two take only the daemon — passing (db, daemon) would put the
@@ -22,4 +23,5 @@ export function registerDataRoutes(db: Database, daemon: ManagerDaemon): void {
   registerDataDaemonRoutes(db, daemon);
   registerDataGlobalStoreRoutes();
   registerDataScheduledTaskRoutes(daemon);
+  registerDataLogRoutes();
 }
