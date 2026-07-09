@@ -3,7 +3,7 @@ import { getDb } from "../db/connection";
 import { hashApiKey } from "../mcp/auth";
 import { apiKeysPanel, type ApiKeyData } from "../html/pages/config.page";
 
-function listKeys(): ApiKeyData[] {
+export function listKeys(): ApiKeyData[] {
   return getDb()
     .prepare("SELECT id, name, created_at FROM api_keys ORDER BY created_at DESC")
     .all() as ApiKeyData[];
@@ -47,7 +47,11 @@ export function registerApiKeyRoutes(): void {
 
     const isHtmx = req.headers.get("hx-request") === "true";
     if (isHtmx) {
-      return Response.json({ id, name, key: plainKey });
+      // The create form outerHTML-swaps #sk-api-keys-panel — re-render the
+      // panel with the plaintext key revealed once.
+      return new Response(apiKeysPanel(listKeys(), { name, key: plainKey }), {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
     }
     return Response.json({ id, name, key: plainKey });
   });

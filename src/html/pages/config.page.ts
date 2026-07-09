@@ -16,6 +16,7 @@ export interface ConfigPageViewModel {
   escalationCount: number;
   skipperConnectHasKey: boolean;
   skipperConnectUrl: string;
+  apiKeys: ApiKeyData[];
   modelSettings: {
     skipper: ModelChoice;
     chat: ModelChoice;
@@ -289,6 +290,9 @@ export function configPage(vm: ConfigPageViewModel): string {
       </div>
       ` : ""}
 
+      <!-- API Keys Section (experimental only) -->
+      ${isExperimental() ? apiKeysPanel(vm.apiKeys) : ""}
+
       <!-- System Section -->
       <div class="sk-panel">
         <div class="sk-panel__header">
@@ -307,13 +311,28 @@ export function configPage(vm: ConfigPageViewModel): string {
 
 export interface ApiKeyData { id: string; name: string; created_at: string; }
 
-export function apiKeysPanel(keys: ApiKeyData[]): string {
+export function apiKeysPanel(keys: ApiKeyData[], newKey?: { name: string; key: string }): string {
   const rows = keys.map(k =>
     `<tr><td>${escapeHtml(k.name)}</td><td class="sk-muted sk-text-xs">${escapeHtml(k.created_at)}</td><td><button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/api-keys/${escapeHtml(k.id)}" hx-target="#sk-api-keys-panel" hx-swap="outerHTML" hx-confirm="Delete this API key?">Delete</button></td></tr>`
   ).join("");
+  // One-time reveal: the plaintext key exists only in this response — the DB
+  // stores its hash, so it can never be shown again.
+  const newKeyBanner = newKey ? `
+      <div class="sk-panel__body" style="border:1px solid var(--sk-accent);border-radius:var(--sk-radius);margin-bottom:var(--sk-space-3);padding:var(--sk-space-3);">
+        <p class="sk-text-xs" style="margin-bottom:var(--sk-space-2);"><strong>${escapeHtml(newKey.name)}</strong> created. Copy the key now — it is shown only once:</p>
+        <div style="display:flex;gap:var(--sk-space-2);align-items:center;">
+          <code id="sk-new-api-key" class="sk-text-xs" style="user-select:all;word-break:break-all;">${escapeHtml(newKey.key)}</code>
+          <button type="button" class="sk-btn sk-btn--sm"
+            onclick="navigator.clipboard.writeText(document.getElementById('sk-new-api-key').textContent).then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500);})">Copy</button>
+        </div>
+      </div>` : "";
   return `<div id="sk-api-keys-panel" class="sk-panel" style="margin-bottom: var(--sk-space-6);">
     <div class="sk-panel__header"><span class="sk-panel__title">API Keys</span></div>
     <div class="sk-panel__body">
+      <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
+        Keys authenticate external MCP clients (Bearer on /mcp) and the JSON data API (Bearer on /data/*).
+      </p>
+      ${newKeyBanner}
       ${keys.length > 0 ? `<table class="sk-table"><thead><tr><th>Name</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : `<p class="sk-muted sk-text-xs">No API keys</p>`}
       <form hx-post="/api/api-keys" hx-target="#sk-api-keys-panel" hx-swap="outerHTML" style="margin-top:var(--sk-space-3);display:flex;gap:var(--sk-space-2);align-items:end;">
         <input type="text" name="name" placeholder="Key name" class="sk-input sk-input--sm" required>

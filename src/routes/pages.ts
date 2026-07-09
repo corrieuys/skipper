@@ -8,6 +8,7 @@ import { getRealtimeTeamId, listTeamsForStandardTasks } from "../config/teams";
 import { isTeamVisible, isExperimental } from "../config/feature-flags";
 import { listPreferences, setPreference } from "../notifications/store";
 import { NOTIFICATION_EVENTS, type NotificationEventKey } from "../notifications/types";
+import { listKeys } from "./api-keys";
 import { assetTextSync } from "../assets";
 import {
   fetchTasksWithTeams,
@@ -1274,6 +1275,7 @@ function registerV2PageRoutes(): void {
       escalationCount,
       skipperConnectHasKey: !!getSetting(db, SETTING_SKIPPER_CONNECT_KEY),
       skipperConnectUrl: getStringSetting(db, SETTING_SKIPPER_CONNECT_URL, ""),
+      apiKeys: listKeys(),
       modelSettings: getModelSettingsView(db),
     }));
   });
