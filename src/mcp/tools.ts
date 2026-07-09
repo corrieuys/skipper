@@ -38,6 +38,10 @@ export interface RegisterDaemonToolsOptions {
   isDelegated?: boolean;
 }
 
+function errorResult(err: unknown) {
+  return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };
+}
+
 /**
  * Register daemon MCP tools on the given McpServer instance.
  * The `getIdentity` callback resolves the calling agent's identity from
@@ -153,7 +157,7 @@ export function registerDaemonTools(
 
         return { content: [{ type: "text" as const, text: JSON.stringify({ id: artifact.id, version: artifact.version }) }] };
       } catch (err) {
-        return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };
+        return errorResult(err);
       }
     },
   );
@@ -298,7 +302,7 @@ export function registerDaemonTools(
           status: delegation.status,
         }) }] };
       } catch (err) {
-        return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };
+        return errorResult(err);
       }
     },
   );
@@ -333,7 +337,7 @@ export function registerDaemonTools(
           resumed: true,
         }) }] };
       } catch (err) {
-        return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };
+        return errorResult(err);
       }
     },
   );
@@ -413,7 +417,7 @@ export function registerDaemonTools(
           delegations: delegations.map((d) => ({ id: d.id, status: d.status })),
         }) }] };
       } catch (err) {
-        return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };
+        return errorResult(err);
       }
     },
   );
@@ -566,7 +570,7 @@ export function registerDaemonTools(
 
           return { content: [{ type: "text" as const, text: JSON.stringify({ status: "completed" }) }] };
         } catch (err) {
-          return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };
+          return errorResult(err);
         }
       },
     );
@@ -588,7 +592,7 @@ export function registerDaemonTools(
 
         return { content: [{ type: "text" as const, text: JSON.stringify({ status: "applied" }) }] };
       } catch (err) {
-        return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };
+        return errorResult(err);
       }
     },
   );
@@ -608,7 +612,7 @@ export function registerDaemonTools(
 
         return { content: [{ type: "text" as const, text: JSON.stringify({ status: "applied" }) }] };
       } catch (err) {
-        return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };
+        return errorResult(err);
       }
     },
   );
@@ -655,7 +659,7 @@ export function registerExternalTools(
           team_id: task.team_id,
         }) }] };
       } catch (err) {
-        return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };
+        return errorResult(err);
       }
     },
   );
@@ -706,7 +710,7 @@ export function registerExternalTools(
           approved_at: task.approved_at,
         }) }] };
       } catch (err) {
-        return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };
+        return errorResult(err);
       }
     },
   );

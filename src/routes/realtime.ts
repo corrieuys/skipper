@@ -24,7 +24,7 @@ import type {
   RealtimeTaskConfig,
   TeamAssignedAgent,
 } from "../html/realtime-components";
-import { htmlResponse as html } from "./utils";
+import { htmlResponse as html, hxRedirect } from "./utils";
 
 function fetchAvailableAgents(): AvailableAgent[] {
   const db = getDb();
@@ -220,13 +220,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
 
       if (req.headers.get("HX-Request")) {
         // Redirect to detail page
-        return new Response("", {
-          status: 200,
-          headers: {
-            "HX-Redirect": `/realtime/${task.id}`,
-            "Content-Type": "text/html; charset=utf-8",
-          },
-        });
+        return hxRedirect(`/realtime/${task.id}`);
       }
       return Response.json(task, { status: 201 });
     } catch (err: unknown) {
@@ -293,13 +287,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
     );
 
     if (req.headers.get("HX-Request")) {
-      return new Response("", {
-        status: 200,
-        headers: {
-          "HX-Redirect": `/realtime/${params.id}`,
-          "Content-Type": "text/html; charset=utf-8",
-        },
-      });
+      return hxRedirect(`/realtime/${params.id}`);
     }
 
     const updated = db.prepare("SELECT * FROM tasks WHERE id = ?").get(params.id);
@@ -335,13 +323,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
             headers: { "Content-Type": "text/html; charset=utf-8" },
           });
         }
-        return new Response("", {
-          status: 200,
-          headers: {
-            "HX-Redirect": `/realtime/${params.id}`,
-            "Content-Type": "text/html; charset=utf-8",
-          },
-        });
+        return hxRedirect(`/realtime/${params.id}`);
       }
 
       return Response.json({ ok: true });
@@ -362,13 +344,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       }
 
       if (_req.headers.get("HX-Request")) {
-        return new Response("", {
-          status: 200,
-          headers: {
-            "HX-Redirect": `/realtime/${params.id}`,
-            "Content-Type": "text/html; charset=utf-8",
-          },
-        });
+        return hxRedirect(`/realtime/${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -387,13 +363,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       rtMgr.resumeSession(params.id);
 
       if (_req.headers.get("HX-Request")) {
-        return new Response("", {
-          status: 200,
-          headers: {
-            "HX-Redirect": `/realtime/${params.id}`,
-            "Content-Type": "text/html; charset=utf-8",
-          },
-        });
+        return hxRedirect(`/realtime/${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -416,13 +386,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       }
 
       if (_req.headers.get("HX-Request")) {
-        return new Response("", {
-          status: 200,
-          headers: {
-            "HX-Redirect": `/realtime/${params.id}`,
-            "Content-Type": "text/html; charset=utf-8",
-          },
-        });
+        return hxRedirect(`/realtime/${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -436,7 +400,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       const task = scheduler.getTask(params.id);
       if (!task) {
         if (req.headers.get("HX-Request")) {
-          return new Response("", { status: 200, headers: { "HX-Redirect": "/realtime" } });
+          return hxRedirect("/realtime");
         }
         return Response.json({ error: "Task not found" }, { status: 404 });
       }
@@ -455,13 +419,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       scheduler.deleteTask(params.id);
 
       if (req.headers.get("HX-Request")) {
-        return new Response("", {
-          status: 200,
-          headers: {
-            "HX-Redirect": "/realtime",
-            "Content-Type": "text/html; charset=utf-8",
-          },
-        });
+        return hxRedirect("/realtime");
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -761,10 +719,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
     const config = updateRealtimeConfig(updates);
 
     if (req.headers.get("HX-Request")) {
-      return new Response("", {
-        status: 200,
-        headers: { "HX-Redirect": "/config", "Content-Type": "text/html; charset=utf-8" },
-      });
+      return hxRedirect("/config");
     }
     return Response.json(config);
   });

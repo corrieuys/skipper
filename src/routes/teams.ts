@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { hxRedirect } from "./utils";
 import { randomUUID } from "crypto";
 import { addRoute } from "../server";
 import { getDb } from "../db/connection";
@@ -254,7 +255,7 @@ export function registerTeamRoutes(database?: Database): void {
     }
     try {
       const team = createLocalTeam(db, input);
-      if (isHtmx) return new Response("", { status: 200, headers: { "HX-Redirect": "/config" } });
+      if (isHtmx) return hxRedirect("/config");
       return Response.json(team, { status: 201 });
     } catch (e) {
       return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 400 });
@@ -277,7 +278,7 @@ export function registerTeamRoutes(database?: Database): void {
     }
     try {
       const team = updateLocalTeam(db, id, input);
-      if (isHtmx) return new Response("", { status: 200, headers: { "HX-Redirect": "/config" } });
+      if (isHtmx) return hxRedirect("/config");
       return Response.json(team);
     } catch (e) {
       return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 400 });
@@ -297,7 +298,7 @@ export function registerTeamRoutes(database?: Database): void {
   addRoute("POST", "/api/teams/:id/delete", (req, params) => {
     deleteLocalTeam(db, params.id!);
     if (req.headers.get("HX-Request")) {
-      return new Response("", { status: 200, headers: { "HX-Redirect": "/config" } });
+      return hxRedirect("/config");
     }
     return new Response("", { status: 302, headers: { Location: "/config" } });
   });

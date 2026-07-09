@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { parseJsonOr } from "../db/json";
 import { getDb } from "../db/connection";
 import type { TaskScheduler, Task } from "./scheduler";
 
@@ -38,10 +39,7 @@ interface ScheduledTaskRow {
 }
 
 function rowToScheduledTask(row: ScheduledTaskRow): ScheduledTask {
-  let taskConfig: Record<string, unknown> = {};
-  try {
-    taskConfig = row.task_config ? JSON.parse(row.task_config) : {};
-  } catch { /* leave empty */ }
+  const taskConfig = parseJsonOr<Record<string, unknown>>(row.task_config, {});
 
   return {
     id: row.id,

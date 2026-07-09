@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { parseJsonOr } from "../db/json";
 import type { AgentManager } from "../agents/manager";
 import type { PromptBuilder, AgentInfo, PhaseInfo } from "../agents/prompt-builder";
 import type { TaskScheduler } from "../tasks/scheduler";
@@ -696,13 +697,8 @@ export class DelegationManager {
       .prepare("SELECT phases FROM teams WHERE id = ?")
       .get(task.team_id) as { phases: string } | null;
     if (!teamRow?.phases) return undefined;
-    let phases: Array<{ name: string; prompt: string }>;
-    try {
-      phases = JSON.parse(teamRow.phases) as Array<{ name: string; prompt: string }>;
-    } catch {
-      return undefined;
-    }
-    if (!Array.isArray(phases) || phases.length === 0) return undefined;
+    const phases = parseJsonOr<Array<{ name: string; prompt: string }> | undefined>(teamRow.phases, undefined);
+    if (!phases || !Array.isArray(phases) || phases.length === 0) return undefined;
     const idx = Math.min(Math.max(0, task.current_phase ?? 0), phases.length - 1);
     const rawPhase = phases[idx];
     if (!rawPhase) return undefined;

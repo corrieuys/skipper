@@ -1,4 +1,5 @@
 import { addRoute } from "../server";
+import { hxRedirect } from "./utils";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import type { ScheduleUnit } from "../tasks/scheduled-scheduler";
 import type { ManagerDaemon } from "../agents/manager-daemon";
@@ -7,11 +8,6 @@ import { parsePhaseOverridesFromForm } from "./phase-overrides";
 
 const EXPERIMENTAL_REQUIRED = Response.json({ error: "scheduled tasks require --experimental" }, { status: 403 });
 
-// Mirror how regular tasks respond (src/routes/tasks.ts): a 200 with an
-// HX-Redirect header. htmx honours the header and navigates client-side. We do
-// NOT use a 3xx redirect — the browser's fetch auto-follows 3xx, so the final
-// response carries no HX-Redirect header and the UI never updates.
-const hxRedirect = (to: string) => new Response("", { status: 200, headers: { "HX-Redirect": to } });
 
 // Parse an optional recurring interval from form fields. The UNIT drives it:
 // an empty/"None" unit means manual-only (unit/amount null) regardless of any

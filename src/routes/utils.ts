@@ -1,3 +1,11 @@
+/** Empty 200 whose HX-Redirect header makes htmx navigate client-side. */
+export function hxRedirect(path: string): Response {
+  return new Response("", {
+    status: 200,
+    headers: { "HX-Redirect": path, "Content-Type": "text/html; charset=utf-8" },
+  });
+}
+
 export function htmlResponse(content: string, status: number = 200): Response {
   return new Response(content, {
     status,

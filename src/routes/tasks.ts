@@ -9,7 +9,7 @@ import type { TaskNoteData } from "../html/components";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { eventBus } from "../events/bus";
-import { htmlResponse, parseRequestBody } from "./utils";
+import { htmlResponse, parseRequestBody, hxRedirect } from "./utils";
 import { noteItemFragment } from "../html/dashboardNotesFragment";
 import { getRealtimeTeamId } from "../config/teams";
 import { parsePhaseOverridesFromForm } from "./phase-overrides";
@@ -46,7 +46,7 @@ function taskCreationPageResponse(_errorMessage?: string, _daemonStatus?: { stat
 }
 
 function taskDetailResponse(id: string, _daemonStatus?: { state: "running" | "pausing" | "paused" | "stopped"; uptime: number }): Response {
-  return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${id}` } });
+  return hxRedirect(`/?task=${id}`);
 }
 
 function killRunningRuntimesForTask(taskId: string, daemon?: Pick<ManagerDaemon, "getAgentManager">): void {
@@ -173,7 +173,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         try { scheduledScheduler.approveScheduledTask(scheduled.id); } catch { /* ignore */ }
       }
 
-      return new Response("", { status: 200, headers: { "HX-Redirect": `/?scheduled=${scheduled.id}`, "Content-Type": "text/html; charset=utf-8" } });
+      return hxRedirect(`/?scheduled=${scheduled.id}`);
     }
 
     const workingDirectory = typeof workingDirectoryRaw === "string" && workingDirectoryRaw.trim()
@@ -258,13 +258,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         const redirectTo = shouldAutoApprove
           ? (created.task_type === "real_time" ? `/?task=${created.id}` : "/")
           : (created.task_type === "real_time" ? `/realtime/${created.id}` : `/tasks/${created.id}`);
-        return new Response("", {
-          status: 200,
-          headers: {
-            "HX-Redirect": redirectTo,
-            "Content-Type": "text/html; charset=utf-8",
-          },
-        });
+        return hxRedirect(redirectTo);
       }
       return new Response(null, { status: 302, headers: { Location: "/" } });
     } catch (err: unknown) {
@@ -398,7 +392,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       }
 
       if (req.headers.get("HX-Request")) {
-        return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -425,7 +419,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       }
 
       if (_req.headers.get("HX-Request")) {
-        return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -441,7 +435,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     try {
       scheduler.unapproveTask(params.id);
       if (_req.headers.get("HX-Request")) {
-        return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -464,7 +458,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       killRunningRuntimesForTask(params.id, daemon);
       scheduler.completeTask(params.id);
       if (_req.headers.get("HX-Request")) {
-        return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -485,7 +479,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       killRunningRuntimesForTask(params.id, daemon);
       scheduler.cancelTask(params.id);
       if (_req.headers.get("HX-Request")) {
-        return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -506,7 +500,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       scheduler.pauseTask(params.id);
       if (daemon) await daemon.pauseTaskAgents(params.id);
       if (_req.headers.get("HX-Request")) {
-        return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -527,7 +521,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       if (daemon) await daemon.resumeTaskAgents(params.id);
       scheduler.resumeFromPause(params.id);
       if (_req.headers.get("HX-Request")) {
-        return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -540,7 +534,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     try {
       scheduler.retryTask(params.id);
       if (_req.headers.get("HX-Request")) {
-        return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -553,7 +547,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     try {
       scheduler.resumeTask(params.id);
       if (_req.headers.get("HX-Request")) {
-        return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -571,7 +565,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       }
       const updated = scheduler.iterateTask(params.id, additionalInput);
       if (req.headers.get("HX-Request")) {
-        return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${params.id}` } });
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json(updated);
     } catch (err: unknown) {
@@ -598,7 +592,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       const skipRedirect = req.headers.get("X-Skip-Redirect") === "1";
       if (req.headers.get("HX-Request")) {
         if (skipRedirect) return new Response("", { status: 200 });
-        return new Response("", { status: 200, headers: { "HX-Redirect": "/" } });
+        return hxRedirect("/");
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {

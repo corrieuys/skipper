@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { parseJsonOr } from "../db/json";
 import { getDb } from "../db/connection";
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
@@ -69,10 +70,7 @@ interface TaskRow {
 }
 
 function rowToTask(row: TaskRow): Task {
-  let taskConfig: RealtimeTaskConfig = {};
-  try {
-    taskConfig = row.task_config ? JSON.parse(row.task_config) : {};
-  } catch { /* leave empty */ }
+  const taskConfig = parseJsonOr<RealtimeTaskConfig>(row.task_config, {});
 
   return {
     id: row.id,
