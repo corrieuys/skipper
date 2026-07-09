@@ -14,7 +14,8 @@ function err(message: string, status: number = 400): Response {
   return Response.json({ ok: false, error: message }, { status });
 }
 
-interface ScheduledTaskBody {
+// Index signature satisfies parseRequestBody's Record<string, unknown> constraint.
+interface ScheduledTaskBody extends Record<string, unknown> {
   title?: string;
   description?: string;
   teamId?: string;

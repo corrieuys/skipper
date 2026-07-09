@@ -19,7 +19,9 @@ Global-store tools (`set_global_value`, `get_global_value`, `query_global_store`
 
 ## External access
 
-External agents authenticate with API keys (managed via `/api/api-keys`). Configure in `.mcp.json`:
+External agents authenticate with API keys (managed via `/api/api-keys`, or the API Keys panel on `/config` under `--experimental`). Configure in `.mcp.json`:
 ```json
 { "mcpServers": { "skipper": { "type": "streamableHttp", "url": "http://localhost:5005/mcp", "headers": { "Authorization": "Bearer <api-key>" } } } }
 ```
+
+The same keys authenticate the JSON data API — every `/data/*` route requires `Authorization: Bearer <api-key>` (see [../routes/CLAUDE.md](../routes/CLAUDE.md)). Key validation is shared via `auth.ts:resolveApiKey()`.

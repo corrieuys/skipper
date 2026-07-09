@@ -453,7 +453,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- API keys for external MCP access
+-- API keys authenticate external MCP access and the JSON data API (/data/*)
 CREATE TABLE IF NOT EXISTS api_keys (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,

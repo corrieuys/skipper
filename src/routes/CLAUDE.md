@@ -15,4 +15,4 @@ HTTP handlers. Registered in `index.ts` against `server.ts` router. Each gets `M
 | `scheduled-tasks.ts` | CRUD for scheduled (cron) tasks |
 | `utils.ts` | HTML response + body parse (form/json) helpers |
 | `api-keys.ts` | API-key CRUD under `/api/api-keys` (sk-… keys, hash-stored). Keys gate external MCP and the `/data/*` API |
-| `data/` | JSON data API (`{ok, data\|error}` envelope). Every route requires `Authorization: Bearer <api-key>` — register via `data/auth.ts:addDataRoute()`, never raw `addRoute` (auth.test.ts walks the route table and fails unguarded `/data/*`) |
+| `data/` | JSON data API (`{ok, data\|error}` envelope). Every route requires `Authorization: Bearer <api-key>` — register via `data/auth.ts:addDataRoute()`, never raw `addRoute` (auth.test.ts walks the route table and fails unguarded `/data/*`). Resources: tasks (CRUD, lifecycle, review approve/reject, notes, artifacts, forensics, escalation history), teams, agents (+steer), escalations (list/detail/resolve/dismiss), dashboard, daemon, realtime tasks, global-store, scheduled tasks (experimental), logs/events |

@@ -13,7 +13,7 @@ bun run typecheck:cleanup         # dead code sweep
 
 Dev: no build, Bun runs TS direct.
 
-`typecheck:cleanup` baseline: ~340 errors, all `noUncheckedIndexedAccess`
+`typecheck:cleanup` baseline: ~360 errors, all `noUncheckedIndexedAccess`
 nullability noise (TS2345/TS18048/TS2532/TS2339/TS18046/TS2322) in route/HTML
 glue — known-benign, deliberately unfixed. Investigate only NEW error codes or
 count jumps; unused-code errors (TS6133/6196/6138) should stay at zero.
