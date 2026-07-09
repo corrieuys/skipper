@@ -8,7 +8,6 @@ import { getRealtimeTeamId, listTeamsForStandardTasks } from "../config/teams";
 import { isTeamVisible, isExperimental } from "../config/feature-flags";
 import { listPreferences, setPreference } from "../notifications/store";
 import { NOTIFICATION_EVENTS, type NotificationEventKey } from "../notifications/types";
-import { join } from "path";
 import { assetTextSync } from "../assets";
 import {
   fetchTasksWithTeams,
@@ -24,7 +23,6 @@ export {
   fetchTasksWithTeams,
   fetchTaskById,
   fetchTaskDelegations,
-  fetchDashboardActiveTeamAgents,
   fetchDashboardRealtimeTimeline,
   fetchDashboardPhaseIndicatorTask,
 } from "../data/queries";
@@ -488,7 +486,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
        WHERE ai.status IN ('running', 'waiting_delegation')
        ORDER BY ai.updated_at DESC`,
     ).all() as NonNullable<DashboardData["runningInstances"]>;
-    return html(dashboardActiveAgentsCountFragment(runningInstances, getPollIntervalSeconds(db)));
+    return html(dashboardActiveAgentsCountFragment(runningInstances.length));
   });
 
   addRoute("GET", "/fragments/dashboard/realtime-timeline", (req) => {

@@ -123,7 +123,6 @@ let brainTickCount = 0;
 let lastDOMFingerprint = "";
 let lastTaskFingerprint = "";
 let lastSentDOMSections: DOMSection[] = [];
-let lastSentTaskContext = "";
 let idleSkipCount = 0;
 const IDLE_TICK_INTERVAL = 2; // only call brain every Nth tick when nothing changed
 
@@ -170,7 +169,6 @@ export function resetConversation(): void {
   lastDOMFingerprint = "";
   lastTaskFingerprint = "";
   lastSentDOMSections = [];
-  lastSentTaskContext = "";
   recentLines.length = 0;
 }
 
@@ -378,7 +376,7 @@ function fingerprint(obj: unknown): string {
 
 function buildTickMessage(
   state: MonkeyState,
-  perches: Perch[],
+  _perches: Perch[],
   taskContext: string,
   recentEvents: UserEvent[],
   _taskDetail: TaskDetail | null,
@@ -426,7 +424,6 @@ function buildTickMessage(
   if (taskFP !== lastTaskFingerprint) {
     msg += `\n${taskContext || "idle"}\n`;
     lastTaskFingerprint = taskFP;
-    lastSentTaskContext = taskContext;
   }
 
   // Events: always new

@@ -3,7 +3,7 @@ import type { AgentManager } from "../agents/manager";
 import type { PromptBuilder, AgentInfo, PhaseInfo } from "../agents/prompt-builder";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { Task } from "../tasks/scheduler";
-import type { ArtifactManager, TaskArtifact } from "./artifact-manager";
+import type { ArtifactManager } from "./artifact-manager";
 import type { WorktreeManager } from "./worktree-manager";
 import type { Phase, ConsensusConfig } from "../teams/manager";
 import type { OrchestrationState } from "./types";
@@ -38,7 +38,8 @@ export class ConsensusManager {
     private readonly promptBuilder: PromptBuilder,
     private readonly taskScheduler: TaskScheduler,
     private readonly worktreeManager: WorktreeManager,
-    private readonly artifactManager: ArtifactManager,
+    // Positional slot kept so ManagerDaemon's construction order stays stable
+    _artifactManager: ArtifactManager,
     private readonly updateOrchestrationState: (taskId: string, state: OrchestrationState) => void,
     private readonly writeCheckpoint: (taskId: string, type: string, snapshot?: Record<string, unknown>) => void,
   ) {}
@@ -115,18 +116,17 @@ export class ConsensusManager {
       const delegationId = crypto.randomUUID();
 
       try {
-        let workingDir = agentWorkingDir;
-
         if (useWorktree) {
-          // Create worktree in the target repo for isolated file changes
-          const { worktreePath } = await this.worktreeManager.createWorktree({
+          // Create worktree in the target repo for isolated file changes.
+          // The spawn below still runs in the orchestrator cwd — the worktree
+          // path is handed to the agent via consensusContext.
+          await this.worktreeManager.createWorktree({
             taskId: task.id,
             phaseIndex,
             delegationGroupId: groupId,
             agentInstanceId: instanceId,
             baseDir: worktreeBaseDir,
           });
-          workingDir = worktreePath;
         } else {
           // No worktree — track consensus instance via lightweight row (empty path/branch)
           this.db
@@ -522,7 +522,6 @@ ${instructions}`;
       .run(reviewerInstanceId, meta.taskId, reviewerAgentId, reviewerAgentId);
 
     try {
-      const task = this.taskScheduler.getTask(meta.taskId);
       const reviewerWorkingDir = process.cwd(); // Reviewer runs in orchestrator cwd
       await this.agentManager.spawnAgentInstance(reviewerAgentId, reviewerInstanceId, {
         workingDir: reviewerWorkingDir,

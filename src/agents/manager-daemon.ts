@@ -27,7 +27,6 @@ import { WorktreeManager } from "../orchestrator/worktree-manager";
 import { ConsensusManager } from "../orchestrator/consensus-manager";
 import { RealtimeSessionManager } from "../orchestrator/realtime-session";
 import type { OrchestrationState, PausedAgentSnapshot, TaskCheckpoint } from "../orchestrator/types";
-import type { Escalation } from "../escalations/manager";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 
 
@@ -498,11 +497,6 @@ export class ManagerDaemon {
   }
 
   getReconciliationLoop(): ReconciliationLoop {
-    return this.reconciliationLoop;
-  }
-
-  /** @deprecated Use getReconciliationLoop() */
-  getDaemonLoop(): ReconciliationLoop {
     return this.reconciliationLoop;
   }
 

@@ -10,7 +10,6 @@ import type { ConsensusManager } from "../orchestrator/consensus-manager";
 import type { GlobalStoreManager } from "../global-store/manager";
 import type { AgentIdentity, InternalAgentIdentity } from "./auth";
 import { eventBus } from "../events/bus";
-import { logError } from "../logging";
 import { z } from "zod";
 import { signalBridge } from "./signal-bridge";
 import { isExperimental } from "../config/feature-flags";
@@ -52,7 +51,7 @@ export function registerDaemonTools(
   getIdentity: () => AgentIdentity | null,
   options?: RegisterDaemonToolsOptions,
 ): void {
-  const { db, agentManager, delegationManager, phaseManager, taskScheduler, escalationManager, artifactManager, consensusManager, globalStoreManager } = deps;
+  const { db, delegationManager, phaseManager, taskScheduler, escalationManager, artifactManager, consensusManager, globalStoreManager } = deps;
 
   function getInternalIdentity(): InternalAgentIdentity | null {
     const id = getIdentity();

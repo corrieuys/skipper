@@ -4,16 +4,8 @@ import type { TaskType, RealtimeTaskConfig } from "../tasks/scheduler";
 import { getDb } from "../db/connection";
 import { setBoolSetting, SETTING_PARALLEL_TASKS, SETTING_SKIPPER_CONNECT_ENABLED } from "../config/app-settings";
 import { getConnectClient, type ConnectionStatus } from "../connect/client";
-import { buildSkillsPromptAddition as _buildSkillsPromptAddition } from "../config-readers/skills";
-import { getPollIntervalSeconds } from "./pages";
 import { finalizeActiveInstancesForTask } from "../agents/instance-status";
-import type {
-  DelegationData,
-  TaskData,
-  TaskNoteData,
-  TeamOptionData,
-  TaskHealthSummary,
-} from "../html/components";
+import type { TaskNoteData } from "../html/components";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { eventBus } from "../events/bus";
@@ -27,40 +19,6 @@ import { isExperimental } from "../config/feature-flags";
 
 function connectStatusFragment(status: ConnectionStatus): string {
   return `<span class="sk-connect__status" data-status="${status}" hx-get="/api/settings/skipper-connect/status" hx-trigger="every 5s" hx-swap="outerHTML"></span>`;
-}
-
-function parseTaskRow(row: Record<string, unknown>): TaskData {
-  const result = { ...row };
-  for (const field of ["result", "orchestration_state"]) {
-    if (typeof result[field] === "string") {
-      try {
-        result[field] = JSON.parse(result[field] as string);
-      } catch {
-        // leave as string if not valid JSON
-      }
-    }
-  }
-  return result as unknown as TaskData;
-}
-
-function listTaskRowsForUi(): TaskData[] {
-  const db = getDb();
-  const rows = db.prepare(
-    `SELECT t.*, tm.name AS team_name
-     FROM tasks t
-     LEFT JOIN teams tm ON tm.id = t.team_id
-     WHERE t.task_type != 'real_time'
-     ORDER BY
-       CASE t.status WHEN 'approved' THEN 0 WHEN 'draft' THEN 1 WHEN 'running' THEN 2 ELSE 3 END,
-       COALESCE(t.updated_at, t.created_at) DESC,
-       t.rowid DESC`,
-  ).all() as Record<string, unknown>[];
-  return rows.map(parseTaskRow);
-}
-
-function listTeamsForUi(): TeamOptionData[] {
-  const db = getDb();
-  return db.prepare("SELECT id, name FROM teams ORDER BY name").all() as TeamOptionData[];
 }
 
 function findDefaultTaskTeamId(db: ReturnType<typeof getDb>, taskType?: TaskType): string | undefined {
@@ -87,37 +45,8 @@ function taskCreationPageResponse(_errorMessage?: string, _daemonStatus?: { stat
   return new Response(null, { status: 302, headers: { Location: "/tasks/new" } });
 }
 
-export function buildSkillsPromptAddition(taskId: string, agentProvider: string): string {
-  return _buildSkillsPromptAddition(taskId, agentProvider, getDb());
-}
-
 function taskDetailResponse(id: string, _daemonStatus?: { state: "running" | "pausing" | "paused" | "stopped"; uptime: number }): Response {
   return new Response("", { status: 200, headers: { "HX-Redirect": `/?task=${id}` } });
-}
-
-function fetchTaskHealthSummary(taskId: string, db: ReturnType<typeof getDb>): TaskHealthSummary {
-  const row = db.prepare(
-    `SELECT
-       (SELECT COUNT(*) FROM agent_instances WHERE task_id = ? AND status IN ('running', 'waiting_delegation')) AS live_runtime_count,
-       (SELECT COUNT(*) FROM delegations WHERE task_id = ? AND status IN ('pending', 'running')) AS active_delegation_count,
-       (SELECT COUNT(*) FROM escalations WHERE task_id = ? AND status = 'open') AS open_escalation_count,
-       (SELECT MAX(created_at) FROM task_checkpoints WHERE task_id = ?) AS last_progress,
-       (SELECT COUNT(*) FROM events WHERE task_id = ? AND type LIKE 'remediation:%') AS remediation_event_count`,
-  ).get(taskId, taskId, taskId, taskId, taskId) as {
-    live_runtime_count: number;
-    active_delegation_count: number;
-    open_escalation_count: number;
-    last_progress: string | null;
-    remediation_event_count: number;
-  };
-
-  return {
-    liveRuntimeCount: row.live_runtime_count,
-    activeDelegationCount: row.active_delegation_count,
-    openEscalationCount: row.open_escalation_count,
-    lastProgressAt: row.last_progress,
-    remediationEventCount: row.remediation_event_count,
-  };
 }
 
 function killRunningRuntimesForTask(taskId: string, daemon?: Pick<ManagerDaemon, "getAgentManager">): void {

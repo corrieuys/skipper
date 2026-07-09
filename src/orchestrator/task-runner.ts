@@ -5,7 +5,6 @@ import type { TaskScheduler } from "../tasks/scheduler";
 import type { TeamManager, Phase } from "../teams/manager";
 import type { ConsensusManager } from "./consensus-manager";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
-import { eventBus } from "../events/bus";
 import { logError } from "../logging";
 import type { OrchestrationState } from "./types";
 import { resolvePhaseConfig } from "./phase-config";

@@ -64,7 +64,6 @@ export function commandCenterPage(vm: CommandCenterViewModel, selectedTaskId?: s
 }
 
 function renderSidebar(vm: CommandCenterViewModel, activeId: string | null): string {
-  const experimental = isExperimental();
   return `<aside class="mc-sidebar">
     <div class="mc-sidebar__header">
       <a href="/tasks/new" class="mc-sidebar__create">+ New Task</a>

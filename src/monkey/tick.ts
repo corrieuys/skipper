@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { Server, ServerWebSocket } from "bun";
 import type { WSData } from "../ws/types";
-import type { MonkeyState, Perch, MonkeyAction, UserEvent, TaskDetail, DOMSection, DashboardContext, ScheduledTaskInfo, RecentTaskInfo, NewNote } from "./types";
+import type { MonkeyState, Perch, MonkeyAction, UserEvent, TaskDetail, DOMSection, DashboardContext, ScheduledTaskInfo, RecentTaskInfo } from "./types";
 import { askMonkeyBrain, replyViaBrain, getLastUsage, resetConversation, getPersona, setGregModelConfig } from "./brain";
 import { terminalJsonSummary } from "../html/terminalJsonSummary";
 import { getGregModelChoice } from "../config/model-settings";
@@ -87,7 +87,7 @@ export class MonkeyEngine {
         persona: getPersona(),
       }));
     },
-    message: (ws: ServerWebSocket<WSData>, message: string | Buffer) => {
+    message: (_ws: ServerWebSocket<WSData>, message: string | Buffer) => {
       try {
         const msg = JSON.parse(typeof message === "string" ? message : message.toString());
         if (msg.type === "perches") {

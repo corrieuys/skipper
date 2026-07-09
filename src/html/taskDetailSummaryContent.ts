@@ -1,5 +1,4 @@
 import { TaskData, TeamOptionData, escapeHtml } from "./components";
-import { formatTimestamp } from "./formatTimestamp";
 import { taskFormFields } from "./taskFormFields";
 
 export function taskDetailSummaryContent(

@@ -1263,15 +1263,6 @@ export class DelegationManager {
     return parentRuntimeId;
   }
 
-  private getDelegationCountForParent(parentRuntimeId: string, taskId: string): number {
-    const row = this.db
-      .prepare(
-        "SELECT COUNT(*) as count FROM delegations WHERE parent_instance_id = ? AND task_id = ?",
-      )
-      .get(parentRuntimeId, taskId) as { count: number };
-    return row.count;
-  }
-
   private agentsInSameTeam(parentTemplateId: string, childTemplateId: string): boolean {
     const row = this.db
       .prepare(

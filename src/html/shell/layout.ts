@@ -12,7 +12,7 @@ import { getDb } from "../../db/connection";
 export function v2layout(
   title: string,
   content: string,
-  currentPath: string = "/",
+  _currentPath: string = "/",
   wsTopics: string[] = [],
 ): string {
   const topicsAttr = wsTopics.length > 0 ? ` data-ws-topics="${wsTopics.join(",")}"` : "";

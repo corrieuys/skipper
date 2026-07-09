@@ -37,7 +37,8 @@ export class IdlePokeManager {
       getTeamForExecution: (teamId: string) => { entrypoint_agent_id: string } | null;
     },
     private readonly escalationManager: EscalationManager,
-    private readonly getActiveDelegationForParent: (parentRuntimeId: string) => unknown,
+    // Positional slot kept so ManagerDaemon's construction order stays stable
+    _getActiveDelegationForParent: (parentRuntimeId: string) => unknown,
     // Optional so existing tests that mock IdlePokeManager without a PromptBuilder
     // keep passing. When present, pokes are prefixed with unseen notes so an
     // operator note added during idle isn't deferred to the next phase / delegation.

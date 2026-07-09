@@ -91,11 +91,6 @@ function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, "utf-8"));
 }
 
-function readFile(path: string): string {
-  if (!existsSync(path)) return "";
-  return readFileSync(path, "utf-8").trimEnd();
-}
-
 function toStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((v) => String(v));

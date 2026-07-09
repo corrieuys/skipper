@@ -54,7 +54,6 @@ import {
   fetchTaskDelegations,
   fetchDashboardRealtimeTimeline,
   fetchDashboardPhaseIndicatorTask,
-  getPollIntervalSeconds,
 } from "../routes/pages";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 import { topicMatches } from "./fragment-registry";
@@ -531,7 +530,7 @@ export class UIWebSocketManager {
   private pushDashboardInstances(): void {
     const runningInstances = fetchDashboardRunningInstances(this.db);
     this.broadcast(`<div id="running-instances" class="cmd-progress-section-body">${dashboardRunningInstancesFragment(runningInstances)}</div>`, ["dashboard"]);
-    this.broadcast(dashboardActiveAgentsCountFragment(runningInstances.length, getPollIntervalSeconds(this.db)), ["dashboard"]);
+    this.broadcast(dashboardActiveAgentsCountFragment(runningInstances.length), ["dashboard"]);
     this.broadcast(`<span id="dashboard-progress-agents-stat" class="cmd-progress-stat">${runningInstances.length} agents</span>`, ["dashboard"]);
     this.broadcastJson("updated", "dashboard:instances", null, { running_instances: runningInstances });
   }
