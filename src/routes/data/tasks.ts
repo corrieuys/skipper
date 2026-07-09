@@ -12,6 +12,7 @@ import { finalizeActiveInstancesForTask } from "../../agents/instance-status";
 import type { TaskType, RealtimeTaskConfig } from "../../tasks/scheduler";
 import { ArtifactManager } from "../../orchestrator/artifact-manager";
 import { parseRequestBody } from "../utils";
+import { eventBus } from "../../events/bus";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
 
 function ok(data: unknown, status: number = 200): Response {
@@ -23,7 +24,7 @@ function err(message: string, status: number = 400): Response {
 }
 
 export function registerDataTaskRoutes(
-  _daemon?: Pick<ManagerDaemon, "getAgentManager" | "getRealtimeSessionManager">,
+  _daemon?: Pick<ManagerDaemon, "getAgentManager" | "getRealtimeSessionManager" | "getPhaseManager">,
 ): void {
   const scheduler = new TaskScheduler();
   const artifactManager = new ArtifactManager();
@@ -87,6 +88,22 @@ export function registerDataTaskRoutes(
     const task = fetchTaskById(db, params.id);
     if (!task) return err("Task not found", 404);
     return ok(fetchTaskForensics(db, params.id));
+  });
+
+  addDataRoute("GET", "/data/tasks/:id/review", (_req, params) => {
+    const db = getDb();
+    const task = fetchTaskById(db, params.id) as (Record<string, unknown> & {
+      phases?: Array<{ name: string }> | null;
+    }) | null;
+    if (!task) return err("Task not found", 404);
+    const currentPhase = Number(task.current_phase ?? 0);
+    const phase = task.phases?.[currentPhase];
+    return ok({
+      needs_review: !!task.needs_review,
+      status: task.status,
+      current_phase: currentPhase,
+      phase: phase ? { index: currentPhase, name: phase.name } : null,
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -234,6 +251,114 @@ export function registerDataTaskRoutes(
     try {
       scheduler.deleteTask(params.id);
       return ok({ id: params.id, deleted: true });
+    } catch (e: unknown) {
+      return err(e instanceof Error ? e.message : "Internal error");
+    }
+  });
+
+  // --- Phase review gate ---
+
+  // Optional { message } body, JSON or form; absent/malformed body is fine.
+  async function readOptionalMessage(req: Request): Promise<string | undefined> {
+    try {
+      const body = await parseRequestBody<Record<string, string>>(req);
+      const msg = body.message;
+      return typeof msg === "string" && msg.trim() ? msg.trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  for (const action of ["approve", "reject"] as const) {
+    addDataRoute("POST", `/data/tasks/:id/review/${action}`, async (req, params) => {
+      if (!_daemon) return err("Daemon not available", 503);
+      const task = scheduler.getTask(params.id);
+      if (!task) return err("Task not found", 404);
+      // PhaseManager silently no-ops outside this state — surface it instead.
+      if (task.status !== "running" || !task.needs_review) {
+        return err("Task is not awaiting review", 409);
+      }
+      const message = await readOptionalMessage(req);
+      try {
+        const pm = _daemon.getPhaseManager();
+        if (action === "approve") await pm.approveReview(params.id, message);
+        else await pm.rejectReview(params.id, message);
+        return ok({ id: params.id, review: action === "approve" ? "approved" : "rejected" });
+      } catch (e: unknown) {
+        return err(e instanceof Error ? e.message : "Internal error");
+      }
+    });
+  }
+
+  // --- Notes ---
+
+  addDataRoute("POST", "/data/tasks/:id/notes", async (req, params) => {
+    const body = await parseRequestBody<{ content?: string }>(req);
+    if (!body.content || !body.content.trim()) return err("content is required");
+
+    const db = getDb();
+    const task = scheduler.getTask(params.id);
+    if (!task) return err("Task not found", 404);
+
+    // Use the team entrypoint agent to satisfy the FK in monolith mode;
+    // 'user' fallback matches /api/tasks/:id/notes.
+    let agentId = "user";
+    try {
+      if (task.team_id) {
+        const teamRow = db
+          .prepare("SELECT entrypoint_agent_id FROM teams WHERE id = ?")
+          .get(task.team_id) as { entrypoint_agent_id: string | null } | null;
+        if (teamRow?.entrypoint_agent_id) agentId = teamRow.entrypoint_agent_id;
+      }
+    } catch { /* fallback to 'user' */ }
+
+    const noteId = crypto.randomUUID();
+    const content = body.content.trim();
+    try {
+      db.prepare(
+        "INSERT INTO task_notes (id, task_id, agent_id, content, source) VALUES (?, ?, ?, ?, 'user')",
+      ).run(noteId, params.id, agentId, content);
+    } catch (e: unknown) {
+      return err(e instanceof Error ? e.message : "Internal error", 500);
+    }
+
+    eventBus.emit("task:note_added", { noteId, taskId: params.id, agentId, content });
+
+    const note = db
+      .prepare("SELECT n.*, a.name AS agent_name FROM task_notes n LEFT JOIN agents a ON a.id = n.agent_id WHERE n.id = ?")
+      .get(noteId);
+    return ok(note, 201);
+  });
+
+  addDataRoute("DELETE", "/data/tasks/:id/notes/:noteId", (_req, params) => {
+    // Soft delete — deleted notes stay visible in the UI but are excluded
+    // from agent context injection (same semantics as the /api route).
+    const result = getDb()
+      .prepare("UPDATE task_notes SET deleted_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ? AND task_id = ?")
+      .run(params.noteId, params.id);
+    if (result.changes === 0) return err("Note not found", 404);
+    return ok({ id: params.noteId, deleted: true });
+  });
+
+  // --- Artifact create (reads live above with the other GETs) ---
+
+  addDataRoute("POST", "/data/tasks/:id/artifacts", async (req, params) => {
+    const body = await parseRequestBody<Record<string, string>>(req);
+    if (!body.name?.trim()) return err("name is required");
+    if (!body.kind?.trim()) return err("kind is required");
+    if (typeof body.body !== "string" || !body.body) return err("body is required");
+    const task = scheduler.getTask(params.id);
+    if (!task) return err("Task not found", 404);
+    try {
+      const artifact = artifactManager.createArtifact({
+        taskId: params.id,
+        name: body.name.trim(),
+        kind: body.kind.trim() as Parameters<typeof artifactManager.createArtifact>[0]["kind"],
+        body: body.body,
+        description: body.description?.trim() || undefined,
+        createdByAgentId: "api",
+      });
+      return ok(artifact, 201);
     } catch (e: unknown) {
       return err(e instanceof Error ? e.message : "Internal error");
     }
