@@ -1,4 +1,4 @@
-import { ForensicsAgentInstance, escapeHtml } from "./components";
+import { type ForensicsAgentInstance, escapeHtml } from "./components";
 import { formatTimestamp } from "./formatTimestamp";
 import { computeDisplayStatus } from "./computeDisplayStatus";
 import { staleBadge } from "./staleBadge";

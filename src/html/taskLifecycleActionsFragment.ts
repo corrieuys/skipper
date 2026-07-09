@@ -1,4 +1,4 @@
-import { TaskData, escapeHtml } from "./components";
+import { type TaskData, escapeHtml } from "./components";
 
 
 export function taskLifecycleActionsFragment(

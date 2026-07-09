@@ -1,4 +1,4 @@
-import { TaskData, TeamOptionData, escapeHtml } from "./components";
+import { type TaskData, type TeamOptionData, escapeHtml } from "./components";
 import { taskFormFields } from "./taskFormFields";
 
 export function taskDetailSummaryContent(

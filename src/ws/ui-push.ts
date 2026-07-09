@@ -123,7 +123,7 @@ export class UIWebSocketManager {
     this.startHeartbeat();
   }
 
-  tryUpgrade(req: Request, server: Server): boolean {
+  tryUpgrade(req: Request, server: Server<WSData>): boolean {
     const url = new URL(req.url);
     if (url.pathname !== "/ws/ui") return false;
 
@@ -563,7 +563,7 @@ export class UIWebSocketManager {
 
   private pushDashboardRealtimeTimeline(): void {
     const timeline = fetchDashboardRealtimeTimeline(this.db);
-    this.broadcast(`<div id="dashboard-rt-timeline" class="cmd-panel-body-flush cmd-scroll-compact">${dashboardRealtimeTimelineFragment(timeline)}</div>`, ["dashboard"]);
+    this.broadcast(`<div id="dashboard-rt-timeline" class="cmd-panel-body-flush cmd-scroll-compact">${dashboardRealtimeTimelineFragment(timeline ?? null)}</div>`, ["dashboard"]);
     this.broadcastJson("updated", "dashboard:realtime-timeline", null, { timeline });
   }
 
@@ -574,7 +574,7 @@ export class UIWebSocketManager {
       : "idle";
     this.broadcast(`<span id="dashboard-phase-indicator-count" class="cmd-progress-value">${countLabel}</span>`, ["dashboard"]);
     this.broadcast(`<span id="dashboard-progress-phase-stat" class="cmd-progress-stat">${countLabel}</span>`, ["dashboard"]);
-    this.broadcast(`<div id="dashboard-phase-indicator" class="cmd-progress-phase-body">${dashboardPhaseIndicatorFragment(task)}</div>`, ["dashboard"]);
+    this.broadcast(`<div id="dashboard-phase-indicator" class="cmd-progress-phase-body">${dashboardPhaseIndicatorFragment(task ?? null)}</div>`, ["dashboard"]);
     this.broadcastJson("updated", "dashboard:phase-indicator", task?.id ?? null, { task });
   }
 

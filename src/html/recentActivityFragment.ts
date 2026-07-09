@@ -1,4 +1,4 @@
-import { RecentLogEntry, parseJsonLine, escapeHtml } from "./components";
+import { type RecentLogEntry, parseJsonLine, escapeHtml } from "./components";
 import { formatTimestamp } from "./formatTimestamp";
 import { terminalJsonSummary, stripThinking } from "./terminalJsonSummary";
 

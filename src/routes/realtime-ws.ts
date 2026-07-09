@@ -17,7 +17,7 @@ const wsCleanupHandlers = new WeakMap<ServerWebSocket<WSData>, () => void>();
  */
 export function tryUpgradeRealtimeWs(
   req: Request,
-  server: import("bun").Server,
+  server: import("bun").Server<import("../ws/types").WSData>,
   realtimeSessionManager: RealtimeSessionManager,
 ): boolean {
   const url = new URL(req.url);

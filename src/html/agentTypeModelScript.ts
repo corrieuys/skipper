@@ -1,4 +1,4 @@
-import { AgentTypeOption, buildAgentTypeModelMap } from "./components";
+import { type AgentTypeOption, buildAgentTypeModelMap } from "./components";
 
 
 export function agentTypeModelScript(agentTypes: AgentTypeOption[]): string {

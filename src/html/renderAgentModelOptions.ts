@@ -1,4 +1,4 @@
-import { AgentTypeOption, parseAvailableModels, escapeHtml } from "./components";
+import { type AgentTypeOption, parseAvailableModels, escapeHtml } from "./components";
 
 
 export function renderAgentModelOptions(

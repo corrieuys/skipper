@@ -1,4 +1,4 @@
-import { ForensicsDelegationGroup, escapeHtml } from "./components";
+import { type ForensicsDelegationGroup, escapeHtml } from "./components";
 import { formatTimestamp } from "./formatTimestamp";
 
 

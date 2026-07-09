@@ -48,7 +48,7 @@ export function registerDataTaskRoutes(
     const db = getDb();
     const task = fetchTaskById(db, params.id);
     if (!task) return err("Task not found", 404);
-    return ok({ phases: (task as Record<string, unknown>).phases ?? [] });
+    return ok({ phases: (task as unknown as Record<string, unknown>).phases ?? [] });
   });
 
   addRoute("GET", "/data/tasks/:id/delegations", (_req, params) => {

@@ -1,4 +1,4 @@
-import { TaskNoteData, escapeHtml } from "./components";
+import { type TaskNoteData, escapeHtml } from "./components";
 import { formatTimestamp } from "./formatTimestamp";
 
 export function noteItemFragment(n: TaskNoteData): string {

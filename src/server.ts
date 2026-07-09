@@ -62,7 +62,8 @@ function matchRoute(method: string, pathname: string): { handler: RouteHandler; 
     if (match) {
       const params: Record<string, string> = {};
       for (let i = 0; i < route.paramNames.length; i++) {
-        params[route.paramNames[i]] = match[i + 1];
+        const name = route.paramNames[i];
+        if (name !== undefined) params[name] = match[i + 1] ?? "";
       }
       return { handler: route.handler, params };
     }
@@ -147,7 +148,7 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 }
 
-type WebSocketUpgradeHandler = (req: Request, server: Server) => boolean;
+type WebSocketUpgradeHandler = (req: Request, server: Server<WSData>) => boolean;
 const wsUpgradeHandlers: WebSocketUpgradeHandler[] = [];
 
 export function setWebSocketUpgradeHandlers(handlers: WebSocketUpgradeHandler[]): void {
@@ -168,7 +169,7 @@ export function setWebSocketHandlers(handlers: Record<string, WSHandlerSet>): vo
   Object.assign(wsHandlerMap, handlers);
 }
 
-export function startServer(port: number = Number(process.env.PORT) || 5005): Server {
+export function startServer(port: number = Number(process.env.PORT) || 5005): Server<WSData> {
   const server = Bun.serve<WSData>({
     port,
     idleTimeout: 255, // max value — long-lived WS connections

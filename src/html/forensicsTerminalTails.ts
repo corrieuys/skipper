@@ -1,4 +1,4 @@
-import { ForensicsTerminalTail, escapeHtml } from "./components";
+import { type ForensicsTerminalTail, escapeHtml } from "./components";
 
 
 export function forensicsTerminalTails(tails: ForensicsTerminalTail[]): string {

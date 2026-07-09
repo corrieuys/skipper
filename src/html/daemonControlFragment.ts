@@ -1,4 +1,4 @@
-import { DaemonStatus, daemonBadgeClass } from "./components";
+import { type DaemonStatus, daemonBadgeClass } from "./components";
 
 
 export function daemonControlFragment(

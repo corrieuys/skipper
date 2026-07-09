@@ -17,8 +17,8 @@ const hxRedirect = (to: string) => new Response("", { status: 200, headers: { "H
 // an empty/"None" unit means manual-only (unit/amount null) regardless of any
 // leftover value in the amount field. A set unit requires a valid amount.
 export function parseOptionalInterval(
-  unitRaw: FormDataEntryValue | null,
-  amountRaw: FormDataEntryValue | null,
+  unitRaw: string | File | null,
+  amountRaw: string | File | null,
 ): { unit: ScheduleUnit | null; amount: number | null; error?: string } {
   const unitStr = typeof unitRaw === "string" ? unitRaw.trim() : "";
   const amountStr = typeof amountRaw === "string" ? amountRaw.trim() : "";

@@ -70,11 +70,11 @@ export class MonkeyEngine {
     }, delay);
   }
 
-  tryUpgrade(req: Request, server: Server): boolean {
+  tryUpgrade(req: Request, server: Server<WSData>): boolean {
     const url = new URL(req.url);
     if (url.pathname !== "/ws/monkey") return false;
     return server.upgrade(req, {
-      data: { type: "monkey" as const } as WSData,
+      data: { type: "monkey" as const } as unknown as WSData,
     });
   }
 

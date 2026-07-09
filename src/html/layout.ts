@@ -1,4 +1,4 @@
-import { DaemonStatus, escapeHtml } from "./components";
+import { type DaemonStatus, escapeHtml } from "./components";
 import { navDropdownHtml } from "./navDropdownHtml";
 import { daemonControlFragment } from "./daemonControlFragment";
 import { themeBootScript, themePickerFragment, appearanceBackgroundCss } from "./styles/themes";

@@ -1376,7 +1376,7 @@ export class AgentManager {
 
   private async withResumeLock<T>(runtimeId: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.resumeLocks.get(runtimeId) ?? Promise.resolve();
-    let release: (() => void) | null = null;
+    let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
@@ -1387,7 +1387,7 @@ export class AgentManager {
     try {
       return await operation();
     } finally {
-      release?.();
+      release();
       if (this.resumeLocks.get(runtimeId) === queued) {
         this.resumeLocks.delete(runtimeId);
       }
@@ -1525,7 +1525,8 @@ export class AgentManager {
         // …) that Skipper's delegation graph never sees. Recording it here makes the
         // count exact even if the sub-agent fails before emitting any usage frame.
         if (usageTracked && Array.isArray(json.message?.content)) {
-          for (const block of json.message.content) {
+          const blocks = json.message.content as Array<{ type?: string; name?: string; id?: string; input?: { subagent_type?: string; description?: string } }>;
+          for (const block of blocks) {
             if (block?.type === "tool_use" && (block.name === "Agent" || block.name === "Task")) {
               this.recordSubagentSpawn(agentId, block);
             }

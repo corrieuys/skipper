@@ -1,4 +1,4 @@
-import { TeamData, TeamAgentData, escapeHtml } from "./components";
+import { type TeamData, type TeamAgentData, escapeHtml } from "./components";
 
 
 export function teamMemberCard(_team: TeamData, a: TeamAgentData): string {

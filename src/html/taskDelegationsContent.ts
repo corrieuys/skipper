@@ -1,4 +1,4 @@
-import { DelegationData, delegationTableRow } from "./components";
+import { type DelegationData, delegationTableRow } from "./components";
 
 
 export function taskDelegationsContent(delegations: DelegationData[]): string {

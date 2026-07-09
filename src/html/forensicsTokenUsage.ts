@@ -1,4 +1,4 @@
-import { ForensicsTokenUsage, escapeHtml } from "./components";
+import { type ForensicsTokenUsage, escapeHtml } from "./components";
 
 
 export function forensicsTokenUsage(usage: ForensicsTokenUsage[]): string {

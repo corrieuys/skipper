@@ -1,4 +1,4 @@
-import { TaskHealthSummary } from "./components";
+import { type TaskHealthSummary } from "./components";
 import { formatTimestamp } from "./formatTimestamp";
 
 

@@ -1,4 +1,4 @@
-import { DashboardData } from "./components";
+import { type DashboardData } from "./components";
 import { formatTimestamp } from "./formatTimestamp";
 
 // --- Dashboard: Delegation Groups ---

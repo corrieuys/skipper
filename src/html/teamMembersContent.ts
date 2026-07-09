@@ -1,4 +1,4 @@
-import { TeamData, TeamAgentData, AgentOptionData } from "./components";
+import { type TeamData, type TeamAgentData, type AgentOptionData } from "./components";
 import { teamMemberCard } from "./teamMemberCard";
 
 

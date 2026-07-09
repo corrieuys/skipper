@@ -1103,7 +1103,7 @@ export class ManagerDaemon {
       // Real-time tasks are never completed or failed by agent exit — they run
       // continuously until the user explicitly archives them. Clean up the agent
       // instance but leave the task running.
-      if ((task as Record<string, unknown>).task_type === "real_time") {
+      if ((task as unknown as Record<string, unknown>).task_type === "real_time") {
         this.db
           .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
           .run(templateId);

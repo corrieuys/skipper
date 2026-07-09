@@ -1,4 +1,4 @@
-import { ForensicsData, escapeHtml } from "./components";
+import { type ForensicsData, escapeHtml } from "./components";
 import { forensicsTerminalTails } from "./forensicsTerminalTails";
 import { forensicsTokenUsage } from "./forensicsTokenUsage";
 import { forensicsEscalations } from "./forensicsEscalations";

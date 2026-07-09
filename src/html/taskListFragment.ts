@@ -1,4 +1,4 @@
-import { TaskData, taskTableRow } from "./components";
+import { type TaskData, taskTableRow } from "./components";
 
 
 export function taskListFragment(tasks: TaskData[]): string {

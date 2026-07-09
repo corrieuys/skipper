@@ -1,4 +1,4 @@
-import { AgentData, escapeHtml } from "./components";
+import { type AgentData, escapeHtml } from "./components";
 
 
 export function agentDetailSummaryContent(agent: AgentData): string {

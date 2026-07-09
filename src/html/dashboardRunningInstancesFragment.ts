@@ -1,4 +1,4 @@
-import { DashboardData, escapeHtml } from "./components";
+import { type DashboardData, escapeHtml } from "./components";
 
 // --- Dashboard: Agent Roster ---
 

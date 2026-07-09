@@ -1,4 +1,4 @@
-import { ForensicsEscalation, escapeHtml } from "./components";
+import { type ForensicsEscalation, escapeHtml } from "./components";
 import { formatTimestamp } from "./formatTimestamp";
 
 
