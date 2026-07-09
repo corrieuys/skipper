@@ -4,6 +4,7 @@ import { daemonControlFragment } from "./daemonControlFragment";
 import { themeBootScript, themePickerFragment, appearanceBackgroundCss } from "./styles/themes";
 import { STYLESHEET_PATH } from "./styles/stylesheet";
 import { getAppearanceConfig } from "../config/store";
+import { getDb } from "../db/connection";
 
 
 export function layout(
@@ -18,7 +19,7 @@ export function layout(
     ? "container container-dashboard"
     : "container";
 
-  const appearance = getAppearanceConfig();
+  const appearance = getAppearanceConfig(getDb());
   const appearanceCss = appearanceBackgroundCss(appearance.active);
 
   const daemonControl = daemonStatus

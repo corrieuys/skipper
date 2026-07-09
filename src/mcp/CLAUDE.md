@@ -21,5 +21,5 @@ Global-store tools (`set_global_value`, `get_global_value`, `query_global_store`
 
 External agents authenticate with API keys (managed via `/api/api-keys`). Configure in `.mcp.json`:
 ```json
-{ "mcpServers": { "skipper": { "type": "streamableHttp", "url": "http://localhost:3000/mcp", "headers": { "Authorization": "Bearer <api-key>" } } } }
+{ "mcpServers": { "skipper": { "type": "streamableHttp", "url": "http://localhost:5005/mcp", "headers": { "Authorization": "Bearer <api-key>" } } } }
 ```

@@ -1,14 +1,11 @@
 import { addRoute } from "../server";
-import { readFileSync } from "fs";
-import { join } from "path";
 import { ConversationManager } from "../conversations/manager";
 import { parseRequestBody } from "./utils";
-
-const PROMPTS_DIR = join(import.meta.dir, "../../prompts");
+import { assetTextSync } from "../assets";
 
 function loadConversationalSkipperPrompt(): string {
   try {
-    return readFileSync(join(PROMPTS_DIR, "conversational-skipper.md"), "utf-8").trim();
+    return assetTextSync("prompts/conversational-skipper.md").trim();
   } catch {
     return "You are a conversational Skipper assistant for the Skipper multi-agent orchestration system. Help the user manage tasks and agents.";
   }

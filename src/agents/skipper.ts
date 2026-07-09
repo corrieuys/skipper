@@ -1,13 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { getDb } from "../db/connection";
 import { clearAgentTypeCache } from "./types";
-
-const PROMPTS_DIR = join(import.meta.dir, "../../prompts");
+import { assetTextSync } from "../assets";
 
 function loadPrompt(filename: string): string {
-  return readFileSync(join(PROMPTS_DIR, filename), "utf-8").trimEnd();
+  return assetTextSync(`prompts/${filename}`).trimEnd();
 }
 
 const SKIPPER_PROMPT_DEFAULT = loadPrompt("skipper.md");

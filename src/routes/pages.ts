@@ -8,8 +8,8 @@ import { getRealtimeTeamId, listTeamsForStandardTasks } from "../config/teams";
 import { isTeamVisible, isExperimental } from "../config/feature-flags";
 import { listPreferences, setPreference } from "../notifications/store";
 import { NOTIFICATION_EVENTS, type NotificationEventKey } from "../notifications/types";
-import { readFileSync } from "fs";
 import { join } from "path";
+import { assetTextSync } from "../assets";
 import {
   fetchTasksWithTeams,
   fetchTaskById,
@@ -758,7 +758,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
 
   function loadConversationalSkipperPrompt(): string {
     try {
-      return readFileSync(join(import.meta.dir, "../../prompts/conversational-skipper.md"), "utf-8").trim();
+      return assetTextSync("prompts/conversational-skipper.md").trim();
     } catch {
       return "You are a conversational Skipper assistant for the Skipper multi-agent orchestration system. Help the user manage tasks and agents.";
     }

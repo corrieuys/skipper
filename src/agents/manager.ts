@@ -589,7 +589,7 @@ export class AgentManager {
     let mcpOverrides = buildMcpSpawnOverrides(agent.type);
 
     // Inject skipper-daemon MCP server so agents can use structured tool calls
-    const daemonPort = Number(process.env.PORT) || 3000;
+    const daemonPort = Number(process.env.PORT) || 5005;
     mcpOverrides = injectDaemonMcpServer(mcpOverrides, runtimeId, agent.type, daemonPort);
 
     if (mcpOverrides.extraArgs.length > 0) {

@@ -1,8 +1,12 @@
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import type { AgentTypeDefinition } from "../agents/types";
 import { BUILTIN_REALTIME_AGENTS, BUILTIN_REALTIME_TEAMS } from "./builtin-realtime";
 import { BUILTIN_INFRA_AGENTS } from "./builtin-infra";
+import type { Database } from "bun:sqlite";
+import { getConfigDir, ensureConfigSeeded } from "../paths";
+import { assetTextSync, listAssets } from "../assets";
+import { getStringSetting, setStringSetting, SETTING_ACTIVE_WALLPAPER } from "./app-settings";
 
 export interface AgentDefinition {
   id: string;
@@ -57,9 +61,7 @@ export interface AppearanceConfig {
   active: string;
 }
 
-const CONFIG_DIR = process.env.SKIPPER_CONFIG_DIR
-  ? resolve(process.env.SKIPPER_CONFIG_DIR)
-  : resolve(process.cwd(), "config");
+const CONFIG_DIR = getConfigDir();
 
 const CONFIG_FILES = {
   agent_types: resolve(CONFIG_DIR, "agent_types.json"),
@@ -68,9 +70,6 @@ const CONFIG_FILES = {
   appearance: resolve(CONFIG_DIR, "appearance.json"),
 } as const;
 
-const PROMPTS_DIR = resolve(import.meta.dir, "../../prompts");
-const SKIPPER_PROMPT_FILE = resolve(PROMPTS_DIR, "skipper.md");
-const NOTARY_PROMPT_FILE = resolve(PROMPTS_DIR, "notary.md");
 
 let agentTypes: Map<string, AgentTypeDefinition> = new Map();
 let agents: Map<string, AgentDefinition> = new Map();
@@ -144,8 +143,8 @@ function loadAgentTypes(): Map<string, AgentTypeDefinition> {
 
 function loadSkipperConfig(): SkipperConfig {
   const raw = readJson(CONFIG_FILES.skipper_config);
-  const promptDefault = readFile(SKIPPER_PROMPT_FILE);
-  const realtimePromptDefault = readFile(NOTARY_PROMPT_FILE);
+  const promptDefault = assetTextSync("prompts/skipper.md").trimEnd();
+  const realtimePromptDefault = assetTextSync("prompts/notary.md").trimEnd();
 
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const obj = raw as Record<string, unknown>;
@@ -181,17 +180,13 @@ function loadRealtimeConfigDefaults(): Array<{ key: string; value: string }> {
   return out;
 }
 
-const DEFAULT_WALLPAPER_DIR = resolve(import.meta.dir, "../html/public/wallpapers/defaults");
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "webp", "avif", "gif"]);
 
+// Shipped default wallpapers are embedded assets under public/wallpapers/defaults/.
 function scanDefaultWallpapers(): string[] {
-  if (!existsSync(DEFAULT_WALLPAPER_DIR)) return [];
-  try {
-    return readdirSync(DEFAULT_WALLPAPER_DIR)
-      .filter((f) => IMAGE_EXTS.has(f.split(".").pop()?.toLowerCase() || ""))
-      .sort()
-      .map((f) => `/wallpapers/defaults/${f}`);
-  } catch { return []; }
+  return listAssets("public/wallpapers/defaults/")
+    .filter((logical) => IMAGE_EXTS.has(logical.split(".").pop()?.toLowerCase() || ""))
+    .map((logical) => `/${logical.slice("public/".length)}`);
 }
 
 let cachedDefaults: string[] | null = null;
@@ -235,6 +230,7 @@ function loadAppearance(): AppearanceConfig {
 }
 
 export function initializeConfigStore(): void {
+  ensureConfigSeeded();
   agentTypes = loadAgentTypes();
   // Agents and teams are not read from JSON: infra + realtime agents are code
   // defaults (per-machine model overrides live in runtime app_settings), and
@@ -328,14 +324,30 @@ export function getSkipperConfig(): SkipperConfig {
   return skipperConfig;
 }
 
-export function getAppearanceConfig(): AppearanceConfig {
+export function getAppearanceConfig(db: Database): AppearanceConfig {
   ensureInitialized();
   const defaults = getDefaultWallpapers();
-  if (defaults.length === 0) return appearanceConfig;
-
   const existing = new Set(appearanceConfig.gallery);
-  const merged = [...defaults.filter((u) => !existing.has(u)), ...appearanceConfig.gallery];
-  return { gallery: merged, active: appearanceConfig.active || pickRandom(merged) };
+  const merged = defaults.length === 0
+    ? appearanceConfig.gallery
+    : [...defaults.filter((u) => !existing.has(u)), ...appearanceConfig.gallery];
+
+  // Active wallpaper lives in runtime app_settings (persists across restarts,
+  // shared by dev + binary) — not appearance.json. If none is stored (or it was
+  // removed from the gallery), pick one at random and persist it so the choice
+  // stays stable until changed.
+  const stored = getStringSetting(db, SETTING_ACTIVE_WALLPAPER, "");
+  let active = stored && merged.includes(stored) ? stored : "";
+  if (!active) {
+    active = pickRandom(merged);
+    if (active) setStringSetting(db, SETTING_ACTIVE_WALLPAPER, active);
+  }
+  return { gallery: merged, active };
+}
+
+/** Persist the active wallpaper selection to runtime app_settings. */
+export function setActiveWallpaper(db: Database, url: string): void {
+  setStringSetting(db, SETTING_ACTIVE_WALLPAPER, url);
 }
 
 /**

@@ -1,9 +1,9 @@
 import { type Server, type ServerWebSocket } from "bun";
-import { resolve, join, extname } from "path";
+import { join, extname } from "path";
 import type { WSData } from "./ws/types";
 import { STYLESHEET_PATH, getStylesheet } from "./html/styles/stylesheet";
-
-const STATIC_DIR = resolve(import.meta.dir, "html/public");
+import { assetFile } from "./assets";
+import { getUploadedWallpaperDir } from "./paths";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
@@ -71,26 +71,29 @@ function matchRoute(method: string, pathname: string): { handler: RouteHandler; 
 }
 
 async function serveStaticFile(pathname: string, req: Request): Promise<Response | null> {
-  const safePath = pathname.replace(/\.\./g, "");
-  const filePath = join(STATIC_DIR, safePath);
+  // Map the URL to an embedded asset (public/*). Path is a map key, so `..` can't
+  // escape; strip it and the leading slash anyway. Uploaded wallpapers are not
+  // embedded — they live in the data dir and are served from there.
+  const safePath = pathname.replace(/\.\./g, "").replace(/^\/+/, "");
+  if (!safePath) return null;
 
-  if (!filePath.startsWith(STATIC_DIR)) {
-    return null;
+  let file = assetFile(`public/${safePath}`);
+  if (!file && safePath.startsWith("wallpapers/")) {
+    const diskPath = join(getUploadedWallpaperDir(), safePath.slice("wallpapers/".length));
+    const f = Bun.file(diskPath);
+    if (await f.exists()) file = f;
   }
+  if (!file || !(await file.exists())) return null;
 
-  const file = Bun.file(filePath);
-  if (!(await file.exists())) return null;
-
-  const ext = extname(filePath);
+  const ext = extname(safePath);
   const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
-  const lastModified = new Date(file.lastModified).toUTCString();
-  const etag = `"${file.size.toString(16)}-${file.lastModified.toString(16)}"`;
+  const etag = `"${file.size.toString(16)}-${(file.lastModified || 0).toString(16)}"`;
   // Uploaded wallpapers get unique filenames, so they can be cached forever.
   // Everything else revalidates cheaply via ETag (304, no body re-download).
-  const cacheControl = safePath.startsWith("/wallpapers/")
+  const cacheControl = safePath.startsWith("wallpapers/")
     ? "public, max-age=31536000, immutable"
     : "public, max-age=0, must-revalidate";
-  const cacheHeaders = { "Cache-Control": cacheControl, "ETag": etag, "Last-Modified": lastModified };
+  const cacheHeaders = { "Cache-Control": cacheControl, "ETag": etag };
 
   if (req.headers.get("if-none-match") === etag) {
     return new Response(null, { status: 304, headers: cacheHeaders });
@@ -165,7 +168,7 @@ export function setWebSocketHandlers(handlers: Record<string, WSHandlerSet>): vo
   Object.assign(wsHandlerMap, handlers);
 }
 
-export function startServer(port: number = Number(process.env.PORT) || 3000): Server {
+export function startServer(port: number = Number(process.env.PORT) || 5005): Server {
   const server = Bun.serve<WSData>({
     port,
     idleTimeout: 255, // max value — long-lived WS connections

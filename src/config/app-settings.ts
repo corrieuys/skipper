@@ -7,6 +7,10 @@ export const SETTING_SKIPPER_CONNECT_ENABLED = "skipper_connect_enabled";
 export const SETTING_SKIPPER_CONNECT_KEY = "skipper_connect_key";
 export const SETTING_SKIPPER_CONNECT_URL = "skipper_connect_url";
 
+// Active wallpaper URL. Machine-scoped runtime state (persists across restarts,
+// shared by dev + binary), unlike the gallery which is config (appearance.json).
+export const SETTING_ACTIVE_WALLPAPER = "active_wallpaper";
+
 type SettingType = "boolean" | "number" | "string" | "json";
 
 interface SettingRow {

@@ -1,7 +1,6 @@
 import type { MonkeyAction, MonkeyState, Perch, UserEvent, TaskDetail, DOMSection } from "./types";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { agentSpawnPath } from "../paths";
+import { assetTextSync } from "../assets";
 
 const MAX_RESPONSE_TIMEOUT = 20_000;
 
@@ -37,7 +36,7 @@ const ISOLATION_ARGS = [
 const SPAWN_ENV = { ...process.env, PATH: agentSpawnPath(), MAX_THINKING_TOKENS: "0" };
 const COMPACT_EVERY_N_TICKS = 20;
 
-const PROMPT_PATH = join(import.meta.dir, "../../prompts/greg.md");
+const PROMPT_ASSET = "prompts/greg.md";
 
 // Minimal fallback if the prompt file is missing — keeps Greg in character.
 // {{ANIMAL}}/{{ANIMAL_FLAVOR}} are filled per persona, same as greg.md.
@@ -95,9 +94,9 @@ export function isUnhinged(): boolean { return unhinged; }
 function loadSystemPrompt(): string {
   let base: string;
   try {
-    base = readFileSync(PROMPT_PATH, "utf-8").trim() || FALLBACK_PROMPT;
+    base = assetTextSync(PROMPT_ASSET).trim() || FALLBACK_PROMPT;
   } catch {
-    console.warn("[monkey-brain] could not read %s — using fallback prompt", PROMPT_PATH);
+    console.warn("[monkey-brain] could not read %s — using fallback prompt", PROMPT_ASSET);
     base = FALLBACK_PROMPT;
   }
   const p = PERSONAS[persona];

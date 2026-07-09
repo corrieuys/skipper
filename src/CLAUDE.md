@@ -6,9 +6,11 @@ Server code. TS, Bun runtime.
 
 | file | use |
 |---|---|
-| `server.ts` | tiny HTTP router. `addRoute()`, path-param match, static from `html/public/`, `/health`, logs |
+| `server.ts` | tiny HTTP router. `addRoute()`, path-param match, static from embedded `public/*` assets, `/health`, logs |
 | `logging.ts` | DB-backed error log (`error_log`), console fallback |
-| `paths.ts` | resolve project paths |
+| `paths.ts` | resolve data/config/pid/log paths. Data dir (`~/.skipper`) for mutable state; `getConfigDir()` + `ensureConfigSeeded()` relocate + seed config in the binary |
+| `assets.ts` | embedded-asset access (`assetTextSync`, `assetFile`, `listAssets`, `isCompiledBinary`) over the generated manifest baked in by `bun build --compile`. See root [CLAUDE.md](../CLAUDE.md) Package section |
+| `generated/` | `embedded-assets.js` (+ `.d.ts`) — auto-generated asset manifest. Do not edit; run `bun run gen:assets` |
 
 ## Subdirs
 

@@ -208,7 +208,7 @@ export const realtimeWsHandlers = {
           } catch (err) {
             logError(getDb(), "realtime_ws.recording_stopped_transcribe", { taskId }, err);
           }
-          fetch(`http://127.0.0.1:${process.env.PORT || 3000}/api/whisper/stop`, { method: "POST" }).catch(() => {});
+          fetch(`http://127.0.0.1:${process.env.PORT || 5005}/api/whisper/stop`, { method: "POST" }).catch(() => {});
           ws.send(JSON.stringify({ type: "ack", ref: "recording.stopped" }));
           return;
         }

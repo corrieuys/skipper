@@ -1,7 +1,10 @@
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
+import { getDataDir } from "../paths";
 
-const DB_PATH = join(import.meta.dir, "../../greg.db");
+// Greg's chat DB is runtime state — lives in the data dir alongside the runtime
+// DB (not next to the source/binary, which is read-only when compiled).
+const DB_PATH = join(getDataDir(), "greg.db");
 
 let db: Database | null = null;
 

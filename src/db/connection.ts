@@ -1,15 +1,17 @@
 import { Database } from "bun:sqlite";
-import { dirname, resolve } from "path";
-import { mkdirSync, readFileSync, readdirSync, existsSync } from "fs";
+import { dirname } from "path";
+import { mkdirSync } from "fs";
 import { loadConfigSnapshotIntoDb, loadRealtimeDefaultsIntoDb } from "../config/store";
 import { flattenLocalTeamsIntoStore } from "../teams/local-teams";
 import { getRuntimeDbPath, migrateLegacyDbIfNeeded } from "../paths";
 import { migrateLegacySchema, tableExists } from "./legacy-migrations";
+import { assetTextSync, listAssets } from "../assets";
 
-const MONOLITH_SCHEMA_PATH = resolve(import.meta.dir, "schema.sql");
-const CONFIG_SCHEMA_PATH = resolve(import.meta.dir, "schema.config.sql");
-const RUNTIME_SCHEMA_PATH = resolve(import.meta.dir, "schema.runtime.sql");
-const MIGRATIONS_DIR = resolve(import.meta.dir, "migrations");
+// Schema + migrations are embedded assets (see scripts/gen-assets.ts) so the
+// compiled binary carries them; logical paths mirror src/db/*.sql on disk.
+const MONOLITH_SCHEMA = "db/schema.sql";
+const CONFIG_SCHEMA = "db/schema.config.sql";
+const RUNTIME_SCHEMA = "db/schema.runtime.sql";
 
 const IN_MEMORY_DB = ":memory:";
 
@@ -66,8 +68,8 @@ function ensureParentDir(path: string): void {
   }
 }
 
-function runSchema(database: Database, schemaPath: string): void {
-  const schema = readFileSync(schemaPath, "utf-8");
+function runSchema(database: Database, schemaAsset: string): void {
+  const schema = assetTextSync(schemaAsset);
   database.exec(schema);
 }
 
@@ -83,7 +85,7 @@ function ensureSharedAttached(runtimeDb: Database): void {
 }
 
 function runSharedConfigSchema(runtimeDb: Database): void {
-  const schema = readFileSync(CONFIG_SCHEMA_PATH, "utf-8");
+  const schema = assetTextSync(CONFIG_SCHEMA);
   const rewritten = schema
     .replace(/CREATE TABLE IF NOT EXISTS\s+(\w+)/g, "CREATE TABLE IF NOT EXISTS shared.$1");
   runtimeDb.exec(rewritten);
@@ -155,7 +157,7 @@ function resetLegacyRuntimeSchema(runtimeDb: Database): void {
 
 function initializeSplitDatabases(runtimeDb: Database): void {
   resetLegacyRuntimeSchema(runtimeDb);
-  runSchema(runtimeDb, RUNTIME_SCHEMA_PATH);
+  runSchema(runtimeDb, RUNTIME_SCHEMA);
   migrateLegacySchema(runtimeDb);
   applyVersionedMigrations(runtimeDb);
 
@@ -173,7 +175,7 @@ function initializeSplitDatabases(runtimeDb: Database): void {
 
 function initializeSingleDatabase(database: Database): void {
   migrateLegacySchema(database);
-  runSchema(database, MONOLITH_SCHEMA_PATH);
+  runSchema(database, MONOLITH_SCHEMA);
   migrateLegacySchema(database);
   applyVersionedMigrations(database);
   flattenLocalTeamsIntoStore(database);
@@ -194,9 +196,8 @@ function applyVersionedMigrations(database: Database): void {
      )`,
   );
 
-  if (!existsSync(MIGRATIONS_DIR)) return;
-
-  const files = readdirSync(MIGRATIONS_DIR)
+  const files = listAssets("db/migrations/")
+    .map((logical) => logical.slice("db/migrations/".length))
     .filter((name) => /^\d{4}_.+\.sql$/.test(name))
     .sort();
 
@@ -214,7 +215,7 @@ function applyVersionedMigrations(database: Database): void {
   for (const file of files) {
     const version = parseInt(file.slice(0, 4), 10);
     if (Number.isNaN(version) || applied.has(version)) continue;
-    const sql = readFileSync(resolve(MIGRATIONS_DIR, file), "utf-8");
+    const sql = assetTextSync(`db/migrations/${file}`);
     database.exec("BEGIN");
     try {
       database.exec(sql);

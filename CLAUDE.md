@@ -5,25 +5,69 @@ AI agent orchestrator. Spawn external CLI agents (claude-code, codex, opencode, 
 ## Run
 
 ```sh
-bun run index.ts                  # server, default port 3000
+bun run index.ts                  # server, default port 5005
 bun run test                      # tests
 bun test <file>                   # single
 bun run typecheck:cleanup         # dead code sweep
 ```
 
-No build. Bun runs TS direct.
+Dev: no build, Bun runs TS direct.
+
+## Package (standalone binary)
+
+```sh
+bun run build                     # cross-compile dist/skipper-{macos-arm64,linux-x64,linux-arm64}
+bun run build linux-x64           # subset
+bun run gen:assets                # regen embedded-asset manifest (after adding/removing assets)
+bun run release                   # build all + SHA256SUMS + print manual publish recipe
+```
+
+`bun build --compile` bakes the Bun runtime + all assets into one file. Because a
+compiled binary has no source tree, every file read at runtime (prompts, config
+seeds, `src/html/public/*`, `src/db/*.sql`) must be an **embedded asset**, not an
+`import.meta.dir`-relative `readFileSync`. See [src/assets.ts](src/assets.ts) +
+[scripts/gen-assets.ts](scripts/gen-assets.ts). Add a new runtime-read file →
+it must fall under a `gen-assets.ts` embed rule (`prompts/`, `config/`, `public/`,
+`db/*.sql`) or the binary throws ENOENT on `/$bunfs/...`.
+
+Mutable state lives in the data dir (`~/.skipper`, or `SKIPPER_DATA_DIR` /
+`XDG_DATA_HOME`), never the binary: runtime DB, `greg.db`, and the config working
+copy (seeded from embedded defaults on first run — see `ensureConfigSeeded`).
+Whisper transcription needs a separately-built `vendor/whisper.cpp` and is not in
+the binary (opt-in, fails gracefully if absent).
+
+## CLI
+
+Binary entry is [bin/cli.ts](bin/cli.ts) (npm shim: `bin/skipper.js`). Subcommands:
+`start` (spawn detached, pid + log in data dir; waits for `/health` then opens the
+UI in the default browser — `--no-open` skips), `stop` (SIGTERM recorded pid,
+SIGKILL fallback), `restart`, `status` (pid + `/health`), `logs [-f]`, `serve`
+(foreground — what `start` execs), `update` (self-replace from latest GitHub
+release), `--version`.
+
+## Release + distribute (manual)
+
+Binaries ship via **GitHub Releases** (`corrieuys/skipper`), not npm. Publishing
+is fully manual: [scripts/release.ts](scripts/release.ts) (`bun run release`)
+builds every target + `dist/SHA256SUMS` and prints the exact `git tag` +
+`gh release create` commands — it makes no git/gh writes itself. Then:
+- install: `curl -fsSL https://raw.githubusercontent.com/corrieuys/skipper/main/install.sh | bash` ([install.sh](install.sh) picks the OS/arch asset → `~/.local/bin/skipper`)
+- update: `skipper update` (checks the releases API, downloads the matching asset, atomic self-swap).
 
 ## Entry
 
-- `index.ts` — boot DB, build `ManagerDaemon`, register routes, start Bun server, SIGINT/SIGTERM shutdown
-- `src/server.ts` — tiny router. `addRoute()`. static from `src/html/public/`
+- `index.ts` — boot DB, build `ManagerDaemon`, register routes, start Bun server, SIGINT/SIGTERM shutdown. Reached via `bin/cli.ts serve`.
+- `src/server.ts` — tiny router. `addRoute()`. static served from embedded `public/*` assets (uploaded wallpapers from the data dir)
+- `src/assets.ts` — embedded-asset access layer (`assetTextSync`, `assetFile`, `listAssets`, `isCompiledBinary`)
 
 ## Env
 
 | var | default | use |
 |---|---|---|
-| `PORT` | 3000 | HTTP port |
-| `SKIPPER_RUNTIME_DB_PATH` | `skipper-runtime.db` | runtime DB file |
+| `PORT` | 5005 | HTTP port |
+| `SKIPPER_DATA_DIR` | `~/.skipper` | writable state (DB, greg.db, config copy, pid/log) |
+| `SKIPPER_RUNTIME_DB_PATH` | `<data dir>/skipper-runtime.db` | runtime DB file |
+| `SKIPPER_CONFIG_DIR` | `<data dir>/config` (binary) · `./config` (dev) | config snapshots |
 | `SKIPPER_CONTEXT_COMPACT_THRESHOLD` | 400000 | input tokens before compact |
 
 ## Map — where to look
@@ -54,7 +98,6 @@ No build. Bun runs TS direct.
 | external config file readers (MCP, skills) | [src/config-readers/CLAUDE.md](src/config-readers/CLAUDE.md) |
 | prompt templates loaded at runtime | [prompts/CLAUDE.md](prompts/CLAUDE.md) |
 | JSON config snapshots | [config/CLAUDE.md](config/CLAUDE.md) |
-| Playwright e2e | [tests/CLAUDE.md](tests/CLAUDE.md) |
 | dev scripts | [scripts/CLAUDE.md](scripts/CLAUDE.md) |
 
 ## Agent → orchestrator protocol

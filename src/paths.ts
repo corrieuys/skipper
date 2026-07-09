@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { existsSync, mkdirSync, copyFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, copyFileSync, statSync, writeFileSync } from "node:fs";
+import { isCompiledBinary, listAssets, assetBytesSync } from "./assets";
 
 const LEGACY_CWD_DB = "skipper-runtime.db";
 
@@ -42,6 +43,58 @@ export function ensureDataDir(): string {
 export function getRuntimeDbPath(): string {
   if (process.env.SKIPPER_RUNTIME_DB_PATH) return process.env.SKIPPER_RUNTIME_DB_PATH;
   return join(ensureDataDir(), "skipper-runtime.db");
+}
+
+/**
+ * Directory holding the mutable config snapshots (`agent_types.json`,
+ * `appearance.json`, …).
+ *
+ * - `SKIPPER_CONFIG_DIR` override always wins.
+ * - Compiled binary: `<data dir>/config`, seeded from the embedded defaults on
+ *   first run (see `ensureConfigSeeded`). The repo `config/` is not on disk next
+ *   to a packaged binary, and `appearance.json` is written back at runtime.
+ * - Dev (`bun run`): the repo `./config` as before, so version-controlled config
+ *   is what you edit and see.
+ */
+export function getConfigDir(): string {
+  if (process.env.SKIPPER_CONFIG_DIR) return resolve(process.env.SKIPPER_CONFIG_DIR);
+  if (isCompiledBinary()) return join(ensureDataDir(), "config");
+  return resolve(process.cwd(), "config");
+}
+
+/**
+ * Seed the data-dir config from embedded defaults on first run of a compiled
+ * binary. Only writes files that are absent, so user edits (persisted back to
+ * `appearance.json`) survive upgrades. No-op in dev and when `SKIPPER_CONFIG_DIR`
+ * is set. Must run before the config store first reads.
+ */
+export function ensureConfigSeeded(): void {
+  if (process.env.SKIPPER_CONFIG_DIR) return;
+  if (!isCompiledBinary()) return;
+  const dir = join(ensureDataDir(), "config");
+  mkdirSync(dir, { recursive: true });
+  for (const logical of listAssets("config/")) {
+    const name = logical.slice("config/".length);
+    if (!name.endsWith(".json")) continue;
+    const dest = join(dir, name);
+    if (existsSync(dest)) continue;
+    writeFileSync(dest, assetBytesSync(logical));
+  }
+}
+
+/** Directory for user-uploaded wallpapers (served alongside embedded defaults). */
+export function getUploadedWallpaperDir(): string {
+  return join(getDataDir(), "wallpapers");
+}
+
+/** PID file for the `skipper start`/`stop` daemon lifecycle. */
+export function getPidFile(): string {
+  return join(getDataDir(), "skipper.pid");
+}
+
+/** Log file the detached daemon writes stdout/stderr to. */
+export function getLogFile(): string {
+  return join(getDataDir(), "skipper.log");
 }
 
 /**

@@ -3,6 +3,7 @@ import { appearanceBackgroundCss } from "../styles/index";
 import { themeBootScript } from "../styles/themes";
 import { STYLESHEET_PATH } from "../styles/stylesheet";
 import { getAppearanceConfig } from "../../config/store";
+import { getDb } from "../../db/connection";
 
 /**
  * New layout shell for v2 pages.
@@ -15,7 +16,7 @@ export function v2layout(
   wsTopics: string[] = [],
 ): string {
   const topicsAttr = wsTopics.length > 0 ? ` data-ws-topics="${wsTopics.join(",")}"` : "";
-  const appearance = getAppearanceConfig();
+  const appearance = getAppearanceConfig(getDb());
   const appearanceCss = appearanceBackgroundCss(appearance.active);
 
   return `<!DOCTYPE html>

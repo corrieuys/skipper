@@ -23,3 +23,7 @@ SQLite via `bun:sqlite`. Split architecture.
 ## Migrations
 
 Add new file `00X_<name>.sql` under `migrations/`. Applied on init in numeric order.
+
+Schema + migration `.sql` are **embedded assets** (read via `assetTextSync`, not
+`readFileSync`), so the compiled binary carries them and `bun run gen:assets`
+picks up new files automatically (any `src/db/**/*.sql`). See root [CLAUDE.md](../../CLAUDE.md) Package section.
