@@ -607,6 +607,46 @@ describe("sendInput", () => {
       "Agent type test-inline-prompt requires prompt delivery at spawn time",
     );
   });
+
+  // Regression: two parallel tasks on the same team share ONE template agent but
+  // get distinct runtime instances. Callers (task-runner/phase/recovery/poke/
+  // escalation) MUST sendInput to the specific spawned runtime id — NOT the
+  // template id. sendInput(templateId) resolves an arbitrary sibling and writes
+  // one task's prompt to the other's stdin, leaving the new claude-code --print
+  // with no stdin ("Input must be provided..."). This locks per-instance routing.
+  it("routes stdin to the exact instance under parallel same-team spawns", async () => {
+    const { agentId } = createTestEchoAgent('read line && echo "GOT:$line"');
+    db.prepare("INSERT INTO tasks (id, title) VALUES ('task-A', 'Parallel A')").run();
+    db.prepare("INSERT INTO tasks (id, title) VALUES ('task-B', 'Parallel B')").run();
+
+    const idA = crypto.randomUUID();
+    const idB = crypto.randomUUID();
+    const a = await manager.spawnAgentInstance(agentId, idA, {
+      workingDir: "/tmp", taskId: "task-A", parentInstanceId: null, rootInstanceId: idA, attempt: 1,
+    });
+    const b = await manager.spawnAgentInstance(agentId, idB, {
+      workingDir: "/tmp", taskId: "task-B", parentInstanceId: null, rootInstanceId: idB, attempt: 1,
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Deliver each task's prompt to ITS OWN runtime instance.
+    manager.sendInput(a.id, "PROMPT_A", true);
+    manager.sendInput(b.id, "PROMPT_B", true);
+
+    await a.process.exited;
+    await b.process.exited;
+    await new Promise((r) => setTimeout(r, 200));
+
+    const out = (rid: string): string =>
+      (db.prepare("SELECT data FROM terminal_outputs WHERE agent_id = ? AND stream = 'stdout'").all(rid) as { data: string }[])
+        .map((r) => r.data).join("");
+
+    expect(out(a.id)).toContain("GOT:PROMPT_A");
+    expect(out(a.id)).not.toContain("PROMPT_B");
+    expect(out(b.id)).toContain("GOT:PROMPT_B");
+    expect(out(b.id)).not.toContain("PROMPT_A");
+  });
 });
 
 describe("killAgent", () => {

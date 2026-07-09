@@ -490,7 +490,7 @@ describe("RealtimeSessionManager", () => {
 
       let spawned = false;
       const sentInputs: string[] = [];
-      const running = { process: { pid: 4242 } };
+      const running = { id: "rt-runtime-4242", process: { pid: 4242 } };
       const fakeAgentManager = {
         getRunningAgent: () => (spawned ? running : undefined),
         clearSessionId: () => { },
@@ -539,7 +539,7 @@ describe("RealtimeSessionManager", () => {
 
       let spawned = false;
       const sentInputs: string[] = [];
-      const running = { process: { pid: 4243 } };
+      const running = { id: "rt-runtime-4243", process: { pid: 4243 } };
       const fakeAgentManager = {
         getRunningAgent: () => (spawned ? running : undefined),
         clearSessionId: () => { },

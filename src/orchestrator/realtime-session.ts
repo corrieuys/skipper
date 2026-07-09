@@ -1039,9 +1039,11 @@ export class RealtimeSessionManager {
         sessionId: priorSessionId ?? undefined,
         initialPrompt: entrypointUsesInlinePrompt ? (priorSessionId ? feedMessage : initialMessage) : undefined,
       })
-      .then(() => {
+      .then((spawned) => {
         if (!entrypointUsesInlinePrompt) {
-          this.agentManager!.sendInput(entrypointAgentId, priorSessionId ? feedMessage : initialMessage, true);
+          // Target the spawned runtime instance, not the template id — avoids
+          // misrouting to a sibling same-team task's stdin under parallel runs.
+          this.agentManager!.sendInput(spawned.id, priorSessionId ? feedMessage : initialMessage, true);
         }
 
         markFed();

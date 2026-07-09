@@ -1549,7 +1549,7 @@ export class ManagerDaemon {
     const typeDef = getAgentTypeDefinition(agent.type, this.db);
     const isStreaming = typeDef?.supports_stdin ?? false;
     const usesInlinePrompt = typeDef ? agentTypeUsesInlinePrompt(typeDef) : false;
-    await this.agentManager.spawnAgent(entrypointAgentId, {
+    const spawned = await this.agentManager.spawnAgent(entrypointAgentId, {
       workingDir,
       taskId,
       initialPrompt: usesInlinePrompt ? recoveryPrompt : undefined,
@@ -1562,7 +1562,9 @@ export class ManagerDaemon {
     const closeStdin = !isStreaming;
 
     if (!usesInlinePrompt) {
-      this.agentManager.sendInput(entrypointAgentId, recoveryPrompt, closeStdin);
+      // Target the runtime instance just spawned, not the template id —
+      // sendInput(templateId) misroutes to a sibling same-team task's stdin.
+      this.agentManager.sendInput(spawned.id, recoveryPrompt, closeStdin);
     }
   }
 }

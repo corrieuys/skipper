@@ -128,7 +128,7 @@ describe("sendInput error handling", () => {
         {
           getAgent: () => mockAgent,
           getRunningAgent: () => null,
-          spawnAgent: async () => {},
+          spawnAgent: async () => ({ id: "runtime-mock" }),
           sendInput: throwingSendInput,
           clearSessionId: () => {},
           getSessionId: () => null,
@@ -166,7 +166,7 @@ describe("sendInput error handling", () => {
           getRunningAgent: () => null,
           getSessionId: () => null,
           getEntrypointSessionIdForTask: () => null,
-          spawnAgent: async () => {},
+          spawnAgent: async () => ({ id: "runtime-mock" }),
           sendInput: throwingSendInput,
         } as any,
         { buildInitialPrompt: () => "prompt", buildInitialPromptTracked: () => ({ prompt: "prompt", noteIds: [] }), recordNoteDelivery: () => {} } as any,

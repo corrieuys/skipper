@@ -450,18 +450,19 @@ export class RecoveryManager {
     // producing duplicate parallel agents. The resumed root re-drives delegation.
     await this.reapTaskSubtree(taskId);
 
+    let spawnedRuntimeId: string;
     try {
       const workingDir = process.cwd(); // Agents spawn in orchestrator cwd
       const spawnOpts = canResume
         ? { workingDir, taskId, sessionId: sessionId!, initialPrompt: usesInlinePrompt ? fullPrompt : undefined }
         : { workingDir, taskId, initialPrompt: usesInlinePrompt ? fullPrompt : undefined };
-      await this.agentManager.spawnAgent(entrypointAgentId, spawnOpts);
+      spawnedRuntimeId = (await this.agentManager.spawnAgent(entrypointAgentId, spawnOpts)).id;
     } catch (err) {
       logError(this.db, "recovery_spawn", { taskId, agentId: entrypointAgentId, method: "recoverTask" }, err);
       return false;
     }
 
-    if (!this.agentManager.getRunningAgent(entrypointAgentId)) {
+    if (!this.agentManager.getRunningAgent(spawnedRuntimeId)) {
       logError(this.db, "recovery_spawn_unconfirmed", { taskId, agentId: entrypointAgentId, method: "recoverTask" }, new Error("Spawn did not result in a running agent"));
       return false;
     }
@@ -477,7 +478,9 @@ export class RecoveryManager {
     const closeStdin = !isStreaming;
     try {
       if (!usesInlinePrompt) {
-        this.agentManager.sendInput(entrypointAgentId, fullPrompt, closeStdin);
+        // Target the runtime instance just spawned, not the template id —
+        // sendInput(templateId) misroutes to a sibling same-team task's stdin.
+        this.agentManager.sendInput(spawnedRuntimeId, fullPrompt, closeStdin);
       }
     } catch (err) {
       logError(this.db, "recovery_send_input", { taskId, agentId: entrypointAgentId, method: "recoverTask" }, err);

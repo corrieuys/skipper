@@ -158,13 +158,15 @@ export class TaskRunner {
       .prepare("UPDATE agents SET current_task_id = ? WHERE id = ?")
       .run(task.id, entrypointAgentId);
 
+    let spawnedRuntimeId: string;
     try {
-      await this.agentManager.spawnAgent(entrypointAgentId, {
+      const spawned = await this.agentManager.spawnAgent(entrypointAgentId, {
         workingDir,
         taskId: task.id,
         initialPrompt: usesInlinePrompt ? prompt : undefined,
         sessionId: resumeSessionId ?? undefined,
       });
+      spawnedRuntimeId = spawned.id;
     } catch (err) {
       this.taskScheduler.failTask(
         task.id,
@@ -181,7 +183,12 @@ export class TaskRunner {
     const closeStdin = !isStreaming;
     try {
       if (!usesInlinePrompt) {
-        this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+        // Target the exact runtime instance just spawned — NOT the template id.
+        // Under parallel same-team tasks the template has multiple live
+        // instances; sendInput(templateId) resolves to an arbitrary sibling and
+        // writes this task's prompt to the wrong process's stdin, leaving the
+        // new claude-code --print with no stdin ("Input must be provided...").
+        this.agentManager.sendInput(spawnedRuntimeId, prompt, closeStdin);
       }
     } catch (err) {
       logError(this.db, "task_startup_send_input", { taskId: task.id, agentId: entrypointAgentId, method: "processTaskQueue" }, err);

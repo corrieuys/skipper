@@ -1271,6 +1271,10 @@ export class AgentManager {
       const inlineCompactPrompt = usesInlineCompact ? compactedMessage : undefined;
 
       const workingDir = process.cwd();
+      // Runtime instance to deliver the compacted message to. Only the template
+      // fallback below re-derives it — the two instance branches respawn under a
+      // known runtime id (== agentId), so sendInput(agentId) is already correct.
+      let compactTargetId = agentId;
       if (runtimeBeforeKill && runtimeBeforeKill.id !== runtimeBeforeKill.templateAgentId) {
         await this.spawnAgentInstance(runtimeBeforeKill.templateAgentId, runtimeBeforeKill.id, {
           workingDir,
@@ -1290,11 +1294,13 @@ export class AgentManager {
           attempt: persistedRuntime.attempt,
         });
       } else {
-        await this.spawnAgent(templateAgentId, { workingDir, initialPrompt: inlineCompactPrompt });
+        // Template-keyed spawn — capture the new runtime id so we don't misroute
+        // to an arbitrary sibling instance under parallel same-team tasks.
+        compactTargetId = (await this.spawnAgent(templateAgentId, { workingDir, initialPrompt: inlineCompactPrompt })).id;
       }
 
       if (!usesInlineCompact) {
-        this.sendInput(agentId, compactedMessage, closeStdin);
+        this.sendInput(compactTargetId, compactedMessage, closeStdin);
       }
       this.writeContextCompactionCheckpoint(agentId, compactState.lastInputTokens, snapshot);
       this.clearContextCompactionFlag(agentId);
@@ -1334,6 +1340,8 @@ export class AgentManager {
 
     // Spawn new process with --resume
     const workingDir = process.cwd();
+    // Runtime instance to deliver the resume message to (see compact block above).
+    let resumeTargetId = agentId;
     if (runtimeBeforeKill && runtimeBeforeKill.id !== runtimeBeforeKill.templateAgentId) {
       await this.spawnAgentInstance(runtimeBeforeKill.templateAgentId, runtimeBeforeKill.id, {
         workingDir,
@@ -1355,12 +1363,14 @@ export class AgentManager {
         attempt: persistedRuntime.attempt,
       });
     } else {
-      await this.spawnAgent(templateAgentId, { workingDir, sessionId, initialPrompt: inlinePromptForResume });
+      // Template-keyed spawn — capture the new runtime id so we don't misroute
+      // to an arbitrary sibling instance under parallel same-team tasks.
+      resumeTargetId = (await this.spawnAgent(templateAgentId, { workingDir, sessionId, initialPrompt: inlinePromptForResume })).id;
     }
 
     // Send message via stdin for agents that don't use inline prompts
     if (!usesInlineInResume) {
-      this.sendInput(agentId, compactedMessage, closeStdin);
+      this.sendInput(resumeTargetId, compactedMessage, closeStdin);
     }
   }
 
