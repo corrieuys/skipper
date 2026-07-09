@@ -391,10 +391,13 @@ describe("spawnAgent", () => {
 
   it("replaces an existing runtime when spawning the same agent twice", async () => {
     const { agentId } = createTestEchoAgent("sleep 10");
-    const first = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+    // Replacement only applies within the same task — different tasks run the
+    // same template agent in parallel, so both spawns must share a taskId.
+    db.prepare("INSERT INTO tasks (id, title) VALUES ('task-replace', 'Replace')").run();
+    const first = await manager.spawnAgent(agentId, { workingDir: "/tmp", taskId: "task-replace" });
     const firstPid = first.process.pid;
 
-    const second = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+    const second = await manager.spawnAgent(agentId, { workingDir: "/tmp", taskId: "task-replace" });
     const secondPid = second.process.pid;
 
     expect(secondPid).not.toBe(firstPid);

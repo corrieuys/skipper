@@ -98,6 +98,8 @@ describe("sendInput error handling", () => {
           killAgent: () => true,
           waitForExit: async () => {},
           spawnAgent: async () => {},
+          spawnAgentInstance: async () => ({ id: "runtime-mock" }),
+          getRunningInstanceForTask: () => undefined,
         } as any,
         { buildInitialPrompt: () => "prompt", buildInitialPromptTracked: () => ({ prompt: "prompt", noteIds: [] }), recordNoteDelivery: () => {} } as any,
         {
@@ -129,6 +131,11 @@ describe("sendInput error handling", () => {
           getAgent: () => mockAgent,
           getRunningAgent: () => null,
           spawnAgent: async () => ({ id: "runtime-mock" }),
+          spawnAgentInstance: async () => ({ id: "runtime-mock" }),
+          getRunningInstanceForTask: () => undefined,
+          markAsRespawning: () => {},
+          killAgent: () => true,
+          waitForExit: async () => {},
           sendInput: throwingSendInput,
           clearSessionId: () => {},
           getSessionId: () => null,
@@ -202,6 +209,11 @@ describe("sendInput error handling", () => {
           getSessionId: () => null,
           getEntrypointSessionIdForTask: () => null,
           spawnAgent: async () => {},
+          spawnAgentInstance: async () => ({ id: "runtime-mock" }),
+          getRunningInstanceForTask: () => undefined,
+          markAsRespawning: () => {},
+          killAgent: () => true,
+          waitForExit: async () => {},
           sendInput: throwingSendInput,
         } as any,
         { buildInitialPrompt: () => "prompt", buildInitialPromptTracked: () => ({ prompt: "prompt", noteIds: [] }), recordNoteDelivery: () => {} } as any,
@@ -214,7 +226,7 @@ describe("sendInput error handling", () => {
         () => {},
       );
 
-      const task = { id: "task-1", title: "test", description: null } as any;
+      const task = { id: "task-1", title: "test", description: null, current_phase: 0 } as any;
       const phases = mockTeamExec.team.phases;
       await pm.advanceAndRespawn(task, "agent-1", phases);
       expect(failedTaskId).toBe("task-1");
@@ -235,6 +247,11 @@ describe("sendInput error handling", () => {
           getSessionId: () => null,
           getEntrypointSessionIdForTask: () => null,
           spawnAgent: async () => {},
+          spawnAgentInstance: async () => ({ id: "runtime-mock" }),
+          getRunningInstanceForTask: () => undefined,
+          markAsRespawning: () => {},
+          killAgent: () => true,
+          waitForExit: async () => {},
           sendInput: throwingSendInput,
         } as any,
         { buildInitialPrompt: () => "prompt", buildInitialPromptTracked: () => ({ prompt: "prompt", noteIds: [] }), recordNoteDelivery: () => {} } as any,

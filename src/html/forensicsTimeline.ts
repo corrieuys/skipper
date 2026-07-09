@@ -6,8 +6,10 @@ export function forensicsTimeline(entries: ForensicsTimelineEntry[]): string {
     if (entries.length === 0) return "";
     const items = entries
         .map((e) => {
-            let icon: string;
-            let label: string;
+            // Defaults cover unknown sources — without them the entry renders
+            // the literal string "undefined".
+            let icon = "&#8226;";
+            let label = escapeHtml(e.event_type ?? e.source ?? "event");
             let detail = "";
 
             if (e.source === "checkpoint") {

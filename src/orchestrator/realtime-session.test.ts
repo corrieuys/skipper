@@ -37,6 +37,13 @@ function seedRealtimeTaskWithoutTeam(
       "INSERT INTO tasks (id, title, team_id, status, task_type, task_config) VALUES (?, ?, NULL, 'running', 'real_time', ?)",
     )
     .run(id, "Realtime Task Without Team", JSON.stringify(config));
+  // Auto-resume on construction only picks up tasks that were actively
+  // recording — persisted as cadence_timer_active = 1 in pipeline state.
+  database
+    .prepare(
+      "INSERT INTO realtime_pipeline_state (task_id, cadence_timer_active) VALUES (?, 1)",
+    )
+    .run(id);
   return id;
 }
 
@@ -254,7 +261,7 @@ describe("RealtimeSessionManager", () => {
         )
         .get(taskId) as Record<string, unknown> | null;
       expect(timeline).not.toBeNull();
-      expect((timeline!.content as string)).toContain("no whisper endpoint configured");
+      expect((timeline!.content as string)).toContain("Whisper not running");
     });
 
     it("marks audio segments as failed when openai provider has no API key", async () => {
@@ -494,15 +501,23 @@ describe("RealtimeSessionManager", () => {
       const fakeAgentManager = {
         getRunningAgent: () => (spawned ? running : undefined),
         clearSessionId: () => { },
-        spawnAgent: async () => {
+        // Inline-prompt agent types (claude-code) receive the feed via
+        // spawn options, streaming types via sendInput, and an already-running
+        // entrypoint via sendResumeMessage — capture all three channels.
+        spawnAgent: async (_agentId: string, opts?: { initialPrompt?: string }) => {
           spawned = true;
+          if (opts?.initialPrompt) sentInputs.push(opts.initialPrompt);
           return running;
         },
         sendInput: (_agentId: string, input: string) => {
           sentInputs.push(input);
         },
+        sendResumeMessage: async (_agentId: string, message: string) => {
+          sentInputs.push(message);
+        },
         getSessionId: () => "sess-fallback",
         getEntrypointSessionIdForTask: () => "sess-fallback",
+        getTemplateAgentId: () => null,
       } as unknown as RealtimeSessionManager["agentManager"];
 
       const managerWithAgent = new RealtimeSessionManager(
@@ -511,18 +526,23 @@ describe("RealtimeSessionManager", () => {
         fakeAgentManager,
       );
 
-      expect(managerWithAgent.isSessionActive(taskId)).toBe(true);
-      await managerWithAgent.ingestInput(taskId, {
-        sourceType: "text",
-        contentBody: "hello realtime",
-      });
+      // try/finally: a failing expect must still dispose, or this manager's
+      // eventBus listeners (with a partial fake) leak into later test files.
+      try {
+        expect(managerWithAgent.isSessionActive(taskId)).toBe(true);
+        // Text ingest forces an immediate cadence tick, which feeds Skipper —
+        // no manual feedSkipper() needed.
+        await managerWithAgent.ingestInput(taskId, {
+          sourceType: "text",
+          contentBody: "hello realtime",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
 
-      managerWithAgent.feedSkipper(taskId);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-
-      expect(spawned).toBe(true);
-      expect(sentInputs.length).toBe(1);
-      managerWithAgent.dispose();
+        expect(spawned).toBe(true);
+        expect(sentInputs.length).toBe(1);
+      } finally {
+        managerWithAgent.dispose();
+      }
     });
 
     it("uses main skipper prompt when realtime prompt is empty", async () => {
@@ -543,15 +563,20 @@ describe("RealtimeSessionManager", () => {
       const fakeAgentManager = {
         getRunningAgent: () => (spawned ? running : undefined),
         clearSessionId: () => { },
-        spawnAgent: async () => {
+        spawnAgent: async (_agentId: string, opts?: { initialPrompt?: string }) => {
           spawned = true;
+          if (opts?.initialPrompt) sentInputs.push(opts.initialPrompt);
           return running;
         },
         sendInput: (_agentId: string, input: string) => {
           sentInputs.push(input);
         },
+        sendResumeMessage: async (_agentId: string, message: string) => {
+          sentInputs.push(message);
+        },
         getSessionId: () => null,
         getEntrypointSessionIdForTask: () => null,
+        getTemplateAgentId: () => null,
       } as unknown as RealtimeSessionManager["agentManager"];
 
       const managerWithAgent = new RealtimeSessionManager(
@@ -560,19 +585,21 @@ describe("RealtimeSessionManager", () => {
         fakeAgentManager,
       );
 
-      expect(managerWithAgent.isSessionActive(taskId)).toBe(true);
-      await managerWithAgent.ingestInput(taskId, {
-        sourceType: "text",
-        contentBody: "feed me",
-      });
+      try {
+        expect(managerWithAgent.isSessionActive(taskId)).toBe(true);
+        // Text ingest forces an immediate cadence tick, which feeds Skipper.
+        await managerWithAgent.ingestInput(taskId, {
+          sourceType: "text",
+          contentBody: "feed me",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
 
-      managerWithAgent.feedSkipper(taskId);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-
-      expect(sentInputs.length).toBe(1);
-      expect(sentInputs[0]).toContain("MAIN SKIPPER PROMPT");
-      expect(sentInputs[0]).toContain("[REALTIME_FEED]");
-      managerWithAgent.dispose();
+        expect(sentInputs.length).toBe(1);
+        expect(sentInputs[0]).toContain("MAIN SKIPPER PROMPT");
+        expect(sentInputs[0]).toContain("[REALTIME_FEED]");
+      } finally {
+        managerWithAgent.dispose();
+      }
     });
   });
 

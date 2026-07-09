@@ -37,6 +37,21 @@ describe("Bug 1: hasDelegation flag from DB query", () => {
     try { unlinkSync(TEST_DB); } catch {}
   });
 
+  // agent:exit carries the runtime instance UUID, not the template agent id —
+  // pick the runtime id up front via spawnAgentInstance so the delegation row
+  // and the exit filter are wired before the process can exit.
+  function waitForExitOf(runtimeId: string): Promise<AgentExitEvent> {
+    return new Promise<AgentExitEvent>((resolve) => {
+      const handler = (event: AgentExitEvent) => {
+        if (event.agentId === runtimeId) {
+          eventBus.off("agent:exit", handler);
+          resolve(event);
+        }
+      };
+      eventBus.on("agent:exit", handler);
+    });
+  }
+
   it("emits hasDelegation=true when agent has active delegation as parent", async () => {
     const agent = manager.createAgent({ name: "Parent", type: "test-echo" });
 
@@ -46,17 +61,20 @@ describe("Bug 1: hasDelegation flag from DB query", () => {
     db.prepare(
       "INSERT INTO agents (id, name, type, model, config, capabilities) VALUES (?, ?, ?, ?, ?, ?)",
     ).run("child-agent", "Child", "test-echo", "default", "{}", "[]");
+
+    const runtimeId = crypto.randomUUID();
     db.prepare(
       "INSERT INTO delegations (id, parent_agent_id, parent_instance_id, child_agent_id, task_id, prompt, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run("del-1", agent.id, agent.id, "child-agent", "task-1", "test", "running");
+    ).run("del-1", agent.id, runtimeId, "child-agent", "task-1", "test", "running");
 
-    const exitPromise = new Promise<AgentExitEvent>((resolve) => {
-      eventBus.once("agent:exit", (event: AgentExitEvent) => {
-        if (event.agentId === agent.id) resolve(event);
-      });
+    const exitPromise = waitForExitOf(runtimeId);
+    await manager.spawnAgentInstance(agent.id, runtimeId, {
+      workingDir: process.cwd(),
+      taskId: "task-1",
+      parentInstanceId: null,
+      rootInstanceId: runtimeId,
+      attempt: 1,
     });
-
-    await manager.spawnAgent(agent.id, { workingDir: process.cwd() });
     const event = await exitPromise;
 
     expect(event.hasDelegation).toBe(true);
@@ -65,13 +83,15 @@ describe("Bug 1: hasDelegation flag from DB query", () => {
   it("emits hasDelegation=false when agent has no active delegation", async () => {
     const agent = manager.createAgent({ name: "Solo", type: "test-echo" });
 
-    const exitPromise = new Promise<AgentExitEvent>((resolve) => {
-      eventBus.once("agent:exit", (event: AgentExitEvent) => {
-        if (event.agentId === agent.id) resolve(event);
-      });
+    const runtimeId = crypto.randomUUID();
+    const exitPromise = waitForExitOf(runtimeId);
+    await manager.spawnAgentInstance(agent.id, runtimeId, {
+      workingDir: process.cwd(),
+      taskId: null,
+      parentInstanceId: null,
+      rootInstanceId: runtimeId,
+      attempt: 1,
     });
-
-    await manager.spawnAgent(agent.id, { workingDir: process.cwd() });
     const event = await exitPromise;
 
     expect(event.hasDelegation).toBe(false);
@@ -100,6 +120,9 @@ describe("Bug 2: fire-and-forget async calls in PhaseManager", () => {
       killAgent: mock(() => true),
       waitForExit: mock(async () => {}),
       spawnAgent: overrides.spawnAgent ?? mock(async () => {}),
+      spawnAgentInstance: overrides.spawnAgent ?? mock(async () => {}),
+      getRunningInstanceForTask: () => undefined,
+      markAsRespawning: mock(() => {}),
       sendInput: overrides.sendInput ?? mock(() => {}),
     } as any;
 

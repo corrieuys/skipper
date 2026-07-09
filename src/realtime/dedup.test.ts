@@ -52,9 +52,9 @@ describe("deduplicateOverlap", () => {
   it("handles full overlap (current is subset of previous tail)", () => {
     const prev = "one two three four five";
     const curr = "three four five";
-    // Everything in curr matches the tail of prev
-    expect(deduplicateOverlap(prev, curr)).toBe("three four five");
-    // Returns original since stripping everything would leave empty
+    // Everything in curr matches the tail of prev — entirely duplicate audio,
+    // so nothing new remains (documented: empty string if entirely overlap)
+    expect(deduplicateOverlap(prev, curr)).toBe("");
   });
 
   it("handles whitespace-only inputs", () => {

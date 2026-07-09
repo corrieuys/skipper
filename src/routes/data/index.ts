@@ -9,8 +9,10 @@ import { registerDataEscalationRoutes } from "./escalations";
 import { registerDataDaemonRoutes } from "./daemon";
 
 export function registerDataRoutes(db: Database, daemon: ManagerDaemon): void {
-  registerDataTaskRoutes(db, daemon);
-  registerDataRealtimeTaskRoutes(db, daemon);
+  // These two take only the daemon — passing (db, daemon) would put the
+  // Database in the daemon slot and break realtime start/resume/stop.
+  registerDataTaskRoutes(daemon);
+  registerDataRealtimeTaskRoutes(daemon);
   registerDataTeamRoutes(db, daemon);
   registerDataAgentRoutes(db, daemon);
   registerDataDashboardRoutes(db, daemon);

@@ -7,7 +7,9 @@ describe("chatPartFragment", () => {
     const html = chatPartFragment({ kind: "text", content: "hello <world>\nline2" });
     expect(html).toContain('class="chat-bubble chat-bubble-text"');
     expect(html).toContain("hello &lt;world&gt;");
-    expect(html).toContain("<br>");
+    // Plain text is wrapped in a client-side markdown container, newlines intact
+    expect(html).toContain("data-artifact-md");
+    expect(html).toContain("line2");
     expect(html).not.toContain("<script");
   });
 

@@ -29,9 +29,9 @@ describe("LocalWhisperAdapter", () => {
         expect(adapter.isConfigured()).toBe(true);
     });
 
-    it("notConfiguredReason mentions whisper endpoint", () => {
+    it("notConfiguredReason explains whisper is not running", () => {
         const adapter = new LocalWhisperAdapter("");
-        expect(adapter.notConfiguredReason()).toContain("whisper endpoint");
+        expect(adapter.notConfiguredReason()).toContain("Whisper not running");
     });
 });
 

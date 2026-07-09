@@ -731,9 +731,10 @@ ${instructions}`;
       ? this.db.prepare("SELECT phases FROM teams WHERE id = ?").get(task.team_id) as { phases: string } | null
       : null;
     let phaseHasReview = false;
+    let phases: Phase[] = [];
     if (teamRow?.phases) {
       try {
-        const phases = JSON.parse(teamRow.phases) as Phase[];
+        phases = JSON.parse(teamRow.phases) as Phase[];
         const phase = phases[meta.phaseIndex];
         if (phase) {
           phaseHasReview = resolvePhaseConfig(phase, task.task_config as Record<string, unknown>).review;

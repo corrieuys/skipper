@@ -551,6 +551,7 @@ export class UIWebSocketManager {
         task_id: option.task_id,
         task_title: option.task_title,
         session_id: option.session_id,
+        process_pid: option.process_pid,
         can_steer: option.can_steer,
         disabled_reason: option.disabled_reason,
       })),

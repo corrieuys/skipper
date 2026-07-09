@@ -213,10 +213,12 @@ describe("TaskRunner", () => {
       expect(task?.status).toBe("running");
     });
 
-    it("in sequential mode, a failed task blocks the queue until resolved", async () => {
+    it("in sequential mode, a failed task does not occupy the concurrency slot", async () => {
       const teamId = createTeam([{ name: "Phase 1", prompt: "Do something" }]);
       setBoolSetting(db, SETTING_PARALLEL_TASKS, false);
 
+      // Failed is a terminal status — only running/paused tasks hold the
+      // sequential (cap=1) slot, so the next approved task starts normally.
       const failedTaskId = crypto.randomUUID();
       db.prepare(
         `INSERT INTO tasks (id, title, team_id, status, task_type, started_at, completed_at)
@@ -228,8 +230,8 @@ describe("TaskRunner", () => {
       const runner = createRunner();
       const result = await runner.processTaskQueue();
 
-      expect(result.processed).toBe(0);
-      expect(scheduler.getTask(approvedTaskId)?.status).toBe("approved");
+      expect(result.processed).toBe(1);
+      expect(scheduler.getTask(approvedTaskId)?.status).toBe("running");
     });
 
     it("in parallel mode, a failed task does not block the queue", async () => {
