@@ -74,11 +74,16 @@ function buildManager(
     getAgent?: (id: string) => { id: string; type: string } | null;
   } = {},
 ): { manager: IdlePokeManager; escalateMock: ReturnType<typeof mock>; spawnMock: ReturnType<typeof mock>; } {
-  const spawnMock = overrides.spawnAgent ?? mock(async () => {});
+  // spawnAgent returns the RunningAgent — pokeSkipper reads .id off it to target
+  // the exact spawned instance for the post-spawn confirmation + sendInput.
+  const spawnMock = overrides.spawnAgent ?? mock(async () => ({ id: "rt-spawn" }));
   const escalateMock = mock((_input: { taskId: string }) => ({ id: "esc-1", task_id: _input.taskId }));
 
   const agentManager = {
     getRunningAgent: overrides.getRunningAgent ?? mock(() => null),
+    // Stale-instance teardown is now task-scoped (not template-keyed) to avoid
+    // killing a sibling same-team task's entrypoint under parallel runs.
+    getRunningInstanceForTask: mock(() => undefined),
     getAgent: overrides.getAgent ?? mock(() => ({ id: "skipper", type: "claude-code" })),
     getEntrypointSessionIdForTask: () => "session-1",
     killAgent: mock(() => true),
@@ -155,13 +160,16 @@ describe("IdlePokeManager", () => {
     const taskId = createRunningTask(db, teamId);
     setIdleSince(db, taskId, ago(75_000));
 
-    // First call to getRunningAgent (gate check) returns null; second call
-    // (post-spawn confirmation) returns a fake runtime.
+    // First getRunningAgent call is the "live entrypoint" gate (must be null so
+    // the poke proceeds); the second is the post-spawn confirmation (must return
+    // the freshly spawned runtime). Stale teardown is now task-scoped via
+    // getRunningInstanceForTask (mocked to undefined), which does not consume a
+    // getRunningAgent call.
     let runningCalls = 0;
     const { manager, spawnMock } = buildManager(db, {
       getRunningAgent: () => {
         runningCalls++;
-        return runningCalls === 1 ? null : ({ id: "rt-1" } as unknown);
+        return runningCalls === 1 ? null : ({ id: "rt-spawn" } as unknown);
       },
     });
     const acted = await manager.runIdlePokes();

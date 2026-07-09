@@ -98,8 +98,11 @@ function createMockAgentManager() {
     clearSessionId: () => {},
     killAgent: () => {},
     waitForExit: async () => {},
-    spawnAgent: async () => {},
-    spawnAgentInstance: async () => {},
+    // spawnAgent/spawnAgentInstance return the RunningAgent — callers now read
+    // .id off it to target the exact runtime instance for sendInput (parallel
+    // same-team stdin routing). Return a minimal stub with an id.
+    spawnAgent: async () => ({ id: "runtime-mock" }),
+    spawnAgentInstance: async () => ({ id: "runtime-mock" }),
     sendInput: () => {},
     getSessionId: () => null,
     getEntrypointSessionIdForTask: () => null,

@@ -325,7 +325,9 @@ export class EscalationManager {
     const runningAgent = this.agentManager.getRunningAgent(agentId);
     if (runningAgent) {
       try {
-        this.agentManager.sendInput(agentId, message);
+        // Use the resolved runtime id — sendInput(agentId) would re-resolve the
+        // template to an arbitrary sibling instance under parallel same-team runs.
+        this.agentManager.sendInput(runningAgent.id, message);
         markNotesDelivered();
         return;
       } catch (err) {
@@ -354,14 +356,16 @@ export class EscalationManager {
     try {
       const typeDef = getAgentTypeDefinition(agent.type, this.db);
       const usesInlinePrompt = typeDef ? agentTypeUsesInlinePrompt(typeDef) : false;
-      await this.agentManager.spawnAgent(agentId, {
+      const spawned = await this.agentManager.spawnAgent(agentId, {
         workingDir: process.cwd(),
         taskId,
         initialPrompt: usesInlinePrompt ? message : undefined,
       });
       const closeStdin = !(typeDef?.supports_stdin ?? false);
       if (!usesInlinePrompt) {
-        this.agentManager.sendInput(agentId, message, closeStdin);
+        // Target the runtime instance just spawned, not the template id —
+        // sendInput(templateId) misroutes to a sibling same-team task's stdin.
+        this.agentManager.sendInput(spawned.id, message, closeStdin);
       }
       markNotesDelivered();
     } catch (err) {

@@ -278,7 +278,9 @@ export class PhaseManager {
     const closeStdin = !isStreaming;
     try {
       if (!usesInlinePrompt) {
-        this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+        // Target the runtime instance just respawned, not the template id —
+        // sendInput(templateId) misroutes to a sibling same-team task's stdin.
+        this.agentManager.sendInput(respawnRuntimeId, prompt, closeStdin);
       }
       if (noteIds.length > 0) {
         this.promptBuilder.recordNoteDelivery(entrypointAgentId, noteIds);
@@ -389,7 +391,9 @@ export class PhaseManager {
     const closeStdin = !isStreaming;
     try {
       if (!usesInlinePrompt) {
-        this.agentManager.sendInput(entrypointAgentId, prompt, closeStdin);
+        // Target the runtime instance just respawned, not the template id —
+        // sendInput(templateId) misroutes to a sibling same-team task's stdin.
+        this.agentManager.sendInput(respawnRuntimeId, prompt, closeStdin);
       }
       if (noteIds.length > 0) {
         this.promptBuilder.recordNoteDelivery(entrypointAgentId, noteIds);

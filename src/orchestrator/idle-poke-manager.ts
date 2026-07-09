@@ -218,23 +218,27 @@ export class IdlePokeManager {
       ?? { text: "", noteIds: [] };
     const promptWithNotes = notes.text ? `${notes.text}\n${POKE_PROMPT}` : POKE_PROMPT;
 
-    if (this.agentManager.getRunningAgent(entrypointAgentId)) {
-      this.agentManager.killAgent(entrypointAgentId);
-      await this.agentManager.waitForExit(entrypointAgentId);
+    // Target THIS task's instance — killAgent(templateId) would murder a sibling
+    // same-team task's entrypoint under parallel runs.
+    const staleInstance = this.agentManager.getRunningInstanceForTask(entrypointAgentId, taskId);
+    if (staleInstance) {
+      this.agentManager.killAgent(staleInstance.id);
+      await this.agentManager.waitForExit(staleInstance.id);
     }
 
+    let spawnedRuntimeId: string;
     try {
       const workingDir = process.cwd();
       const spawnOpts = canResume
         ? { workingDir, taskId, sessionId: sessionId!, initialPrompt: usesInlinePrompt ? promptWithNotes : undefined }
         : { workingDir, taskId, initialPrompt: usesInlinePrompt ? promptWithNotes : undefined };
-      await this.agentManager.spawnAgent(entrypointAgentId, spawnOpts);
+      spawnedRuntimeId = (await this.agentManager.spawnAgent(entrypointAgentId, spawnOpts)).id;
     } catch (err) {
       logError(this.db, "idle_poke_spawn", { taskId, agentId: entrypointAgentId, method: "pokeSkipper" }, err);
       return false;
     }
 
-    if (!this.agentManager.getRunningAgent(entrypointAgentId)) {
+    if (!this.agentManager.getRunningAgent(spawnedRuntimeId)) {
       logError(this.db, "idle_poke_spawn_unconfirmed", { taskId, agentId: entrypointAgentId, method: "pokeSkipper" }, new Error("Spawn did not result in a running agent"));
       return false;
     }
@@ -246,7 +250,7 @@ export class IdlePokeManager {
     if (!usesInlinePrompt) {
       const closeStdin = !isStreaming;
       try {
-        this.agentManager.sendInput(entrypointAgentId, promptWithNotes, closeStdin);
+        this.agentManager.sendInput(spawnedRuntimeId, promptWithNotes, closeStdin);
       } catch (err) {
         logError(this.db, "idle_poke_send_input", { taskId, agentId: entrypointAgentId, method: "pokeSkipper" }, err);
         return false;
