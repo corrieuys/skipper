@@ -151,6 +151,32 @@ Codex skills:
 
 After adding skills, open `/skills` and the relevant agent detail page to verify availability/toggles.
 
+## Skipper Connect (remote access)
+
+Skipper Connect links your instance to a small relay service ([skipper-connect](https://github.com/corrieuys/skipper-connect), Cloudflare Workers) so you can reach it from outside your machine **without opening any inbound ports**: the daemon dials out over a single WebSocket and everything else is relayed back through it.
+
+Configure it on the **Config** page: paste the Connect URL and the connect key issued by your integrator, then enable the toggle. Once live you get:
+
+- **The remote control app**: a mobile-friendly web app hosted by the relay. Live task list, task creation (name, description, team) with draft approval, phase reviews, escalation responses, agent output tails; state is pushed over the socket, so it stays current without polling.
+- **Public artifact links**: publish an artifact version and share a `https://<relay>/p/...?key=...` URL that needs no login. Unpublish to revoke.
+- **Webhook task triggers**: a static URL that fires a recurring task from any external service (see below).
+
+### Webhook triggers for recurring tasks
+
+Any recurring (scheduled) task can be fired by an external webhook (GitHub pushes, monitoring alerts, external cron) via a static URL with an embedded secret:
+
+```
+POST https://<relay>/wh/<instance-id>/<scheduled-task-id>?key=<secret>
+```
+
+**Setup:** open the recurring task's detail page (it must be approved), find the **Webhook Trigger** panel, and click *Enable webhook trigger*. Copy the URL and paste it into the external service. That's it: an empty `POST` behaves exactly like pressing "Run Now".
+
+**Payload:** if the sender posts a body (JSON or plain text, up to 64 KB), Skipper injects it into the spawned run's prompt as `Webhook payload: ...`, so your agents can react to what actually happened (e.g. the pushed branch, the alert details).
+
+**Security model:** the secret lives only in your local database (`scheduled_tasks.webhook_key`) and is validated by your daemon with a timing-safe compare; the relay never stores it and cannot fire tasks itself. Wrong key, unknown task, and disabled trigger are all the same opaque 404 to the caller. *Regenerate secret* invalidates every previously shared URL instantly; *Disable* turns the trigger off entirely. Anyone holding the URL can fire the task, so treat it like a password and prefer regenerating after sharing it somewhere you no longer trust.
+
+If the daemon is offline the relay answers `503`, which well-behaved webhook senders retry, so the trigger fires when your instance reconnects (no queueing: a request that arrives while offline is not stored).
+
 ## Meet Greg
 
 Greg is the dashboard mascot. He brings zero productivity and is proud of it. Toggle him on or off with the 🐒 button in the navbar. He watches your tasks and agents work, then chimes in with short, playful one-liners: ribbing the robots for thinking too long, teasing the operator for backspacing twenty times, and taking credit for nothing. Greg jumps around the UI, and slides down the sidebar when he is happy.

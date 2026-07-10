@@ -34,6 +34,8 @@ export function v2layout(
   <script src="/ws-subscribe.js"></script>
   <script src="/monkey.js" defer></script>
   <script src="/zen-orbs-3d.js" defer></script>
+  <script src="/dictation.js" defer></script>
+  <script src="/schedule-matrix.js" defer></script>
   <link rel="stylesheet" href="${STYLESHEET_PATH}">
   ${appearanceCss ? `<style>${appearanceCss}</style>` : ""}
 </head>

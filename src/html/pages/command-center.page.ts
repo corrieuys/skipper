@@ -5,6 +5,8 @@ import { formatTimestamp } from "../atoms/format-timestamp";
 import { terminalJsonSummary, stripThinking } from "../terminalJsonSummary";
 import { iteratePanel } from "../panels/iterate.panel";
 import { isExperimental } from "../../config/feature-flags";
+import { parseScheduleMatrix } from "../../tasks/scheduled-scheduler";
+import { renderScheduleMatrixEditor, renderScheduleMatrixView, countMatrixHours } from "../atoms/schedule-matrix";
 import type { CommandCenterViewModel, TaskSummary, ScheduledTaskSummary } from "../view-models/command-center.vm";
 import type { AgentTreeNode } from "../fragments/tree-node.fragment";
 
@@ -67,10 +69,14 @@ function renderSidebar(vm: CommandCenterViewModel, activeId: string | null): str
   return `<aside class="mc-sidebar">
     <div class="mc-sidebar__header">
       <a href="/tasks/new" class="mc-sidebar__create">+ New Task</a>
-      <button class="mc-sidebar__collapse-btn" data-sk-sidebar-toggle title="Toggle sidebar">&#x25C0;</button>
+      <button class="mc-sidebar__collapse-btn" data-sk-sidebar-toggle title="Pin sidebar open">&#x25C0;</button>
     </div>
 
-    <div class="mc-sidebar__setting">
+    <div class="mc-sidebar__list" id="mc-sidebar-list">
+      ${renderSidebarListBody(vm, activeId)}
+    </div>
+
+    <div class="mc-sidebar__footer">
       <label class="sk-checkbox">
         <input type="checkbox" name="enabled" ${vm.parallelExecution ? "checked" : ""}
           hx-post="/api/settings/parallel-tasks" hx-trigger="change" hx-swap="none">
@@ -78,17 +84,18 @@ function renderSidebar(vm: CommandCenterViewModel, activeId: string | null): str
         <span class="sk-checkbox__label">Run tasks in parallel</span>
       </label>
     </div>
-
-    <div class="mc-sidebar__list" id="mc-sidebar-list">
-      ${renderSidebarListBody(vm, activeId)}
-    </div>
   </aside>`;
 }
 
 export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: string | null): string {
   const running = vm.allTasks.filter(t => t.status === "running");
   const queued = vm.allTasks.filter(t => t.status === "approved");
-  const recent = vm.allTasks.filter(t => t.status === "completed" || t.status === "failed").slice(0, 5);
+  // Paused tasks live under Recent, sorted first so the 5-item cap can't push
+  // them out — unlike completed/failed they still need operator action (Resume).
+  const recent = vm.allTasks
+    .filter(t => t.status === "completed" || t.status === "failed" || t.status === "paused")
+    .sort((a, b) => (a.status === "paused" ? 0 : 1) - (b.status === "paused" ? 0 : 1))
+    .slice(0, 5);
   const drafts = vm.allTasks.filter(t => t.status === "draft").slice(0, 5);
 
   return `
@@ -155,7 +162,8 @@ function sidebarScheduledItem(st: ScheduledTaskSummary, activeId: string | null)
   </a>`;
 }
 
-function formatScheduleBadge(unit: string | null, amount: number | null): string {
+function formatScheduleBadge(unit: string | null, amount: number | null, matrix: string | null = null): string {
+  if (matrix) return "weekly";
   if (!unit || !amount) return "manual";
   if (unit === "minutes") return amount === 1 ? "1m" : `${amount}m`;
   if (unit === "hours") return amount === 1 ? "1h" : `${amount}h`;
@@ -985,7 +993,8 @@ export function renderScheduledTaskDetail(
   runs: Array<{ id: string; title: string; status: string; started_at: string | null; completed_at: string | null; result: string | null; created_at: string }>,
 ): string {
   const eid = escapeHtml(st.id);
-  const badge = formatScheduleBadge(st.schedule_unit, st.schedule_amount);
+  const matrix = parseScheduleMatrix(st.schedule_matrix ?? null);
+  const badge = formatScheduleBadge(st.schedule_unit, st.schedule_amount, st.schedule_matrix ?? null);
   const hasInterval = !!(st.schedule_unit && st.schedule_amount);
 
   if (st.status === "draft") {
@@ -1000,8 +1009,8 @@ export function renderScheduledTaskDetail(
       <span class="sk-badge sk-badge--waiting" style="font-size:9px;padding:1px 5px;">${badge}</span>
       ${st.team_name ? `<span class="sk-muted sk-text-xs">${escapeHtml(st.team_name)}</span>` : ""}
       <div class="mc-task-header__actions">
-        ${hasInterval ? `<button class="sk-btn sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/clear-schedule" hx-swap="none"
-                hx-confirm="Clear the interval? This task will become manual-only (Run Now).">Clear interval</button>` : ""}
+        ${hasInterval || matrix ? `<button class="sk-btn sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/clear-schedule" hx-swap="none"
+                hx-confirm="Clear the schedule? This task will become manual-only (Run Now).">Clear schedule</button>` : ""}
         <button class="sk-btn sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/unapprove" hx-swap="none">Unapprove</button>
         <button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/scheduled-tasks/${eid}" hx-swap="none"
                 hx-confirm="Delete this recurring task?">Delete</button>
@@ -1019,7 +1028,7 @@ export function renderScheduledTaskDetail(
       <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:var(--sk-space-4); margin-bottom:var(--sk-space-5);">
         <div>
           <div class="sk-muted sk-text-xs">Schedule</div>
-          <div style="font-weight:600;">${hasInterval ? `Every ${st.schedule_amount} ${st.schedule_unit}` : "Manual only"}</div>
+          <div style="font-weight:600;">${hasInterval ? `Every ${st.schedule_amount} ${st.schedule_unit}` : matrix ? `Weekly schedule (${countMatrixHours(matrix)} hours/week)` : "Manual only"}</div>
         </div>
         <div>
           <div class="sk-muted sk-text-xs">Next Run</div>
@@ -1031,7 +1040,13 @@ export function renderScheduledTaskDetail(
         </div>
       </div>
 
+      ${matrix ? `<div style="margin-bottom:var(--sk-space-5);">${renderScheduleMatrixView(matrix)}</div>` : ""}
+
       ${st.description ? `<div style="margin-bottom:var(--sk-space-4);"><div class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-1);">Description</div><div style="white-space:pre-wrap;max-height:10lh;overflow-y:auto;">${escapeHtml(st.description)}</div></div>` : ""}
+
+      ${st.global_store_instructions ? `<div style="margin-bottom:var(--sk-space-4);"><div class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-1);">Global Store Instructions</div><div style="white-space:pre-wrap;max-height:10lh;overflow-y:auto;">${escapeHtml(st.global_store_instructions)}</div></div>` : ""}
+
+      ${renderWebhookPanel(st)}
 
       <div class="sk-panel" style="margin-top:var(--sk-space-3);">
         <div class="sk-panel__header">
@@ -1039,7 +1054,7 @@ export function renderScheduledTaskDetail(
           <span class="sk-muted sk-text-xs">${runs.length} recent</span>
         </div>
         <div class="sk-panel__body" id="scheduled-runs-list"
-             hx-get="/workspace/scheduled/${eid}/runs" hx-trigger="load" hx-swap="innerHTML">
+             hx-get="/workspace/scheduled/${eid}/runs" hx-trigger="load, every 5s" hx-swap="innerHTML">
           ${renderScheduledRuns(runs)}
         </div>
       </div>
@@ -1047,9 +1062,67 @@ export function renderScheduledTaskDetail(
   `;
 }
 
+/**
+ * Webhook trigger panel on the approved scheduled-task detail. The URL embeds
+ * the per-task secret and is relayed by the connect integrator; an empty POST
+ * fires "Run Now"; a request body is injected into the run's prompt.
+ */
+function renderWebhookPanel(st: ScheduledTaskSummary): string {
+  const eid = escapeHtml(st.id);
+  const enabled = !!st.webhook_key;
+  const url = st.webhook_url ?? null;
+
+  let body: string;
+  if (!enabled) {
+    body = `
+      <div class="sk-muted sk-text-sm" style="margin-bottom:var(--sk-space-2);">
+        Trigger this task from external services with a static URL. The secret is embedded in the URL, so anyone holding it can fire this task.
+      </div>
+      <button class="sk-btn sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/webhook/enable" hx-swap="none">Enable webhook trigger</button>`;
+  } else {
+    body = `
+      ${url
+        ? `<div style="display:flex;gap:var(--sk-space-2);align-items:center;margin-bottom:var(--sk-space-2);">
+            <input class="sk-input" readonly value="${escapeHtml(url)}" id="webhook-url-${eid}"
+                   style="flex:1;font-size:var(--sk-text-xs);font-family:var(--sk-font-mono);" onclick="this.select()"/>
+            <button class="sk-btn sk-btn--sm" style="flex-shrink:0;"
+                    onclick="navigator.clipboard.writeText(document.getElementById('webhook-url-${eid}').value).then(()=>{this.textContent='Copied';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
+          </div>
+          <div class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-2);">POST to this URL fires a run. A JSON or text body is injected into the run's prompt as the webhook payload.</div>`
+        : `<div class="sk-muted sk-text-sm" style="margin-bottom:var(--sk-space-2);">Webhook trigger is enabled, but Skipper Connect is not configured. Set the Connect URL and key on the Config page to get a public URL.</div>`}
+      <form hx-post="/api/scheduled-tasks/${eid}/webhook/debounce" hx-swap="none"
+            style="display:flex;gap:var(--sk-space-2);align-items:center;margin-bottom:var(--sk-space-2);">
+        <label class="sk-muted sk-text-xs" style="flex-shrink:0;margin-bottom:0;">Debounce: ignore webhooks within</label>
+        <input type="number" name="debounceMinutes" class="sk-input" min="1" step="1"
+               value="${st.webhook_debounce_minutes ?? 1}"
+               style="width:56px;height:var(--sk-btn-height-sm);margin:0;padding:0 0.45rem;font-size:var(--sk-text-xs);text-align:center;">
+        <span class="sk-muted sk-text-xs" style="flex-shrink:0;">minute(s) of the previous one</span>
+        <button type="submit" class="sk-btn sk-btn--sm">Save</button>
+      </form>
+      <div class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-2);">Only the first webhook of a burst fires a run; each ignored webhook extends the quiet window. Scheduled and manual runs are not affected.</div>
+      <div style="display:flex;gap:var(--sk-space-2);">
+        <button class="sk-btn sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/webhook/regenerate" hx-swap="none"
+                hx-confirm="Regenerate the secret? Every previously shared webhook URL stops working.">Regenerate secret</button>
+        <button class="sk-btn sk-btn--danger sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/webhook/disable" hx-swap="none"
+                hx-confirm="Disable the webhook trigger?">Disable</button>
+      </div>`;
+  }
+
+  return `
+      <div class="sk-panel" style="margin-top:var(--sk-space-3);">
+        <div class="sk-panel__header">
+          <span class="sk-panel__title">Webhook Trigger</span>
+          <span class="sk-badge ${enabled ? "sk-badge--running" : "sk-badge--waiting"}" style="font-size:9px;padding:1px 5px;">${enabled ? "enabled" : "off"}</span>
+        </div>
+        <div class="sk-panel__body" style="padding:var(--sk-space-4);">${body}</div>
+      </div>`;
+}
+
 function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: string; name: string }>, runs: Array<{ id: string; title: string; status: string; started_at: string | null; completed_at: string | null; result: string | null; created_at: string }> = []): string {
   const eid = escapeHtml(st.id);
-  const badge = formatScheduleBadge(st.schedule_unit, st.schedule_amount);
+  const badge = formatScheduleBadge(st.schedule_unit, st.schedule_amount, st.schedule_matrix ?? null);
+  const matrix = parseScheduleMatrix(st.schedule_matrix ?? null);
+  const mode = matrix ? "weekly" : st.schedule_unit ? "interval" : "";
   return `
     <div class="mc-task-header">
       <span class="mc-node__indicator mc-node__indicator--pending"></span>
@@ -1079,6 +1152,14 @@ function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: s
               <label class="sk-label">Description</label>
               <textarea name="description" class="sk-textarea" rows="4">${st.description ? escapeHtml(st.description) : ""}</textarea>
             </div>
+            <div class="sk-form-group">
+              <label class="sk-label">Global Store Instructions</label>
+              <textarea name="globalStoreInstructions" class="sk-textarea" rows="3"
+                placeholder="Optional. Key names and payload structure for cross-run state, e.g.: store the last processed timestamp under key 'report-window' and resume from it next run.">${st.global_store_instructions ? escapeHtml(st.global_store_instructions) : ""}</textarea>
+              <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
+                Injected into every run's prompt; authorizes Skipper to use the global store for state shared across runs.
+              </div>
+            </div>
             <div class="sk-form-row" style="gap:var(--sk-space-3);">
               <div class="sk-form-group" style="flex:1;">
                 <label class="sk-label">Working Directory</label>
@@ -1094,24 +1175,38 @@ function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: s
                 </select>
               </div>
             </div>
-            <div class="sk-form-row" style="gap:var(--sk-space-3);">
-              <div class="sk-form-group" style="flex:1;">
-                <label class="sk-label">Run every</label>
-                <input type="number" name="scheduleAmount" class="sk-input" min="1" value="${st.schedule_amount ?? ""}" style="max-width:100px;"${!st.schedule_unit ? " disabled" : ""}>
+            <div class="sk-form-group">
+              <label class="sk-label">Schedule</label>
+              <select name="scheduleMode" class="sk-select" style="max-width:220px;">
+                <option value=""${mode === "" ? " selected" : ""}>None (manual only)</option>
+                <option value="interval"${mode === "interval" ? " selected" : ""}>Fixed interval</option>
+                <option value="weekly"${mode === "weekly" ? " selected" : ""}>Weekly schedule</option>
+              </select>
+            </div>
+            <div id="schedule-interval-fields" style="${mode === "interval" ? "" : "display:none;"}">
+              <div class="sk-form-row" style="gap:var(--sk-space-3);">
+                <div class="sk-form-group" style="flex:1;">
+                  <label class="sk-label">Run every</label>
+                  <input type="number" name="scheduleAmount" class="sk-input" min="1" value="${st.schedule_amount ?? ""}" style="max-width:100px;"${mode !== "interval" ? " disabled" : ""}>
+                </div>
+                <div class="sk-form-group" style="flex:1;">
+                  <label class="sk-label">Unit</label>
+                  <select name="scheduleUnit" class="sk-select"${mode !== "interval" ? " disabled" : ""}>
+                    <option value="minutes"${st.schedule_unit === "minutes" ? " selected" : ""}>Minutes</option>
+                    <option value="hours"${st.schedule_unit === "hours" || !st.schedule_unit ? " selected" : ""}>Hours</option>
+                    <option value="days"${st.schedule_unit === "days" ? " selected" : ""}>Days</option>
+                  </select>
+                </div>
               </div>
-              <div class="sk-form-group" style="flex:1;">
-                <label class="sk-label">Unit</label>
-                <select name="scheduleUnit" class="sk-select"
-                  onchange="var a=this.form.querySelector('[name=scheduleAmount]'); a.disabled=!this.value; if(!this.value){a.value='';}">
-                  <option value=""${!st.schedule_unit ? " selected" : ""}>None (manual only)</option>
-                  <option value="minutes"${st.schedule_unit === "minutes" ? " selected" : ""}>Minutes</option>
-                  <option value="hours"${st.schedule_unit === "hours" ? " selected" : ""}>Hours</option>
-                  <option value="days"${st.schedule_unit === "days" ? " selected" : ""}>Days</option>
-                </select>
+            </div>
+            <div id="schedule-matrix-fields" style="${mode === "weekly" ? "" : "display:none;"}">
+              <div class="sk-form-group">
+                <label class="sk-label">Weekly schedule</label>
+                ${renderScheduleMatrixEditor(matrix, { inputDisabled: mode !== "weekly" })}
               </div>
             </div>
             <div class="sk-muted sk-text-xs" style="margin-top:calc(-1 * var(--sk-space-2)); margin-bottom:var(--sk-space-3);">
-              Leave the interval as "None" to run this task only manually via Run Now.
+              Leave the schedule as "None" to run this task only manually via Run Now.
             </div>
             <div style="display:flex; gap:var(--sk-space-3); margin-top:var(--sk-space-4);">
               <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm">Save Changes</button>
@@ -1126,7 +1221,7 @@ function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: s
           <span class="sk-muted sk-text-xs">${runs.length} recent</span>
         </div>
         <div class="sk-panel__body" id="scheduled-runs-list"
-             hx-get="/workspace/scheduled/${eid}/runs" hx-trigger="load" hx-swap="innerHTML">
+             hx-get="/workspace/scheduled/${eid}/runs" hx-trigger="load, every 5s" hx-swap="innerHTML">
           ${renderScheduledRuns(runs)}
         </div>
       </div>

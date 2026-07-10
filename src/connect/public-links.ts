@@ -18,16 +18,21 @@ export function gidFromConnectKey(key: string): string | null {
   }
 }
 
-export function getConnectPublicBase(db: Database): string | null {
+function getConnectHttpBaseAndGid(db: Database): { httpBase: string; gid: string } | null {
   const key = getStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, "");
-  const guid = key ? gidFromConnectKey(key) : null;
-  if (!guid) return null;
+  const gid = key ? gidFromConnectKey(key) : null;
+  if (!gid) return null;
   // No default remote: public links only exist once the operator configures a
   // Connect URL. Without one there is nowhere to serve them from.
   const wsUrl = getStringSetting(db, SETTING_SKIPPER_CONNECT_URL, "");
   if (!wsUrl) return null;
   const httpBase = wsUrl.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/+$/, "");
-  return `${httpBase}/p/${encodeURIComponent(guid)}`;
+  return { httpBase, gid };
+}
+
+export function getConnectPublicBase(db: Database): string | null {
+  const base = getConnectHttpBaseAndGid(db);
+  return base ? `${base.httpBase}/p/${encodeURIComponent(base.gid)}` : null;
 }
 
 /**
@@ -40,4 +45,20 @@ export function getPublicArtifactUrl(db: Database, artifact: Pick<TaskArtifact, 
   const base = getConnectPublicBase(db);
   if (!base) return null;
   return `${base}/${artifact.id}?key=${encodeURIComponent(artifact.publish_key)}`;
+}
+
+/**
+ * Public webhook trigger URL for a recurring task, served by the connect
+ * integrator (POST /wh/:gid/:scheduledTaskId?key=...) which relays back to
+ * this instance; the daemon validates the key and fires "Run Now". Null when
+ * connect is unconfigured or the task's webhook trigger is disabled.
+ */
+export function getWebhookTriggerUrl(
+  db: Database,
+  scheduled: { id: string; webhook_key: string | null },
+): string | null {
+  if (!scheduled.webhook_key) return null;
+  const base = getConnectHttpBaseAndGid(db);
+  if (!base) return null;
+  return `${base.httpBase}/wh/${encodeURIComponent(base.gid)}/${encodeURIComponent(scheduled.id)}?key=${encodeURIComponent(scheduled.webhook_key)}`;
 }

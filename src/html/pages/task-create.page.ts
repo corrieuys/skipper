@@ -1,6 +1,8 @@
 import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
+import { dictateButton } from "../fragments/dictate-button.fragment";
+import { renderScheduleMatrixEditor } from "../atoms/schedule-matrix";
 import { isExperimental } from "../../config/feature-flags";
 import type { TeamPhase } from "../../config/store";
 import type { ConsensusConfig } from "../../teams/manager";
@@ -169,7 +171,10 @@ export function taskCreatePage(vm: TaskCreateViewModel): string {
               <input type="text" name="title" class="sk-input" placeholder="What needs to be done?" required autofocus>
             </div>
             <div class="sk-form-group">
-              <label class="sk-label">Description</label>
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--sk-space-2);">
+                <label class="sk-label" style="margin-bottom:0;">Description</label>
+                ${dictateButton("textarea[name=description]")}
+              </div>
               <textarea name="description" class="sk-textarea" rows="6" placeholder="Context, constraints, acceptance criteria..."></textarea>
             </div>
             <div class="sk-form-group">
@@ -199,24 +204,46 @@ export function taskCreatePage(vm: TaskCreateViewModel): string {
               hx-target="this"
               hx-swap="innerHTML"></div>
             ${isExperimental() ? `<div id="schedule-fields" style="display:none;">
-              <div class="sk-form-row" style="gap:var(--sk-space-3);">
-                <div class="sk-form-group" style="flex:1;">
-                  <label class="sk-label">Run every</label>
-                  <input type="number" name="scheduleAmount" class="sk-input" min="1" placeholder="e.g. 1" style="max-width:100px;" disabled>
+              <div class="sk-form-group">
+                <label class="sk-label">Schedule</label>
+                <select name="scheduleMode" class="sk-select" style="max-width:220px;">
+                  <option value="" selected>None (manual only)</option>
+                  <option value="interval">Fixed interval</option>
+                  <option value="weekly">Weekly schedule</option>
+                </select>
+              </div>
+              <div id="schedule-interval-fields" style="display:none;">
+                <div class="sk-form-row" style="gap:var(--sk-space-3);">
+                  <div class="sk-form-group" style="flex:1;">
+                    <label class="sk-label">Run every</label>
+                    <input type="number" name="scheduleAmount" class="sk-input" min="1" placeholder="e.g. 1" style="max-width:100px;" disabled>
+                  </div>
+                  <div class="sk-form-group" style="flex:1;">
+                    <label class="sk-label">Unit</label>
+                    <select name="scheduleUnit" class="sk-select" disabled>
+                      <option value="minutes">Minutes</option>
+                      <option value="hours" selected>Hours</option>
+                      <option value="days">Days</option>
+                    </select>
+                  </div>
                 </div>
-                <div class="sk-form-group" style="flex:1;">
-                  <label class="sk-label">Unit</label>
-                  <select name="scheduleUnit" class="sk-select"
-                    onchange="var a=this.form.querySelector('[name=scheduleAmount]'); a.disabled=!this.value; if(!this.value){a.value='';}">
-                    <option value="" selected>None (manual only)</option>
-                    <option value="minutes">Minutes</option>
-                    <option value="hours">Hours</option>
-                    <option value="days">Days</option>
-                  </select>
+              </div>
+              <div id="schedule-matrix-fields" style="display:none;">
+                <div class="sk-form-group">
+                  <label class="sk-label">Weekly schedule</label>
+                  ${renderScheduleMatrixEditor(null, { inputDisabled: true })}
                 </div>
               </div>
               <div class="sk-muted sk-text-xs" style="margin-top:calc(-1 * var(--sk-space-2)); margin-bottom:var(--sk-space-1);">
-                Optional. Leave the interval as "None" to run this recurring task only manually via Run Now.
+                Optional. Leave the schedule as "None" to run this recurring task only manually via Run Now.
+              </div>
+              <div class="sk-form-group">
+                <label class="sk-label">Global Store Instructions</label>
+                <textarea name="globalStoreInstructions" class="sk-textarea" rows="3"
+                  placeholder="Optional. Key names and payload structure for cross-run state, e.g.: store the last processed timestamp under key 'report-window' and resume from it next run."></textarea>
+                <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
+                  Injected into every run's prompt; authorizes Skipper to use the global store for state shared across runs.
+                </div>
               </div>
             </div>
             <script>

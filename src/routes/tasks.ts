@@ -13,7 +13,7 @@ import { htmlResponse, parseRequestBody, hxRedirect } from "./utils";
 import { noteItemFragment } from "../html/dashboardNotesFragment";
 import { getRealtimeTeamId } from "../config/teams";
 import { parsePhaseOverridesFromForm } from "./phase-overrides";
-import { parseOptionalInterval } from "./scheduled-tasks";
+import { parseScheduleFields } from "./scheduled-tasks";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { isExperimental } from "../config/feature-flags";
 
@@ -149,15 +149,16 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     if (taskTypeRaw === "recurring") {
       if (!isExperimental()) return Response.json({ error: "recurring tasks require --experimental" }, { status: 403 });
 
-      const { unit: scheduleUnitVal, amount: scheduleAmountVal, error: intervalError } =
-        parseOptionalInterval(formData.get("scheduleUnit"), formData.get("scheduleAmount"));
-      if (intervalError) return Response.json({ error: intervalError }, { status: 400 });
+      const { unit: scheduleUnitVal, amount: scheduleAmountVal, matrix: scheduleMatrixVal, error: scheduleError } =
+        parseScheduleFields(formData.get("scheduleUnit"), formData.get("scheduleAmount"), formData.get("scheduleMatrix"));
+      if (scheduleError) return Response.json({ error: scheduleError }, { status: 400 });
 
       const resolvedTeamId = typeof teamId === "string" && teamId.trim() ? teamId.trim() : undefined;
       const recurringConfig: Record<string, unknown> = {};
       const { overrides: recurringOverrides } = parsePhaseOverridesFromForm(formData, resolvedTeamId);
       if (Object.keys(recurringOverrides).length > 0) recurringConfig.phase_overrides = recurringOverrides;
 
+      const globalStoreInstructionsRaw = formData.get("globalStoreInstructions");
       const scheduledScheduler = new ScheduledTaskScheduler();
       const scheduled = scheduledScheduler.createScheduledTask({
         title: title.trim(),
@@ -166,6 +167,8 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         workingDirectory: typeof workingDirectoryRaw === "string" && workingDirectoryRaw.trim() ? workingDirectoryRaw.trim() : process.cwd(),
         scheduleUnit: scheduleUnitVal,
         scheduleAmount: scheduleAmountVal,
+        scheduleMatrix: scheduleMatrixVal,
+        globalStoreInstructions: typeof globalStoreInstructionsRaw === "string" && globalStoreInstructionsRaw.trim() ? globalStoreInstructionsRaw.trim() : undefined,
         taskConfig: Object.keys(recurringConfig).length > 0 ? recurringConfig : undefined,
       });
 

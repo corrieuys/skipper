@@ -1,39 +1,34 @@
 import type { MonkeyAction, MonkeyState, Perch, UserEvent, TaskDetail, DOMSection } from "./types";
 import { agentSpawnPath } from "../paths";
 import { assetTextSync } from "../assets";
+import { getAgentTypeDefinition } from "../agents/types";
+import { runOneShotText, CLAUDE_ISOLATION_ARGS } from "../agents/oneshot";
 
 const MAX_RESPONSE_TIMEOUT = 20_000;
 
-// Greg's provider + model. Defaults to the plain `claude` CLI on Haiku — fast and
-// cheap, which the 20s timeout + no-thinking spawn below assume. The operator can
+// Greg's provider + model. Defaults to claude-code on Haiku — fast and cheap,
+// which the 20s timeout + no-thinking spawn below assume. The operator can
 // override these from the config page (machine-scoped app_settings); tick.ts
-// resolves the choice and calls setGregModelConfig() so changes take effect live.
-// NOTE: the arg scaffold in callClaude() is claude-CLI-shaped, so non-claude
-// providers are best-effort and may not honor the flags or timeout.
-let gregCommand = "claude";
+// resolves the choice and calls setGregModelConfig() so changes take effect
+// live. The actual spawn goes through the provider-generic one-shot runner
+// (src/agents/oneshot.ts), so any allowlisted provider works; session resume
+// and usage tracking only apply where the provider surfaces them (claude).
+let gregAgentType = "claude-code";
 let gregModel = "claude-haiku-4-5";
-let gregModelFlag: string | null = "--model";
-export function setGregModelConfig(cfg: { command: string; model: string; modelFlag: string | null }): void {
-  gregCommand = cfg.command || "claude";
+export function setGregModelConfig(cfg: { agentType: string; model: string }): void {
+  gregAgentType = cfg.agentType || "claude-code";
   gregModel = cfg.model || "claude-haiku-4-5";
-  gregModelFlag = cfg.modelFlag ?? null;
 }
 
-// Greg is a tool-less persona bot. Run the CLI fully isolated from the user's
-// environment: no MCP servers (some are failed/needs-auth and stall startup for
-// 30s+), no tools, no settings/hooks. This keeps each tick fast (~3s) and
-// avoids inheriting the operator's giant tool/skill surface.
-const ISOLATION_ARGS = [
-  "--strict-mcp-config", // with no --mcp-config, this disables all MCP servers
-  "--tools", "",         // no tools at all
-  "--setting-sources", "", // skip user/project/local settings (and their hooks)
-];
+function gregUsesClaude(): boolean {
+  return getAgentTypeDefinition(gregAgentType)?.command === "claude";
+}
 
-// Disable extended thinking. Haiku otherwise burns ~2600 thinking tokens (~25s,
-// ~$0.017) per tick before emitting a one-line quip — blowing the timeout. With
-// thinking off, ticks finish in ~4s for ~50 output tokens. Greg never needs to
-// "reason"; he just fires a fast JSON action.
-const SPAWN_ENV = { ...process.env, PATH: agentSpawnPath(), MAX_THINKING_TOKENS: "0" };
+// Disable extended thinking (claude only). Haiku otherwise burns ~2600 thinking
+// tokens (~25s, ~$0.017) per tick before emitting a one-line quip — blowing the
+// timeout. With thinking off, ticks finish in ~4s for ~50 output tokens. Greg
+// never needs to "reason"; he just fires a fast JSON action.
+const SPAWN_ENV = { PATH: agentSpawnPath(), MAX_THINKING_TOKENS: "0" };
 const COMPACT_EVERY_N_TICKS = 20;
 
 const PROMPT_ASSET = "prompts/greg.md";
@@ -176,121 +171,61 @@ export function getConversationLength(): number {
   return sessionId ? 1 : 0;
 }
 
-async function callClaude(prompt: string, requestType: "tick" | "reply"): Promise<string | null> {
-  const args = [
-    "-p",
-    ...(gregModelFlag ? [gregModelFlag, gregModel] : []),
-    "--output-format", "stream-json",
-    "--verbose",
-    "--max-turns", "1",
-    ...ISOLATION_ARGS,
-  ];
+async function callBrain(prompt: string, requestType: "tick" | "reply"): Promise<string | null> {
+  const isClaude = gregUsesClaude();
+  const result = await runOneShotText({
+    agentType: gregAgentType,
+    model: gregModel,
+    prompt,
+    // Always supply the system prompt — `--resume` does NOT carry it forward, so
+    // without this every tick after the first reverts to the default assistant
+    // voice. Read fresh so prompt edits + reset take effect live.
+    systemPrompt: loadSystemPrompt(),
+    sessionId,
+    timeoutMs: MAX_RESPONSE_TIMEOUT,
+    extraArgs: isClaude ? ["--max-turns", "1", ...CLAUDE_ISOLATION_ARGS] : [],
+    env: isClaude ? SPAWN_ENV : { PATH: agentSpawnPath() },
+  });
 
-  // Always supply the system prompt — `--resume` does NOT carry it forward, so
-  // without this every tick after the first reverts to the default Claude
-  // assistant voice. Read fresh so prompt edits + reset take effect live.
-  args.push("--system-prompt", loadSystemPrompt());
-  if (sessionId) {
-    args.push("--resume", sessionId);
-  }
-
-  try {
-    const proc = Bun.spawn([gregCommand, ...args], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      env: SPAWN_ENV,
-    });
-
-    proc.stdin.write(prompt);
-    proc.stdin.end();
-
-    let killed = false;
-    const timeout = setTimeout(() => { killed = true; try { proc.kill(); } catch { } }, MAX_RESPONSE_TIMEOUT);
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    clearTimeout(timeout);
-
-    if (killed) {
-      console.warn("[monkey-brain] CLI timed out after %dms (type=%s)", MAX_RESPONSE_TIMEOUT, requestType);
-    }
-    if (stderr.trim()) {
-      console.warn("[monkey-brain] stderr:", stderr.slice(0, 300));
-    }
-
-    let resultText: string | null = null;
-    let usage: MonkeyUsage | null = null;
-    let foundResult = false;
-
-    for (const line of stdout.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const event = JSON.parse(line);
-
-        if (event.type === "result") {
-          foundResult = true;
-          resultText = event.result || null;
-          sessionId = event.session_id || sessionId;
-          usage = {
-            input_tokens: event.usage?.input_tokens ?? 0,
-            output_tokens: event.usage?.output_tokens ?? 0,
-            cache_read_tokens: event.usage?.cache_read_input_tokens ?? 0,
-            cache_write_tokens: event.usage?.cache_creation_input_tokens ?? 0,
-            cost_usd: event.total_cost_usd ?? 0,
-            request_type: requestType,
-            conversation_length: 0,
-            response_text: "",
-          };
-        }
-      } catch { }
-    }
-
-    if (!foundResult) {
-      console.warn("[monkey-brain] no result event in output (%d lines, %d bytes)", stdout.split("\n").length, stdout.length);
-      if (stdout.length < 500) console.warn("[monkey-brain] raw output:", stdout);
-    }
-
-    if (usage) {
-      console.log("[monkey-brain] usage: in=%d out=%d cache_r=%d cost=$%s", usage.input_tokens, usage.output_tokens, usage.cache_read_tokens, usage.cost_usd.toFixed(4));
-      lastUsage = usage;
-    }
-    return resultText;
-  } catch (err) {
-    console.warn("[monkey-brain] claude CLI failed:", err);
+  if (!result) {
+    console.warn("[monkey-brain] brain call failed (type=%s, provider=%s)", requestType, gregAgentType);
     return null;
   }
+
+  sessionId = result.sessionId ?? sessionId;
+  if (result.usage) {
+    const usage: MonkeyUsage = {
+      input_tokens: result.usage.input_tokens,
+      output_tokens: result.usage.output_tokens,
+      cache_read_tokens: result.usage.cache_read_tokens,
+      cache_write_tokens: result.usage.cache_write_tokens,
+      cost_usd: result.usage.cost_usd,
+      request_type: requestType,
+      conversation_length: 0,
+      response_text: "",
+    };
+    console.log("[monkey-brain] usage: in=%d out=%d cache_r=%d cost=$%s", usage.input_tokens, usage.output_tokens, usage.cache_read_tokens, usage.cost_usd.toFixed(4));
+    lastUsage = usage;
+  }
+  return result.text || null;
 }
 
 async function compactSession(): Promise<void> {
-  if (!sessionId) return;
+  // /compact is a claude CLI feature; other providers just reset periodically
+  // via the caller's cadence.
+  if (!sessionId || !gregUsesClaude()) return;
   console.log("[monkey-brain] compacting conversation (tick %d)", brainTickCount);
-  try {
-    const proc = Bun.spawn(["claude", "-p", "--resume", sessionId, "--output-format", "stream-json", "--verbose", "--max-turns", "1", ...ISOLATION_ARGS], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      env: SPAWN_ENV,
-    });
-    proc.stdin.write("/compact");
-    proc.stdin.end();
-    const timeout = setTimeout(() => { try { proc.kill(); } catch { } }, MAX_RESPONSE_TIMEOUT);
-    const stdout = await new Response(proc.stdout).text();
-    clearTimeout(timeout);
-    for (const line of stdout.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const event = JSON.parse(line);
-        if (event.type === "result") {
-          sessionId = event.session_id || sessionId;
-        }
-      } catch { }
-    }
-    console.log("[monkey-brain] compaction done");
-  } catch (err) {
-    console.warn("[monkey-brain] compaction failed:", err);
-  }
+  const result = await runOneShotText({
+    agentType: gregAgentType,
+    model: gregModel,
+    prompt: "/compact",
+    sessionId,
+    timeoutMs: MAX_RESPONSE_TIMEOUT,
+    extraArgs: ["--max-turns", "1", ...CLAUDE_ISOLATION_ARGS],
+    env: SPAWN_ENV,
+  });
+  if (result?.sessionId) sessionId = result.sessionId;
+  console.log("[monkey-brain] compaction done");
 }
 
 export async function askMonkeyBrain(
@@ -324,7 +259,7 @@ export async function askMonkeyBrain(
   }
 
   const prompt = buildTickMessage(state, perches, taskContext, recentEvents, taskDetail, domSections);
-  const response = await callClaude(prompt, "tick");
+  const response = await callBrain(prompt, "tick");
 
   if (!response) {
     return randomFallbackAction(perches);
@@ -356,7 +291,7 @@ export async function replyViaBrain(
     }
   }
 
-  const response = await callClaude(prompt, "reply");
+  const response = await callBrain(prompt, "reply");
   // Brain down — say nothing rather than fabricate a canned reply.
   if (!response) {
     return { type: "idle" };

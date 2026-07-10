@@ -5,7 +5,6 @@ import type { MonkeyState, Perch, MonkeyAction, UserEvent, TaskDetail, DOMSectio
 import { askMonkeyBrain, replyViaBrain, getLastUsage, resetConversation, getPersona, setGregModelConfig } from "./brain";
 import { terminalJsonSummary } from "../html/terminalJsonSummary";
 import { getGregModelChoice } from "../config/model-settings";
-import { getAgentTypeDefinition } from "../agents/types";
 import { logError } from "../logging";
 
 const TICK_ACTIVE_MS = 10_000;
@@ -39,7 +38,6 @@ export class MonkeyEngine {
   start(): void {
     if (this.tickTimer) return;
     this.resetForFreshStart();
-    console.log("[monkey] Engine started — adaptive tick (10s active, 30s idle)");
     this.scheduleTick();
   }
 
@@ -54,7 +52,6 @@ export class MonkeyEngine {
     } catch (err) {
       console.warn("[monkey] could not clear usage history:", err);
     }
-    console.log("[monkey] Reset — empty session and history");
   }
 
   stop(): void {
@@ -158,15 +155,14 @@ export class MonkeyEngine {
   /**
    * Push Greg's machine-scoped provider/model choice (config page) into the
    * brain before each call, so edits take effect on the next tick without a
-   * restart. Resolves the CLI command + model flag from the agent type.
+   * restart. The brain resolves the CLI command line from the agent type via
+   * the one-shot runner.
    */
   private syncGregModelConfig(): void {
     const choice = getGregModelChoice(this.db);
-    const typeDef = getAgentTypeDefinition(choice.agent_type, this.db);
     setGregModelConfig({
-      command: typeDef?.command || "claude",
+      agentType: choice.agent_type,
       model: choice.model,
-      modelFlag: typeDef?.model_flag ?? null,
     });
   }
 
@@ -310,13 +306,14 @@ export class MonkeyEngine {
 
       try {
         ctx.scheduledTasks = this.db.prepare(
-          `SELECT title, status, schedule_amount, schedule_unit, next_run_at, last_run_at
+          `SELECT title, status, schedule_amount, schedule_unit, schedule_matrix, next_run_at, last_run_at
            FROM scheduled_tasks ORDER BY next_run_at ASC LIMIT 5`,
         ).all().map((r: any) => ({
           title: r.title,
           status: r.status,
           scheduleAmount: r.schedule_amount,
           scheduleUnit: r.schedule_unit,
+          hasWeeklySchedule: !!r.schedule_matrix,
           nextRunAt: r.next_run_at,
           lastRunAt: r.last_run_at,
         })) as ScheduledTaskInfo[];
@@ -400,7 +397,7 @@ export class MonkeyEngine {
     }
 
     if (dc.scheduledTasks.length > 0) {
-      p.push("sched:" + dc.scheduledTasks.map(s => `${s.title}/${s.scheduleUnit && s.scheduleAmount ? `${s.scheduleAmount}${s.scheduleUnit[0]}` : "manual"}`).join(","));
+      p.push("sched:" + dc.scheduledTasks.map(s => `${s.title}/${s.scheduleUnit && s.scheduleAmount ? `${s.scheduleAmount}${s.scheduleUnit[0]}` : s.hasWeeklySchedule ? "weekly" : "manual"}`).join(","));
     }
 
     if (dc.totalAgentsRunning > 0) p.push(`${dc.totalAgentsRunning}agents`);

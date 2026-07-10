@@ -43,6 +43,26 @@ export interface TaskStateChangedEvent {
   newStatus: string;
 }
 
+export interface TaskCreatedEvent {
+  taskId: string;
+}
+
+export interface TaskPhaseChangedEvent {
+  taskId: string;
+  previousPhase: number;
+  newPhase: number;
+  direction: "advance" | "regress";
+}
+
+export interface ArtifactPublishStateEvent {
+  artifactId: string;
+  taskId: string;
+  name: string;
+  version: number;
+  /** ISO timestamp when published; null after unpublish. */
+  publishedAt: string | null;
+}
+
 export interface AgentStateChangedEvent {
   agentId: string;
   previousState: string;
@@ -194,7 +214,11 @@ export interface EventMap {
   "escalation:resolved": [EscalationResolvedEvent];
   "task:note_added": [TaskNoteAddedEvent];
   "task:state_changed": [TaskStateChangedEvent];
+  "task:created": [TaskCreatedEvent];
+  "task:phase_changed": [TaskPhaseChangedEvent];
   "artifact:created": [ArtifactCreatedEvent];
+  "artifact:published": [ArtifactPublishStateEvent];
+  "artifact:unpublished": [ArtifactPublishStateEvent];
   "realtime:window_ready": [RealtimeWindowReadyEvent];
   "realtime:trigger_fired": [RealtimeTriggerFiredEvent];
   "realtime:session_state": [RealtimeSessionStateEvent];

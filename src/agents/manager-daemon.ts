@@ -938,12 +938,17 @@ export class ManagerDaemon {
     if (queuedCount > 0) return;
 
     const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+    // The global-store contract rides in the run's task_config so the prompt
+    // builder can inject it (same merge as runTaskNow).
     const task = this.taskScheduler.createTask({
       title: `${scheduled.title} (${timestamp})`,
       description: scheduled.description ?? undefined,
       teamId: scheduled.team_id ?? undefined,
       workingDirectory: scheduled.working_directory,
-      taskConfig: scheduled.task_config as import("../tasks/scheduler").RealtimeTaskConfig,
+      taskConfig: {
+        ...scheduled.task_config,
+        ...(scheduled.global_store_instructions ? { global_store_instructions: scheduled.global_store_instructions } : {}),
+      } as import("../tasks/scheduler").RealtimeTaskConfig,
     });
 
     this.db

@@ -43,10 +43,20 @@ export interface ScheduledTaskSummary {
   team_name: string | null;
   schedule_unit: string | null;
   schedule_amount: number | null;
+  /** Weekly matrix as its raw JSON string (7x24 of 0/1); null = interval/manual mode. */
+  schedule_matrix?: string | null;
   status: string;
   next_run_at: string | null;
   last_run_at: string | null;
   created_at: string;
+  /** Webhook trigger secret (null = disabled). Only populated on the detail view. */
+  webhook_key?: string | null;
+  /** Full public trigger URL; null when connect is unconfigured. */
+  webhook_url?: string | null;
+  /** Webhook debounce window in minutes (floor 1). Detail view only. */
+  webhook_debounce_minutes?: number | null;
+  /** Global-store usage contract injected into every run's prompt. Detail view only. */
+  global_store_instructions?: string | null;
 }
 
 export interface CommandCenterViewModel {
@@ -289,7 +299,7 @@ export function buildCommandCenterViewModel(
     try {
       scheduledTasks = db.prepare(
         `SELECT st.id, st.title, st.description, st.team_id, st.schedule_unit, st.schedule_amount,
-                st.status, st.next_run_at, st.last_run_at, st.created_at,
+                st.schedule_matrix, st.status, st.next_run_at, st.last_run_at, st.created_at,
                 tm.name AS team_name
          FROM scheduled_tasks st LEFT JOIN teams tm ON tm.id = st.team_id
          ORDER BY CASE st.status WHEN 'approved' THEN 0 ELSE 1 END, st.created_at DESC`

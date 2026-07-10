@@ -167,14 +167,34 @@ export class ArtifactManager {
     this.db
       .prepare("UPDATE task_artifacts SET publish_key = ?, published_at = datetime('now') WHERE id = ?")
       .run(key, id);
-    return this.getArtifactById(id);
+    const updated = this.getArtifactById(id);
+    if (updated) {
+      eventBus.emit("artifact:published", {
+        artifactId: id,
+        taskId: updated.task_id,
+        name: updated.name,
+        version: updated.version,
+        publishedAt: updated.published_at,
+      });
+    }
+    return updated;
   }
 
   unpublishArtifact(id: string): TaskArtifact | null {
     const artifact = this.getArtifactById(id);
     if (!artifact) return null;
     this.db.prepare("UPDATE task_artifacts SET published_at = NULL WHERE id = ?").run(id);
-    return this.getArtifactById(id);
+    const updated = this.getArtifactById(id);
+    if (updated) {
+      eventBus.emit("artifact:unpublished", {
+        artifactId: id,
+        taskId: updated.task_id,
+        name: updated.name,
+        version: updated.version,
+        publishedAt: null,
+      });
+    }
+    return updated;
   }
 
   getPublishedArtifact(id: string, key: string): TaskArtifact | null {

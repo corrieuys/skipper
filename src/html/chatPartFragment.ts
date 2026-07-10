@@ -44,7 +44,12 @@ export function chatPartFragment(part: MessagePart): string {
       return `<details class="chat-bubble chat-bubble-thinking"><summary>thinking</summary><div class="chat-bubble-body">${escapeHtml(part.content).replace(/\n/g, "<br>")}</div></details>`;
     case "tool_use": {
       const name = part.name ?? "tool";
-      const body = part.content?.trim() ? part.content : "(no input)";
+      // content normally carries the stringified input; fall back to the raw
+      // input field for parts persisted without it.
+      const inputFallback = part.input === undefined || part.input === null
+        ? ""
+        : typeof part.input === "string" ? part.input : JSON.stringify(part.input, null, 2);
+      const body = part.content?.trim() ? part.content : inputFallback.trim() ? inputFallback : "(no input)";
       return `<details class="chat-bubble chat-bubble-tool-use"><summary>tool · ${escapeHtml(name)}</summary><pre class="chat-bubble-body chat-bubble-pre">${escapeHtml(body)}</pre></details>`;
     }
     case "tool_result": {

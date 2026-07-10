@@ -3,7 +3,7 @@ import { getDb } from "../db/connection";
 import { escapeHtml } from "../html/atoms/escape-html";
 import { looksLikeHtml } from "../html/atoms/sniff-html";
 import { ArtifactManager } from "../orchestrator/artifact-manager";
-import { getConnectPublicBase, getPublicArtifactUrl } from "../connect/public-links";
+import { getConnectPublicBase, getPublicArtifactUrl, getWebhookTriggerUrl } from "../connect/public-links";
 import { getRealtimeTeamId, listTeamsForStandardTasks } from "../config/teams";
 import { isTeamVisible, isExperimental } from "../config/feature-flags";
 import { listPreferences, setPreference } from "../notifications/store";
@@ -866,6 +866,8 @@ function registerV2PageRoutes(): void {
       `SELECT st.*, tm.name AS team_name FROM scheduled_tasks st LEFT JOIN teams tm ON tm.id = st.team_id WHERE st.id = ?`
     ).get(scheduledId) as any;
     if (!st) return null;
+    // Public trigger URL for the webhook panel; null until connect is configured.
+    st.webhook_url = getWebhookTriggerUrl(db, { id: st.id, webhook_key: st.webhook_key ?? null });
     // Recurring tasks are always standard — exclude the Real Time team.
     const teams = listTeamsForStandardTasks();
     const runs = db.prepare(
@@ -1294,8 +1296,13 @@ function registerV2PageRoutes(): void {
       const body = await req.json() as { target?: string; agent_type?: string; model?: string };
       target = body.target ?? ""; agentType = body.agent_type ?? ""; model = body.model ?? "";
     }
-    if (target !== "skipper" && target !== "chat" && target !== "greg") {
-      return new Response("target must be skipper|chat|greg", { status: 400 });
+    const validTargets = ["skipper", "chat", "greg"];
+    // Dictation is experimental-only; its config row is hidden without the flag,
+    // so reject writes too.
+    const { isExperimental } = require("../config/feature-flags");
+    if (isExperimental()) validTargets.push("dictation");
+    if (!validTargets.includes(target)) {
+      return new Response(`target must be ${validTargets.join("|")}`, { status: 400 });
     }
     const err = saveModelSetting(db, target, agentType, model);
     if (err) return new Response(err, { status: 400 });

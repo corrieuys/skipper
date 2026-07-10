@@ -739,3 +739,43 @@ describe("note injection cap + soft-delete", () => {
     expect(noteIds.length).toBe(6);
   });
 });
+
+describe("global store instructions injection", () => {
+  it("injects the marked section when the run's task_config carries instructions", () => {
+    const agentId = createAgent("Dev Agent");
+    const contract = "Store the last processed timestamp under key 'report-window' and resume from it.";
+    db.prepare("INSERT INTO tasks (id, title, task_config) VALUES (?, ?, ?)").run(
+      "task-gsi",
+      "Rolling report",
+      JSON.stringify({ global_store_instructions: contract }),
+    );
+
+    const prompt = builder.buildInitialPrompt({
+      agent: { id: agentId, name: "Dev Agent", type: "claude-code", instruction: "" },
+      task: { id: "task-gsi", title: "Rolling report", description: "Generate the report" },
+      isStreaming: true,
+    });
+
+    expect(prompt).toContain("--- GLOBAL STORE INSTRUCTIONS ---");
+    expect(prompt).toContain(contract);
+    expect(prompt).toContain("--- END GLOBAL STORE INSTRUCTIONS ---");
+    expect(prompt).toContain("explicitly authorized to use the global-store MCP tools");
+  });
+
+  it("omits the section when task_config has no instructions", () => {
+    const agentId = createAgent("Dev Agent");
+    db.prepare("INSERT INTO tasks (id, title, task_config) VALUES (?, ?, ?)").run(
+      "task-plain",
+      "Plain task",
+      JSON.stringify({ phase_overrides: {} }),
+    );
+
+    const prompt = builder.buildInitialPrompt({
+      agent: { id: agentId, name: "Dev Agent", type: "claude-code", instruction: "" },
+      task: { id: "task-plain", title: "Plain task" },
+      isStreaming: true,
+    });
+
+    expect(prompt).not.toContain("GLOBAL STORE INSTRUCTIONS");
+  });
+});

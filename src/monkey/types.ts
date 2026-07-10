@@ -69,6 +69,8 @@ export interface ScheduledTaskInfo {
   status: string;
   scheduleAmount: number | null;
   scheduleUnit: string | null;
+  /** True when the task uses a weekly schedule matrix instead of an interval. */
+  hasWeeklySchedule: boolean;
   nextRunAt: string | null;
   lastRunAt: string | null;
 }

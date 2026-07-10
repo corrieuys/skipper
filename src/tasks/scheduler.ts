@@ -135,6 +135,8 @@ export class TaskScheduler {
       )
       .run(id, input.title, input.description ?? null, input.teamId ?? null, workingDirectory, taskType, taskConfig);
 
+    eventBus.emit("task:created", { taskId: id });
+
     return this.getTask(id)!;
   }
 
@@ -644,6 +646,13 @@ export class TaskScheduler {
       )
       .run(id);
 
+    eventBus.emit("task:phase_changed", {
+      taskId: id,
+      previousPhase: task.current_phase,
+      newPhase: task.current_phase + 1,
+      direction: "advance",
+    });
+
     return this.getTask(id)!;
   }
 
@@ -689,6 +698,13 @@ export class TaskScheduler {
          WHERE id = ?`,
       )
       .run(targetPhase, id);
+
+    eventBus.emit("task:phase_changed", {
+      taskId: id,
+      previousPhase: task.current_phase,
+      newPhase: targetPhase,
+      direction: "regress",
+    });
 
     return this.getTask(id)!;
   }

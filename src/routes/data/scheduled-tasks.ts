@@ -1,7 +1,7 @@
 import { addDataRoute } from "./auth";
 import { ScheduledTaskScheduler } from "../../tasks/scheduled-scheduler";
-import type { ScheduleUnit } from "../../tasks/scheduled-scheduler";
-import { parseOptionalInterval } from "../scheduled-tasks";
+import type { ScheduleUnit, ScheduleMatrix } from "../../tasks/scheduled-scheduler";
+import { parseScheduleFields } from "../scheduled-tasks";
 import { parseRequestBody } from "../utils";
 import { isExperimental } from "../../config/feature-flags";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
@@ -22,13 +22,20 @@ interface ScheduledTaskBody extends Record<string, unknown> {
   workingDirectory?: string;
   scheduleUnit?: string;
   scheduleAmount?: string | number;
+  // Weekly matrix: the natural JSON array or a pre-encoded JSON string.
+  scheduleMatrix?: string | number[][];
+  // Global-store usage contract, injected into every spawned run's prompt.
+  globalStoreInstructions?: string;
   taskConfig?: Record<string, unknown>;
 }
 
-function parseInterval(body: ScheduledTaskBody): { unit: ScheduleUnit | null; amount: number | null; error?: string } {
-  return parseOptionalInterval(
+function parseSchedule(body: ScheduledTaskBody): { unit: ScheduleUnit | null; amount: number | null; matrix: ScheduleMatrix | null; error?: string } {
+  return parseScheduleFields(
     body.scheduleUnit ?? null,
     body.scheduleAmount !== undefined ? String(body.scheduleAmount) : null,
+    body.scheduleMatrix !== undefined && typeof body.scheduleMatrix !== "string"
+      ? JSON.stringify(body.scheduleMatrix)
+      : body.scheduleMatrix ?? null,
   );
 }
 
@@ -62,7 +69,7 @@ export function registerDataScheduledTaskRoutes(
     if (gate) return gate;
     const body = await parseRequestBody<ScheduledTaskBody>(req);
     if (!body.title?.trim()) return err("title is required");
-    const { unit, amount, error } = parseInterval(body);
+    const { unit, amount, matrix, error } = parseSchedule(body);
     if (error) return err(error);
     try {
       const task = getScheduler().createScheduledTask({
@@ -72,6 +79,8 @@ export function registerDataScheduledTaskRoutes(
         workingDirectory: body.workingDirectory?.trim() || process.cwd(),
         scheduleUnit: unit,
         scheduleAmount: amount,
+        scheduleMatrix: matrix,
+        globalStoreInstructions: body.globalStoreInstructions?.trim() || undefined,
         taskConfig: body.taskConfig,
       });
       return ok(task, 201);
@@ -85,7 +94,7 @@ export function registerDataScheduledTaskRoutes(
     if (gate) return gate;
     const body = await parseRequestBody<ScheduledTaskBody>(req);
     if (!body.title?.trim()) return err("title is required");
-    const { unit, amount, error } = parseInterval(body);
+    const { unit, amount, matrix, error } = parseSchedule(body);
     if (error) return err(error);
     try {
       const task = getScheduler().updateScheduledTask(params.id, {
@@ -95,6 +104,8 @@ export function registerDataScheduledTaskRoutes(
         workingDirectory: body.workingDirectory?.trim() || undefined,
         scheduleUnit: unit,
         scheduleAmount: amount,
+        scheduleMatrix: matrix,
+        globalStoreInstructions: body.globalStoreInstructions?.trim() || undefined,
         taskConfig: body.taskConfig,
       });
       return ok(task);

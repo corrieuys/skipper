@@ -6,7 +6,7 @@ import type { TaskScheduler } from "../tasks/scheduler";
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
 import { getRealtimeConfig } from "../realtime/config";
-import { createTranscriptionAdapter } from "../realtime/transcription";
+import { createTranscriptionAdapter, stripFillerMarkers } from "../realtime/transcription";
 import { getSkipperConfig, getEntrypointAgentId } from "../agents/skipper";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
 import { deduplicateOverlap } from "../realtime/dedup";
@@ -474,12 +474,7 @@ export class RealtimeSessionManager {
           } catch { /* metadata parse failure — skip dedup */ }
 
           // Strip whisper filler/pause markers and check if anything meaningful remains
-          const strippedText = finalText
-            .replace(/\[pause\]/gi, "")
-            .replace(/\[silence\]/gi, "")
-            .replace(/\[blank_audio\]/gi, "")
-            .replace(/\[music\]/gi, "")
-            .trim();
+          const strippedText = stripFillerMarkers(finalText);
 
           if (!strippedText || strippedText.split(/\s+/).length < 3) {
             // Too short / only filler — mark as transcribed but empty

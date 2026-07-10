@@ -3,10 +3,14 @@ import type { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import type { EscalationManager } from "../escalations/manager";
 import type { ArtifactManager } from "../orchestrator/artifact-manager";
 import type { PhaseManager } from "../orchestrator/phase-manager";
+import { timingSafeEqual } from "crypto";
 import { fetchTaskNotes, fetchTaskArtifacts } from "../data/queries";
+import { TeamManager } from "../teams/manager";
 import { getDb } from "../db/connection";
 import { looksLikeHtml } from "../html/atoms/sniff-html";
+import { CONNECT_PROTOCOL_VERSION, type StateSnapshot } from "./protocol";
 import { getPublicArtifactUrl } from "./public-links";
+import { snapshotOpenEscalations, snapshotTasks } from "./serializers";
 
 export interface ResourceDeps {
   taskScheduler: TaskScheduler;
@@ -35,16 +39,22 @@ export async function handleResourceRequest(
             return { ok: true, data: taskScheduler.listTasks() };
           case "read":
             return { ok: true, data: taskScheduler.getTask(String(params.id ?? "")) };
-          case "create":
+          case "create": {
+            const taskType = params.taskType != null ? String(params.taskType) : undefined;
+            if (taskType && taskType !== "standard" && taskType !== "real_time") {
+              return { ok: false, error: `Invalid taskType: ${taskType}` };
+            }
             return {
               ok: true,
               data: taskScheduler.createTask({
                 title: String(params.title ?? ""),
                 description: params.description != null ? String(params.description) : undefined,
                 teamId: params.teamId != null ? String(params.teamId) : undefined,
+                taskType: taskType as "standard" | "real_time" | undefined,
                 workingDirectory: params.workingDirectory != null ? String(params.workingDirectory) : process.cwd(),
               }),
             };
+          }
           case "delete":
             return { ok: true, data: { deleted: taskScheduler.deleteTask(String(params.id ?? "")) } };
           case "approve":
@@ -82,6 +92,23 @@ export async function handleResourceRequest(
           default:
             return { ok: false, error: `Unknown tasks action: ${action}` };
         }
+      }
+
+      case "teams": {
+        // Light projection for remote task creation: pick a team, never its full config.
+        if (action === "list") {
+          const teams = new TeamManager(db).listTeams();
+          return {
+            ok: true,
+            data: teams.map((t) => ({
+              id: t.id,
+              name: t.name,
+              goal: t.goal ?? null,
+              phase_count: t.phases.length,
+            })),
+          };
+        }
+        return { ok: false, error: `Unknown teams action: ${action}` };
       }
 
       case "escalations": {
@@ -298,6 +325,63 @@ export async function handleResourceRequest(
             createdAt: r.created_at,
           })),
         };
+      }
+
+      case "webhooks": {
+        if (action !== "trigger") return { ok: false, error: `Unknown webhooks action: ${action}` };
+        // Relay target for the integrator's public webhook route
+        // (POST /wh/:gid/:scheduledTaskId?key=...). Auth is possession of the
+        // per-task webhook_key, validated HERE - the integrator only relays.
+        // One opaque error for unknown id / disabled / wrong key so the public
+        // route cannot enumerate scheduled tasks.
+        const id = String(params.id ?? "");
+        const key = String(params.key ?? "");
+        const scheduled = id ? scheduledTaskScheduler.getScheduledTask(id) : null;
+        if (!scheduled?.webhook_key || !key) return { ok: false, error: "Not found" };
+        const expected = Buffer.from(scheduled.webhook_key);
+        const provided = Buffer.from(key);
+        if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) {
+          return { ok: false, error: "Not found" };
+        }
+        // Key holder is semi-trusted from here: real errors (e.g. not approved).
+        const payload = params.payload;
+        const runInput =
+          payload == null
+            ? undefined
+            : typeof payload === "string"
+              ? payload
+              : JSON.stringify(payload);
+        // Per-task leading-edge debounce: a webhook inside the window is
+        // ignored and restamps the window, so only a burst's first webhook
+        // runs. Cron and manual runs never consume the window.
+        const fired = scheduledTaskScheduler.runWebhookTask(
+          id,
+          taskScheduler,
+          runInput ? `Webhook payload:\n${runInput.slice(0, 16_384)}` : undefined,
+        );
+        if (fired.debounced) {
+          return { ok: false, error: "Debounced: ignored, within the debounce window of the previous webhook" };
+        }
+        return { ok: true, data: { triggered: true, taskId: fired.task.id, title: fired.task.title } };
+      }
+
+      case "state": {
+        if (action !== "snapshot") return { ok: false, error: `Unknown state action: ${action}` };
+        // One-shot full state for the integrator web app: fetched on every WS
+        // (re)connect, after which fat events keep its local store patched.
+        // Projections only - no result/orchestration_state/artifact bodies.
+        const tasks = snapshotTasks(db);
+        const escalations = snapshotOpenEscalations(db);
+        const reviews = tasks.filter((t) => t.needs_review);
+        const snapshot: StateSnapshot = {
+          protocolVersion: CONNECT_PROTOCOL_VERSION,
+          ts: new Date().toISOString(),
+          tasks,
+          escalations,
+          reviews,
+          counts: { openEscalations: escalations.length, pendingReviews: reviews.length },
+        };
+        return { ok: true, data: snapshot };
       }
 
       default:

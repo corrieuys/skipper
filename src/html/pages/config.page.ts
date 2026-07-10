@@ -1,6 +1,7 @@
 import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
+import { themePickerFragment } from "../styles/themes";
 import { NOTIFICATION_EVENTS } from "../../notifications/types";
 import { isExperimental } from "../../config/feature-flags";
 import type { NotificationPreference } from "../../notifications/store";
@@ -21,6 +22,7 @@ export interface ConfigPageViewModel {
     skipper: ModelChoice;
     chat: ModelChoice;
     greg: ModelChoice;
+    dictation: ModelChoice;
     options: AgentTypeOption[];
   };
 }
@@ -28,7 +30,7 @@ export interface ConfigPageViewModel {
 /** One provider (agent type) + model row for a subsystem. Model list is filtered
  *  client-side when the provider changes (see the script in modelSettingsPanel). */
 function modelSettingRow(
-  target: "skipper" | "chat" | "greg",
+  target: "skipper" | "chat" | "greg" | "dictation",
   label: string,
   hint: string,
   current: ModelChoice,
@@ -74,11 +76,12 @@ function modelSettingsPanel(ms: ConfigPageViewModel["modelSettings"]): string {
     </div>
     <div class="sk-panel__body">
       <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
-        Provider + model for each core agent. Stored on this machine only (not committed). Greg is tuned for the <code>claude</code> CLI; other providers are best-effort.
+        Provider + model for each core agent. Stored on this machine only (not committed).
       </p>
       ${modelSettingRow("skipper", "Skipper", "Root task orchestrator", ms.skipper, ms.options)}
       ${modelSettingRow("chat", "Skipper Chat", "Conversational chat agent", ms.chat, ms.options)}
       ${modelSettingRow("greg", "Greg", "Heckler bot", ms.greg, ms.options)}
+      ${isExperimental() ? modelSettingRow("dictation", "Dictation Rewriter", "Cleans up dictated task descriptions", ms.dictation, ms.options) : ""}
     </div>
     <script>
       (function(){
@@ -212,6 +215,20 @@ export function configPage(vm: ConfigPageViewModel): string {
       ${teamsPanel(vm.teams)}
 
       ${modelSettingsPanel(vm.modelSettings)}
+
+      <!-- Appearance Section -->
+      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
+        <div class="sk-panel__header">
+          <span class="sk-panel__title">Appearance</span>
+        </div>
+        <div class="sk-panel__body">
+          <div class="sk-flex sk-items-center sk-gap-3">
+            <label class="sk-muted sk-text-xs">Theme:</label>
+            ${themePickerFragment()}
+            <span class="sk-text-xs sk-muted">Applies immediately. Stored in this browser.</span>
+          </div>
+        </div>
+      </div>
 
       <!-- Sound Notifications Section -->
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">

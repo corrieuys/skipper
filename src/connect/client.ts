@@ -9,6 +9,7 @@ import type { ClientMessage, ServerMessage, ConnectTool } from "./protocol";
 import { executeCommand } from "./commands";
 import { handleResourceRequest, type ResourceDeps } from "./resources";
 import { subscribeConnectEvents } from "./events";
+import { OutputTailManager } from "./output-tail";
 
 const MAX_BACKOFF_MS = 60_000;
 
@@ -21,6 +22,7 @@ export class ConnectClient {
   private running = false;
   private _connectionStatus: ConnectionStatus = "disabled";
   private _eventUnsub: (() => void) | null = null;
+  private _outputTail: OutputTailManager | null = null;
 
   private taskScheduler: TaskScheduler;
   private scheduledTaskScheduler: ScheduledTaskScheduler;
@@ -55,6 +57,8 @@ export class ConnectClient {
     this._connectionStatus = "disabled";
     this._eventUnsub?.();
     this._eventUnsub = null;
+    this._outputTail?.destroy();
+    this._outputTail = null;
     this.clearReconnectTimer();
     if (this.ws) {
       this.ws.close();
@@ -121,10 +125,15 @@ export class ConnectClient {
       if (msg.type === "auth_ok") {
         this._connectionStatus = "connected";
         console.log("[connect] Authenticated — Skipper Connect live");
-        this._eventUnsub?.();
-        this._eventUnsub = subscribeConnectEvents((frame) => {
+        const sender = (frame: string) => {
           if (ws.readyState === WebSocket.OPEN) ws.send(frame);
-        });
+        };
+        this._eventUnsub?.();
+        this._eventUnsub = subscribeConnectEvents(sender);
+        // Fresh per connection: the server replays output_subscribe frames for
+        // still-wanted tasks after reconnect, so no tail state survives here.
+        this._outputTail?.destroy();
+        this._outputTail = new OutputTailManager(getDb(), sender);
       } else if (msg.type === "auth_error") {
         this._connectionStatus = "auth_failed";
         console.error("[connect] Auth rejected by server:", msg.message);
@@ -132,6 +141,10 @@ export class ConnectClient {
       } else if (msg.type === "ping") {
         const pong: ClientMessage = { type: "pong" };
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(pong));
+      } else if (msg.type === "output_subscribe") {
+        this._outputTail?.handleSubscribe(msg.taskId);
+      } else if (msg.type === "output_unsubscribe") {
+        this._outputTail?.handleUnsubscribe(msg.taskId);
       } else if (msg.type === "command") {
         this.handleCommand(ws, msg.id, msg.tool, (msg.args ?? {}) as Record<string, unknown>);
       } else if (msg.type === "request") {
@@ -142,6 +155,8 @@ export class ConnectClient {
     ws.onclose = (event: CloseEvent) => {
       this._eventUnsub?.();
       this._eventUnsub = null;
+      this._outputTail?.destroy();
+      this._outputTail = null;
       this.ws = null;
       if (event.code === 4001) {
         this.running = false;

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
+import { eventBus, type ArtifactPublishStateEvent } from "../events/bus";
 import { ArtifactManager } from "./artifact-manager";
 import { unlinkSync } from "fs";
 
@@ -237,6 +238,38 @@ describe("ArtifactManager", () => {
     it("publishArtifact returns null for unknown id", () => {
       expect(artifactManager.publishArtifact("nope")).toBeNull();
       expect(artifactManager.unpublishArtifact("nope")).toBeNull();
+    });
+
+    it("emits artifact:published and artifact:unpublished bus events", () => {
+      const published: ArtifactPublishStateEvent[] = [];
+      const unpublished: ArtifactPublishStateEvent[] = [];
+      const onPublish = (e: ArtifactPublishStateEvent) => published.push(e);
+      const onUnpublish = (e: ArtifactPublishStateEvent) => unpublished.push(e);
+      eventBus.on("artifact:published", onPublish);
+      eventBus.on("artifact:unpublished", onUnpublish);
+      try {
+        const taskId = seedTask(db);
+        const created = artifactManager.createArtifact({ taskId, name: "doc", kind: "plan", body: "v1" });
+
+        artifactManager.publishArtifact(created.id);
+        expect(published).toHaveLength(1);
+        expect(published[0]).toMatchObject({ artifactId: created.id, taskId, name: "doc", version: 1 });
+        expect(published[0]!.publishedAt).toBeTruthy();
+
+        artifactManager.unpublishArtifact(created.id);
+        expect(unpublished).toEqual([
+          { artifactId: created.id, taskId, name: "doc", version: 1, publishedAt: null },
+        ]);
+
+        // unknown ids emit nothing
+        artifactManager.publishArtifact("nope");
+        artifactManager.unpublishArtifact("nope");
+        expect(published).toHaveLength(1);
+        expect(unpublished).toHaveLength(1);
+      } finally {
+        eventBus.off("artifact:published", onPublish);
+        eventBus.off("artifact:unpublished", onUnpublish);
+      }
     });
 
     it("getPublishedArtifact returns the artifact only for the correct key", () => {

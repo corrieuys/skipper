@@ -5,9 +5,12 @@
 export function missionControlStyles(): string {
   return `
     /* ── Workspace shell: sidebar + main ── */
+    /* Desktop: the sidebar column is a permanent 40px rail; the expanded
+       sidebar overlays the main area (see the min-width media block below)
+       so the dashboard always gets maximum width. Mobile overrides to 1fr. */
     .mc-workspace {
       display: grid;
-      grid-template-columns: 260px 1fr;
+      grid-template-columns: 40px 1fr;
       grid-template-rows: 1fr;
       height: calc(100vh - 48px);
       overflow: hidden; /* grid children scroll independently */
@@ -46,12 +49,16 @@ export function missionControlStyles(): string {
     }
     .mc-sidebar__create:hover { opacity: 0.9; color: var(--on-primary); }
 
-    .mc-sidebar__setting {
+    /* Footer container pinned to the bottom of the sidebar (list above it
+       takes flex:1) — holds machine-wide quick settings like the parallel
+       task toggle. */
+    .mc-sidebar__footer {
       padding: var(--sk-space-2) var(--sk-space-3) var(--sk-space-3);
-      border-bottom: 1px solid var(--sk-border);
+      border-top: 1px solid var(--sk-border);
+      background: var(--sk-surface-1);
+      flex-shrink: 0;
     }
-    .mc-sidebar__setting .sk-checkbox { margin-top: 0; padding: var(--sk-space-1) 0; }
-    .mc-sidebar__setting-hint { font-size: var(--sk-text-xs); margin-top: 2px; }
+    .mc-sidebar__footer .sk-checkbox { margin-top: 0; padding: var(--sk-space-1) 0; }
 
     .mc-sidebar__filters {
       display: flex;
@@ -113,6 +120,7 @@ export function missionControlStyles(): string {
     .mc-sidebar__item-dot--completed { background: var(--sk-accent-tertiary); }
     .mc-sidebar__item-dot--failed { background: var(--sk-accent-danger); }
     .mc-sidebar__item-dot--approved { background: var(--sk-accent-warning); }
+    .mc-sidebar__item-dot--paused { background: var(--sk-accent-warning); }
     .mc-sidebar__item-dot--draft { background: var(--sk-surface-4); }
     .mc-sidebar__item-dot--active { background: var(--sk-accent-tertiary); }
     .mc-sidebar__item-dot--archived { background: var(--sk-surface-4); }
@@ -877,6 +885,7 @@ export function missionControlStyles(): string {
     .mc-node__indicator--failed { background: var(--sk-accent-danger); }
     .mc-node__indicator--waiting { background: var(--sk-accent-primary); animation: mc-pulse 3s ease-in-out infinite; }
     .mc-node__indicator--pending { background: var(--sk-surface-4); }
+    .mc-node__indicator--paused { background: var(--sk-accent-warning); }
     .mc-node__name {
       font-weight: 700;
       color: var(--sk-text);
@@ -1304,7 +1313,9 @@ export function missionControlStyles(): string {
       left: 0;
       right: 0;
       bottom: 0;
-      z-index: 50;
+      /* Above the overlay sidebar (z-index 100), below modals (200): the
+         collapsed sidebar rail must not paint over full-height chat. */
+      z-index: 150;
     }
     .mc-chat-panel__body {
       flex: 1;
@@ -1545,20 +1556,69 @@ export function missionControlStyles(): string {
     }
     .conv-sidebar-toggle:hover { color: var(--sk-text); }
 
-    /* ── Collapsed sidebar state ── */
-    .mc-workspace--sidebar-collapsed {
-      grid-template-columns: 40px 1fr;
-    }
-    .mc-workspace--sidebar-collapsed .mc-sidebar__header {
-      justify-content: center;
-      padding: var(--sk-space-3) var(--sk-space-1);
-    }
-    .mc-workspace--sidebar-collapsed .mc-sidebar__create,
-    .mc-workspace--sidebar-collapsed .mc-sidebar__list,
-    .mc-workspace--sidebar-collapsed .mc-sidebar__escalations,
-    .mc-workspace--sidebar-collapsed .mc-sidebar__group-label,
-    .mc-workspace--sidebar-collapsed .mc-sidebar__setting {
-      display: none;
+    /* ── Desktop sidebar: collapsed rail, hover to overlay, pin to dock ──
+       Closed by default: a 40px rail with just the arrow button. Hovering
+       the rail slides the full sidebar out OVER the main area (it sits in
+       the 40px grid column and overflows it with a higher z-index, so the
+       dashboard never reflows). Mouse-out collapses it again. Clicking the
+       arrow pins it open as a real 260px grid column instead: the main
+       area reflows next to it, no overlay, no shadow (persisted; see
+       Skipper.sidebar in skipper.js). */
+    @media (min-width: 769px) {
+      .mc-sidebar {
+        position: relative;
+        z-index: 100;
+        width: 40px;
+        transition: width 0.15s ease;
+        overflow: hidden;
+      }
+      .mc-sidebar:hover,
+      .mc-workspace--sidebar-pinned .mc-sidebar {
+        width: 260px;
+      }
+      /* Hover (unpinned) is the temporary overlay: shadow signals floating. */
+      .mc-workspace:not(.mc-workspace--sidebar-pinned) .mc-sidebar:hover {
+        box-shadow: 4px 0 16px rgba(0, 0, 0, 0.35);
+      }
+      /* Pinned: widen the grid column so the sidebar is part of the layout. */
+      .mc-workspace--sidebar-pinned {
+        grid-template-columns: 260px 1fr;
+      }
+      /* Closed rail: content hidden, arrow centered. */
+      .mc-sidebar__create,
+      .mc-sidebar__list,
+      .mc-sidebar__footer {
+        display: none;
+      }
+      .mc-sidebar__header {
+        justify-content: center;
+        padding: var(--sk-space-3) var(--sk-space-1);
+      }
+      /* Open (hovered or pinned): full content at its final 260px width so
+         text doesn't reflow while the panel is still sliding. */
+      .mc-sidebar:hover .mc-sidebar__create,
+      .mc-workspace--sidebar-pinned .mc-sidebar__create { display: block; }
+      .mc-sidebar:hover .mc-sidebar__list,
+      .mc-workspace--sidebar-pinned .mc-sidebar__list { display: block; }
+      .mc-sidebar:hover .mc-sidebar__footer,
+      .mc-workspace--sidebar-pinned .mc-sidebar__footer { display: block; }
+      .mc-sidebar:hover .mc-sidebar__header,
+      .mc-workspace--sidebar-pinned .mc-sidebar__header {
+        justify-content: flex-start;
+        padding: var(--sk-space-3);
+        padding-top: var(--sk-space-4);
+      }
+      .mc-sidebar:hover .mc-sidebar__header,
+      .mc-sidebar:hover .mc-sidebar__list,
+      .mc-sidebar:hover .mc-sidebar__footer,
+      .mc-workspace--sidebar-pinned .mc-sidebar__header,
+      .mc-workspace--sidebar-pinned .mc-sidebar__list,
+      .mc-workspace--sidebar-pinned .mc-sidebar__footer {
+        min-width: 260px;
+      }
+      /* Arrow points right (open me) when unpinned, left (unpin) when pinned. */
+      .mc-sidebar__collapse-btn { transform: rotate(180deg); }
+      .mc-workspace--sidebar-pinned .mc-sidebar__collapse-btn { transform: none; }
     }
     .mc-sidebar__collapse-btn {
       background: none;
@@ -1572,9 +1632,6 @@ export function missionControlStyles(): string {
       flex-shrink: 0;
     }
     .mc-sidebar__collapse-btn:hover { color: var(--sk-text); }
-    .mc-workspace--sidebar-collapsed .mc-sidebar__collapse-btn {
-      transform: rotate(180deg);
-    }
 
     /* ── Outputs 3-column layout ── */
     .mc-outputs {
@@ -1650,7 +1707,7 @@ export function missionControlStyles(): string {
      * chat panel, resize dividers. Sidebar becomes an off-canvas
      * drawer toggled via the existing data-sk-sidebar-toggle button.
      * The JS branch in Skipper.sidebar.toggle picks the right class
-     * (--sidebar-open here vs --sidebar-collapsed on desktop) based
+     * (--sidebar-open here vs --sidebar-pinned on desktop) based
      * on window.matchMedia. */
     @media (max-width: 768px) {
       .mc-workspace {
@@ -1681,12 +1738,6 @@ export function missionControlStyles(): string {
         opacity: 1;
         pointer-events: auto;
       }
-      /* Desktop's icon-strip collapse class shouldn't shrink the
-       * fixed-position sidebar on mobile. */
-      .mc-workspace--sidebar-collapsed .mc-sidebar {
-        width: min(85vw, 320px);
-      }
-
       /* Outputs stack: single column, no dividers, no activity feed. */
       .mc-outputs {
         grid-template-columns: 1fr !important;

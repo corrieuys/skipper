@@ -12,7 +12,8 @@ HTTP handlers. Registered in `index.ts` against `server.ts` router. Each gets `M
 | `realtime-ws.ts` | WebSocket endpoint for realtime task event stream |
 | `skipper.ts` | Skipper config `GET/PUT` w/ agent-type+model validate. Optional HTML fragment render |
 | `conversations.ts` | Chat conversation API (see `../conversations/`) |
-| `scheduled-tasks.ts` | CRUD for scheduled (cron) tasks |
+| `scheduled-tasks.ts` | CRUD for scheduled (cron) tasks + webhook trigger lifecycle (`/api/scheduled-tasks/:id/webhook/{enable,regenerate,disable}`) |
 | `utils.ts` | HTML response + body parse (form/json) helpers |
 | `api-keys.ts` | API-key CRUD under `/api/api-keys` (sk-… keys, hash-stored). Keys gate external MCP and the `/data/*` API |
+| `dictation.ts` | Experimental (404 without `--experimental`): `POST /api/dictation/transcribe` (base64 clip → realtime transcription adapter → text) + `/api/dictation/cleanup` (LLM rewrite, falls back to raw). UI: `public/dictation.js` mic button on task-description fields |
 | `data/` | JSON data API (`{ok, data\|error}` envelope). Every route requires `Authorization: Bearer <api-key>` — register via `data/auth.ts:addDataRoute()`, never raw `addRoute` (auth.test.ts walks the route table and fails unguarded `/data/*`). Resources: tasks (CRUD, lifecycle, review approve/reject, notes, artifacts, forensics, escalation history), teams, agents (+steer), escalations (list/detail/resolve/dismiss), dashboard, daemon, realtime tasks, global-store, scheduled tasks (experimental), logs/events |

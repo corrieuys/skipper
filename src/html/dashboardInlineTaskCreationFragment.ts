@@ -1,3 +1,5 @@
+import { dictateButton } from "./fragments/dictate-button.fragment";
+
 export function dashboardInlineTaskCreationFragment(
     _teams: { id: string; name: string; }[]): string {
     // Team + template selects are rendered server-side via the slot endpoint;
@@ -26,8 +28,11 @@ export function dashboardInlineTaskCreationFragment(
           autocomplete="off"
         >
       </label>
-      <label class="cmd-inline-intake-description">
-        <span class="muted">Orchestration command</span>
+      <div class="cmd-inline-intake-description">
+        <span style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+          <span class="muted">Orchestration command</span>
+          ${dictateButton("#dashboard-inline-description")}
+        </span>
         <textarea
           id="dashboard-inline-description"
           name="description"
@@ -36,7 +41,7 @@ export function dashboardInlineTaskCreationFragment(
           placeholder="Describe the work to orchestrate..."
           oninput="syncDashboardInlineTaskTitle(this)"
         ></textarea>
-      </label>
+      </div>
       <div class="cmd-inline-intake-controls">
         <label for="dashboard-inline-task-type" class="muted">Task Type</label>
         <label for="dashboard-inline-team" class="muted">Agent Team</label>

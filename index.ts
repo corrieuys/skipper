@@ -9,6 +9,7 @@ import { registerDataRoutes } from "./src/routes/data/index";
 import { registerConversationRoutes } from "./src/routes/conversations";
 import { registerScheduledTaskRoutes } from "./src/routes/scheduled-tasks";
 import { registerApiKeyRoutes } from "./src/routes/api-keys";
+import { registerDictationRoutes } from "./src/routes/dictation";
 import { ManagerDaemon } from "./src/agents/manager-daemon";
 import { initializeDatabase, closeDb, getDb } from "./src/db/connection";
 import { tryUpgradeRealtimeWs, realtimeWsHandlers } from "./src/routes/realtime-ws";
@@ -61,6 +62,8 @@ registerDataRoutes(getDb(), daemon);
 registerConversationRoutes(daemon.getConversationManager());
 registerScheduledTaskRoutes(daemon);
 registerApiKeyRoutes();
+// Dictation (experimental): transcribe + LLM cleanup for task-description fields.
+registerDictationRoutes();
 
 // MCP protocol routes (Streamable HTTP transport)
 const mcpHandler = (req: Request) => mcpServer.handleRequest(req);

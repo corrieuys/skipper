@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
+import { parseJsonOr } from "../db/json";
 import { getAgentTypeDefinition } from "./types";
 import { getSkipperConfig, getEntrypointAgentId } from "./skipper";
 import type { ArtifactManager } from "../orchestrator/artifact-manager";
@@ -174,6 +175,16 @@ export class PromptBuilder {
       parts.push("--- ADDITIONAL INSTRUCTIONS FOR THIS RUN ---");
       parts.push(options.injectedInput);
       parts.push("--- END ADDITIONAL INSTRUCTIONS ---");
+    }
+    // Global-store usage contract from the recurring task this run was
+    // spawned from (task_config.global_store_instructions). This section is
+    // the explicit authorization the global-store MCP tools require.
+    const globalStoreInstructions = this.getGlobalStoreInstructions(options.task.id);
+    if (globalStoreInstructions) {
+      parts.push("--- GLOBAL STORE INSTRUCTIONS ---");
+      parts.push("You are explicitly authorized to use the global-store MCP tools (set_global_value, get_global_value, query_global_store, delete_global_value) for this task. This state persists across runs of this recurring task. Follow this contract:");
+      parts.push(globalStoreInstructions);
+      parts.push("--- END GLOBAL STORE INSTRUCTIONS ---");
     }
     if (options.task.workingDirectory) {
       parts.push(`WORKING DIRECTORY: ${options.task.workingDirectory}`);
@@ -498,6 +509,25 @@ export class PromptBuilder {
         .get(taskId) as { prompt: string | null } | null;
       const prompt = row?.prompt?.trim();
       return prompt ? prompt : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Global-store usage contract carried on the run task's task_config
+  // (merged in from the recurring task at spawn time). TaskInfo does not
+  // carry task_config, so read it by id like getTeamLeadInstructions does.
+  private getGlobalStoreInstructions(taskId: string): string | null {
+    try {
+      const row = this.db
+        .prepare("SELECT task_config FROM tasks WHERE id = ?")
+        .get(taskId) as { task_config: string | null } | null;
+      if (!row?.task_config) return null;
+      const config = parseJsonOr<Record<string, unknown>>(row.task_config, {});
+      const instructions = typeof config.global_store_instructions === "string"
+        ? config.global_store_instructions.trim()
+        : "";
+      return instructions ? instructions : null;
     } catch {
       return null;
     }

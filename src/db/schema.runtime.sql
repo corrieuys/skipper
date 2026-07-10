@@ -436,10 +436,27 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   -- NULL interval = manual-only recurring task: never auto-fires, only "Run Now".
   schedule_unit TEXT CHECK (schedule_unit IS NULL OR schedule_unit IN ('minutes', 'hours', 'days')),
   schedule_amount INTEGER,
+  -- Weekly schedule matrix: JSON array of 7 arrays (index 0 = Monday) of 24
+  -- ints (0/1); an enabled cell fires one run at the top of that local hour.
+  -- Mutually exclusive with schedule_unit/schedule_amount (app-layer enforced).
+  schedule_matrix TEXT,
   status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'approved')),
   task_config TEXT NOT NULL DEFAULT '{}',
   next_run_at TEXT,
   last_run_at TEXT,
+  -- Secret for the public webhook trigger URL relayed via Skipper Connect
+  -- (NULL = webhook trigger disabled). Validated daemon-side, timing-safe.
+  webhook_key TEXT,
+  -- Webhook debounce (floor 1): a webhook arriving within this many minutes
+  -- of the previous webhook is ignored. Every webhook (fired or ignored)
+  -- stamps webhook_last_event_at; cron/manual runs do not.
+  webhook_debounce_minutes INTEGER NOT NULL DEFAULT 1,
+  webhook_last_event_at TEXT,
+  -- Free-text contract for how runs use the cross-task global store (key
+  -- names, payload shape, rolling-window markers). Injected into every
+  -- spawned run's root prompt; doubles as the explicit authorization the
+  -- global-store MCP tools require. NULL = no instructions.
+  global_store_instructions TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

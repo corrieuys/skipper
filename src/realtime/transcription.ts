@@ -8,6 +8,16 @@ export interface TranscriptionAdapter {
   transcribe(audioData: string, format: string): Promise<string>;
 }
 
+/** Strip whisper filler/pause markers ([pause], [silence], [blank_audio], [music]). */
+export function stripFillerMarkers(text: string): string {
+  return text
+    .replace(/\[pause\]/gi, "")
+    .replace(/\[silence\]/gi, "")
+    .replace(/\[blank_audio\]/gi, "")
+    .replace(/\[music\]/gi, "")
+    .trim();
+}
+
 /**
  * Local whisper-server adapter.
  * Converts audio to WAV via ffmpeg, then POSTs to a local whisper-server endpoint.

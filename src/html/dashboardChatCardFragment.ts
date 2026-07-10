@@ -97,18 +97,6 @@ export function dashboardChatCardFragment(
       if (slashTa && window.Skipper && window.Skipper.chat && window.Skipper.chat.initSlashAutocomplete) {
         window.Skipper.chat.initSlashAutocomplete(slashTa);
       }
-      var KEY = 'skipper.chat.hideToolCalls';
-      var stored = localStorage.getItem(KEY) === '1';
-      var box = document.querySelector('#dashboard-chat-panel .chat-filter-tool-calls');
-      if (msgs && stored) msgs.classList.add('hide-tool-calls');
-      if (box) {
-        box.checked = stored;
-        box.addEventListener('change', function() {
-          var on = box.checked;
-          if (msgs) msgs.classList.toggle('hide-tool-calls', on);
-          localStorage.setItem(KEY, on ? '1' : '0');
-        });
-      }
     })();
   </script>`;
 }

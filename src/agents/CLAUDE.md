@@ -9,6 +9,7 @@ Agent process runtime. Spawn external CLI, parse stdout, route signals.
 | `prompt-builder.ts` | Build initial/resume prompts. Inject phase + delegation context + command templates from `prompts/` |
 | `state-tracker.ts` | Heartbeat + fingerprint for stuck detect / nudge / escalation |
 | `types.ts` | Agent-type lookup + cache. `clearAgentTypeCache()` for tests |
+| `oneshot.ts` | `runOneShotText()` — provider-generic one-shot text call built from `agent_types` arg templates. Used by Greg's brain + the dictation rewriter; no instance rows/MCP/signals |
 | `skipper.ts` | `SKIPPER_AGENT_ID` constant + skipper config read/update |
 | `mcp-spawn-helper.ts` | Build MCP server config injection at spawn time |
 | `instance-status.ts` | Shared `agent_instances.status` writers: `updateInstanceStatus()`, `finalizeActiveInstancesForTask()` |

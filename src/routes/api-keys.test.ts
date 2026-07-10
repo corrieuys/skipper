@@ -80,7 +80,7 @@ describe("configPage API keys section", () => {
       skipperConnectHasKey: false,
       skipperConnectUrl: "",
       apiKeys: [{ id: "k", name: "visible-key", created_at: "2026-07-09" }],
-      modelSettings: { skipper: {}, chat: {}, greg: {}, options: [] },
+      modelSettings: { skipper: {}, chat: {}, greg: {}, dictation: {}, options: [] },
     } as never;
 
     expect(configPage(vm)).not.toContain("sk-api-keys-panel");

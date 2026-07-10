@@ -486,9 +486,11 @@
     },
   };
 
-  // ── Sidebar Collapse ──
+  // ── Sidebar ──
   // Two viewport modes:
-  //  - Desktop (>768px): collapse to a 40px icon strip (--sidebar-collapsed).
+  //  - Desktop (>768px): a 40px rail, closed by default; hovering it slides
+  //    the sidebar open as an overlay (pure CSS :hover). The arrow button
+  //    PINS it open (--sidebar-pinned, persisted) so it stays out.
   //  - Mobile (≤768px): the sidebar is fixed off-canvas; toggle slides it in
   //    over the content via --sidebar-open. Backdrop click closes; clicking
   //    a task link also closes (handled in the click delegate below).
@@ -505,8 +507,8 @@
         // Don't persist mobile drawer state — it should default closed on every load.
         return;
       }
-      var collapsed = ws.classList.toggle("mc-workspace--sidebar-collapsed");
-      Skipper.prefs.set("sidebarCollapsed", collapsed ? "1" : "0");
+      var pinned = ws.classList.toggle("mc-workspace--sidebar-pinned");
+      Skipper.prefs.set("sidebarPinned", pinned ? "1" : "0");
     },
     closeMobile: function () {
       var ws = document.getElementById("mc-workspace");
@@ -1012,6 +1014,35 @@
     }
   });
 
+  // ── Chat "hide tools" filter ──
+  // Persisted in localStorage and reapplied after every HTMX settle. It must
+  // run on afterSettle, not from an inline fragment script: htmx's settle
+  // phase (~20ms after a swap) restores the incoming element's original
+  // attributes, wiping any class an inline script added during the swap.
+  var CHAT_HIDE_TOOLS_KEY = "skipper.chat.hideToolCalls";
+  function applyChatToolFilter() {
+    var boxes = document.querySelectorAll(".chat-filter-tool-calls");
+    if (boxes.length === 0) return;
+    var on = localStorage.getItem(CHAT_HIDE_TOOLS_KEY) === "1";
+    boxes.forEach(function (box) {
+      box.checked = on;
+    });
+    document.querySelectorAll(".chat-messages").forEach(function (msgs) {
+      msgs.classList.toggle("hide-tool-calls", on);
+    });
+  }
+  document.addEventListener("change", function (e) {
+    if (!e.target.matches || !e.target.matches(".chat-filter-tool-calls")) return;
+    localStorage.setItem(CHAT_HIDE_TOOLS_KEY, e.target.checked ? "1" : "0");
+    applyChatToolFilter();
+  });
+  document.addEventListener("htmx:afterSettle", applyChatToolFilter);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", applyChatToolFilter);
+  } else {
+    applyChatToolFilter();
+  }
+
   // ── Chat busy indicator ──
   // The busy indicator is server-driven: the conversation manager emits
   // `conversation:busy_changed` whenever the agent process starts or finishes
@@ -1121,11 +1152,11 @@
       }
     }
 
-    // Restore sidebar collapsed state — desktop only. On mobile the drawer is
-    // always closed on load (the persisted desktop collapse pref is meaningless).
-    if (!Skipper.sidebar.isMobile() && Skipper.prefs.get("sidebarCollapsed", "0") === "1") {
+    // Restore sidebar pinned state — desktop only. Default is the closed
+    // hover-to-open rail; on mobile the drawer is always closed on load.
+    if (!Skipper.sidebar.isMobile() && Skipper.prefs.get("sidebarPinned", "0") === "1") {
       var ws = document.getElementById("mc-workspace");
-      if (ws) ws.classList.add("mc-workspace--sidebar-collapsed");
+      if (ws) ws.classList.add("mc-workspace--sidebar-pinned");
     }
 
     // Restore output column widths

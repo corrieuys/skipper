@@ -1,7 +1,7 @@
 import { type DaemonStatus, escapeHtml } from "./components";
 import { navDropdownHtml } from "./navDropdownHtml";
 import { daemonControlFragment } from "./daemonControlFragment";
-import { themeBootScript, themePickerFragment, appearanceBackgroundCss } from "./styles/themes";
+import { themeBootScript, appearanceBackgroundCss } from "./styles/themes";
 import { STYLESHEET_PATH } from "./styles/stylesheet";
 import { getAppearanceConfig } from "../config/store";
 import { getDb } from "../db/connection";
@@ -80,7 +80,6 @@ export function layout(
       <a href="/" class="brand">Skipper</a>
     </div>
     <div class="navbar-daemon-slot">
-      ${themePickerFragment()}
       ${daemonControl}
     </div>
   </nav>

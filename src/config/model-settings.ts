@@ -24,6 +24,8 @@ export const SETTING_CHAT_AGENT_TYPE = "chat_agent_type";
 export const SETTING_CHAT_MODEL = "chat_model";
 export const SETTING_GREG_AGENT_TYPE = "greg_agent_type";
 export const SETTING_GREG_MODEL = "greg_model";
+export const SETTING_DICTATION_AGENT_TYPE = "dictation_agent_type";
+export const SETTING_DICTATION_MODEL = "dictation_model";
 
 export interface ModelChoice {
   agent_type: string;
@@ -33,6 +35,9 @@ export interface ModelChoice {
 /** Greg's shipped default: the plain `claude` CLI on Haiku (see monkey/brain.ts). */
 export const GREG_DEFAULT: ModelChoice = { agent_type: "claude-code", model: "claude-haiku-4-5" };
 
+/** Dictation rewriter default: fast + cheap, same reasoning as Greg's. */
+export const DICTATION_DEFAULT: ModelChoice = { agent_type: "claude-code", model: "claude-haiku-4-5" };
+
 export interface AgentTypeOption {
   name: string;
   model_flag: string | null;
@@ -40,9 +45,10 @@ export interface AgentTypeOption {
   models: string[];
 }
 
-// The only provider offered anywhere a model provider is selectable. Kept as an
-// allowlist so it's one place to widen later. Everything else is hidden.
-export const PROVIDER_ALLOWLIST = ["claude-code"] as const;
+// The providers offered anywhere a model provider is selectable. An allowlist so
+// it's one place to widen; internal aliases ("conversation-skipper") and the empty
+// "custom" placeholder stay hidden.
+export const PROVIDER_ALLOWLIST = ["claude-code", "codex", "opencode", "oz"] as const;
 
 export function isAllowedProvider(name: string): boolean {
   return (PROVIDER_ALLOWLIST as readonly string[]).includes(name);
@@ -99,11 +105,20 @@ export function getGregModelChoice(db: Database): ModelChoice {
   };
 }
 
-/** Effective (override-or-default) choices for all three, for the config UI. */
+/** Dictation rewriter, same override-or-default shape as Greg. */
+export function getDictationModelChoice(db: Database): ModelChoice {
+  return {
+    agent_type: getStringSetting(db, SETTING_DICTATION_AGENT_TYPE, "") || DICTATION_DEFAULT.agent_type,
+    model: getStringSetting(db, SETTING_DICTATION_MODEL, "") || DICTATION_DEFAULT.model,
+  };
+}
+
+/** Effective (override-or-default) choices for all subsystems, for the config UI. */
 export function getModelSettingsView(db: Database): {
   skipper: ModelChoice;
   chat: ModelChoice;
   greg: ModelChoice;
+  dictation: ModelChoice;
   options: AgentTypeOption[];
 } {
   const skOverride = getSkipperModelOverride(db);
@@ -120,6 +135,7 @@ export function getModelSettingsView(db: Database): {
       model: chOverride.model ?? chDefault.model,
     },
     greg: getGregModelChoice(db),
+    dictation: getDictationModelChoice(db),
     options: listModelOptions(),
   };
 }
@@ -128,6 +144,7 @@ const VALID_KEYS = {
   skipper: [SETTING_SKIPPER_AGENT_TYPE, SETTING_SKIPPER_MODEL],
   chat: [SETTING_CHAT_AGENT_TYPE, SETTING_CHAT_MODEL],
   greg: [SETTING_GREG_AGENT_TYPE, SETTING_GREG_MODEL],
+  dictation: [SETTING_DICTATION_AGENT_TYPE, SETTING_DICTATION_MODEL],
 } as const;
 
 /**
@@ -136,7 +153,7 @@ const VALID_KEYS = {
  */
 export function saveModelSetting(
   db: Database,
-  target: "skipper" | "chat" | "greg",
+  target: "skipper" | "chat" | "greg" | "dictation",
   agentType: string,
   model: string,
 ): string | null {

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
+import { eventBus, type TaskCreatedEvent, type TaskPhaseChangedEvent } from "../events/bus";
 import { TaskScheduler } from "./scheduler";
 import { unlinkSync } from "fs";
 
@@ -891,5 +892,58 @@ describe("full lifecycle", () => {
     scheduler.failTask(task.id, "oops");
     const retried = scheduler.retryTask(task.id);
     expect(retried.status).toBe("draft");
+  });
+});
+
+describe("bus events", () => {
+  it("emits task:created on createTask", () => {
+    const seen: TaskCreatedEvent[] = [];
+    const listener = (e: TaskCreatedEvent) => seen.push(e);
+    eventBus.on("task:created", listener);
+    try {
+      const task = scheduler.createTask({ title: "Event Task" });
+      expect(seen).toEqual([{ taskId: task.id }]);
+    } finally {
+      eventBus.off("task:created", listener);
+    }
+  });
+
+  it("emits task:phase_changed with advance direction on advancePhase", () => {
+    const seen: TaskPhaseChangedEvent[] = [];
+    const listener = (e: TaskPhaseChangedEvent) => seen.push(e);
+    eventBus.on("task:phase_changed", listener);
+    try {
+      const teamId = createTeam(db);
+      const task = scheduler.createTask({ title: "Task", teamId });
+      scheduler.approveTask(task.id);
+      scheduler.startTask(task.id);
+      scheduler.advancePhase(task.id);
+      expect(seen).toEqual([
+        { taskId: task.id, previousPhase: 0, newPhase: 1, direction: "advance" },
+      ]);
+    } finally {
+      eventBus.off("task:phase_changed", listener);
+    }
+  });
+
+  it("emits task:phase_changed with regress direction on regressPhase", () => {
+    const seen: TaskPhaseChangedEvent[] = [];
+    const listener = (e: TaskPhaseChangedEvent) => seen.push(e);
+    eventBus.on("task:phase_changed", listener);
+    try {
+      const teamId = createTeam(db);
+      const task = scheduler.createTask({ title: "Task", teamId });
+      scheduler.approveTask(task.id);
+      scheduler.startTask(task.id);
+      scheduler.advancePhase(task.id);
+      scheduler.advancePhase(task.id);
+      seen.length = 0;
+      scheduler.regressPhase(task.id, 0);
+      expect(seen).toEqual([
+        { taskId: task.id, previousPhase: 2, newPhase: 0, direction: "regress" },
+      ]);
+    } finally {
+      eventBus.off("task:phase_changed", listener);
+    }
   });
 });

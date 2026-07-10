@@ -11,6 +11,8 @@ export interface ScheduledTaskListItem {
   title: string;
   schedule_unit: string | null;
   schedule_amount: number | null;
+  /** Weekly matrix as its raw JSON string; null = interval/manual mode. */
+  schedule_matrix?: string | null;
   status: string;
   team_name: string | null;
   next_run_at: string | null;
@@ -31,7 +33,8 @@ export interface TaskListViewModel {
   daemonUptime: number;
 }
 
-function formatScheduleBadge(unit: string | null, amount: number | null): string {
+function formatScheduleBadge(unit: string | null, amount: number | null, matrix: string | null = null): string {
+  if (matrix) return "weekly";
   if (!unit || !amount) return "manual";
   if (unit === "minutes") return amount === 1 ? "1m" : `${amount}m`;
   if (unit === "hours") return amount === 1 ? "1h" : `${amount}h`;
@@ -73,7 +76,7 @@ export function taskListPage(vm: TaskListViewModel): string {
               ${scheduled.map(st => `
                 <tr style="cursor:pointer;" onclick="window.location='/?scheduled=${escapeHtml(st.id)}';">
                   <td>${escapeHtml(st.title)}</td>
-                  <td><span class="sk-badge sk-badge--waiting" style="font-size:10px;padding:1px 5px;">${formatScheduleBadge(st.schedule_unit, st.schedule_amount)}</span></td>
+                  <td><span class="sk-badge sk-badge--waiting" style="font-size:10px;padding:1px 5px;">${formatScheduleBadge(st.schedule_unit, st.schedule_amount, st.schedule_matrix ?? null)}</span></td>
                   <td><span class="sk-badge sk-badge--${st.status === "approved" ? "running" : "draft"}" style="font-size:10px;padding:1px 5px;">${escapeHtml(st.status)}</span></td>
                   <td class="sk-muted">${st.team_name ? escapeHtml(st.team_name) : "—"}</td>
                   <td>${st.next_run_at ? formatTimestamp(st.next_run_at) : "<span class='sk-muted'>—</span>"}</td>

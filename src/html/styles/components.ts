@@ -412,5 +412,65 @@ export function componentStyles(): string {
     .sk-model-row__save {
       margin-left: auto;
     }
+
+    /* Weekly schedule matrix (7 days x 24 hours) */
+    .sk-schedmatrix {
+      max-width: 640px;
+    }
+    .sk-schedmatrix__grid {
+      display: grid;
+      grid-template-columns: 36px repeat(24, minmax(12px, 1fr));
+      gap: 2px;
+      align-items: center;
+    }
+    .sk-schedmatrix__hcol,
+    .sk-schedmatrix__hrow {
+      background: none;
+      border: none;
+      padding: 0;
+      color: var(--sk-text-muted);
+      font-size: 10px;
+      text-align: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    .sk-schedmatrix__hrow {
+      text-align: right;
+      padding-right: var(--sk-space-1);
+    }
+    .sk-schedmatrix__hcol:hover,
+    .sk-schedmatrix__hrow:hover {
+      color: var(--sk-text);
+    }
+    .sk-schedmatrix__cell {
+      background: var(--sk-border);
+      border-radius: var(--sk-radius-sm);
+      height: 16px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .sk-schedmatrix__cell:hover {
+      outline: 1px solid var(--sk-accent-primary);
+    }
+    .sk-schedmatrix__cell.is-on {
+      background: var(--sk-accent-primary);
+    }
+    .sk-schedmatrix__summary {
+      margin-top: var(--sk-space-2);
+    }
+    .sk-schedmatrix--readonly {
+      max-width: 480px;
+    }
+    .sk-schedmatrix--readonly .sk-schedmatrix__grid {
+      pointer-events: none;
+    }
+    .sk-schedmatrix--readonly .sk-schedmatrix__cell {
+      height: 10px;
+      cursor: default;
+    }
+    .sk-schedmatrix--readonly .sk-schedmatrix__hcol,
+    .sk-schedmatrix--readonly .sk-schedmatrix__hrow {
+      cursor: default;
+    }
   `;
 }

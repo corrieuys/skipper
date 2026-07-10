@@ -18,6 +18,40 @@
     return attr ? attr.split(",").map(function (t) { return t.trim(); }).filter(Boolean) : [];
   }
 
+  function taskTopicFromUrl() {
+    try {
+      var task = new URLSearchParams(location.search).get("task");
+      return task ? "task:" + task : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Initial subscription: the body attribute (rendered at full-page load),
+  // plus the URL's ?task=<id> if the attribute doesn't already carry it.
+  function initialTopics() {
+    var topics = getTopics();
+    var urlTask = taskTopicFromUrl();
+    if (urlTask && topics.indexOf(urlTask) === -1) topics.push(urlTask);
+    return topics;
+  }
+
+  // Post-navigation subscription. The body attribute is rendered once at
+  // full-page load, so any task:<id> entry in it reflects the page-load
+  // selection only. HTMX sidebar clicks swap #mc-main and push /?task=<id>
+  // without touching the attribute — so after navigation the current task
+  // topic must come from the URL. Without this the client stays subscribed
+  // to the page-load task forever (its state changes keep ripping out
+  // #mc-main) and never hears about the task actually on screen (its
+  // completion refresh gets topic-filtered, leaving the view stuck — e.g.
+  // recurring-run tasks, which never exist at page load).
+  function navigationTopics() {
+    var topics = getTopics().filter(function (t) { return t.indexOf("task:") !== 0; });
+    var urlTask = taskTopicFromUrl();
+    if (urlTask) topics.push(urlTask);
+    return topics;
+  }
+
   function subscribe(topics) {
     if (ws && ws.readyState === WebSocket.OPEN && topics.length > 0) {
       ws.send(JSON.stringify({ type: "subscribe", topics: topics }));
@@ -51,20 +85,10 @@
   }
 
   function connect() {
-    // Use the htmx-ext-ws WebSocket path, but we add our own handler for subscriptions
-    var proto = location.protocol === "https:" ? "wss:" : "ws:";
-    var topics = getTopics();
-    var url = proto + "//" + location.host + "/ws/ui";
-    if (topics.length > 0) {
-      url += "?topics=" + encodeURIComponent(topics.join(","));
-    }
-
     // Don't create our own WS — htmx-ext-ws creates it.
     // Instead, intercept the htmx ws connection to add message handling.
-    // We use a MutationObserver approach: watch for htmx WS open events.
-
-    // Store topics for re-subscription on reconnect
-    currentTopics = topics;
+    // Store topics for the wsOpen subscribe + re-subscription on reconnect.
+    currentTopics = initialTopics();
   }
 
   // Listen for htmx WebSocket events to handle subscriptions and reconnect
@@ -75,12 +99,15 @@
     showReconnectBanner(false);
     startHeartbeatMonitor();
 
-    // Subscribe to page topics
-    var topics = getTopics();
+    // Subscribe to page topics. On a reconnect after HTMX navigation the URL
+    // may have moved past the body attribute, so pick whichever set applies:
+    // same URL as page load → initialTopics; navigated → navigationTopics.
+    var topics = currentTopics.length > 0 ? currentTopics : initialTopics();
     if (topics.length > 0 && ws) {
       try {
         ws.send(JSON.stringify({ type: "subscribe", topics: topics }));
       } catch (e) { /* ignore */ }
+      currentTopics = topics;
     }
   });
 
@@ -104,9 +131,10 @@
     }
   });
 
-  // On htmx navigation, re-subscribe with new page topics
+  // On htmx navigation, re-subscribe with the topics for the new URL (the
+  // pushed URL's ?task=<id> replaces any page-load task topic).
   document.addEventListener("htmx:pushedIntoHistory", function () {
-    var newTopics = getTopics();
+    var newTopics = navigationTopics();
     if (ws && newTopics.length > 0) {
       if (currentTopics.length > 0) {
         try { ws.send(JSON.stringify({ type: "unsubscribe", topics: currentTopics })); } catch (e) { /* ignore */ }
