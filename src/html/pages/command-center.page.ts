@@ -224,38 +224,43 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
         <button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/tasks/${eid}" hx-swap="none" hx-confirm="Delete this draft?">Delete</button>
       </div>
     </div>
-    <div style="padding: var(--sk-space-6); max-width: 700px;">
-      <form hx-post="/api/tasks/${eid}/update" hx-target="#mc-main" hx-swap="innerHTML">
-        <div class="sk-form-group">
-          <label class="sk-label">Title</label>
-          <input type="text" name="title" class="sk-input" value="${escapeHtml(task.title)}" required>
+    <div style="padding: var(--sk-space-4) var(--sk-space-6); max-width: 700px;">
+      <div class="sk-panel">
+        <div class="sk-panel__header"><span class="sk-panel__title">Configuration</span></div>
+        <div class="sk-panel__body" style="padding: var(--sk-space-4);">
+          <form hx-post="/api/tasks/${eid}/update" hx-target="#mc-main" hx-swap="innerHTML">
+            <div class="sk-form-group">
+              <label class="sk-label">Title</label>
+              <input type="text" name="title" class="sk-input" value="${escapeHtml(task.title)}" required>
+            </div>
+            <div class="sk-form-group">
+              <label class="sk-label">Description</label>
+              <textarea name="description" class="sk-textarea" rows="6">${task.description ? escapeHtml(task.description) : ""}</textarea>
+            </div>
+            <div class="sk-form-group">
+              <label class="sk-label">Working Directory</label>
+              <input type="text" name="workingDirectory" class="sk-input" value="${escapeHtml(task.working_directory || "")}" placeholder="/path/to/repo" required>
+            </div>
+            <div class="sk-form-row">
+              <div id="task-form-team-slot" style="display:contents;"
+                hx-get="/fragments/task-form/team?${slotQuery}"
+                hx-trigger="load"
+                hx-target="this"
+                hx-swap="outerHTML"></div>
+            </div>
+            <div id="phase-config-slot"
+              hx-get="/fragments/task-form/phase-config?${phaseQuery}"
+              hx-trigger="load, change[target.name=='teamId'] from:document"
+              hx-include="[name='teamId']"
+              hx-target="this"
+              hx-swap="innerHTML"></div>
+            <div style="display:flex; gap:var(--sk-space-3); margin-top:var(--sk-space-4);">
+              <button type="submit" class="sk-btn sk-btn--sm">Save Changes</button>
+              <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm" name="approve" value="1">Save &amp; Approve</button>
+            </div>
+          </form>
         </div>
-        <div class="sk-form-group">
-          <label class="sk-label">Description</label>
-          <textarea name="description" class="sk-textarea" rows="6">${task.description ? escapeHtml(task.description) : ""}</textarea>
-        </div>
-        <div class="sk-form-group">
-          <label class="sk-label">Working Directory</label>
-          <input type="text" name="workingDirectory" class="sk-input" value="${escapeHtml(task.working_directory || "")}" placeholder="/path/to/repo" required>
-        </div>
-        <div class="sk-form-row">
-          <div id="task-form-team-slot" style="display:contents;"
-            hx-get="/fragments/task-form/team?${slotQuery}"
-            hx-trigger="load"
-            hx-target="this"
-            hx-swap="outerHTML"></div>
-        </div>
-        <div id="phase-config-slot"
-          hx-get="/fragments/task-form/phase-config?${phaseQuery}"
-          hx-trigger="load, change[target.name=='teamId'] from:document"
-          hx-include="[name='teamId']"
-          hx-target="this"
-          hx-swap="innerHTML"></div>
-        <div style="display:flex; gap:var(--sk-space-3); margin-top:var(--sk-space-4);">
-          <button type="submit" class="sk-btn sk-btn--sm">Save Changes</button>
-          <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm" name="approve" value="1">Save &amp; Approve</button>
-        </div>
-      </form>
+      </div>
     </div>
   `;
 }
@@ -619,7 +624,7 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
            hx-swap="innerHTML"></div>
       ${resultHtml}
       ${!resultHtml
-        ? `<div class="mc-userinput__empty sk-muted" style="padding: var(--sk-space-4); text-align:center;">Nothing needs your input right now.</div>`
+        ? `<div class="sk-panel"><div class="sk-panel__body mc-userinput__empty sk-muted" style="padding: var(--sk-space-4); text-align:center;">Nothing needs your input right now.</div></div>`
         : ""}
     </div>
 
@@ -1025,26 +1030,31 @@ export function renderScheduledTaskDetail(
         <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm" style="flex-shrink:0;">Run Now</button>
       </form>
 
-      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:var(--sk-space-4); margin-bottom:var(--sk-space-5);">
-        <div>
-          <div class="sk-muted sk-text-xs">Schedule</div>
-          <div style="font-weight:600;">${hasInterval ? `Every ${st.schedule_amount} ${st.schedule_unit}` : matrix ? `Weekly schedule (${countMatrixHours(matrix)} hours/week)` : "Manual only"}</div>
-        </div>
-        <div>
-          <div class="sk-muted sk-text-xs">Next Run</div>
-          <div>${st.next_run_at ? formatTimestamp(st.next_run_at) : "<span class='sk-muted'>—</span>"}</div>
-        </div>
-        <div>
-          <div class="sk-muted sk-text-xs">Last Run</div>
-          <div>${st.last_run_at ? formatTimestamp(st.last_run_at) : "<span class='sk-muted'>—</span>"}</div>
+      <div class="sk-panel" style="margin-bottom:var(--sk-space-3);">
+        <div class="sk-panel__header"><span class="sk-panel__title">Overview</span></div>
+        <div class="sk-panel__body" style="padding:var(--sk-space-4);">
+          <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:var(--sk-space-4);">
+            <div>
+              <div class="sk-muted sk-text-xs">Schedule</div>
+              <div style="font-weight:600;">${hasInterval ? `Every ${st.schedule_amount} ${st.schedule_unit}` : matrix ? `Weekly schedule (${countMatrixHours(matrix)} hours/week)` : "Manual only"}</div>
+            </div>
+            <div>
+              <div class="sk-muted sk-text-xs">Next Run</div>
+              <div>${st.next_run_at ? formatTimestamp(st.next_run_at) : "<span class='sk-muted'>—</span>"}</div>
+            </div>
+            <div>
+              <div class="sk-muted sk-text-xs">Last Run</div>
+              <div>${st.last_run_at ? formatTimestamp(st.last_run_at) : "<span class='sk-muted'>—</span>"}</div>
+            </div>
+          </div>
+
+          ${matrix ? `<div style="margin-top:var(--sk-space-4);">${renderScheduleMatrixView(matrix)}</div>` : ""}
+
+          ${st.description ? `<div style="margin-top:var(--sk-space-4);"><div class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-1);">Description</div><div style="white-space:pre-wrap;max-height:10lh;overflow-y:auto;">${escapeHtml(st.description)}</div></div>` : ""}
+
+          ${st.global_store_instructions ? `<div style="margin-top:var(--sk-space-4);"><div class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-1);">Global Store Instructions</div><div style="white-space:pre-wrap;max-height:10lh;overflow-y:auto;">${escapeHtml(st.global_store_instructions)}</div></div>` : ""}
         </div>
       </div>
-
-      ${matrix ? `<div style="margin-bottom:var(--sk-space-5);">${renderScheduleMatrixView(matrix)}</div>` : ""}
-
-      ${st.description ? `<div style="margin-bottom:var(--sk-space-4);"><div class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-1);">Description</div><div style="white-space:pre-wrap;max-height:10lh;overflow-y:auto;">${escapeHtml(st.description)}</div></div>` : ""}
-
-      ${st.global_store_instructions ? `<div style="margin-bottom:var(--sk-space-4);"><div class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-1);">Global Store Instructions</div><div style="white-space:pre-wrap;max-height:10lh;overflow-y:auto;">${escapeHtml(st.global_store_instructions)}</div></div>` : ""}
 
       ${renderWebhookPanel(st)}
 

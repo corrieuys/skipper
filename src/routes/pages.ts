@@ -1156,23 +1156,40 @@ function registerV2PageRoutes(): void {
       </tr>`;
     }).join("");
 
-    return html(`<div style="padding: var(--sk-space-4); overflow-y:auto;">
-      <h3 style="color:var(--sk-text); margin-bottom:var(--sk-space-3); font-size:var(--sk-text-sm);">Task Info</h3>
-      <table class="sk-table" style="margin-bottom:var(--sk-space-6);">
-        <tr><td class="sk-muted">ID</td><td class="sk-mono sk-text-xs">${esc(task.id)}</td></tr>
-        <tr><td class="sk-muted">Status</td><td><span class="sk-badge sk-badge--${task.status}">${task.status}</span></td></tr>
-        <tr><td class="sk-muted">Team</td><td>${esc(task.team_name ?? "Unassigned")}</td></tr>
-        <tr><td class="sk-muted">Type</td><td>${esc(task.task_type ?? "standard")}</td></tr>
-        <tr><td class="sk-muted">Phase</td><td>${task.current_phase + 1}</td></tr>
-        <tr><td class="sk-muted">Created</td><td>${formatTimestamp(task.created_at)}</td></tr>
-        ${task.completed_at ? `<tr><td class="sk-muted">Completed</td><td>${formatTimestamp(task.completed_at)}</td></tr>` : ""}
-        ${subTotal.n > 0 ? `<tr><td class="sk-muted">Internal sub-agents</td><td>${subTotal.n} <span class="sk-muted">(${fmtTok(subTotal.tok)} tokens, not shown in the agent tree)</span></td></tr>` : ""}
-        ${task.description ? `<tr><td class="sk-muted">Description</td><td style="white-space:pre-wrap;max-width:500px;">${esc(task.description)}</td></tr>` : ""}
-      </table>
+    // Everything sits inside sk-panel containers: the tab panel itself is
+    // transparent, so bare tables are unreadable over wallpaper themes.
+    // The root is the scroll container (flex:1 + min-height:0 inside the flex
+    // tab panel) and the panels are flex-shrink:0 so they never get squashed;
+    // the agents table additionally caps its own body at ~10 rows and scrolls
+    // internally.
+    return html(`<div style="flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:var(--sk-space-3);">
+      <div class="sk-panel" style="flex-shrink:0;">
+        <div class="sk-panel__header"><span class="sk-panel__title">Task Info</span></div>
+        <div class="sk-panel__body--flush">
+          <table class="sk-table">
+            <tr><td class="sk-muted">ID</td><td class="sk-mono sk-text-xs">${esc(task.id)}</td></tr>
+            <tr><td class="sk-muted">Status</td><td><span class="sk-badge sk-badge--${task.status}">${task.status}</span></td></tr>
+            <tr><td class="sk-muted">Team</td><td>${esc(task.team_name ?? "Unassigned")}</td></tr>
+            <tr><td class="sk-muted">Type</td><td>${esc(task.task_type ?? "standard")}</td></tr>
+            <tr><td class="sk-muted">Phase</td><td>${task.current_phase + 1}</td></tr>
+            <tr><td class="sk-muted">Created</td><td>${formatTimestamp(task.created_at)}</td></tr>
+            ${task.completed_at ? `<tr><td class="sk-muted">Completed</td><td>${formatTimestamp(task.completed_at)}</td></tr>` : ""}
+            ${subTotal.n > 0 ? `<tr><td class="sk-muted">Internal sub-agents</td><td>${subTotal.n} <span class="sk-muted">(${fmtTok(subTotal.tok)} tokens, not shown in the agent tree)</span></td></tr>` : ""}
+            ${task.description ? `<tr><td class="sk-muted">Description</td><td style="white-space:pre-wrap;max-width:500px;">${esc(task.description)}</td></tr>` : ""}
+          </table>
+        </div>
+      </div>
 
       ${rows.length > 0 ? `
-        <h3 style="color:var(--sk-text); margin-bottom:var(--sk-space-3); font-size:var(--sk-text-sm);">Agents &amp; Delegations (${rows.length})</h3>
-        <table class="sk-table"><thead><tr><th>Agent</th><th>From</th><th>Status</th><th>Prompt</th><th>Sub-agents</th><th>Created</th></tr></thead><tbody>${agentRows}</tbody></table>
+        <div class="sk-panel" style="flex-shrink:0;">
+          <div class="sk-panel__header">
+            <span class="sk-panel__title">Agents &amp; Delegations</span>
+            <span class="sk-muted sk-text-xs">${rows.length}</span>
+          </div>
+          <div class="sk-panel__body--flush" style="max-height:25.75rem; overflow-y:auto;">
+            <table class="sk-table"><thead style="position:sticky; top:0; background:var(--sk-surface-2); z-index:1;"><tr><th>Agent</th><th>From</th><th>Status</th><th>Prompt</th><th>Sub-agents</th><th>Created</th></tr></thead><tbody>${agentRows}</tbody></table>
+          </div>
+        </div>
       ` : ""}
     </div>`);
   });
