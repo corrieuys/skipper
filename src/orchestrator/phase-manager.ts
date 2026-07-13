@@ -3,7 +3,7 @@ import type { AgentManager } from "../agents/manager";
 import type { PromptBuilder, AgentInfo, PhaseInfo } from "../agents/prompt-builder";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { Task } from "../tasks/scheduler";
-import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
+import { agentTypeUsesInlinePrompt } from "../agents/types";
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
 import type { ConsensusManager } from "./consensus-manager";
@@ -211,7 +211,9 @@ export class PhaseManager {
     const agent = this.agentManager.getAgent(entrypointAgentId);
     if (!agent) return;
 
-    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    // Root respawn: honor the machine-scoped provider override so the respawn
+    // matches the provider that owns the resumed session.
+    const typeDef = this.agentManager.getEffectiveRootTypeDef(entrypointAgentId);
     const isStreaming = typeDef?.supports_stdin ?? false;
     const sessionId = this.agentManager.getEntrypointSessionIdForTask(task.id, entrypointAgentId) ?? undefined;
 
@@ -260,6 +262,7 @@ export class PhaseManager {
         parentInstanceId: null,
         rootInstanceId: respawnRuntimeId,
         attempt: 1,
+        ...this.agentManager.getRootSpawnOverrides(),
       });
     } catch (err) {
       logError(this.db, "regression_respawn", { taskId: task.id, agentId: entrypointAgentId, targetPhase, method: "respawnForRegression" }, err);
@@ -325,7 +328,8 @@ export class PhaseManager {
     const agent = this.agentManager.getAgent(entrypointAgentId);
     if (!agent) return;
 
-    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    // Root respawn: honor the machine-scoped provider override (see respawnForRegression).
+    const typeDef = this.agentManager.getEffectiveRootTypeDef(entrypointAgentId);
     const isStreaming = typeDef?.supports_stdin ?? false;
 
     const sessionId = this.agentManager.getEntrypointSessionIdForTask(task.id, entrypointAgentId) ?? undefined;
@@ -377,6 +381,7 @@ export class PhaseManager {
         parentInstanceId: null,
         rootInstanceId: respawnRuntimeId,
         attempt: 1,
+        ...this.agentManager.getRootSpawnOverrides(),
       });
     } catch (err) {
       logError(this.db, "phase_respawn", { taskId: task.id, agentId: entrypointAgentId, method: "advanceAndRespawn" }, err);

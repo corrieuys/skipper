@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { IdlePokeManager } from "./idle-poke-manager";
+import { getAgentTypeDefinition } from "../agents/types";
 import { unlinkSync } from "fs";
 
 const TEST_DB = "test-idle-poke-manager.db";
@@ -85,6 +86,11 @@ function buildManager(
     // killing a sibling same-team task's entrypoint under parallel runs.
     getRunningInstanceForTask: mock(() => undefined),
     getAgent: overrides.getAgent ?? mock(() => ({ id: "skipper", type: "claude-code" })),
+    getEffectiveRootTypeDef: (id: string) => {
+      const agent = (overrides.getAgent ?? (() => ({ id: "skipper", type: "claude-code" })))(id);
+      return agent ? getAgentTypeDefinition(agent.type, database) : null;
+    },
+    getRootSpawnOverrides: () => ({}),
     getEntrypointSessionIdForTask: () => "session-1",
     killAgent: mock(() => true),
     waitForExit: mock(async () => {}),

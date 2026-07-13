@@ -1216,8 +1216,9 @@ export class ManagerDaemon {
     const running = Array.from(this.agentManager.getRunningAgents().values());
 
     this.pausedRuntimeSnapshots = running.map((runtime) => {
-      const agent = this.agentManager.getAgent(runtime.templateAgentId);
-      const typeDef = agent ? getAgentTypeDefinition(agent.type, this.db) : null;
+      // The runtime's resolved provider, not the template row's type — an
+      // overridden root must resume as the provider that owns its session.
+      const typeDef = getAgentTypeDefinition(runtime.providerType, this.db);
       return {
         runtimeId: runtime.id,
         templateAgentId: runtime.templateAgentId,
@@ -1259,7 +1260,9 @@ export class ManagerDaemon {
 
     for (const snapshot of snapshots) {
       const templateAgent = this.agentManager.getAgent(snapshot.templateAgentId);
-      const typeDef = templateAgent ? getAgentTypeDefinition(templateAgent.type, this.db) : null;
+      const typeDef = snapshot.runtimeId === snapshot.templateAgentId
+        ? this.agentManager.getEffectiveRootTypeDef(snapshot.templateAgentId)
+        : this.agentManager.getEffectiveTypeDefForInstance(snapshot.runtimeId, snapshot.templateAgentId);
       if (!templateAgent || !typeDef) continue;
 
       const spawnPromise = snapshot.runtimeId === snapshot.templateAgentId
@@ -1414,7 +1417,9 @@ export class ManagerDaemon {
 
     for (const snapshot of snapshots) {
       const templateAgent = this.agentManager.getAgent(snapshot.templateAgentId);
-      const typeDef = templateAgent ? getAgentTypeDefinition(templateAgent.type, this.db) : null;
+      const typeDef = snapshot.isTemplateRuntime
+        ? this.agentManager.getEffectiveRootTypeDef(snapshot.templateAgentId)
+        : this.agentManager.getEffectiveTypeDefForInstance(snapshot.runtimeId, snapshot.templateAgentId);
       if (!templateAgent || !typeDef) continue;
 
       this.pauseInterruptedAgents.delete(snapshot.runtimeId);
@@ -1545,7 +1550,8 @@ export class ManagerDaemon {
       "Complete the assigned work. When the current phase is done, call the `complete_phase` MCP tool (or `complete_task` if this is the final phase).",
     ].join("\n");
 
-    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    // Root spawn: match the provider spawnAgent will actually resolve.
+    const typeDef = this.agentManager.getEffectiveRootTypeDef(agent.id);
     const isStreaming = typeDef?.supports_stdin ?? false;
     const usesInlinePrompt = typeDef ? agentTypeUsesInlinePrompt(typeDef) : false;
     const spawned = await this.agentManager.spawnAgent(entrypointAgentId, {

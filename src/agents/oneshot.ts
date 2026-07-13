@@ -124,6 +124,8 @@ export function parseOneShotOutput(stdout: string, priorSessionId: string | null
   let usage: OneShotUsage | null = null;
   let sawJson = false;
   let sawErrorResult = false;
+  // Grok streams the answer as {type:"text",data:"<chunk>"} events — join them.
+  const grokChunks: string[] = [];
 
   for (const line of stdout.split("\n")) {
     if (!line.trim()) continue;
@@ -136,7 +138,13 @@ export function parseOneShotOutput(stdout: string, priorSessionId: string | null
     if (!event || typeof event !== "object") continue;
     sawJson = true;
 
-    sessionId = event.session_id ?? event.thread_id ?? event.sessionID ?? sessionId;
+    sessionId = event.session_id ?? event.thread_id ?? event.sessionID ?? event.sessionId ?? sessionId;
+
+    if (event.type === "thought") continue;
+    if (event.type === "text" && typeof event.data === "string") {
+      grokChunks.push(event.data);
+      continue;
+    }
 
     if (event.type === "result") {
       // Claude reports failures as result events too (is_error / error subtype)
@@ -173,6 +181,8 @@ export function parseOneShotOutput(stdout: string, priorSessionId: string | null
   // A failed run echoes its error into assistant text too — without a genuine
   // success result, nothing in the stream is a trustworthy answer.
   if (sawErrorResult && resultText === null) return null;
+
+  if (grokChunks.length > 0 && lastText === null) lastText = grokChunks.join("");
 
   // Plain-text CLI (or a provider format we don't know): the raw output is the answer.
   const text = (resultText ?? lastText ?? (sawJson ? "" : stdout)).trim();

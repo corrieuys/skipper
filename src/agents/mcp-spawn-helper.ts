@@ -1,12 +1,22 @@
-import { writeFileSync, mkdirSync } from "fs";
-import { rmSync } from "fs";
-import { join } from "path";
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
+import { rmSync, rmdirSync } from "fs";
+import { join, dirname } from "path";
 import { readAllMcpServers, type McpServerEntry } from "../config-readers/mcp";
+
+export interface McpRestoreFile {
+  path: string;
+  /** Original file bytes to write back on cleanup; null = file did not exist (delete it). */
+  content: string | null;
+  /** Also remove the parent dir on cleanup if we created it and it is empty after restore. */
+  removeParentDirIfEmpty?: boolean;
+}
 
 export interface McpSpawnOverrides {
   extraArgs: string[];
   extraEnv: Record<string, string>;
   cleanupPaths: string[];
+  /** Files patched in place (not temp files) that must be restored on agent exit. */
+  restoreFiles?: McpRestoreFile[];
 }
 
 /**
@@ -105,6 +115,7 @@ export function injectDaemonMcpServer(
   runtimeId: string,
   agentType: string,
   port: number,
+  workingDir?: string,
 ): McpSpawnOverrides {
   const daemonUrl = `http://localhost:${port}/mcp`;
 
@@ -164,6 +175,23 @@ export function injectDaemonMcpServer(
         writeFileSync(configPath, daemonToml, "utf-8");
       }
     }
+  } else if (agentType === "grok") {
+    // Grok reads MCP servers from <cwd>/.grok/config.toml (highest priority,
+    // merged per-server-name with the user's own ~/.grok/config.toml, so the
+    // user's servers, auth, and sessions stay untouched). Patch that file with
+    // a marker-delimited skipper-daemon block and restore it on agent exit.
+    // The bearer token is env-expanded by grok at load time, so the file
+    // content is identical for concurrent agents sharing a working dir and no
+    // secret lands in the repo.
+    overrides.extraEnv.SKIPPER_DAEMON_URL = daemonUrl;
+    overrides.extraEnv.SKIPPER_AGENT_TOKEN = runtimeId;
+    if (workingDir) {
+      try {
+        injectGrokDaemonConfig(overrides, workingDir, daemonUrl);
+      } catch {
+        // Best-effort: the agent still runs, just without daemon MCP tools
+      }
+    }
   } else {
     // For unknown agent types, provide env vars as generic fallback
     overrides.extraEnv.SKIPPER_DAEMON_URL = daemonUrl;
@@ -171,6 +199,79 @@ export function injectDaemonMcpServer(
   }
 
   return overrides;
+}
+
+const GROK_BLOCK_START = "# >>> skipper-daemon (auto-generated, removed on agent exit) >>>";
+const GROK_BLOCK_END = "# <<< skipper-daemon <<<";
+
+function grokDaemonBlock(daemonUrl: string): string {
+  return [
+    GROK_BLOCK_START,
+    "[mcp_servers.skipper-daemon]",
+    `url = ${toTomlString(daemonUrl)}`,
+    "enabled = true",
+    "[mcp_servers.skipper-daemon.headers]",
+    'Authorization = "Bearer ${SKIPPER_AGENT_TOKEN}"',
+    GROK_BLOCK_END,
+  ].join("\n");
+}
+
+/** Remove any marker-delimited skipper-daemon blocks (stale crash leftovers). */
+export function stripGrokDaemonBlocks(content: string): string {
+  let out = content;
+  for (;;) {
+    const start = out.indexOf(GROK_BLOCK_START);
+    if (start === -1) return out;
+    const endIdx = out.indexOf(GROK_BLOCK_END, start);
+    const end = endIdx === -1 ? out.length : endIdx + GROK_BLOCK_END.length;
+    out = (out.slice(0, start) + out.slice(end)).replace(/\n{3,}/g, "\n\n");
+  }
+}
+
+function injectGrokDaemonConfig(
+  overrides: McpSpawnOverrides,
+  workingDir: string,
+  daemonUrl: string,
+): void {
+  const dir = join(workingDir, ".grok");
+  const configPath = join(dir, "config.toml");
+  const dirExisted = existsSync(dir);
+  const original = existsSync(configPath) ? readFileSync(configPath, "utf-8") : null;
+  const base = original === null ? "" : stripGrokDaemonBlocks(original);
+  if (!dirExisted) mkdirSync(dir, { recursive: true });
+  const sep = base.length > 0 && !base.endsWith("\n") ? "\n" : "";
+  writeFileSync(configPath, base + sep + grokDaemonBlock(daemonUrl) + "\n", "utf-8");
+  (overrides.restoreFiles ??= []).push({
+    path: configPath,
+    content: original,
+    removeParentDirIfEmpty: !dirExisted,
+  });
+}
+
+/**
+ * Undo in-place config patches recorded in restoreFiles: write back the
+ * original bytes, or delete the file (and the dir we created, if now empty)
+ * when it did not exist before spawn.
+ */
+export function restoreMcpConfigFiles(files: McpRestoreFile[]): void {
+  for (const f of files) {
+    try {
+      if (f.content === null) {
+        rmSync(f.path, { force: true });
+        if (f.removeParentDirIfEmpty) {
+          try {
+            rmdirSync(dirname(f.path));
+          } catch {
+            // Dir not empty or already gone — leave it
+          }
+        }
+      } else {
+        writeFileSync(f.path, f.content, "utf-8");
+      }
+    } catch {
+      // Best-effort cleanup — ignore errors
+    }
+  }
 }
 
 export function cleanupMcpTempFiles(paths: string[]): void {

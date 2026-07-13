@@ -2,12 +2,12 @@ import type { Database } from "bun:sqlite";
 import type { Subprocess, FileSink } from "bun";
 import { getDb } from "../db/connection";
 import { agentSpawnPath } from "../paths";
-import { agentTypeUsesInlinePrompt, getAgentTypeDefinition, providerSupportsUsageTracking } from "./types";
+import { agentTypeUsesInlinePrompt, getAgentTypeDefinition, providerSupportsUsageTracking, type AgentTypeDefinition } from "./types";
 import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
 import { logError } from "../logging";
 import { signalTextSnippet } from "./signal-utils";
-import { buildMcpSpawnOverrides, injectDaemonMcpServer, cleanupMcpTempFiles } from "./mcp-spawn-helper";
+import { buildMcpSpawnOverrides, injectDaemonMcpServer, cleanupMcpTempFiles, restoreMcpConfigFiles, type McpRestoreFile } from "./mcp-spawn-helper";
 import { signalBridge } from "../mcp/signal-bridge";
 import { getStringSetting } from "../config/app-settings";
 import { SETTING_SKIPPER_AGENT_TYPE, SETTING_SKIPPER_MODEL } from "../config/model-settings";
@@ -57,6 +57,8 @@ export interface RunningAgent {
   templateAgentId: string;
   /** Resolved agent-type/provider (e.g. "claude-code") — gates usage tracking. */
   providerType: string;
+  /** Model the process was spawned with ("default" when no model flag applied). */
+  resolvedModel: string;
   taskId: string | null;
   parentInstanceId: string | null;
   rootInstanceId: string | null;
@@ -70,6 +72,7 @@ export interface RunningAgent {
   spawnSessionId: string;
   drainedStreams: number;
   mcpCleanupPaths: string[];
+  mcpRestoreFiles: McpRestoreFile[];
 }
 
 export interface SyntheticOutputOptions {
@@ -204,6 +207,12 @@ export interface JsonEvent {
   session_id?: string;
   thread_id?: string;
   sessionID?: string;
+  /** Grok: session identifier, only present on the final `end` event. */
+  sessionId?: string;
+  /** Grok: text/thought chunk payload. */
+  data?: string;
+  /** Grok: turn stop reason on the `end` event. */
+  stopReason?: string;
   usage?: {
     input_tokens?: number;
     cached_input_tokens?: number;
@@ -288,6 +297,10 @@ export class AgentManager {
   private templateToInstances: Map<string, Set<string>> = new Map();
   private respawningAgents: Set<string> = new Set();
   private queuedSignals: Map<string, ParsedSignal[]> = new Map();
+  // Grok streams response text as chunks; markers like [DELEGATE_COMPLETE] can
+  // split across events, so chunks accumulate here and are signal-scanned once
+  // the terminal `end` event arrives.
+  private grokTextBuffers: Map<string, string[]> = new Map();
   private recentSignalFingerprints: Map<string, Map<string, number>> = new Map();
   private resumeLocks: Map<string, Promise<void>> = new Map();
   // agentId(runtime/instance id) -> resolved provider type, for usage-tracking gate.
@@ -377,6 +390,7 @@ export class AgentManager {
     // embedder that constructs more than one manager per process).
     this.respawningAgents.clear();
     this.queuedSignals.clear();
+    this.grokTextBuffers.clear();
     this.recentSignalFingerprints.clear();
     this.resumeLocks.clear();
     this.providerTypeCache.clear();
@@ -515,6 +529,14 @@ export class AgentManager {
       if (overrideModel === undefined) {
         overrideModel = getStringSetting(this.db, SETTING_SKIPPER_MODEL, "") || undefined;
       }
+    } else if (overrideType === undefined || overrideModel === undefined) {
+      // Runtime-keyed respawn (resume, compact, pause/resume, regression): keep
+      // the provider + model this instance was originally resolved with, so an
+      // overridden root does not silently flip back to the template row's type
+      // mid-task and try to resume a foreign session id.
+      const persisted = this.getPersistedSpawnChoice(runtimeId);
+      if (overrideType === undefined) overrideType = persisted.providerType;
+      if (overrideModel === undefined) overrideModel = persisted.model;
     }
     const resolvedType = overrideType || agent.type;
     const resolvedModel = overrideModel || agent.model;
@@ -594,12 +616,14 @@ export class AgentManager {
       env[key] = template.replace("{{model}}", agent.model);
     }
 
-    // Inject MCP server overrides (disabled servers filtered out via temp config)
-    let mcpOverrides = buildMcpSpawnOverrides(agent.type);
+    // Inject MCP server overrides (disabled servers filtered out via temp config).
+    // Keyed off resolvedType, not agent.type: a machine-scoped provider override
+    // must get its own provider's MCP wiring, not the template row's.
+    let mcpOverrides = buildMcpSpawnOverrides(resolvedType);
 
     // Inject skipper-daemon MCP server so agents can use structured tool calls
     const daemonPort = Number(process.env.PORT) || 5005;
-    mcpOverrides = injectDaemonMcpServer(mcpOverrides, runtimeId, agent.type, daemonPort);
+    mcpOverrides = injectDaemonMcpServer(mcpOverrides, runtimeId, resolvedType, daemonPort, options.workingDir);
 
     if (mcpOverrides.extraArgs.length > 0) {
       args.push(...mcpOverrides.extraArgs);
@@ -681,6 +705,17 @@ export class AgentManager {
         options.attempt ?? 1,
       );
 
+    // Persist the resolved provider + model on the instance so respawns of this
+    // runtime id (and post-exit resumes) reuse them instead of re-deriving from
+    // the template row.
+    if (preSpawnTaskId) {
+      this.db
+        .prepare(
+          "UPDATE agent_instances SET state_metadata = json_set(state_metadata, '$.provider_type', ?, '$.resolved_model', ?) WHERE id = ?",
+        )
+        .run(resolvedType, resolvedModel, runtimeId);
+    }
+
     // Spawn the process. If Bun.spawn throws (bad cwd, missing binary, fork
     // limit, etc.) the pre-spawn agent_instances row above would otherwise be
     // stranded in status='running' with pid=NULL forever — health-monitor only
@@ -735,6 +770,7 @@ export class AgentManager {
       id: runtimeId,
       templateAgentId,
       providerType: resolvedType,
+      resolvedModel,
       taskId: options.taskId ?? null,
       parentInstanceId: options.parentInstanceId ?? null,
       rootInstanceId: options.rootInstanceId ?? runtimeId,
@@ -748,6 +784,7 @@ export class AgentManager {
       spawnSessionId,
       drainedStreams: 0,
       mcpCleanupPaths: mcpOverrides.cleanupPaths,
+      mcpRestoreFiles: mcpOverrides.restoreFiles ?? [],
     };
 
     // Track in memory
@@ -1047,10 +1084,15 @@ export class AgentManager {
     // Clean up in-memory tracking
     this.agents.delete(agentId);
     this.recentSignalFingerprints.delete(agentId);
+    this.grokTextBuffers.delete(agentId);
 
     // Clean up any temp MCP config files written at spawn time
     if (runtime?.mcpCleanupPaths?.length) {
       cleanupMcpTempFiles(runtime.mcpCleanupPaths);
+    }
+    // Restore config files patched in place at spawn time (grok .grok/config.toml)
+    if (runtime?.mcpRestoreFiles?.length) {
+      restoreMcpConfigFiles(runtime.mcpRestoreFiles);
     }
 
     if (runtime) {
@@ -1220,6 +1262,64 @@ export class AgentManager {
     }
   }
 
+  /**
+   * Machine-scoped root-orchestrator overrides (config page "Agent Models").
+   * spawnAgent() applies these automatically for template runtimes; runtime-keyed
+   * respawn call sites pass them explicitly when no prior instance row exists.
+   */
+  getRootSpawnOverrides(): { agentTypeOverride?: string; modelOverride?: string } {
+    return {
+      agentTypeOverride: getStringSetting(this.db, SETTING_SKIPPER_AGENT_TYPE, "") || undefined,
+      modelOverride: getStringSetting(this.db, SETTING_SKIPPER_MODEL, "") || undefined,
+    };
+  }
+
+  /**
+   * The type definition a root/entrypoint spawn of this template will actually
+   * use: the machine-scoped provider override wins over the template row's
+   * committed type. Callers deciding prompt delivery (inline vs stdin) or
+   * resume support for root spawns must use this instead of the raw
+   * agents.type, or an overridden provider gets the wrong delivery mode.
+   */
+  getEffectiveRootTypeDef(templateAgentId: string): AgentTypeDefinition | null {
+    const agent = this.getAgent(templateAgentId);
+    if (!agent) return null;
+    const { agentTypeOverride } = this.getRootSpawnOverrides();
+    return getAgentTypeDefinition(agentTypeOverride || agent.type, this.db);
+  }
+
+  /**
+   * The type definition a runtime-keyed respawn of this instance will use:
+   * the provider the instance was originally resolved with (in-memory record,
+   * else the persisted instance row) wins over the template row's type.
+   */
+  getEffectiveTypeDefForInstance(runtimeId: string, templateAgentId: string): AgentTypeDefinition | null {
+    const provider = this.agents.get(runtimeId)?.providerType
+      ?? this.getPersistedSpawnChoice(runtimeId).providerType;
+    if (provider) return getAgentTypeDefinition(provider, this.db);
+    const agent = this.getAgent(templateAgentId);
+    return agent ? getAgentTypeDefinition(agent.type, this.db) : null;
+  }
+
+  /** Provider + model this runtime instance was last resolved with at spawn. */
+  private getPersistedSpawnChoice(runtimeId: string): { providerType?: string; model?: string } {
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT json_extract(state_metadata, '$.provider_type') as provider_type,
+                  json_extract(state_metadata, '$.resolved_model') as resolved_model
+           FROM agent_instances WHERE id = ?`,
+        )
+        .get(runtimeId) as { provider_type: string | null; resolved_model: string | null } | null;
+      return {
+        providerType: row?.provider_type ?? undefined,
+        model: row?.resolved_model ?? undefined,
+      };
+    } catch {
+      return {};
+    }
+  }
+
   private getPersistedRuntimeState(runtimeId: string): PersistedRuntimeState | null {
     const row = this.db
       .prepare(
@@ -1254,9 +1354,16 @@ export class AgentManager {
       throw new Error(`Agent not found: ${agentId}`);
     }
 
-    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    // The provider actually running (or last run) under this id — a root with a
+    // machine-scoped override is not the template row's type, and the respawn
+    // below must match the provider that owns the session id.
+    const effectiveProvider = this.agents.get(agentId)?.providerType
+      ?? (agentId !== templateAgentId ? this.getPersistedSpawnChoice(agentId).providerType : undefined)
+      ?? (agentId === templateAgentId ? this.getRootSpawnOverrides().agentTypeOverride : undefined)
+      ?? agent.type;
+    const typeDef = getAgentTypeDefinition(effectiveProvider, this.db);
     if (!typeDef || !typeDef.supports_resume) {
-      throw new Error(`Agent type ${agent.type} does not support resume`);
+      throw new Error(`Agent type ${effectiveProvider} does not support resume`);
     }
 
     // For runtime instances, always load persisted state so resume-respawn
@@ -1463,8 +1570,9 @@ export class AgentManager {
     const runningAgent = this.agents.get(agentId);
 
     // Capture resume session identifier for --resume support.
-    // Codex uses `thread_id`; Claude-style payloads may use `session_id`.
-    const resumeSessionId = json.session_id ?? json.thread_id ?? json.sessionID;
+    // Codex uses `thread_id`; Claude-style payloads may use `session_id`;
+    // grok's `end` event carries `sessionId`.
+    const resumeSessionId = json.session_id ?? json.thread_id ?? json.sessionID ?? json.sessionId;
     if (resumeSessionId && runningAgent && !runningAgent.sessionId) {
       runningAgent.sessionId = resumeSessionId;
       // Persist eagerly so session_id survives server crashes
@@ -1548,8 +1656,38 @@ export class AgentManager {
         return { ...base, content: json.result ?? text ?? undefined };
 
       case "text":
-        // OpenCode text content
+        // Grok response chunk ({data}) vs OpenCode text content ({part.text}).
+        // Grok chunks can split signal markers, so they accumulate until `end`.
+        if (typeof json.data === "string") {
+          const buf = this.grokTextBuffers.get(agentId) ?? [];
+          buf.push(json.data);
+          this.grokTextBuffers.set(agentId, buf);
+          return base;
+        }
         return { ...base, content: text ?? undefined };
+
+      case "thought":
+        // Grok reasoning chunk — not response text
+        return base;
+
+      case "end": {
+        // Grok terminal event: signal-scan the accumulated response text now
+        // that no marker can be split across chunks.
+        const chunks = this.grokTextBuffers.get(agentId);
+        this.grokTextBuffers.delete(agentId);
+        const fullText = chunks?.join("") ?? "";
+        if (fullText) {
+          const grokSignals = detectAllSignalsInText(agentId, fullText);
+          if (grokSignals.length > 0) {
+            const [first, ...rest] = grokSignals;
+            if (rest.length > 0) {
+              this.queuedSignals.set(agentId, rest.map((signal) => ({ ...signal, raw, jsonEvent: json })));
+            }
+            return { ...first!, raw, jsonEvent: json };
+          }
+        }
+        return { ...base, content: fullText || undefined };
+      }
 
       case "step_start":
         // OpenCode step start — session tracking handled above
@@ -1580,8 +1718,14 @@ export class AgentManager {
         // Silently ignored
         return base;
 
-      case "error":
-        return { ...base, content: json.error?.message ?? "Unknown error" };
+      case "error": {
+        // Claude nests the message under `error`; grok puts a string at top level
+        this.grokTextBuffers.delete(agentId);
+        const topLevelMessage = typeof (json as { message?: unknown }).message === "string"
+          ? (json as { message: string }).message
+          : undefined;
+        return { ...base, content: json.error?.message ?? topLevelMessage ?? "Unknown error" };
+      }
 
       default:
         // Background events, config dumps

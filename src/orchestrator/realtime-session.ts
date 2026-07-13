@@ -726,7 +726,7 @@ export class RealtimeSessionManager {
     console.log(`[realtime-session] spawnSummarizer: spawning ${summarizer.id} for task=${taskId} segments=${firstSeq}-${lastSeq} (${segmentIds.length} segments)`);
 
     this.agentManager.clearSessionId(summarizer.id);
-    const summarizerType = getAgentTypeDefinition(summarizer.type, this.db);
+    const summarizerType = this.agentManager.getEffectiveRootTypeDef(summarizer.id) ?? getAgentTypeDefinition(summarizer.type, this.db);
     const summarizerUsesInlinePrompt = summarizerType ? agentTypeUsesInlinePrompt(summarizerType) : false;
     const summarizerTask = this.db.prepare("SELECT working_directory FROM tasks WHERE id = ?").get(taskId) as { working_directory: string } | null;
     const summarizerWorkingDir = summarizerTask?.working_directory || process.cwd();
@@ -1024,7 +1024,7 @@ export class RealtimeSessionManager {
     const entrypoint = typeof this.agentManager.getAgent === "function"
       ? this.agentManager.getAgent(entrypointAgentId)
       : null;
-    const entrypointType = entrypoint ? getAgentTypeDefinition(entrypoint.type, this.db) : null;
+    const entrypointType = entrypoint ? this.agentManager.getEffectiveRootTypeDef(entrypoint.id) : null;
     const entrypointUsesInlinePrompt = entrypointType ? agentTypeUsesInlinePrompt(entrypointType) : false;
     const feedTask = this.db.prepare("SELECT working_directory FROM tasks WHERE id = ?").get(taskId) as { working_directory: string } | null;
     const feedWorkingDir = feedTask?.working_directory || process.cwd();

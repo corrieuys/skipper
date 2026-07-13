@@ -3,7 +3,7 @@ import type { AgentManager } from "../agents/manager";
 import type { PromptBuilder, AgentInfo, PhaseInfo } from "../agents/prompt-builder";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { TeamManager, Phase } from "../teams/manager";
-import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
+import { agentTypeUsesInlinePrompt } from "../agents/types";
 import { TaskStateMachine } from "./state";
 import { logError } from "../logging";
 import { updateInstanceStatus, finalizeActiveInstancesForTask } from "../agents/instance-status";
@@ -363,7 +363,9 @@ export class RecoveryManager {
     const agent = this.agentManager.getAgent(entrypointAgentId);
     if (!agent) return false;
 
-    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    // Root spawn: match the provider spawnAgent will actually resolve
+    // (machine-scoped override wins over the template row's type).
+    const typeDef = this.agentManager.getEffectiveRootTypeDef(entrypointAgentId);
     if (!typeDef) return false;
 
     const orchState = (task.orchestration_state ?? {}) as Partial<OrchestrationState>;

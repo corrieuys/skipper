@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { getAgentTypeDefinition } from "../agents/types";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { PhaseManager } from "./phase-manager";
@@ -114,6 +115,11 @@ function createPhaseManager(
         config: JSON.parse((row.config as string) ?? "{}"),
       };
     },
+    getEffectiveRootTypeDef: (id: string) => {
+      const row = database.prepare("SELECT type FROM agents WHERE id = ?").get(id) as { type: string } | null;
+      return row ? getAgentTypeDefinition(row.type, database) : null;
+    },
+    getRootSpawnOverrides: () => ({}),
     sendInput: overrides.sendInput ?? (() => {}),
     getRunningAgent: () => null,
     getRunningInstanceForTask: () => overrides.runningInstance,

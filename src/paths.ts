@@ -6,7 +6,7 @@ import { isCompiledBinary, listAssets, assetBytesSync } from "./assets";
 const LEGACY_CWD_DB = "skipper-runtime.db";
 
 /**
- * PATH for spawning external agent CLIs (claude, codex, opencode, oz).
+ * PATH for spawning external agent CLIs (claude, codex, opencode, grok).
  *
  * The native Linux installers drop these binaries in `~/.local/bin`, which is
  * only added to PATH by interactive *login* shells (via ~/.profile / ~/.bashrc).

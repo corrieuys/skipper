@@ -184,8 +184,56 @@ function sidebarChatItem(conv: { id: string; title: string; status: string; upda
   </a>`;
 }
 
+// Architecture map shown as the dashboard backdrop when no task is selected.
+// Hidden by default; the retro themes (win95, geocities) reveal + style it —
+// see .mc-welcome__ascii in mission-control.ts and the per-theme overrides in
+// themes.ts. Alignment assumes a monospace font, so the geocities override
+// must keep beating its global Comic Sans rule.
+const HOW_SKIPPER_WORKS_ASCII = `
+             ~ ~ ~   H O W   S K I P P E R   W O R K S   ~ ~ ~
+
++-----------+                    +-------------------------------------+
+|  BROWSER  | --- http/htmx ---> |              BUN SERVER             |
+|    UI     | <---- ws push ---- |     routes . html . /ws . /mcp      |
++-----------+                    +------------------+------------------+
+                                                    |
++-----------+                    +------------------v------------------+
+| OPERATOR  | ----- approve ---> |            MANAGER DAEMON           |
+|   (you)   |                    |    tick loop . health . recovery    |
++-----------+                    | draft > approved > running > done   |
+   ^    ^                        +------------------+------------------+
+   |    |                                           |
+   |    |                        +------------------v------------------+
+   |    |   phase reviews        |              PHASE LOOP             |
+   |    +------------------------|  phase idx 0..n  complete | regress |
+   |                             +------------------+------------------+
+   |                                                | spawns
+   |                             +------------------v------------------+
+   |        escalations          |           ROOT AGENT (cli)          |
+   +-----------------------------|  claude-code  codex  opencode  grok   |
+                                 +----+-------------+------------+-----+
+                                      |             |            |
+                            mcp tools |      stdout |   delegate |
+                                      v     markers v            v
+                                 +----------------------+  +------------+
+                                 |      EVENT BUS       |  | SUB-AGENTS |
+                                 |     agent:signal     |<-| workers    |
+                                 +---+--------------+---+  +------------+
+                                     |              |
+                   notes . artifacts |              | ws -> live ui
+                                     v              v
+                              +-----------+   +-----------+
+                              |~/.skipper |   | dashboard |
+                              | sqlite db |   |  updates  |
+                              +-----------+   +-----------+
+
+  * connect : outbound ws . remote control . public artifact links
+  * whisper : local transcription for realtime voice tasks
+  * greg    : resident heckler
+`;
+
 function renderWelcome(_vm: CommandCenterViewModel): string {
-  return `<div class="mc-welcome"></div>`;
+  return `<div class="mc-welcome"><pre class="mc-welcome__ascii" aria-hidden="true">${escapeHtml(HOW_SKIPPER_WORKS_ASCII)}</pre></div>`;
 }
 
 function renderTaskView(vm: CommandCenterViewModel, task: TaskSummary): string {

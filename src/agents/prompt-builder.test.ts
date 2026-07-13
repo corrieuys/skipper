@@ -355,7 +355,11 @@ describe("buildPromptEnrichment", () => {
   });
 
   it("hides DELEGATE for agents that don't support delegation", () => {
-    const agent1 = createAgent("OZ Agent", "oz");
+    // No seeded type lacks resume support anymore; create one for the test.
+    db.prepare(
+      "INSERT INTO agent_types (name, command, args, supports_stdin, supports_resume) VALUES ('no-resume-cli', 'norun', '[]', 0, 0)",
+    ).run();
+    const agent1 = createAgent("NoResume Agent", "no-resume-cli");
     const agent2 = createAgent("Other Agent", "claude-code");
     createTeamWithAgents([
       { id: agent1, role: "worker" },

@@ -91,7 +91,9 @@ export class ConsensusManager {
       return;
     }
 
-    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    // Consensus clones are root-skipper instances: honor the machine-scoped
+    // provider override like every other root spawn.
+    const typeDef = this.agentManager.getEffectiveRootTypeDef(entrypointAgentId);
     const isStreaming = typeDef?.supports_stdin ?? false;
 
     const agentInfo: AgentInfo = {
@@ -178,6 +180,7 @@ export class ConsensusManager {
           rootInstanceId: entrypointAgentId,
           attempt: 1,
           initialPrompt: usesInlinePrompt ? prompt : undefined,
+          ...this.agentManager.getRootSpawnOverrides(),
         });
 
         // Update delegation to running

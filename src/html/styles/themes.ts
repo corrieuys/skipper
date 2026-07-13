@@ -592,6 +592,21 @@ function geocitiesOverridesCss(): string {
       border-radius: 0;
       border: 3px solid rgba(224, 85, 85, 0.7);
     }
+
+    /* Welcome backdrop — architecture map, rainbow-cycling like a proud
+       "under construction" homepage centerpiece. Monospace !important beats
+       the theme's global Comic Sans rule (higher specificity, later in
+       source) so the box drawing stays aligned. */
+    ${G} .mc-welcome__ascii {
+      display: block;
+      font-family: 'Courier New', ui-monospace, monospace !important;
+      color: #5fc8c8;
+      background: rgba(26, 26, 61, 0.85);
+      border: 3px ridge rgba(211, 111, 196, 0.55);
+      padding: 20px 28px;
+      text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
+      animation: sk-geo-rainbow 12s ease-in-out infinite;
+    }
   `;
 }
 
@@ -1067,6 +1082,19 @@ function win95OverridesCss(): string {
       border-left: 2px solid #a0a0a0;
       border-bottom: 2px solid #001010;
       border-right: 2px solid #001010;
+    }
+
+    /* Welcome backdrop — architecture map as a sunken DOS console */
+    ${W} .mc-welcome__ascii {
+      display: block;
+      color: #c0c0c0;
+      background: #001820;
+      border-top: 2px solid #001010;
+      border-left: 2px solid #001010;
+      border-bottom: 2px solid #a0a0a0;
+      border-right: 2px solid #a0a0a0;
+      padding: 20px 28px;
+      text-shadow: 0 0 4px rgba(0, 120, 212, 0.35);
     }
   `;
 }

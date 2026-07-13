@@ -190,6 +190,24 @@ export function missionControlStyles(): string {
       gap: var(--sk-space-6);
       margin-top: var(--sk-space-4);
     }
+    /* Architecture map backdrop — hidden by default, revealed by the retro
+       themes (win95, geocities) via their override CSS. Needs a monospace
+       font or the box-drawing alignment falls apart. */
+    .mc-welcome__ascii {
+      display: none;
+      margin: 0;
+      font-family: 'Courier New', ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      line-height: 1.3;
+      white-space: pre;
+      user-select: none;
+      pointer-events: none;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    @media (max-width: 900px) {
+      .mc-welcome__ascii { display: none !important; }
+    }
 
     /* ── Main: task execution view ── */
     .mc-task-header {

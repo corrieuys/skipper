@@ -50,8 +50,8 @@ describe("getAgentTypeDefinition", () => {
     expect(def!.command).toBe("codex");
     expect(def!.supports_resume).toBe(true);
     expect(def!.resume_flag).toBeNull();
-    expect(def!.resume_args).toEqual(["exec", "resume", "{{session_id}}", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"]);
-    expect(def!.model_flag).toBeNull();
+    expect(def!.resume_args).toEqual(["exec", "resume", "{{session_id}}", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-"]);
+    expect(def!.model_flag).toBe("-m");
   });
 
   it("returns opencode type with correct fields", () => {
@@ -69,18 +69,17 @@ describe("getAgentTypeDefinition", () => {
     expect(def!.resume_args).toEqual(["run", "{{prompt}}", "--format", "json", "--session", "{{session_id}}"]);
   });
 
-  it("returns oz type with correct fields", () => {
-    const def = getAgentTypeDefinition("oz", db);
+  it("returns grok type with correct fields", () => {
+    const def = getAgentTypeDefinition("grok", db);
     expect(def).not.toBeNull();
-    expect(def!.name).toBe("oz");
-    expect(def!.command).toBe("oz");
-    expect(def!.args).toEqual(["agent", "run", "--output-format", "json", "--prompt", "{{prompt}}"]);
-    expect(def!.model_flag).toBe("--model");
-    expect(def!.available_models).toContain("auto");
-    expect(def!.available_models).toContain("gpt-5-4-medium");
+    expect(def!.name).toBe("grok");
+    expect(def!.command).toBe("grok");
+    expect(def!.args).toEqual(["-p", "{{prompt}}", "--output-format", "streaming-json", "--always-approve", "--no-auto-update"]);
+    expect(def!.model_flag).toBe("-m");
+    expect(def!.available_models).toContain("grok-4.5");
     expect(def!.supports_stdin).toBe(false);
-    expect(def!.supports_resume).toBe(false);
-    expect(def!.resume_flag).toBeNull();
+    expect(def!.supports_resume).toBe(true);
+    expect(def!.resume_flag).toBe("--resume");
     expect(def!.resume_args).toBeNull();
   });
 
@@ -121,7 +120,7 @@ describe("listAgentTypes", () => {
     expect(names).toContain("claude-code");
     expect(names).toContain("codex");
     expect(names).toContain("opencode");
-    expect(names).toContain("oz");
+    expect(names).toContain("grok");
     // conversation-skipper type still seeded but agents now use claude-code
     expect(names).toContain("conversation-skipper");
   });

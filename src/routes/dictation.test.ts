@@ -72,8 +72,8 @@ describe("dictation model setting", () => {
     setStringSetting(db, "dictation_model", "");
   });
 
-  it("provider allowlist offers all first-class providers", () => {
-    expect([...PROVIDER_ALLOWLIST]).toEqual(["claude-code", "codex", "opencode", "oz"]);
+  it("provider allowlist offers only first-class providers", () => {
+    expect([...PROVIDER_ALLOWLIST]).toEqual(["claude-code"]);
   });
 });
 

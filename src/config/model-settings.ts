@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { getStringSetting, setStringSetting } from "./app-settings";
 import { listAgentTypes } from "./store";
+import { isExperimental } from "./feature-flags";
 import { getSkipperConfig } from "../agents/skipper";
 
 /**
@@ -48,10 +49,15 @@ export interface AgentTypeOption {
 // The providers offered anywhere a model provider is selectable. An allowlist so
 // it's one place to widen; internal aliases ("conversation-skipper") and the empty
 // "custom" placeholder stay hidden.
-export const PROVIDER_ALLOWLIST = ["claude-code", "codex", "opencode", "oz"] as const;
+export const PROVIDER_ALLOWLIST = ["claude-code"] as const;
+
+// Providers still proving themselves; selectable only when the experimental
+// feature flag is on.
+const EXPERIMENTAL_PROVIDERS = ["codex", "opencode", "grok"] as const;
 
 export function isAllowedProvider(name: string): boolean {
-  return (PROVIDER_ALLOWLIST as readonly string[]).includes(name);
+  if ((PROVIDER_ALLOWLIST as readonly string[]).includes(name)) return true;
+  return isExperimental() && (EXPERIMENTAL_PROVIDERS as readonly string[]).includes(name);
 }
 
 /** Selectable providers + their known models, for the config-page controls. */

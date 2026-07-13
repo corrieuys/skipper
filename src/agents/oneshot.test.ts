@@ -15,9 +15,9 @@ const CLAUDE_DEF = {
 
 const CODEX_DEF = {
   command: "codex",
-  args: ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"],
-  resume_args: ["exec", "resume", "{{session_id}}", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"],
-  model_flag: null,
+  args: ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-"],
+  resume_args: ["exec", "resume", "{{session_id}}", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-"],
+  model_flag: "-m",
   supports_resume: true,
   resume_flag: null,
 };
@@ -29,6 +29,15 @@ const OPENCODE_DEF = {
   model_flag: "-m",
   supports_resume: true,
   resume_flag: null,
+};
+
+const GROK_DEF = {
+  command: "grok",
+  args: ["-p", "{{prompt}}", "--output-format", "streaming-json", "--always-approve", "--no-auto-update"],
+  resume_args: null,
+  model_flag: "-m",
+  supports_resume: true,
+  resume_flag: "--resume",
 };
 
 describe("buildOneShotCommand", () => {
@@ -62,7 +71,7 @@ describe("buildOneShotCommand", () => {
       systemPrompt: "sys",
       sessionId: "thread-9",
     });
-    expect(cmd).toEqual(["codex", "exec", "resume", "thread-9", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"]);
+    expect(cmd).toEqual(["codex", "exec", "resume", "thread-9", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-"]);
     // No system-prompt flag — prepended to the stdin prompt instead
     expect(stdinPrompt).toBe("sys\n\nfix it");
   });
@@ -76,6 +85,22 @@ describe("buildOneShotCommand", () => {
     expect(stdinPrompt).toBeNull();
     expect(cmd).toContain("sys\n\ndo thing");
     expect(cmd[cmd.indexOf("-m") + 1]).toBe("opencode/big-pickle");
+    expect(cmd).not.toContain("{{prompt}}");
+  });
+
+  it("grok: inline {{prompt}}, model flag, resume flag appended", () => {
+    const { cmd, stdinPrompt } = buildOneShotCommand(GROK_DEF, {
+      model: "grok-4.5",
+      prompt: "do thing",
+      systemPrompt: "sys",
+      sessionId: "grok-sess-1",
+    });
+    expect(stdinPrompt).toBeNull();
+    expect(cmd[0]).toBe("grok");
+    expect(cmd).toContain("sys\n\ndo thing");
+    expect(cmd).toContain("streaming-json");
+    expect(cmd[cmd.indexOf("--resume") + 1]).toBe("grok-sess-1");
+    expect(cmd[cmd.indexOf("-m") + 1]).toBe("grok-4.5");
     expect(cmd).not.toContain("{{prompt}}");
   });
 });
@@ -112,6 +137,19 @@ describe("parseOneShotOutput", () => {
     const res = parseOneShotOutput(stdout, null);
     expect(res?.text).toBe("opencode says hi");
     expect(res?.sessionId).toBe("oc-3");
+  });
+
+  it("grok: joins text chunks, skips thoughts, captures sessionId from end", () => {
+    const stdout = [
+      JSON.stringify({ type: "thought", data: "pondering" }),
+      JSON.stringify({ type: "text", data: "grok " }),
+      JSON.stringify({ type: "text", data: "says hi" }),
+      JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "g-4", requestId: "r-1" }),
+    ].join("\n");
+    const res = parseOneShotOutput(stdout, null);
+    expect(res?.text).toBe("grok says hi");
+    expect(res?.sessionId).toBe("g-4");
+    expect(res?.usage).toBeNull();
   });
 
   it("plain-text CLI output falls back to raw stdout", () => {

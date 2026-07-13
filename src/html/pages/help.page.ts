@@ -47,7 +47,7 @@ export function helpPage(vm: HelpPageViewModel): string {
     </div>`;
 
   const overview = section("overview", "Overview", `
-    <p>Skipper is a <strong>multi-agent orchestrator</strong> that spawns and coordinates external CLI agents — claude-code, codex, opencode, oz — to execute long-running tasks through structured phases of work.</p>
+    <p>Skipper is a <strong>multi-agent orchestrator</strong> that spawns and coordinates external CLI agents — claude-code, codex, opencode, grok — to execute long-running tasks through structured phases of work.</p>
     <h3 style="margin-top: var(--sk-space-4);">Architecture</h3>
     <ul>
       <li>A <strong>daemon tick loop</strong> runs every 30 seconds, picking the next approved task from the queue and spawning the entrypoint agent.</li>
@@ -80,7 +80,7 @@ export function helpPage(vm: HelpPageViewModel): string {
     <p>Each agent is authored <strong>inline on the team</strong> (not referenced from a shared pool). Per agent you set:</p>
     <ul>
       <li><strong>Name</strong> — used in delegation prompts (e.g. "Coder", "Tester", "Analyst").</li>
-      <li><strong>Type</strong> — the underlying CLI agent type (claude-code, codex, opencode, oz).</li>
+      <li><strong>Type</strong> — the underlying CLI agent type (claude-code, codex, opencode, grok).</li>
       <li><strong>Model</strong> — the model to run (or <code>default</code>).</li>
       <li><strong>Role</strong> — optional free-text label for what the agent does.</li>
       <li><strong>Instruction</strong> — system-level prompt injected when this agent is spawned.</li>
@@ -187,7 +187,7 @@ export function helpPage(vm: HelpPageViewModel): string {
 
   const agents = section("agents", "Agent Types &amp; Agents", `
     <h3>Supported CLIs (Agent Types)</h3>
-    <p>Skipper spawns these external agent CLIs: <strong>claude-code</strong>, <strong>codex</strong>, <strong>opencode</strong>, <strong>oz</strong>. Each agent type has fixed capabilities:</p>
+    <p>Skipper spawns these external agent CLIs: <strong>claude-code</strong>, <strong>codex</strong>, <strong>opencode</strong>, <strong>grok</strong>. Each agent type has fixed capabilities:</p>
     <ul>
       <li>Supported model families.</li>
       <li>Whether it supports stdin input (<code>supports_stdin</code>).</li>

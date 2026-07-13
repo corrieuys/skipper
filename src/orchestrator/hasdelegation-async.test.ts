@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { getAgentTypeDefinition } from "../agents/types";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { AgentManager } from "../agents/manager";
@@ -114,6 +115,8 @@ describe("Bug 2: fire-and-forget async calls in PhaseManager", () => {
   function createPhaseManager(overrides: Record<string, any> = {}) {
     const agentManager = {
       getAgent: () => ({ id: "agent-1", name: "Agent", type: "claude-code", config: { instruction: "test" } }),
+      getEffectiveRootTypeDef: () => getAgentTypeDefinition("claude-code", db),
+      getRootSpawnOverrides: () => ({}),
       getRunningAgent: () => null,
       getSessionId: () => "session-1",
       getEntrypointSessionIdForTask: () => "session-1",

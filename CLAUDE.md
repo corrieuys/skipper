@@ -1,6 +1,6 @@
 # Skipper
 
-AI agent orchestrator. Spawn external CLI agents (claude-code, codex, opencode, oz). Route stdout signals via event bus. Tick-loop daemon coords multi-agent tasks. Real-time tasks support audio/text + transcription.
+AI agent orchestrator. Spawn external CLI agents (claude-code, codex, opencode, grok). Route stdout signals via event bus. Tick-loop daemon coords multi-agent tasks. Real-time tasks support audio/text + transcription.
 
 ## Run
 

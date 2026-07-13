@@ -31,6 +31,7 @@
         "exec",
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
         "-"
       ],
       "resume_args": [
@@ -39,9 +40,10 @@
         "{{session_id}}",
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
         "-"
       ],
-      "model_flag": null,
+      "model_flag": "-m",
       "available_models": [
         "gpt-5.3-codex",
         "gpt-5.4",
@@ -105,56 +107,27 @@
       "resume_flag": null
     },
     {
-      "name": "oz",
-      "command": "oz",
+      "name": "grok",
+      "command": "grok",
       "args": [
-        "agent",
-        "run",
+        "-p",
+        "{{prompt}}",
         "--output-format",
-        "json",
-        "--prompt",
-        "{{prompt}}"
+        "streaming-json",
+        "--always-approve",
+        "--no-auto-update"
       ],
       "resume_args": null,
-      "model_flag": "--model",
+      "model_flag": "-m",
       "available_models": [
-        "auto",
-        "auto-efficient",
-        "auto-genius",
-        "claude-4-5-haiku",
-        "claude-4-5-opus",
-        "claude-4-5-opus-thinking",
-        "claude-4-5-sonnet",
-        "claude-4-5-sonnet-thinking",
-        "claude-4-6-opus-high",
-        "claude-4-6-opus-max",
-        "claude-4-6-sonnet-high",
-        "claude-4-6-sonnet-max",
-        "gemini-3.1-pro",
-        "glm-5-fireworks",
-        "gpt-5-2-codex-high",
-        "gpt-5-2-codex-low",
-        "gpt-5-2-codex-medium",
-        "gpt-5-2-codex-xhigh",
-        "gpt-5-2-high",
-        "gpt-5-2-low",
-        "gpt-5-2-medium",
-        "gpt-5-2-xhigh",
-        "gpt-5-3-codex-high",
-        "gpt-5-3-codex-low",
-        "gpt-5-3-codex-medium",
-        "gpt-5-3-codex-xhigh",
-        "gpt-5-4-high",
-        "gpt-5-4-low",
-        "gpt-5-4-medium",
-        "gpt-5-4-xhigh",
-        "kimi-k25-fireworks",
-        "kimi-k26-fireworks"
+        "grok-4.5",
+        "grok-composer-2.5-fast",
+        "grok-build"
       ],
       "env_vars": {},
       "supports_stdin": false,
-      "supports_resume": false,
-      "resume_flag": null
+      "supports_resume": true,
+      "resume_flag": "--resume"
     }
   ]
 }

@@ -492,6 +492,7 @@ describe("processStdoutBuffer", () => {
       spawnSessionId: "sess",
       drainedStreams: 0,
       mcpCleanupPaths: [],
+      mcpRestoreFiles: [],
     };
 
     const lines = manager.processStdoutBuffer(running);
@@ -516,6 +517,7 @@ describe("processStdoutBuffer", () => {
       spawnSessionId: "sess",
       drainedStreams: 0,
       mcpCleanupPaths: [],
+      mcpRestoreFiles: [],
     };
 
     const lines = manager.processStdoutBuffer(running);
@@ -540,6 +542,7 @@ describe("processStdoutBuffer", () => {
       spawnSessionId: "sess",
       drainedStreams: 0,
       mcpCleanupPaths: [],
+      mcpRestoreFiles: [],
     };
 
     const lines = manager.processStdoutBuffer(running);
@@ -563,6 +566,7 @@ describe("processStdoutBuffer", () => {
       spawnSessionId: "sess",
       drainedStreams: 0,
       mcpCleanupPaths: [],
+      mcpRestoreFiles: [],
     };
 
     const lines = manager.processStdoutBuffer(running);
@@ -876,6 +880,71 @@ describe("handleJsonOutput", () => {
     const result = manager.handleJsonOutput("agent-1", { type: "error", error: { message: "Rate limited" } }, "{}");
     expect(result.type).toBe("json");
     expect(result.content).toBe("Rate limited");
+  });
+
+  it("captures sessionId from grok end events", () => {
+    const agent = manager.createAgent({ name: "Grok Sess", type: "grok" });
+    db.prepare("INSERT INTO tasks (id, title) VALUES ('task-grok-sess', 'Grok sess')").run();
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id) VALUES (?, 'task-grok-sess', ?)",
+    ).run(agent.id, agent.id);
+    const runningAgent: RunningAgent = {
+      id: agent.id,
+      process: null as any,
+      stdin: null as any,
+      stdoutBuffer: "",
+      stderrBuffer: "",
+      outputSequence: 0,
+      sessionId: null,
+    };
+    manager.getRunningAgents().set(agent.id, runningAgent);
+
+    manager.handleJsonOutput(agent.id, { type: "end", stopReason: "EndTurn", sessionId: "grok-sess-9" }, "{}");
+
+    expect(runningAgent.sessionId).toBe("grok-sess-9");
+    const row = db
+      .prepare("SELECT session_id FROM agent_instances WHERE id = ?")
+      .get(agent.id) as { session_id: string | null } | null;
+    expect(row!.session_id).toBe("grok-sess-9");
+  });
+
+  it("accumulates grok text chunks and emits joined content at end", () => {
+    const id = "grok-agent-chunks";
+    expect(manager.handleJsonOutput(id, { type: "text", data: "Hello " }, "{}").type).toBe("json");
+    expect(manager.handleJsonOutput(id, { type: "text", data: "world" }, "{}").content).toBeUndefined();
+    expect(manager.handleJsonOutput(id, { type: "thought", data: "thinking..." }, "{}").content).toBeUndefined();
+    const result = manager.handleJsonOutput(id, { type: "end", stopReason: "EndTurn", sessionId: "s" }, "{}");
+    expect(result.type).toBe("json");
+    expect(result.content).toBe("Hello world");
+  });
+
+  it("detects a delegate_complete marker split across grok chunks", () => {
+    const id = "grok-agent-split";
+    manager.handleJsonOutput(id, { type: "text", data: "[DELEG" }, "{}");
+    manager.handleJsonOutput(id, { type: "text", data: "ATE_COMPLETE] refactor " }, "{}");
+    manager.handleJsonOutput(id, { type: "text", data: "done" }, "{}");
+    const result = manager.handleJsonOutput(id, { type: "end", stopReason: "EndTurn", sessionId: "s" }, "{}");
+    expect(result.type).toBe("delegate_complete");
+    expect(result.content).toBe("refactor done");
+  });
+
+  it("resets the grok buffer between turns", () => {
+    const id = "grok-agent-reset";
+    manager.handleJsonOutput(id, { type: "text", data: "first" }, "{}");
+    manager.handleJsonOutput(id, { type: "end", sessionId: "s" }, "{}");
+    manager.handleJsonOutput(id, { type: "text", data: "second" }, "{}");
+    const result = manager.handleJsonOutput(id, { type: "end", sessionId: "s" }, "{}");
+    expect(result.content).toBe("second");
+  });
+
+  it("extracts grok top-level error messages and drops the buffer", () => {
+    const id = "grok-agent-error";
+    manager.handleJsonOutput(id, { type: "text", data: "partial" }, "{}");
+    const err = manager.handleJsonOutput(id, { type: "error", message: "Couldn't start session" } as unknown as JsonEvent, "{}");
+    expect(err.type).toBe("json");
+    expect(err.content).toBe("Couldn't start session");
+    const end = manager.handleJsonOutput(id, { type: "end", sessionId: "s" }, "{}");
+    expect(end.content).toBeUndefined();
   });
 
   it("marks context compaction needed when turn input tokens are very large", () => {

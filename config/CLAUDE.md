@@ -4,7 +4,7 @@ JSON config snapshots. Loaded into in-memory config DB at startup. Persisted bac
 
 | file | use |
 |---|---|
-| `agent_types.json` | Agent type defs (claude-code, codex, opencode, oz, custom). Re-seeded by `db/connection.ts` if missing |
+| `agent_types.json` | Agent type defs (claude-code, codex, opencode, grok, custom). Re-seeded by `db/connection.ts` if missing |
 | `skipper_config.json` | Skipper prompt + realtime_prompt |
 | `realtime_config.json` | Transcription provider, model, cadence, overlap |
 | `appearance.json` | UI appearance tweaks |

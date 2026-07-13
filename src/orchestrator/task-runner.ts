@@ -4,7 +4,7 @@ import type { PromptBuilder, AgentInfo, PhaseInfo } from "../agents/prompt-build
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { TeamManager, Phase } from "../teams/manager";
 import type { ConsensusManager } from "./consensus-manager";
-import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
+import { agentTypeUsesInlinePrompt } from "../agents/types";
 import { logError } from "../logging";
 import type { OrchestrationState } from "./types";
 import { resolvePhaseConfig } from "./phase-config";
@@ -73,7 +73,9 @@ export class TaskRunner {
       return { processed: 1 };
     }
 
-    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    // Effective def: the machine-scoped provider override (config page) wins
+    // over the template row's type, matching what spawnAgent will resolve.
+    const typeDef = this.agentManager.getEffectiveRootTypeDef(entrypointAgentId);
     const isStreaming = typeDef?.supports_stdin ?? false;
 
     // Resume prior entrypoint session if one exists for this task and the agent type supports resume.

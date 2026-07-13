@@ -67,8 +67,9 @@ describe("Seed data", () => {
     expect(row.command).toBe("codex");
     expect(row.supports_resume).toBe(1);
     expect(row.resume_flag).toBeNull();
+    expect(row.model_flag).toBe("-m");
     expect(row.resume_args).toBe(
-      JSON.stringify(["exec", "resume", "{{session_id}}", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"]),
+      JSON.stringify(["exec", "resume", "{{session_id}}", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-"]),
     );
   });
 
@@ -84,15 +85,16 @@ describe("Seed data", () => {
     );
   });
 
-  it("seeds oz agent type", () => {
-    const row = db.prepare("SELECT * FROM agent_types WHERE name = ?").get("oz") as Record<string, unknown>;
+  it("seeds grok agent type", () => {
+    const row = db.prepare("SELECT * FROM agent_types WHERE name = ?").get("grok") as Record<string, unknown>;
     expect(row).toBeTruthy();
-    expect(row.command).toBe("oz");
-    expect(row.supports_resume).toBe(0);
-    expect(row.model_flag).toBe("--model");
+    expect(row.command).toBe("grok");
+    expect(row.supports_resume).toBe(1);
+    expect(row.resume_flag).toBe("--resume");
+    expect(row.model_flag).toBe("-m");
     expect(row.resume_args).toBeNull();
     expect(row.args).toBe(
-      JSON.stringify(["agent", "run", "--output-format", "json", "--prompt", "{{prompt}}"]),
+      JSON.stringify(["-p", "{{prompt}}", "--output-format", "streaming-json", "--always-approve", "--no-auto-update"]),
     );
   });
 

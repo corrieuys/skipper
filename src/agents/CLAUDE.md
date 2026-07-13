@@ -20,10 +20,29 @@ Agent process runtime. Spawn external CLI, parse stdout, route signals.
 | id | cmd | resume | stdin |
 |---|---|---|---|
 | `claude-code` | `claude --print --output-format stream-json --verbose --dangerously-skip-permissions` | `--resume <session>` | no |
-| `codex` | `codex exec --json --dangerously-bypass-approvals-and-sandbox -` | `codex exec resume <session>` | no |
+| `codex` | `codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -` (`-m` model) | `codex exec resume <session>` | no |
 | `opencode` | `opencode run message --format json` | `--session <id>` (`-m` model) | no |
-| `oz` | `oz agent run --output-format json --prompt "..." --model <id>` | none — prompt at spawn | no |
+| `grok` | `grok -p "..." --output-format streaming-json --always-approve` (`-m` model) | `--resume <sessionId>` | no |
 | `custom` | empty placeholder | — | — |
+
+Only `claude-code` is a first-class provider; `codex`, `opencode`, and `grok`
+are experimental (selectable only under `--experimental`, see
+`config/model-settings.ts`).
+
+Machine-scoped skipper provider+model overrides resolve once per root spawn
+(`AgentManager.getEffectiveRootTypeDef` / `getRootSpawnOverrides`) and persist
+per instance (`agent_instances.state_metadata.provider_type/resolved_model`);
+runtime-keyed respawns and resumes reuse them, so an overridden root never
+flips back to the template row's type mid-task.
+
+`grok` (xAI Grok Build, experimental provider) streams response text as
+`{type:"text",data:"<chunk>"}` events; chunks accumulate in
+`manager.ts:grokTextBuffers` and are signal-scanned when the terminal
+`{type:"end",sessionId}` event arrives (markers can split across chunks).
+MCP wiring: `mcp-spawn-helper.ts` patches `<workingDir>/.grok/config.toml`
+with a marker-delimited skipper-daemon block (bearer via
+`${SKIPPER_AGENT_TOKEN}` env expansion) and restores the file on agent exit,
+so the user's `~/.grok` auth/sessions/servers stay untouched.
 
 ## Signal parse
 

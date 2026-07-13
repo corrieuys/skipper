@@ -5,6 +5,7 @@ import { PhaseManager } from "./phase-manager";
 import { TaskRunner } from "./task-runner";
 import { RecoveryManager } from "./recovery-manager";
 import { unlinkSync } from "fs";
+import { getAgentTypeDefinition } from "../agents/types";
 
 const TEST_DB = "test-sendinput-errors.db";
 
@@ -90,6 +91,8 @@ describe("sendInput error handling", () => {
         db,
         {
           getAgent: () => mockAgent,
+          getEffectiveRootTypeDef: () => getAgentTypeDefinition(mockAgent.type, db),
+          getRootSpawnOverrides: () => ({}),
           sendInput: throwingSendInput,
           getRunningAgent: () => null,
           getSessionId: () => null,
@@ -129,6 +132,8 @@ describe("sendInput error handling", () => {
         db,
         {
           getAgent: () => mockAgent,
+          getEffectiveRootTypeDef: () => getAgentTypeDefinition(mockAgent.type, db),
+          getRootSpawnOverrides: () => ({}),
           getRunningAgent: () => null,
           spawnAgent: async () => ({ id: "runtime-mock" }),
           spawnAgentInstance: async () => ({ id: "runtime-mock" }),
@@ -170,6 +175,8 @@ describe("sendInput error handling", () => {
         db,
         {
           getAgent: () => mockAgent,
+          getEffectiveRootTypeDef: () => getAgentTypeDefinition(mockAgent.type, db),
+          getRootSpawnOverrides: () => ({}),
           getRunningAgent: () => null,
           getSessionId: () => null,
           getEntrypointSessionIdForTask: () => null,
@@ -205,6 +212,8 @@ describe("sendInput error handling", () => {
         db,
         {
           getAgent: () => mockAgent,
+          getEffectiveRootTypeDef: () => getAgentTypeDefinition(mockAgent.type, db),
+          getRootSpawnOverrides: () => ({}),
           getRunningAgent: () => null,
           getSessionId: () => null,
           getEntrypointSessionIdForTask: () => null,
@@ -243,6 +252,8 @@ describe("sendInput error handling", () => {
         db,
         {
           getAgent: () => mockAgent,
+          getEffectiveRootTypeDef: () => getAgentTypeDefinition(mockAgent.type, db),
+          getRootSpawnOverrides: () => ({}),
           getRunningAgent: () => null,
           getSessionId: () => null,
           getEntrypointSessionIdForTask: () => null,

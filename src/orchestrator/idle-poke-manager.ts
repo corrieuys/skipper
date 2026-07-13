@@ -3,7 +3,7 @@ import type { AgentManager } from "../agents/manager";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { EscalationManager } from "../escalations/manager";
 import type { PromptBuilder } from "../agents/prompt-builder";
-import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
+import { agentTypeUsesInlinePrompt } from "../agents/types";
 import { logError } from "../logging";
 
 const IDLE_SINCE_KEY_PREFIX = "idle_since:";
@@ -202,7 +202,9 @@ export class IdlePokeManager {
 
     const agent = this.agentManager.getAgent(entrypointAgentId);
     if (!agent) return false;
-    const typeDef = getAgentTypeDefinition(agent.type, this.db);
+    // Root spawn: match the provider spawnAgent will actually resolve
+    // (machine-scoped override wins over the template row's type).
+    const typeDef = this.agentManager.getEffectiveRootTypeDef(entrypointAgentId);
     if (!typeDef) return false;
 
     const sessionId = this.agentManager.getEntrypointSessionIdForTask(taskId, entrypointAgentId);

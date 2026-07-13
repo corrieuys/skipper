@@ -5,7 +5,7 @@ import { TaskRunner } from "./task-runner";
 import { TaskScheduler } from "../tasks/scheduler";
 import { TeamManager } from "../teams/manager";
 import { PromptBuilder } from "../agents/prompt-builder";
-import { clearAgentTypeCache } from "../agents/types";
+import { clearAgentTypeCache, getAgentTypeDefinition } from "../agents/types";
 import { setBoolSetting, SETTING_PARALLEL_TASKS } from "../config/app-settings";
 import type { OrchestrationState } from "./types";
 import { ArtifactManager } from "./artifact-manager";
@@ -93,6 +93,11 @@ function createMockAgentManager() {
         model: row.model as string,
       };
     },
+    getEffectiveRootTypeDef: (id: string) => {
+      const row = db.prepare("SELECT type FROM agents WHERE id = ?").get(id) as { type: string } | null;
+      return row ? getAgentTypeDefinition(row.type, db) : null;
+    },
+    getRootSpawnOverrides: () => ({}),
     getRunningAgent: () => null,
     getRunningInstanceForTask: () => undefined,
     clearSessionId: () => {},
