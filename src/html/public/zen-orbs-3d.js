@@ -449,6 +449,7 @@
         THREE = mod;
         booted = true;
         booting = false;
+        document.documentElement.classList.add("zen-orbs-3d-active");
         initRenderer();
         scan();
         ensureLoop();

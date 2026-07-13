@@ -23,16 +23,53 @@ export function animationStyles(): string {
       text-shadow: 0 1px 3px var(--sk-surface-0), 0 0 6px var(--sk-surface-0);
     }
 
-    /* The agent orb is a transparent slot: the three.js cube (shared WebGL
-       canvas, z-index 5) is drawn on top, tracking this element's rect. No CSS
-       visuals — the old crystal-ball circle used to flash on every page load
-       before the deferred three.js module booted, so it is gone entirely. The
-       .zen-orb--active / --inactive classes remain as state flags read by
-       zen-orbs-3d.js; they carry no styling here. */
+    /* The agent orb is a transparent slot when WebGL is available: the
+       three.js cube (shared canvas, z-index 5) draws on top. When WebGL is
+       unavailable the CSS fallback renders a glowing sphere using the same
+       theme accent vars the 3D renderer reads. zen-orbs-3d.js adds
+       .zen-orbs-3d-active on <html> once the WebGL renderer boots; until
+       then the CSS visuals are visible. */
     .zen-orb {
       width: 90px; height: 90px; position: relative;
-      background: transparent; border: none;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%,
+        var(--sk-accent-primary, #b07cff) 0%,
+        var(--sk-accent-secondary, #7c93ff) 60%,
+        color-mix(in srgb, var(--sk-accent-secondary, #7c93ff), black 40%) 100%);
+      box-shadow:
+        0 0 12px 2px color-mix(in srgb, var(--sk-accent-secondary, #7c93ff), transparent 50%),
+        inset 0 -4px 8px color-mix(in srgb, var(--sk-accent-secondary, #7c93ff), black 60%);
+      border: none;
+      transition: opacity 0.4s ease, box-shadow 0.4s ease;
     }
-    .zen-orb__shine { display: none; }
+    .zen-orb--inactive {
+      opacity: 0.35;
+      box-shadow: none;
+    }
+    .zen-orb--active {
+      animation: zen-orb-glow 2.5s ease-in-out infinite;
+    }
+    .zen-orb__shine {
+      position: absolute; top: 15%; left: 20%;
+      width: 35%; height: 25%; border-radius: 50%;
+      background: radial-gradient(ellipse at center,
+        rgba(255,255,255,0.6) 0%, rgba(255,255,255,0) 100%);
+      transform: rotate(-20deg);
+      pointer-events: none;
+    }
+    @keyframes zen-orb-glow {
+      0%, 100% { box-shadow: 0 0 12px 2px color-mix(in srgb, var(--sk-accent-secondary, #7c93ff), transparent 50%),
+                              inset 0 -4px 8px color-mix(in srgb, var(--sk-accent-secondary, #7c93ff), black 60%); }
+      50% { box-shadow: 0 0 20px 6px color-mix(in srgb, var(--sk-accent-primary, #b07cff), transparent 40%),
+                         inset 0 -4px 8px color-mix(in srgb, var(--sk-accent-secondary, #7c93ff), black 60%); }
+    }
+
+    /* When WebGL boots, hide CSS visuals so the 3D canvas takes over */
+    .zen-orbs-3d-active .zen-orb {
+      background: transparent;
+      box-shadow: none;
+      animation: none;
+    }
+    .zen-orbs-3d-active .zen-orb__shine { display: none; }
   `;
 }
