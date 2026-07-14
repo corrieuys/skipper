@@ -440,7 +440,8 @@
     }
     if (booting || !hasOrbs()) return;
     if (!webglSupported()) {
-      console.info("zen-orbs-3d: WebGL unavailable, keeping CSS orbs");
+      console.info("zen-orbs-3d: WebGL unavailable, showing CSS fallback orbs");
+      document.documentElement.classList.add("zen-orbs-3d-fallback");
       return;
     }
     booting = true;
@@ -456,7 +457,8 @@
       })
       .catch(function (e) {
         booting = false;
-        console.warn("zen-orbs-3d: three.js failed to load, keeping CSS orbs", e);
+        console.warn("zen-orbs-3d: three.js failed to load, showing CSS fallback orbs", e);
+        document.documentElement.classList.add("zen-orbs-3d-fallback");
       });
   }
 

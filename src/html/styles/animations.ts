@@ -23,15 +23,22 @@ export function animationStyles(): string {
       text-shadow: 0 1px 3px var(--sk-surface-0), 0 0 6px var(--sk-surface-0);
     }
 
-    /* The agent orb is a transparent slot when WebGL is available: the
-       three.js cube (shared canvas, z-index 5) draws on top. When WebGL is
-       unavailable the CSS fallback renders a glowing sphere using the same
-       theme accent vars the 3D renderer reads. zen-orbs-3d.js adds
-       .zen-orbs-3d-active on <html> once the WebGL renderer boots; until
-       then the CSS visuals are visible. */
+    /* The agent orb is a transparent slot by default: nothing renders until
+       zen-orbs-3d.js decides whether WebGL is available. If the three.js cube
+       (shared canvas, z-index 5) can draw, it boots and adds .zen-orbs-3d-active
+       on <html>. If WebGL is unavailable or three.js fails to load, it adds
+       .zen-orbs-3d-fallback instead, which reveals the CSS glowing sphere below
+       (same theme accent vars the 3D renderer reads). Staying blank during the
+       undecided window avoids the flash where CSS orbs show then cubes pop in. */
     .zen-orb {
       width: 90px; height: 90px; position: relative;
       border-radius: 50%;
+      border: none;
+      background: transparent;
+      transition: opacity 0.4s ease, box-shadow 0.4s ease;
+    }
+    /* CSS fallback sphere — only when WebGL/three.js is confirmed unavailable */
+    .zen-orbs-3d-fallback .zen-orb {
       background: radial-gradient(circle at 35% 35%,
         var(--sk-accent-primary, #b07cff) 0%,
         var(--sk-accent-secondary, #7c93ff) 60%,
@@ -39,16 +46,16 @@ export function animationStyles(): string {
       box-shadow:
         0 0 12px 2px color-mix(in srgb, var(--sk-accent-secondary, #7c93ff), transparent 50%),
         inset 0 -4px 8px color-mix(in srgb, var(--sk-accent-secondary, #7c93ff), black 60%);
-      border: none;
-      transition: opacity 0.4s ease, box-shadow 0.4s ease;
+      transform: scale(0.6); /* shrink CSS fallback sphere */
     }
-    .zen-orb--inactive {
+    .zen-orbs-3d-fallback .zen-orb--inactive {
       opacity: 0.35;
       box-shadow: none;
     }
-    .zen-orb--active {
+    .zen-orbs-3d-fallback .zen-orb--active {
       animation: zen-orb-glow 2.5s ease-in-out infinite;
     }
+    /* Shine highlight: hidden until fallback confirmed */
     .zen-orb__shine {
       position: absolute; top: 15%; left: 20%;
       width: 35%; height: 25%; border-radius: 50%;
@@ -56,7 +63,9 @@ export function animationStyles(): string {
         rgba(255,255,255,0.6) 0%, rgba(255,255,255,0) 100%);
       transform: rotate(-20deg);
       pointer-events: none;
+      display: none;
     }
+    .zen-orbs-3d-fallback .zen-orb__shine { display: block; }
     @keyframes zen-orb-glow {
       0%, 100% { box-shadow: 0 0 12px 2px color-mix(in srgb, var(--sk-accent-secondary, #7c93ff), transparent 50%),
                               inset 0 -4px 8px color-mix(in srgb, var(--sk-accent-secondary, #7c93ff), black 60%); }
@@ -64,12 +73,8 @@ export function animationStyles(): string {
                          inset 0 -4px 8px color-mix(in srgb, var(--sk-accent-secondary, #7c93ff), black 60%); }
     }
 
-    /* When WebGL boots, hide CSS visuals so the 3D canvas takes over */
-    .zen-orbs-3d-active .zen-orb {
-      background: transparent;
-      box-shadow: none;
-      animation: none;
-    }
-    .zen-orbs-3d-active .zen-orb__shine { display: none; }
+    /* .zen-orbs-3d-active: the base .zen-orb is already a transparent slot, so
+       the 3D canvas draws over it with nothing to hide. Fallback visuals only
+       ever attach under .zen-orbs-3d-fallback, which is mutually exclusive. */
   `;
 }
