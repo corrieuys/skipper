@@ -89,6 +89,22 @@ function coerceAgent(raw: unknown, usedIds: Set<string>): LocalTeamAgent | null 
   return agent;
 }
 
+/**
+ * Resolve the per-team config blob from a create/update/import body. The team
+ * form posts `slack_enabled` (checkbox); import bodies carry a nested `config`
+ * object. Form takes precedence when present.
+ */
+function coerceTeamConfig(body: Record<string, unknown>): { slackEnabled: boolean } {
+  let slackEnabled = false;
+  if (body.config && typeof body.config === "object") {
+    slackEnabled = (body.config as Record<string, unknown>).slackEnabled === true;
+  }
+  if ("slack_enabled" in body) {
+    slackEnabled = body.slack_enabled === true || body.slack_enabled === "on" || body.slack_enabled === "true";
+  }
+  return { slackEnabled };
+}
+
 /** Build a LocalTeamInput from a raw JSON object (used by create/update/import). */
 function toInput(body: Record<string, unknown>, opts: { withId?: boolean } = {}): LocalTeamInput {
   const usedIds = new Set<string>();
@@ -107,6 +123,7 @@ function toInput(body: Record<string, unknown>, opts: { withId?: boolean } = {})
     hooks: Array.isArray(body.hooks) ? body.hooks : [],
     phases,
     agents,
+    config: coerceTeamConfig(body),
   };
   if (opts.withId && typeof body.id === "string" && body.id.trim()) {
     input.id = body.id.trim();
@@ -123,6 +140,7 @@ function toExportShape(team: LocalTeam): Record<string, unknown> {
     hooks: team.hooks,
     phases: team.phases,
     agents: team.agents,
+    config: team.config,
   };
 }
 
@@ -136,6 +154,8 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
     const body: Record<string, unknown> = {};
     body.name = (formData.get("name") as string | null) ?? undefined;
     body.skipper_prompt = (formData.get("skipper_prompt") as string | null) ?? undefined;
+    // Unchecked checkboxes are absent from the form; presence ⇒ enabled.
+    body.slack_enabled = formData.get("slack_enabled") != null;
     const id = formData.get("id") as string | null;
     if (id) body.id = id;
     // phases / agents / hooks may arrive as JSON-encoded strings from the form.

@@ -93,6 +93,7 @@ builds every target + `dist/SHA256SUMS` and prints the exact `git tag` +
 | realtime audio/transcribe | [src/realtime/CLAUDE.md](src/realtime/CLAUDE.md) |
 | whisper.cpp local server | [src/whisper/CLAUDE.md](src/whisper/CLAUDE.md) |
 | MCP server (typed tools alt to stdout signals) | [src/mcp/CLAUDE.md](src/mcp/CLAUDE.md) |
+| slack app integration (post as app via bot token) | [src/slack/CLAUDE.md](src/slack/CLAUDE.md) |
 | user hooks (task/escalation events → shell) | [src/hooks/CLAUDE.md](src/hooks/CLAUDE.md) |
 | desktop notification sounds | [src/notifications/CLAUDE.md](src/notifications/CLAUDE.md) |
 | chat conversations w/ skipper | [src/conversations/CLAUDE.md](src/conversations/CLAUDE.md) |
@@ -110,7 +111,7 @@ builds every target + `dist/SHA256SUMS` and prints the exact `git tag` +
 Two paths feed `agent:signal` on the bus:
 
 **1. MCP tools** (primary). Agents call typed tools on the daemon MCP server at `/mcp` (Bearer = `runtimeId`). Definitions in `src/mcp/tools.ts`. Includes:
-`delegate`, `delegate_batch`, `complete_phase`, `regress_phase`, `complete_task`, `escalate`, `create_note`, `create_artifact`, `get_artifact`, `list_artifacts`, `set_global_value`, `get_global_value`, `query_global_store`, `delete_global_value`, plus `send_message`. Phase-lifecycle tools (`complete_phase`, `regress_phase`, `complete_task`) are root-Skipper only — delegated children get a refusal message. Global-store tools (`set_global_value`/`get_global_value`/`query_global_store`/`delete_global_value`) write a cross-task shared table — agents use them only when a task/phase/template explicitly instructs it.
+`delegate`, `delegate_batch`, `complete_phase`, `regress_phase`, `complete_task`, `escalate`, `create_note`, `create_artifact`, `get_artifact`, `list_artifacts`, `set_global_value`, `get_global_value`, `query_global_store`, `delete_global_value`, plus `send_message`. Phase-lifecycle tools (`complete_phase`, `regress_phase`, `complete_task`) are root-Skipper only — delegated children get a refusal message. Global-store tools (`set_global_value`/`get_global_value`/`query_global_store`/`delete_global_value`) write a cross-task shared table — agents use them only when a task/phase/template explicitly instructs it. Slack tools (`slack_send_message`/`slack_send_dm`/`slack_read_channel`, experimental) post/read as the Skipper Slack app; registered on a session only when a bot token is configured AND the task's team has Slack enabled (see [src/slack/CLAUDE.md](src/slack/CLAUDE.md)).
 
 **2. Stdout marker parse** (legacy, narrow). `src/agents/manager.ts:SIGNAL_PATTERNS` scans each line. Surviving markers:
 

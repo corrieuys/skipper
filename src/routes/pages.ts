@@ -1285,6 +1285,8 @@ function registerV2PageRoutes(): void {
     const escalationCount = getOpenEscalationCount(db);
     const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
     const { getModelSettingsView } = require("../config/model-settings");
+    const { isExperimental } = require("../config/feature-flags");
+    const { getSlackConfigView } = require("../config/slack-settings");
     return html(configPage({
       teams: listLocalTeams(db),
       notificationPreferences: listPreferences(db),
@@ -1296,6 +1298,7 @@ function registerV2PageRoutes(): void {
       skipperConnectUrl: getStringSetting(db, SETTING_SKIPPER_CONNECT_URL, ""),
       apiKeys: listKeys(),
       modelSettings: getModelSettingsView(db),
+      slack: isExperimental() ? getSlackConfigView(db) : undefined,
     }));
   });
 
@@ -1361,6 +1364,38 @@ function registerV2PageRoutes(): void {
     if (key) setStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, key);
 
     return new Response(null, { status: 204 });
+  });
+
+  // Slack integration credential (experimental). Token + default channel only —
+  // per-team opt-in lives on each team's config.
+  addRoute("POST", "/api/config/slack", async (req) => {
+    const { isExperimental } = require("../config/feature-flags");
+    if (!isExperimental()) return new Response("Not found", { status: 404 });
+    const { saveSlackConfig } = require("../config/slack-settings");
+    const formData = await req.formData();
+    const botToken = (formData.get("bot_token") ?? "").toString();
+    const defaultChannel = (formData.get("default_channel") ?? "").toString();
+    const err = saveSlackConfig(db, { botToken, defaultChannel });
+    if (err) return new Response(err, { status: 400 });
+    return new Response(null, { status: 204 });
+  });
+
+  // Verify the saved Slack token via auth.test; returns a small HTML fragment.
+  addRoute("POST", "/api/config/slack/test", async () => {
+    const { isExperimental } = require("../config/feature-flags");
+    if (!isExperimental()) return new Response("Not found", { status: 404 });
+    const { isSlackConfigured } = require("../config/slack-settings");
+    if (!isSlackConfigured(db)) {
+      return html(`<span style="color:var(--sk-danger);">No bot token saved yet.</span>`);
+    }
+    const { SlackClient } = require("../slack/client");
+    try {
+      const { team, userId } = await new SlackClient(db).authTest();
+      return html(`<span style="color:var(--sk-success,#3fb950);">Connected as ${escapeHtml(userId)} in ${escapeHtml(team)}.</span>`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return html(`<span style="color:var(--sk-danger);">${escapeHtml(msg)}</span>`);
+    }
   });
 
   // Notification preference toggle

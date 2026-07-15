@@ -570,6 +570,45 @@ describe("Recovery manager — duplicate-root prevention", () => {
     expect(daemon.getAgentManager().getRunningAgent(childRuntimeId)).toBeDefined();
   });
 
+  it("recoverAllStaleTasks: does NOT recover a live parallel task whose skipper isn't the one owning the shared agents row", async () => {
+    // Regression: liveness was read off the shared per-template `agents` row
+    // (one current_task_id / process_pid for the whole `skipper` template) and
+    // getRunningAgent("skipper"), which returns an ARBITRARY live instance of
+    // the template. Run two tasks in parallel on the same team and that model
+    // can't tell them apart: the task the shared row does NOT point at looked
+    // unassigned and got orphan-recovered even though its own skipper was alive.
+    // This produced the "died twice" false failure the operator hit.
+    const workerId = createAgent("analyst");
+    const teamId = createTeamWithEntrypoint(workerId);
+    const taskA = createRunningTask(teamId, "Task A");
+    const taskB = createRunningTask(teamId, "Task B");
+
+    // The shared agents row can only describe ONE task — say it points at A.
+    db.prepare("UPDATE agents SET current_task_id = ?, process_pid = NULL WHERE id = 'skipper'").run(taskA);
+
+    // Task B is genuinely alive: it has a running in-memory instance bound to B.
+    const bRuntimeId = "live-task-b-runtime";
+    await daemon.getAgentManager().spawnAgentInstance(workerId, bRuntimeId, {
+      workingDir: process.cwd(),
+      taskId: taskB,
+      attempt: 1,
+    });
+    expect(daemon.getAgentManager().getRunningAgent(bRuntimeId)).toBeDefined();
+
+    // Pre-arm B's grace timer as elapsed so the OLD code would recover B on this
+    // single call (assignedAgent null → straight to orphan recovery).
+    db.prepare("INSERT OR REPLACE INTO daemon_state (key, value) VALUES (?, ?)")
+      .run(`orphan_recovery_seen:${taskB}`, String(Date.now() - 60_000));
+
+    await daemon.getRecoveryManager().recoverAllStaleTasks();
+
+    // B is alive → not recovered: no recovery attempt, grace cleared, still running.
+    expect(scheduler.getTask(taskB)!.status).toBe("running");
+    expect(db.prepare("SELECT value FROM daemon_state WHERE key = ?").get(`recovery_attempt:${taskB}`)).toBeNull();
+    expect(db.prepare("SELECT value FROM daemon_state WHERE key = ?").get(`orphan_recovery_seen:${taskB}`)).toBeNull();
+    expect(daemon.getAgentManager().getRunningAgent(bRuntimeId)).toBeDefined();
+  });
+
   it("reap-before-respawn: reconciles a dead orphaned subtree before spawning", async () => {
     // Make the entrypoint a lightweight test agent so the post-reap spawn succeeds
     // cleanly (and is torn down in afterEach) rather than exec'ing a real CLI.

@@ -205,43 +205,27 @@ export class RecoveryManager {
         if (task.needs_review) continue; // Intentionally paused for human review — not orphaned
         if (this.hasOpenEscalation(taskId)) continue; // Parked awaiting human response — see injectResponse
 
-        const assignedAgent = this.db
-          .prepare("SELECT id, process_pid FROM agents WHERE current_task_id = ?")
-          .get(taskId) as { id: string; process_pid: number | null } | null;
-
-        if (!assignedAgent) {
-          if (!this.shouldAttemptOrphanRecovery(taskId)) {
-            continue;
-          }
-          const didRecover = await this.recoverTask(taskId);
-          if (didRecover) recovered++;
-          continue;
-        }
-
-        const inMemory = this.agentManager.getRunningAgent(assignedAgent.id);
-        if (inMemory) {
+        // Liveness must be keyed on THIS task, not the shared per-template
+        // `agents` row. That row stores a single current_task_id/process_pid
+        // for the whole `skipper` template, so when several tasks share the
+        // template and run in parallel it can only describe one of them:
+        //   - the non-owning task looked unassigned (falsely orphan-recovered);
+        //   - and getRunningAgent(templateId) returns an ARBITRARY live
+        //     instance of the template, so a sibling task's live skipper could
+        //     mask a genuinely dead task (or make a live task look orphaned).
+        // taskHasLiveInstance keys on taskId (in-memory agents) + this task's
+        // own agent_instances pids, so parallel tasks are told apart correctly.
+        if (this.taskHasLiveInstance(taskId)) {
           this.clearOrphanRecoverySeen(taskId);
           continue;
-        }
-
-        if (assignedAgent.process_pid) {
-          try {
-            process.kill(assignedAgent.process_pid, 0);
-            this.clearOrphanRecoverySeen(taskId);
-            continue;
-          } catch (err) {
-            logError(this.db, "recovery_liveness_check", { agentId: assignedAgent.id, pid: assignedAgent.process_pid, method: "recoverAllStaleTasks" }, err);
-          }
         }
 
         // A delegated child still running means the task is making progress —
         // the parent instance legitimately exits after handing off and gets
         // re-spawned when the child completes. Match active delegations by
-        // TASK, not by the parent's id: `assignedAgent.id` is the template
-        // agent id ("skipper"), whereas delegations are keyed by the parent
-        // INSTANCE uuid (parent_instance_id), so a parent-id lookup never
-        // matches once the parent instance has exited — which would reap a
-        // live child as if it were orphaned.
+        // TASK: delegations are keyed by the parent INSTANCE uuid, and the
+        // child runtime ids are unique instance ids, so this stays correct
+        // once the parent instance has exited.
         const childRuntimeIds = this.getActiveDelegationChildrenForTask(taskId);
         const anyChildRunning = childRuntimeIds.some((cid) => this.agentManager.getRunningAgent(cid));
         if (anyChildRunning) {
@@ -255,7 +239,7 @@ export class RecoveryManager {
 
         const didRecover = await this.recoverTask(taskId);
         if (didRecover) {
-          this.emitRemediationEvent("task_recovered", assignedAgent.id, taskId, { method: "recoverAllStaleTasks" });
+          this.emitRemediationEvent("task_recovered", null, taskId, { method: "recoverAllStaleTasks" });
           recovered++;
         }
       }

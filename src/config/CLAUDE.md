@@ -10,6 +10,7 @@ JSON-backed config snapshot layer.
 | `app-settings.ts` | App-wide settings R/W (persisted in DB `app_settings`) |
 | `model-settings.ts` | Machine-scoped provider+model overrides (config page "Agent Models"): skipper, chat, greg, dictation (experimental). `PROVIDER_ALLOWLIST` gates which agent types are selectable; `codex`, `opencode`, and `grok` are experimental providers, selectable only when `isExperimental()` |
 | `feature-flags.ts` | Feature flag read |
+| `slack-settings.ts` | Slack bot token + default channel (runtime `app_settings`). `getSlackBotToken`, `isSlackConfigured`, `saveSlackConfig`. Credential only — per-team opt-in lives on the team record. See [../slack/CLAUDE.md](../slack/CLAUDE.md) |
 | `teams.ts` | Team config persistence helpers |
 
 ## Snapshot files

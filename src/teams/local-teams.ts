@@ -42,6 +42,12 @@ export interface LocalTeamAgent {
   capabilities?: string[];
 }
 
+/** Per-team settings blob (runtime `local_teams.team_config` JSON column). */
+export interface LocalTeamConfig {
+  /** When true, this team's tasks expose the Slack MCP tools to their agents. */
+  slackEnabled?: boolean;
+}
+
 export interface LocalTeam {
   id: string;
   name: string;
@@ -49,6 +55,7 @@ export interface LocalTeam {
   hooks: unknown[];
   phases: TeamPhase[];
   agents: LocalTeamAgent[];
+  config: LocalTeamConfig;
   created_at: string;
   updated_at: string;
 }
@@ -60,6 +67,7 @@ export interface LocalTeamInput {
   hooks?: unknown[];
   phases: TeamPhase[];
   agents?: LocalTeamAgent[];
+  config?: LocalTeamConfig;
 }
 
 const SKIPPER_AGENT_ID = "skipper";
@@ -87,6 +95,7 @@ interface LocalTeamRow {
   hooks: string;
   phases: string;
   agents: string;
+  team_config: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -100,6 +109,15 @@ function parseJsonArray(raw: string): unknown[] {
   }
 }
 
+function parseTeamConfig(raw: string | null | undefined): LocalTeamConfig {
+  try {
+    const v = JSON.parse(raw ?? "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as LocalTeamConfig) : {};
+  } catch {
+    return {};
+  }
+}
+
 function rowToLocalTeam(row: LocalTeamRow): LocalTeam {
   return {
     id: row.id,
@@ -108,6 +126,7 @@ function rowToLocalTeam(row: LocalTeamRow): LocalTeam {
     hooks: parseJsonArray(row.hooks ?? "[]"),
     phases: parseJsonArray(row.phases ?? "[]") as TeamPhase[],
     agents: parseJsonArray(row.agents ?? "[]") as LocalTeamAgent[],
+    config: parseTeamConfig(row.team_config),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -359,8 +378,8 @@ export function createLocalTeam(db: Database, input: LocalTeamInput): LocalTeam 
   if (getLocalTeam(db, id)) throw new Error(`team: id "${id}" already exists`);
   const ts = nowTs();
   db.prepare(
-    `INSERT INTO local_teams (id, name, skipper_prompt, hooks, phases, agents, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO local_teams (id, name, skipper_prompt, hooks, phases, agents, team_config, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.name,
@@ -368,6 +387,7 @@ export function createLocalTeam(db: Database, input: LocalTeamInput): LocalTeam 
     JSON.stringify(input.hooks ?? []),
     JSON.stringify(input.phases),
     JSON.stringify(input.agents ?? []),
+    JSON.stringify(input.config ?? {}),
     ts,
     ts,
   );
@@ -382,7 +402,7 @@ export function updateLocalTeam(db: Database, id: string, input: LocalTeamInput)
   const ts = nowTs();
   db.prepare(
     `UPDATE local_teams
-        SET name = ?, skipper_prompt = ?, hooks = ?, phases = ?, agents = ?, updated_at = ?
+        SET name = ?, skipper_prompt = ?, hooks = ?, phases = ?, agents = ?, team_config = ?, updated_at = ?
       WHERE id = ?`,
   ).run(
     input.name,
@@ -390,6 +410,7 @@ export function updateLocalTeam(db: Database, id: string, input: LocalTeamInput)
     JSON.stringify(input.hooks ?? []),
     JSON.stringify(input.phases),
     JSON.stringify(input.agents ?? []),
+    JSON.stringify(input.config ?? {}),
     ts,
     id,
   );
@@ -403,4 +424,9 @@ export function deleteLocalTeam(db: Database, id: string): boolean {
   db.prepare("DELETE FROM local_teams WHERE id = ?").run(id);
   removeLocalTeamFromShared(db, id);
   return true;
+}
+
+/** Whether a team opted into the Slack integration (gates the Slack MCP tools). */
+export function isSlackEnabledForTeam(db: Database, teamId: string): boolean {
+  return getLocalTeam(db, teamId)?.config?.slackEnabled === true;
 }

@@ -560,6 +560,7 @@ CREATE TABLE IF NOT EXISTS local_teams (
   hooks TEXT NOT NULL DEFAULT '[]',
   phases TEXT NOT NULL DEFAULT '[]',
   agents TEXT NOT NULL DEFAULT '[]',
+  team_config TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

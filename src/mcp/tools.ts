@@ -13,6 +13,9 @@ import { eventBus } from "../events/bus";
 import { z } from "zod";
 import { signalBridge } from "./signal-bridge";
 import { isExperimental } from "../config/feature-flags";
+import { isSlackConfigured, getSlackDefaultChannel } from "../config/slack-settings";
+import { isSlackEnabledForTeam } from "../teams/local-teams";
+import { SlackClient } from "../slack/client";
 
 export interface DaemonDeps {
   db: Database;
@@ -273,6 +276,98 @@ export function registerDaemonTools(
       return { content: [{ type: "text" as const, text: JSON.stringify({ status: deleted ? "deleted" : "not_found" }) }] };
     },
   );
+  }
+
+  // ── Slack (experimental; per-team opt-in; credential must be configured) ──
+  // Visibility is decided at session creation: registered only when the app is
+  // experimental, a bot token is configured globally, and THIS task's team has
+  // the Slack checkbox ticked. A team without it never sees these tools.
+  const slackIdentity = getInternalIdentity();
+  const slackTeamId = slackIdentity?.taskId
+    ? (db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(slackIdentity.taskId) as { team_id: string | null } | null)?.team_id ?? null
+    : null;
+  if (isExperimental() && isSlackConfigured(db) && slackTeamId && isSlackEnabledForTeam(db, slackTeamId)) {
+    const slack = new SlackClient(db);
+
+    // Accept a window bound as ISO 8601 or Unix epoch seconds; return a Slack ts.
+    const toSlackTs = (v?: string): string | undefined => {
+      const s = v?.trim();
+      if (!s) return undefined;
+      if (/^\d+(\.\d+)?$/.test(s)) return s;
+      const ms = Date.parse(s);
+      if (Number.isNaN(ms)) throw new Error(`Invalid time '${s}' — use ISO 8601 (e.g. 2026-07-15T09:00:00Z) or Unix epoch seconds`);
+      return String(Math.floor(ms / 1000));
+    };
+
+    server.tool(
+      "slack_send_message",
+      "Send a message to a Slack channel as the Skipper app.",
+      {
+        channel: z.string().optional().describe("Channel ID (C…) or #name. Omit to use the team's configured default channel."),
+        text: z.string().describe("Message text (Slack mrkdwn)."),
+        thread_ts: z.string().optional().describe("Timestamp of a parent message to reply in-thread."),
+      },
+      async ({ channel, text, thread_ts }) => {
+        const identity = getInternalIdentity();
+        if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
+        const target = channel?.trim() || getSlackDefaultChannel(db);
+        if (!target) return { content: [{ type: "text" as const, text: "Error: no channel given and no default channel configured" }] };
+        try {
+          const r = await slack.postMessage(target, text, { thread_ts });
+          return { content: [{ type: "text" as const, text: JSON.stringify({ status: "sent", channel: r.channel, ts: r.ts }) }] };
+        } catch (err) {
+          return errorResult(err);
+        }
+      },
+    );
+
+    server.tool(
+      "slack_send_dm",
+      "Send a direct message to a Slack user as the Skipper app.",
+      {
+        user: z.string().describe("Slack user ID (U…) or the user's email address."),
+        text: z.string().describe("Message text (Slack mrkdwn)."),
+      },
+      async ({ user, text }) => {
+        const identity = getInternalIdentity();
+        if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
+        try {
+          const userId = user.includes("@") ? await slack.lookupUserByEmail(user.trim()) : user.trim();
+          const dm = await slack.openDm(userId);
+          const r = await slack.postMessage(dm, text);
+          return { content: [{ type: "text" as const, text: JSON.stringify({ status: "sent", channel: dm, ts: r.ts }) }] };
+        } catch (err) {
+          return errorResult(err);
+        }
+      },
+    );
+
+    server.tool(
+      "slack_read_channel",
+      "Read recent messages from a Slack channel, newest first, within an optional time window.",
+      {
+        channel: z.string().optional().describe("Channel ID (C…). Omit to use the team's configured default channel."),
+        oldest: z.string().optional().describe("Window start — ISO 8601 datetime or Unix epoch seconds. Messages older than this are excluded."),
+        latest: z.string().optional().describe("Window end — ISO 8601 datetime or Unix epoch seconds. Messages newer than this are excluded."),
+        limit: z.number().int().positive().max(200).optional().describe("Max messages to return (default 50, max 200)."),
+      },
+      async ({ channel, oldest, latest, limit }) => {
+        const identity = getInternalIdentity();
+        if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
+        const target = channel?.trim() || getSlackDefaultChannel(db);
+        if (!target) return { content: [{ type: "text" as const, text: "Error: no channel given and no default channel configured" }] };
+        try {
+          const messages = await slack.readChannel(target, {
+            oldest: toSlackTs(oldest),
+            latest: toSlackTs(latest),
+            limit,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify({ channel: target, count: messages.length, messages }) }] };
+        } catch (err) {
+          return errorResult(err);
+        }
+      },
+    );
   }
 
   // ── Delegation ───────────────────────────────────────────

@@ -2175,6 +2175,10 @@ describe("recoverAllStaleTasks", () => {
     daemon.getAgentManager().killAgent(skipperRuntimeId);
     daemon.getAgentManager().getRunningAgents().delete(skipperRuntimeId);
     db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = 'skipper'").run();
+    // Recovery liveness is instance-based: a genuinely-dead root has its
+    // agent_instances pid cleared on exit. Finalize the crashed instance so it
+    // isn't mistaken for live (the killed process can linger momentarily).
+    db.prepare("UPDATE agent_instances SET process_pid = NULL, status = 'failed' WHERE task_id = ? AND template_agent_id = 'skipper'").run(taskId);
 
     // Pre-seed the orphan recovery grace period so the second call recovers immediately
     // First call starts the grace timer and returns 0

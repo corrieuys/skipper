@@ -7,6 +7,7 @@ import { isExperimental } from "../../config/feature-flags";
 import type { NotificationPreference } from "../../notifications/store";
 import type { LocalTeam } from "../../teams/local-teams";
 import type { ModelChoice, AgentTypeOption } from "../../config/model-settings";
+import type { SlackConfigView } from "../../config/slack-settings";
 
 export interface ConfigPageViewModel {
   teams: LocalTeam[];
@@ -25,6 +26,7 @@ export interface ConfigPageViewModel {
     dictation: ModelChoice;
     options: AgentTypeOption[];
   };
+  slack?: SlackConfigView;
 }
 
 /** One provider (agent type) + model row for a subsystem. Model list is filtered
@@ -310,6 +312,9 @@ export function configPage(vm: ConfigPageViewModel): string {
       <!-- API Keys Section (experimental only) -->
       ${isExperimental() ? apiKeysPanel(vm.apiKeys) : ""}
 
+      <!-- Slack Integration Section (experimental only) -->
+      ${isExperimental() && vm.slack ? slackPanel(vm.slack) : ""}
+
       <!-- System Section -->
       <div class="sk-panel">
         <div class="sk-panel__header">
@@ -324,6 +329,48 @@ export function configPage(vm: ConfigPageViewModel): string {
       </div>
     </div>
   `, "/config");
+}
+
+export function slackPanel(slack: SlackConfigView): string {
+  return `
+      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
+        <div class="sk-panel__header">
+          <span class="sk-panel__title">Slack Integration</span>
+        </div>
+        <div class="sk-panel__body">
+          <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
+            Let Skipper agents post to Slack <strong>as your app</strong> (not as you). Paste a Bot User OAuth
+            token (<code>xoxb-…</code>) from your Slack app's OAuth &amp; Permissions page. Required bot scopes:
+            <code>chat:write</code>, <code>im:write</code>, <code>users:read</code>, <code>users:read.email</code>,
+            <code>channels:history</code>, <code>groups:history</code>.
+            Turn the tools on per team via the "Enable Slack integration" checkbox on each team.
+          </p>
+          <form hx-post="/api/config/slack" hx-swap="none"
+            hx-on::after-request="if(event.detail.successful&&event.target===this){var b=this.querySelector('[data-save]');if(b){b.textContent='Saved';setTimeout(function(){b.textContent='Save';},1200);}}">
+            <div style="display:flex;flex-direction:column;gap:var(--sk-space-3);">
+              <div style="display:flex;align-items:center;gap:var(--sk-space-3);">
+                <label class="sk-muted sk-text-xs" style="width:130px;" for="slack-token">Bot Token</label>
+                <input type="password" id="slack-token" name="bot_token" autocomplete="off"
+                  placeholder="${slack.botTokenSet ? "(saved — enter to replace)" : "xoxb-…"}"
+                  class="sk-input sk-input--sm" style="flex:1;">
+              </div>
+              <div style="display:flex;align-items:center;gap:var(--sk-space-3);">
+                <label class="sk-muted sk-text-xs" style="width:130px;" for="slack-channel">Default Channel</label>
+                <input type="text" id="slack-channel" name="default_channel"
+                  value="${escapeHtml(slack.defaultChannel)}"
+                  placeholder="#general or C0123456789 (optional)"
+                  class="sk-input sk-input--sm" style="flex:1;">
+              </div>
+              <div style="display:flex;gap:var(--sk-space-2);align-items:center;">
+                <button type="submit" data-save class="sk-btn sk-btn--sm sk-btn--primary">Save</button>
+                <button type="button" class="sk-btn sk-btn--sm"
+                  hx-post="/api/config/slack/test" hx-target="#slack-test-result" hx-swap="innerHTML">Test</button>
+                <span id="slack-test-result" class="sk-text-xs sk-muted"></span>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>`;
 }
 
 export interface ApiKeyData { id: string; name: string; created_at: string; }

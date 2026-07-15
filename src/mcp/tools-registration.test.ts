@@ -2,8 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { registerDaemonTools, registerExternalTools, type DaemonDeps } from "./tools";
-import { hashApiKey, resolveAgentFromToken } from "./auth";
+import { hashApiKey, resolveAgentFromToken, type InternalAgentIdentity } from "./auth";
 import { GlobalStoreManager } from "../global-store/manager";
+import { createLocalTeam } from "../teams/local-teams";
+import { setStringSetting } from "../config/app-settings";
+import { SETTING_SLACK_BOT_TOKEN } from "../config/slack-settings";
 
 let db: Database;
 const TEST_DB = "test-mcp-tools-registration.db";
@@ -105,6 +108,59 @@ describe("registerDaemonTools — role-based registration", () => {
     registerDaemonTools(b.server as any, makeDeps(), () => null, { isDelegated: false });
 
     expect(a.registeredNames).toEqual(b.registeredNames);
+  });
+});
+
+const SLACK_TOOLS = ["slack_send_message", "slack_send_dm", "slack_read_channel"];
+
+describe("registerDaemonTools — Slack tools (experimental + configured + team gated)", () => {
+  beforeEach(() => {
+    db = new Database(TEST_DB);
+    db.exec("PRAGMA foreign_keys = ON");
+    initializeDatabase(db);
+    process.argv.push("--experimental");
+  });
+
+  afterEach(() => {
+    const i = process.argv.indexOf("--experimental");
+    if (i !== -1) process.argv.splice(i, 1);
+    db.close();
+    try { require("fs").unlinkSync(TEST_DB); } catch {}
+  });
+
+  // Create a team (optionally Slack-enabled) + a task on it, and an internal
+  // identity pointing at that task — the shape server.ts passes at session create.
+  function setupTeamTask(slackEnabled: boolean): InternalAgentIdentity {
+    const team = createLocalTeam(db, {
+      name: "T",
+      phases: [{ name: "build", prompt: "", review: false }],
+      config: { slackEnabled },
+    });
+    db.prepare("INSERT INTO tasks (id, title, team_id) VALUES (?, ?, ?)").run("task-1", "T1", team.id);
+    return { type: "internal", runtimeId: "rt-1", templateAgentId: "skipper", taskId: "task-1" };
+  }
+
+  it("registers Slack tools when configured + team enabled", () => {
+    setStringSetting(db, SETTING_SLACK_BOT_TOKEN, "xoxb-abc");
+    const identity = setupTeamTask(true);
+    const { server, registeredNames } = makeFakeMcpServer();
+    registerDaemonTools(server as any, makeDeps(), () => identity);
+    for (const tool of SLACK_TOOLS) expect(registeredNames).toContain(tool);
+  });
+
+  it("omits Slack tools when the team has not opted in", () => {
+    setStringSetting(db, SETTING_SLACK_BOT_TOKEN, "xoxb-abc");
+    const identity = setupTeamTask(false);
+    const { server, registeredNames } = makeFakeMcpServer();
+    registerDaemonTools(server as any, makeDeps(), () => identity);
+    for (const tool of SLACK_TOOLS) expect(registeredNames).not.toContain(tool);
+  });
+
+  it("omits Slack tools when no bot token is configured, even if the team opted in", () => {
+    const identity = setupTeamTask(true);
+    const { server, registeredNames } = makeFakeMcpServer();
+    registerDaemonTools(server as any, makeDeps(), () => identity);
+    for (const tool of SLACK_TOOLS) expect(registeredNames).not.toContain(tool);
   });
 });
 
