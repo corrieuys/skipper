@@ -779,6 +779,36 @@ describe("iterateTask", () => {
     expect(cpCount.c).toBe(0);
   });
 
+  it("clears the root session on iteration but keeps delegated children resumable", () => {
+    const teamId = createTeam(db);
+    const rootAgentId = createAgent(db, "root-agent");
+    const childAgentId = createAgent(db, "worker-agent");
+    const task = scheduler.createTask({ title: "Session Task", teamId });
+    scheduler.approveTask(task.id);
+    scheduler.startTask(task.id);
+
+    // Root Skipper instance (parent_instance_id NULL) + a delegated child, both
+    // with a resumable session id.
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, session_id, attempt)
+       VALUES (?, ?, ?, NULL, ?, 'completed', 'root-sess', 1)`,
+    ).run("root-inst", task.id, rootAgentId, "root-inst");
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, session_id, attempt)
+       VALUES (?, ?, ?, ?, ?, 'completed', 'child-sess', 1)`,
+    ).run("worker-inst", task.id, childAgentId, "root-inst", "root-inst");
+
+    scheduler.completeTask(task.id, { output: "v1" });
+    scheduler.iterateTask(task.id, "another pass");
+
+    const root = db.prepare("SELECT session_id FROM agent_instances WHERE id = ?").get("root-inst") as { session_id: string | null };
+    const worker = db.prepare("SELECT session_id FROM agent_instances WHERE id = ?").get("worker-inst") as { session_id: string | null };
+
+    // Root restarts fresh; delegated worker stays resumable.
+    expect(root.session_id).toBeNull();
+    expect(worker.session_id).toBe("child-sess");
+  });
+
   it("rejects iteration on non-completed tasks", () => {
     const task = scheduler.createTask({ title: "Draft Task" });
     expect(() => scheduler.iterateTask(task.id, "input")).toThrow("Can only iterate completed tasks, current status: draft");

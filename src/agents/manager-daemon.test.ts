@@ -2293,3 +2293,62 @@ describe("tick with recovery loop", () => {
     expect(agentRow.current_task_id).toBe(taskId);
   });
 });
+
+describe("scheduled task firing (singleton guard)", () => {
+  function createDueScheduled(title = "Recurring Task"): string {
+    const teamId = createTeamWithEntrypoint("skipper");
+    const sched = daemon.getScheduledTaskScheduler().createScheduledTask({
+      title,
+      teamId,
+      workingDirectory: process.cwd(),
+      scheduleUnit: "hours",
+      scheduleAmount: 1,
+    });
+    daemon.getScheduledTaskScheduler().approveScheduledTask(sched.id);
+    // Force it overdue so processScheduledTasks() picks it up.
+    db.prepare("UPDATE scheduled_tasks SET next_run_at = datetime('now', '-1 hour') WHERE id = ?").run(sched.id);
+    return sched.id;
+  }
+
+  function runCount(schedId: string): number {
+    return (db
+      .prepare("SELECT COUNT(*) as c FROM tasks WHERE source_scheduled_task_id = ?")
+      .get(schedId) as { c: number }).c;
+  }
+
+  it("fires a run when no prior run is active", () => {
+    const schedId = createDueScheduled();
+
+    (daemon as unknown as { processScheduledTasks: () => void }).processScheduledTasks();
+
+    expect(runCount(schedId)).toBe(1);
+    const created = db
+      .prepare("SELECT status FROM tasks WHERE source_scheduled_task_id = ?")
+      .get(schedId) as { status: string };
+    // The fired run is active (approved, or already picked up to running).
+    expect(["approved", "running"]).toContain(created.status);
+  });
+
+  it("skips firing while a prior run is still active, and advances next_run_at", () => {
+    const schedId = createDueScheduled();
+    const teamId = db.prepare("SELECT team_id FROM scheduled_tasks WHERE id = ?").get(schedId) as { team_id: string };
+
+    // A prior run of THIS scheduled task is still running (e.g. a long
+    // investigation that outlives its schedule interval).
+    const priorId = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO tasks (id, title, team_id, status, source_scheduled_task_id, started_at)
+       VALUES (?, 'Prior run', ?, 'running', ?, datetime('now'))`,
+    ).run(priorId, teamId.team_id, schedId);
+
+    (daemon as unknown as { processScheduledTasks: () => void }).processScheduledTasks();
+
+    // No NEW run created — only the pre-seeded prior run exists.
+    expect(runCount(schedId)).toBe(1);
+    // Schedule advanced past the skipped slot so it isn't re-evaluated each tick.
+    const sched = daemon.getScheduledTaskScheduler().getScheduledTask(schedId)!;
+    expect(sched.next_run_at).not.toBeNull();
+    const nextMs = new Date(sched.next_run_at!.replace(" ", "T") + "Z").getTime();
+    expect(nextMs).toBeGreaterThan(Date.now());
+  });
+});

@@ -9,14 +9,6 @@ let server: Server<unknown>;
 let baseUrl: string;
 let headers: Record<string, string>;
 
-function withExperimental<T>(fn: () => Promise<T>): Promise<T> {
-  process.argv.push("--experimental");
-  return fn().finally(() => {
-    const i = process.argv.indexOf("--experimental");
-    if (i !== -1) process.argv.splice(i, 1);
-  });
-}
-
 beforeAll(() => {
   resetDb();
   const db = getDb(":memory:");
@@ -35,12 +27,7 @@ afterAll(() => {
 });
 
 describe("scheduled tasks data API", () => {
-  it("403s without the experimental flag", async () => {
-    const res = await fetch(`${baseUrl}/data/scheduled-tasks`, { headers });
-    expect(res.status).toBe(403);
-  });
-
-  it("creates, approves, lists, and deletes under --experimental", () => withExperimental(async () => {
+  it("creates, approves, lists, and deletes", async () => {
     const create = await fetch(`${baseUrl}/data/scheduled-tasks`, {
       method: "POST",
       headers,
@@ -74,18 +61,18 @@ describe("scheduled tasks data API", () => {
     expect(del.status).toBe(200);
     const gone = await fetch(`${baseUrl}/data/scheduled-tasks/${created.data.id}`, { headers });
     expect(gone.status).toBe(404);
-  }));
+  });
 
-  it("validates the interval", () => withExperimental(async () => {
+  it("validates the interval", async () => {
     const res = await fetch(`${baseUrl}/data/scheduled-tasks`, {
       method: "POST",
       headers,
       body: JSON.stringify({ title: "Bad", scheduleUnit: "hours", scheduleAmount: "-2" }),
     });
     expect(res.status).toBe(400);
-  }));
+  });
 
-  it("creates a weekly-matrix task from a JSON array and switches it to an interval", () => withExperimental(async () => {
+  it("creates a weekly-matrix task from a JSON array and switches it to an interval", async () => {
     const matrix = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => 0));
     matrix[4]![18] = 1; // Friday 18:00
     matrix[6]![7] = 1; // Sunday 07:00
@@ -125,9 +112,9 @@ describe("scheduled tasks data API", () => {
     expect(updated.data.schedule_unit).toBe("days");
 
     await fetch(`${baseUrl}/data/scheduled-tasks/${created.data.id}`, { method: "DELETE", headers });
-  }));
+  });
 
-  it("rejects invalid matrices and interval+matrix together", () => withExperimental(async () => {
+  it("rejects invalid matrices and interval+matrix together", async () => {
     const good = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => 0));
     good[0]![9] = 1;
 
@@ -155,9 +142,9 @@ describe("scheduled tasks data API", () => {
     expect(both.status).toBe(400);
     const body = await both.json() as { error: string };
     expect(body.error).toContain("not both");
-  }));
+  });
 
-  it("round-trips globalStoreInstructions and clears it on update", () => withExperimental(async () => {
+  it("round-trips globalStoreInstructions and clears it on update", async () => {
     const contract = "Store the last processed id under key 'sweep-cursor'.";
     const create = await fetch(`${baseUrl}/data/scheduled-tasks`, {
       method: "POST",
@@ -178,5 +165,5 @@ describe("scheduled tasks data API", () => {
     expect(updated.data.global_store_instructions).toBeNull();
 
     await fetch(`${baseUrl}/data/scheduled-tasks/${created.data.id}`, { method: "DELETE", headers });
-  }));
+  });
 });

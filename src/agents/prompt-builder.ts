@@ -81,6 +81,11 @@ export interface PromptOptions {
   phase?: PhaseInfo;
   isStreaming: boolean;
   isResume?: boolean;
+  /** True when this spawn is a re-run of an iterated task. The root Skipper
+   *  starts fresh (isResume=false), but prior delegated children remain
+   *  resumable — surface the PRIOR DELEGATIONS menu so Skipper can choose to
+   *  continue a worker vs spawn a fresh one. */
+  isIteration?: boolean;
   regressionReason?: string;
   approvalNote?: string;
   /** Optional one-off operator input (e.g. from a recurring task "Run Now"),
@@ -240,8 +245,9 @@ export class PromptBuilder {
     parts.push(ARTIFACT_HTML);
     parts.push("");
 
-    // Prior delegations summary (only when resuming an entrypoint session)
-    if (options.isResume) {
+    // Prior delegations summary — when resuming an entrypoint session, or on an
+    // iteration re-run where the root is fresh but prior workers stay resumable.
+    if (options.isResume || options.isIteration) {
       const priorDelegations = this.buildPriorDelegationsSection(options.task.id);
       if (priorDelegations) {
         parts.push(priorDelegations);

@@ -146,6 +146,7 @@ export class TaskRunner {
       phase: phaseInfo,
       isStreaming,
       isResume: resumeSessionId !== null,
+      isIteration: (startedTask.iteration_count ?? 0) > 0,
       injectedInput: startedTask.run_input ?? undefined,
     }, entrypointAgentId);
 

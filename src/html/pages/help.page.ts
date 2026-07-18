@@ -131,8 +131,8 @@ export function helpPage(vm: HelpPageViewModel): string {
       <li>Working directory — the filesystem path the entrypoint agent operates in.</li>
     </ul>
 
-    ${experimental ? `<h3 style="margin-top: var(--sk-space-4);">Recurring Tasks</h3>
-    <p>Recurring is a <strong>task type</strong> — choose it from the Task Type dropdown on the <a href="/tasks/new">New Task</a> form and the schedule fields appear inline (there is no separate recurring page). Set an interval (amount + unit: minutes, hours, days) to automatically create and approve a new task instance each interval, or leave the interval unset to run it only on demand with Run Now. Every fire is a <strong>fresh, independent task</strong> — no state carries over between runs. Manage recurring definitions from the Recurring group in the Dashboard sidebar.</p>` : ""}
+    <h3 style="margin-top: var(--sk-space-4);">Recurring Tasks</h3>
+    <p>Recurring is a <strong>task type</strong> — choose it from the Task Type dropdown on the <a href="/tasks/new">New Task</a> form and the schedule fields appear inline (there is no separate recurring page). Set an interval (amount + unit: minutes, hours, days) to automatically create and approve a new task instance each interval, or leave the interval unset to run it only on demand with Run Now. Every fire is a <strong>fresh, independent task</strong> — no state carries over between runs. Manage recurring definitions from the Recurring group in the Dashboard sidebar.</p>
 
     <h3 style="margin-top: var(--sk-space-4);">Queue Behaviour</h3>
     <p>The daemon picks one approved standard task per 30-second tick.${experimental ? " Realtime tasks bypass the queue and start immediately." : ""} Only one task runs at a time in the standard queue.</p>

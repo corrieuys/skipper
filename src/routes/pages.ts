@@ -882,7 +882,7 @@ function registerV2PageRoutes(): void {
     const scheduledId = url.searchParams.get("scheduled");
     const vm = buildCommandCenterViewModel(db);
 
-    if (scheduledId && isExperimental()) {
+    if (scheduledId) {
       const override = fetchScheduledOverride(scheduledId);
       if (override) return html(commandCenterPage(vm, undefined, override));
     }
@@ -1196,7 +1196,6 @@ function registerV2PageRoutes(): void {
 
   // Scheduled task workspace fragment (sidebar click loads into #mc-main)
   addRoute("GET", "/workspace/scheduled/:id", (_req, params) => {
-    if (!isExperimental()) return html(`<div style="padding:1rem; color:var(--sk-text-subtle);">Scheduled tasks require --experimental</div>`);
     const override = fetchScheduledOverride(params.id);
     if (!override) return html(`<div style="padding:1rem; color:var(--sk-text-subtle);">Scheduled task not found</div>`);
     return html(renderScheduledTaskDetail(override.scheduledTask, override.teams, override.runs));
@@ -1204,7 +1203,6 @@ function registerV2PageRoutes(): void {
 
   // Scheduled task runs fragment (lazy-loaded inside the detail panel)
   addRoute("GET", "/workspace/scheduled/:id/runs", (_req, params) => {
-    if (!isExperimental()) return html("");
     const runs = db.prepare(
       `SELECT id, title, status, started_at, completed_at, result, created_at FROM tasks WHERE source_scheduled_task_id = ? ORDER BY created_at DESC LIMIT 20`
     ).all(params.id) as Array<{ id: string; title: string; status: string; started_at: string | null; completed_at: string | null; result: string | null; created_at: string }>;

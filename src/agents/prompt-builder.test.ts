@@ -679,6 +679,27 @@ describe("buildPriorDelegationsSection", () => {
     });
     expect(prompt).not.toContain("PRIOR DELEGATIONS");
   });
+
+  it("includes prior delegations on an iteration even when isResume is false", () => {
+    const taskId = "task-iterate";
+    db.prepare("INSERT INTO tasks (id, title) VALUES (?, ?)").run(taskId, "Iterate");
+    const skipperId = createAgent("Skipper", "claude-code");
+    const childId = createAgent("Worker", "claude-code");
+    seedPriorChild(taskId, skipperId, childId, { sessionId: "sess-iter", status: "completed" });
+
+    // Iterate re-run: root Skipper is a fresh session (isResume=false), but the
+    // resumable-children menu must still surface so it can delegate_resume.
+    const prompt = builder.buildInitialPrompt({
+      agent: { id: skipperId, name: "Skipper", type: "claude-code" },
+      task: { id: taskId, title: "Iterate" },
+      isStreaming: true,
+      isResume: false,
+      isIteration: true,
+    });
+    expect(prompt).toContain("PRIOR DELEGATIONS");
+    expect(prompt).toContain("Worker");
+    expect(prompt).toContain("delegate_resume");
+  });
 });
 
 describe("note injection cap + soft-delete", () => {

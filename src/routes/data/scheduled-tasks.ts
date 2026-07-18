@@ -3,7 +3,6 @@ import { ScheduledTaskScheduler } from "../../tasks/scheduled-scheduler";
 import type { ScheduleUnit, ScheduleMatrix } from "../../tasks/scheduled-scheduler";
 import { parseScheduleFields } from "../scheduled-tasks";
 import { parseRequestBody } from "../utils";
-import { isExperimental } from "../../config/feature-flags";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
 
 function ok(data: unknown, status: number = 200): Response {
@@ -44,20 +43,11 @@ export function registerDataScheduledTaskRoutes(
 ): void {
   const getScheduler = () => daemon?.getScheduledTaskScheduler() ?? new ScheduledTaskScheduler();
 
-  // Mirrors /api/scheduled-tasks: recurring tasks are an experimental feature,
-  // so the data API hides them behind the same flag.
-  function experimentalGate(): Response | null {
-    if (!isExperimental()) return err("Recurring tasks require --experimental", 403);
-    return null;
-  }
-
   addDataRoute("GET", "/data/scheduled-tasks", () => {
-    return experimentalGate() ?? ok(getScheduler().listScheduledTasks());
+    return ok(getScheduler().listScheduledTasks());
   });
 
   addDataRoute("GET", "/data/scheduled-tasks/:id", (_req, params) => {
-    const gate = experimentalGate();
-    if (gate) return gate;
     const scheduler = getScheduler();
     const task = scheduler.getScheduledTask(params.id);
     if (!task) return err("Scheduled task not found", 404);
@@ -65,8 +55,6 @@ export function registerDataScheduledTaskRoutes(
   });
 
   addDataRoute("POST", "/data/scheduled-tasks", async (req) => {
-    const gate = experimentalGate();
-    if (gate) return gate;
     const body = await parseRequestBody<ScheduledTaskBody>(req);
     if (!body.title?.trim()) return err("title is required");
     const { unit, amount, matrix, error } = parseSchedule(body);
@@ -90,8 +78,6 @@ export function registerDataScheduledTaskRoutes(
   });
 
   addDataRoute("POST", "/data/scheduled-tasks/:id", async (req, params) => {
-    const gate = experimentalGate();
-    if (gate) return gate;
     const body = await parseRequestBody<ScheduledTaskBody>(req);
     if (!body.title?.trim()) return err("title is required");
     const { unit, amount, matrix, error } = parseSchedule(body);
@@ -116,8 +102,6 @@ export function registerDataScheduledTaskRoutes(
 
   for (const action of ["approve", "unapprove"] as const) {
     addDataRoute("POST", `/data/scheduled-tasks/:id/${action}`, (_req, params) => {
-      const gate = experimentalGate();
-      if (gate) return gate;
       try {
         const scheduler = getScheduler();
         const task = action === "approve"
@@ -131,8 +115,6 @@ export function registerDataScheduledTaskRoutes(
   }
 
   addDataRoute("POST", "/data/scheduled-tasks/:id/run-now", async (req, params) => {
-    const gate = experimentalGate();
-    if (gate) return gate;
     if (!daemon) return err("Daemon not available", 503);
     let input: string | undefined;
     try {
@@ -148,8 +130,6 @@ export function registerDataScheduledTaskRoutes(
   });
 
   const handleDelete = (_req: Request, params: Record<string, string>) => {
-    const gate = experimentalGate();
-    if (gate) return gate;
     try {
       getScheduler().deleteScheduledTask(params.id);
       return ok({ id: params.id, deleted: true });

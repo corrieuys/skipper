@@ -3,10 +3,8 @@ import { hxRedirect } from "./utils";
 import { ScheduledTaskScheduler, isValidScheduleMatrix } from "../tasks/scheduled-scheduler";
 import type { ScheduleUnit, ScheduleMatrix } from "../tasks/scheduled-scheduler";
 import type { ManagerDaemon } from "../agents/manager-daemon";
-import { isExperimental } from "../config/feature-flags";
 import { parsePhaseOverridesFromForm } from "./phase-overrides";
 
-const EXPERIMENTAL_REQUIRED = Response.json({ error: "scheduled tasks require --experimental" }, { status: 403 });
 
 
 // Parse the optional recurring schedule from form fields. Two mutually
@@ -58,9 +56,6 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   const getScheduler = () => daemon?.getScheduledTaskScheduler() ?? new ScheduledTaskScheduler();
 
   addRoute("POST", "/api/scheduled-tasks", async (req) => {
-    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
-
-
     const formData = await req.formData();
     const title = formData.get("title");
     const description = formData.get("description");
@@ -110,7 +105,6 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/update", async (req, params) => {
-    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 
@@ -160,7 +154,6 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/approve", async (_req, params) => {
-    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 
@@ -175,7 +168,6 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/unapprove", async (_req, params) => {
-    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 
@@ -194,7 +186,6 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   // URL is built from the connect settings (see connect/public-links.ts).
   for (const webhookAction of ["enable", "regenerate", "disable"] as const) {
     addRoute("POST", `/api/scheduled-tasks/:id/webhook/${webhookAction}`, async (_req, params) => {
-      if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
       const id = params?.id;
       if (!id) return Response.json({ error: "id required" }, { status: 400 });
 
@@ -216,7 +207,6 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   // previous webhook are ignored. Floor 1, so the trigger can never fire
   // more than once per minute.
   addRoute("POST", "/api/scheduled-tasks/:id/webhook/debounce", async (req, params) => {
-    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 
@@ -238,7 +228,6 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/clear-schedule", async (_req, params) => {
-    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 
@@ -253,7 +242,6 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/run-now", async (req, params) => {
-    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 
@@ -281,7 +269,6 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
   });
 
   addRoute("DELETE", "/api/scheduled-tasks/:id", async (_req, params) => {
-    if (!isExperimental()) return EXPERIMENTAL_REQUIRED;
     const id = params?.id;
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
 

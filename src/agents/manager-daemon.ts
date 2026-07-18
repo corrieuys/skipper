@@ -930,12 +930,27 @@ export class ManagerDaemon {
 
   /** Each scheduled fire creates a new, fresh task, queued for TaskRunner. */
   private fireStandardScheduledTask(scheduled: import("../tasks/scheduled-scheduler").ScheduledTask): void {
-    const queuedCount = (this.db
+    // Singleton guard: never overlap two runs of the same recurring task. A
+    // prior run that is still active (queued, running, or paused) blocks the
+    // new slot — dropped, not queued. This is what prevents the catch-up storm
+    // when the daemon wakes from sleep with several overdue slots while a long
+    // run is still in flight (each investigation can run for hours). recordRun
+    // below still advances next_run_at to the next FUTURE slot, so the schedule
+    // resumes cleanly rather than replaying every missed hour.
+    const activeCount = (this.db
       .prepare(
-        "SELECT COUNT(*) as c FROM tasks WHERE source_scheduled_task_id = ? AND status = 'approved'",
+        "SELECT COUNT(*) as c FROM tasks WHERE source_scheduled_task_id = ? AND status IN ('approved', 'running', 'paused')",
       )
       .get(scheduled.id) as { c: number }).c;
-    if (queuedCount > 0) return;
+    if (activeCount > 0) {
+      console.log(
+        `[scheduled] skip fire for "${scheduled.title}" (${scheduled.id}): a prior run is still active`,
+      );
+      // Advance the schedule past this slot so we don't re-evaluate it every
+      // tick while the prior run drags on.
+      this.scheduledTaskScheduler.recordRun(scheduled.id);
+      return;
+    }
 
     const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
     // The global-store contract rides in the run's task_config so the prompt

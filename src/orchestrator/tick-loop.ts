@@ -63,7 +63,7 @@ export class ReconciliationLoop {
       { name: "worktree-cleanup",   fn: () => this.worktreeManager?.cleanupStaleWorktrees(),        intervalMs: 300_000 },
       { name: "terminal-cleanup",   fn: () => this.cleanupOldTerminalOutputs(),                     intervalMs: 300_000 },
 
-      // Scheduled tasks (experimental)
+      // Scheduled tasks
       ...(this.scheduledTaskProcessor
         ? [{ name: "scheduled-tasks", fn: this.scheduledTaskProcessor, intervalMs: 60_000 }]
         : []),

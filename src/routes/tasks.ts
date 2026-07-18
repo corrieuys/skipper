@@ -15,7 +15,6 @@ import { getRealtimeTeamId } from "../config/teams";
 import { parsePhaseOverridesFromForm } from "./phase-overrides";
 import { parseScheduleFields } from "./scheduled-tasks";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
-import { isExperimental } from "../config/feature-flags";
 
 function connectStatusFragment(status: ConnectionStatus): string {
   return `<span class="sk-connect__status" data-status="${status}" hx-get="/api/settings/skipper-connect/status" hx-trigger="every 5s" hx-swap="outerHTML"></span>`;
@@ -147,8 +146,6 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     // Recurring tasks are created via the merged task form (Task Type = Recurring).
     // They live in scheduled_tasks, not tasks, so dispatch to the scheduler here.
     if (taskTypeRaw === "recurring") {
-      if (!isExperimental()) return Response.json({ error: "recurring tasks require --experimental" }, { status: 403 });
-
       const { unit: scheduleUnitVal, amount: scheduleAmountVal, matrix: scheduleMatrixVal, error: scheduleError } =
         parseScheduleFields(formData.get("scheduleUnit"), formData.get("scheduleAmount"), formData.get("scheduleMatrix"));
       if (scheduleError) return Response.json({ error: scheduleError }, { status: 400 });

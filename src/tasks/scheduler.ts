@@ -492,15 +492,18 @@ export class TaskScheduler {
          WHERE current_task_id = ?`,
       ).run(id);
 
-      // Detach the prior iteration's Claude Code session IDs so the next
-      // Skipper spawn starts a fresh conversation. Resuming a completed
-      // session carries forward "task is done, we're in Cleanup" context
-      // and confuses the new iteration's phase boundaries (Skipper would
-      // make code changes itself or delegate to Coder during Planning).
-      // Notes, artifacts, and checkpoints stay intact for context.
+      // Detach ONLY the root Skipper's session so the next spawn starts a
+      // fresh conversation. Resuming a completed root carries forward "task is
+      // done, we're in Cleanup" context and confuses the new iteration's phase
+      // boundaries (Skipper would make code changes itself or delegate to Coder
+      // during Planning). Delegated children (parent_instance_id IS NOT NULL)
+      // keep their session_id so they stay resumable — the new iteration's
+      // Skipper can choose delegate_resume (continue a worker's conversation)
+      // vs delegate (fresh child) per the PRIOR DELEGATIONS menu.
+      // Notes, artifacts, and delegation rows stay intact for context.
       this.db.prepare(
         `UPDATE agent_instances SET session_id = NULL
-         WHERE task_id = ? AND session_id IS NOT NULL`,
+         WHERE task_id = ? AND parent_instance_id IS NULL AND session_id IS NOT NULL`,
       ).run(id);
     })();
 

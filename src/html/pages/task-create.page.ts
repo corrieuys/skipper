@@ -187,7 +187,7 @@ export function taskCreatePage(vm: TaskCreateViewModel): string {
                 <select name="taskType" class="sk-select" onchange="toggleScheduleFields(this)">
                   <option value="standard" selected>Standard</option>
                   ${isExperimental() ? `<option value="real_time">Real-Time</option>` : ""}
-                  ${isExperimental() ? `<option value="recurring">Recurring</option>` : ""}
+                  <option value="recurring">Recurring</option>
                 </select>
               </div>
               <div id="task-form-team-slot" style="display:contents;"
@@ -203,7 +203,7 @@ export function taskCreatePage(vm: TaskCreateViewModel): string {
               hx-include="[name='teamId']"
               hx-target="this"
               hx-swap="innerHTML"></div>
-            ${isExperimental() ? `<div id="schedule-fields" style="display:none;">
+            <div id="schedule-fields" style="display:none;">
               <div class="sk-form-group">
                 <label class="sk-label">Schedule</label>
                 <select name="scheduleMode" class="sk-select" style="max-width:220px;">
@@ -251,7 +251,7 @@ export function taskCreatePage(vm: TaskCreateViewModel): string {
                 var f = document.getElementById('schedule-fields');
                 if (f) f.style.display = sel.value === 'recurring' ? 'block' : 'none';
               }
-            </script>` : ""}
+            </script>
             <div style="display:flex; gap:var(--sk-space-3); margin-top:var(--sk-space-4);">
               <input type="hidden" name="autoApprove" value="0">
               <button type="submit" class="sk-btn sk-btn--primary" onclick="this.form.querySelector('[name=autoApprove]').value='1';">Create &amp; Approve</button>
