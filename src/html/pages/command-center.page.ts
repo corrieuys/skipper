@@ -1106,6 +1106,24 @@ export function renderScheduledTaskDetail(
 
       ${renderWebhookPanel(st)}
 
+      ${isExperimental() ? `
+      <div class="sk-panel" style="margin-top:var(--sk-space-3);">
+        <div class="sk-panel__header"><span class="sk-panel__title">Slack Slash Command</span></div>
+        <div class="sk-panel__body" style="padding:var(--sk-space-4);">
+          <form hx-post="/api/scheduled-tasks/${eid}/slash-command" hx-swap="none"
+                style="display:flex;gap:var(--sk-space-2);align-items:center;"
+                hx-on::after-request="if(event.detail.successful){var b=this.querySelector('[data-save]');if(b){b.textContent='Saved';setTimeout(function(){b.textContent='Save';},1200);}}">
+            <input type="text" name="slashCommand" class="sk-input" style="flex:1;" placeholder="/nightly-report"
+                   value="${escapeHtml(typeof st.task_config?.slashCommand === "string" ? st.task_config.slashCommand : "")}">
+            <button type="submit" data-save class="sk-btn sk-btn--primary sk-btn--sm" style="flex-shrink:0;">Save</button>
+          </form>
+          <p class="sk-muted sk-text-xs" style="margin:var(--sk-space-2) 0 0;">
+            Run this recurring task now from Slack (arg text = run input). Leave blank to unbind. Requires Socket Mode under <a href="/config">Config</a>.
+          </p>
+        </div>
+      </div>
+      ` : ""}
+
       <div class="sk-panel" style="margin-top:var(--sk-space-3);">
         <div class="sk-panel__header">
           <span class="sk-panel__title">Runs</span>
@@ -1218,6 +1236,17 @@ function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: s
                 Injected into every run's prompt; authorizes Skipper to use the global store for state shared across runs.
               </div>
             </div>
+            ${isExperimental() ? `
+            <div class="sk-form-group">
+              <label class="sk-label">Slack Slash Command</label>
+              <input type="text" name="slashCommand" class="sk-input"
+                value="${escapeHtml(typeof st.task_config?.slashCommand === "string" ? st.task_config.slashCommand : "")}"
+                placeholder="/nightly-report">
+              <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
+                Bind a Slack slash command to run this recurring task now (arg text = run input). Register the command in your Slack app and enable Socket Mode under <a href="/config">Config</a>. Leave blank to unbind.
+              </div>
+            </div>
+            ` : ""}
             <div class="sk-form-row" style="gap:var(--sk-space-3);">
               <div class="sk-form-group" style="flex:1;">
                 <label class="sk-label">Working Directory</label>

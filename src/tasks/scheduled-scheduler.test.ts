@@ -436,3 +436,33 @@ describe("weekly matrix lifecycle", () => {
     expect(interval.schedule_amount).toBe(1);
   });
 });
+
+describe("setSlashCommand", () => {
+  it("sets and clears the binding on an approved task (bypasses the draft-only guard)", () => {
+    const teamId = createTeam();
+    const st = scheduled.createScheduledTask({ title: "Nightly", teamId, workingDirectory: "/repo" });
+    scheduled.approveScheduledTask(st.id);
+    expect(scheduled.getScheduledTask(st.id)!.status).toBe("approved");
+
+    scheduled.setSlashCommand(st.id, "/nightly-report");
+    expect(scheduled.getScheduledTask(st.id)!.task_config.slashCommand).toBe("/nightly-report");
+    expect(scheduled.findScheduledTaskBySlashCommand("/nightly-report")?.id).toBe(st.id);
+
+    scheduled.setSlashCommand(st.id, null);
+    expect(scheduled.getScheduledTask(st.id)!.task_config.slashCommand).toBeUndefined();
+  });
+
+  it("preserves other task_config keys", () => {
+    const teamId = createTeam();
+    const st = scheduled.createScheduledTask({
+      title: "X",
+      teamId,
+      workingDirectory: "/repo",
+      taskConfig: { phase_overrides: { 0: { prompt: "keep me" } } },
+    });
+    scheduled.setSlashCommand(st.id, "/x");
+    const cfg = scheduled.getScheduledTask(st.id)!.task_config;
+    expect(cfg.slashCommand).toBe("/x");
+    expect(cfg.phase_overrides).toEqual({ 0: { prompt: "keep me" } });
+  });
+});

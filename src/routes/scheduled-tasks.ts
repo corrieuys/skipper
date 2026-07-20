@@ -4,6 +4,9 @@ import { ScheduledTaskScheduler, isValidScheduleMatrix } from "../tasks/schedule
 import type { ScheduleUnit, ScheduleMatrix } from "../tasks/scheduled-scheduler";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 import { parsePhaseOverridesFromForm } from "./phase-overrides";
+import { getDb } from "../db/connection";
+import { normalizeSlashCommand } from "../slack/slash-command";
+import { findSlashCommandConflict } from "../slack/bindings";
 
 
 
@@ -81,6 +84,21 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
     const { overrides: phaseOverrides } = parsePhaseOverridesFromForm(formData, resolvedTeamId);
     if (Object.keys(phaseOverrides).length > 0) taskConfig.phase_overrides = phaseOverrides;
 
+    const slashCommandRaw = formData.get("slashCommand");
+    const slashCommand =
+      typeof slashCommandRaw === "string" && slashCommandRaw.trim() ? normalizeSlashCommand(slashCommandRaw) : "";
+    if (slashCommand) {
+      const conflict = findSlashCommandConflict(getDb(), slashCommand);
+      if (conflict) {
+        const target = conflict.kind === "team" ? "team" : "recurring task";
+        return Response.json(
+          { error: `Slash command ${slashCommand} is already bound to ${target} "${conflict.label}".` },
+          { status: 400 },
+        );
+      }
+      taskConfig.slashCommand = slashCommand;
+    }
+
     const scheduler = getScheduler();
     const task = scheduler.createScheduledTask({
       title: String(title).trim(),
@@ -128,12 +146,36 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       parseScheduleFields(scheduleUnit, scheduleAmountRaw, scheduleMatrixRaw);
     if (scheduleError) return Response.json({ error: scheduleError }, { status: 400 });
 
-    const taskConfig: Record<string, unknown> = {};
+    const scheduler = getScheduler();
+    // Start from the stored config so unrelated keys survive; the edit form
+    // resubmits phase overrides and the slash command, so both stay authoritative.
+    const existing = scheduler.getScheduledTask(id);
+    const taskConfig: Record<string, unknown> = { ...(existing?.task_config ?? {}) };
     const resolvedTeamId = typeof teamId === "string" && teamId.trim() ? teamId.trim() : undefined;
     const { overrides: phaseOverrides } = parsePhaseOverridesFromForm(formData, resolvedTeamId);
     if (Object.keys(phaseOverrides).length > 0) taskConfig.phase_overrides = phaseOverrides;
 
-    const scheduler = getScheduler();
+    // The edit form always submits the slashCommand field: a value binds (after a
+    // uniqueness check), an empty submit clears the binding.
+    const slashCommandRaw = formData.get("slashCommand");
+    if (slashCommandRaw !== null) {
+      const slashCommand =
+        typeof slashCommandRaw === "string" && slashCommandRaw.trim() ? normalizeSlashCommand(slashCommandRaw) : "";
+      if (slashCommand) {
+        const conflict = findSlashCommandConflict(getDb(), slashCommand, { scheduledTaskId: id });
+        if (conflict) {
+          const target = conflict.kind === "team" ? "team" : "recurring task";
+          return Response.json(
+            { error: `Slash command ${slashCommand} is already bound to ${target} "${conflict.label}".` },
+            { status: 400 },
+          );
+        }
+        taskConfig.slashCommand = slashCommand;
+      } else {
+        delete taskConfig.slashCommand;
+      }
+    }
+
     try {
       scheduler.updateScheduledTask(id, {
         title: String(title).trim(),
@@ -150,6 +192,33 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
     }
 
+    return hxRedirect(`/?scheduled=${id}`);
+  });
+
+  // Set/clear only the Slack slash-command binding. Separate from /update so it
+  // works while the task is approved (the full edit form is draft-only).
+  addRoute("POST", "/api/scheduled-tasks/:id/slash-command", async (req, params) => {
+    const id = params?.id;
+    if (!id) return Response.json({ error: "id required" }, { status: 400 });
+    const formData = await req.formData();
+    const raw = formData.get("slashCommand");
+    const slashCommand = typeof raw === "string" && raw.trim() ? normalizeSlashCommand(raw) : "";
+    if (slashCommand) {
+      const conflict = findSlashCommandConflict(getDb(), slashCommand, { scheduledTaskId: id });
+      if (conflict) {
+        const target = conflict.kind === "team" ? "team" : "recurring task";
+        return Response.json(
+          { error: `Slash command ${slashCommand} is already bound to ${target} "${conflict.label}".` },
+          { status: 400 },
+        );
+      }
+    }
+    const scheduler = getScheduler();
+    try {
+      scheduler.setSlashCommand(id, slashCommand || null);
+    } catch (err) {
+      return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+    }
     return hxRedirect(`/?scheduled=${id}`);
   });
 

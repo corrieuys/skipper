@@ -13,6 +13,7 @@ import {
   getTeam,
 } from "../config/store";
 import { registerVisibleLocalTeam, unregisterVisibleLocalTeam } from "../config/feature-flags";
+import { normalizeSlashCommand } from "../slack/slash-command";
 
 // ---------------------------------------------------------------------------
 // A team embeds its own agents + phases and is persisted in the runtime DB.
@@ -46,6 +47,12 @@ export interface LocalTeamAgent {
 export interface LocalTeamConfig {
   /** When true, this team's tasks expose the Slack MCP tools to their agents. */
   slackEnabled?: boolean;
+  /**
+   * Slack slash command bound to this team (e.g. "/software-team"). When an
+   * allowed user invokes it, Skipper creates + auto-approves a task on this
+   * team with the arg text as the description. See src/slack/commands.ts.
+   */
+  slashCommand?: string;
 }
 
 export interface LocalTeam {
@@ -429,4 +436,14 @@ export function deleteLocalTeam(db: Database, id: string): boolean {
 /** Whether a team opted into the Slack integration (gates the Slack MCP tools). */
 export function isSlackEnabledForTeam(db: Database, teamId: string): boolean {
   return getLocalTeam(db, teamId)?.config?.slackEnabled === true;
+}
+
+/** Find the team bound to a Slack slash command, or null. Command is normalized. */
+export function findTeamBySlashCommand(db: Database, command: string): LocalTeam | null {
+  const want = normalizeSlashCommand(command);
+  if (!want) return null;
+  for (const team of listLocalTeams(db)) {
+    if (normalizeSlashCommand(team.config?.slashCommand) === want) return team;
+  }
+  return null;
 }

@@ -866,6 +866,13 @@ function registerV2PageRoutes(): void {
       `SELECT st.*, tm.name AS team_name FROM scheduled_tasks st LEFT JOIN teams tm ON tm.id = st.team_id WHERE st.id = ?`
     ).get(scheduledId) as any;
     if (!st) return null;
+    // task_config comes back as a raw JSON string; parse it so the edit form can
+    // read per-task settings (e.g. the Slack slash-command binding).
+    try {
+      st.task_config = st.task_config ? JSON.parse(st.task_config) : {};
+    } catch {
+      st.task_config = {};
+    }
     // Public trigger URL for the webhook panel; null until connect is configured.
     st.webhook_url = getWebhookTriggerUrl(db, { id: st.id, webhook_key: st.webhook_key ?? null });
     // Recurring tasks are always standard — exclude the Real Time team.
@@ -1364,17 +1371,34 @@ function registerV2PageRoutes(): void {
     return new Response(null, { status: 204 });
   });
 
-  // Slack integration credential (experimental). Token + default channel only —
-  // per-team opt-in lives on each team's config.
+  // Slack integration credential + Socket Mode config (experimental). Per-team
+  // opt-in and per-command bindings live on each team / scheduled task.
   addRoute("POST", "/api/config/slack", async (req) => {
     const { isExperimental } = require("../config/feature-flags");
     if (!isExperimental()) return new Response("Not found", { status: 404 });
-    const { saveSlackConfig } = require("../config/slack-settings");
+    const {
+      saveSlackConfig,
+      parseAllowedUsersInput,
+      isSocketModeConfigured,
+      isSlackSocketEnabled,
+    } = require("../config/slack-settings");
     const formData = await req.formData();
     const botToken = (formData.get("bot_token") ?? "").toString();
     const defaultChannel = (formData.get("default_channel") ?? "").toString();
-    const err = saveSlackConfig(db, { botToken, defaultChannel });
+    const appToken = (formData.get("app_token") ?? "").toString();
+    const socketEnabled = formData.get("socket_enabled") != null;
+    const pushEnabled = formData.get("push_enabled") != null;
+    const allowedUsers = parseAllowedUsersInput((formData.get("allowed_users") ?? "").toString());
+    const err = saveSlackConfig(db, { botToken, defaultChannel, appToken, socketEnabled, allowedUsers, pushEnabled });
     if (err) return new Response(err, { status: 400 });
+    // Apply socket changes without a daemon restart: stop, then re-start if still
+    // configured + enabled.
+    const { getSlackSocket } = require("../slack/socket");
+    const socket = getSlackSocket();
+    if (socket) {
+      socket.stop();
+      if (isSocketModeConfigured(db) && isSlackSocketEnabled(db)) socket.start();
+    }
     return new Response(null, { status: 204 });
   });
 

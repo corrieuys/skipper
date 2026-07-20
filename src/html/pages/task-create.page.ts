@@ -245,6 +245,15 @@ export function taskCreatePage(vm: TaskCreateViewModel): string {
                   Injected into every run's prompt; authorizes Skipper to use the global store for state shared across runs.
                 </div>
               </div>
+              ${isExperimental() ? `
+              <div class="sk-form-group">
+                <label class="sk-label">Slack Slash Command</label>
+                <input type="text" name="slashCommand" class="sk-input" placeholder="/nightly-report">
+                <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
+                  Optional. Bind a Slack slash command to run this recurring task now (arg text = run input). Requires Socket Mode under <a href="/config">Config</a>.
+                </div>
+              </div>
+              ` : ""}
             </div>
             <script>
               function toggleScheduleFields(sel) {

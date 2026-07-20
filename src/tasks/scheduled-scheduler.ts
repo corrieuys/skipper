@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { parseJsonOr } from "../db/json";
 import { getDb } from "../db/connection";
+import { normalizeSlashCommand, type SlackOrigin } from "../slack/slash-command";
 import type { TaskScheduler, Task } from "./scheduler";
 
 export type ScheduleUnit = "minutes" | "hours" | "days";
@@ -302,6 +303,38 @@ export class ScheduledTaskScheduler {
     return rows.map(rowToScheduledTask);
   }
 
+  /**
+   * Find the scheduled task bound to a Slack slash command, or null. The binding
+   * lives in `task_config.slashCommand`; the command is normalized on both sides.
+   * See src/slack/commands.ts.
+   */
+  findScheduledTaskBySlashCommand(command: string): ScheduledTask | null {
+    const want = normalizeSlashCommand(command);
+    if (!want) return null;
+    for (const task of this.listScheduledTasks()) {
+      const bound = task.task_config?.slashCommand;
+      if (typeof bound === "string" && normalizeSlashCommand(bound) === want) return task;
+    }
+    return null;
+  }
+
+  /**
+   * Set or clear (`null`) the Slack slash-command binding on `task_config`.
+   * Allowed in any status (draft OR approved) — unlike `updateScheduledTask`,
+   * which is draft-only — because the binding doesn't touch the schedule.
+   */
+  setSlashCommand(id: string, command: string | null): ScheduledTask {
+    const task = this.getScheduledTask(id);
+    if (!task) throw new Error(`Scheduled task not found: ${id}`);
+    const config = { ...task.task_config };
+    if (command) config.slashCommand = command;
+    else delete config.slashCommand;
+    this.db
+      .prepare("UPDATE scheduled_tasks SET task_config = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(JSON.stringify(config), id);
+    return this.getScheduledTask(id)!;
+  }
+
   updateScheduledTask(id: string, input: UpdateScheduledTaskInput): ScheduledTask {
     const task = this.getScheduledTask(id);
     if (!task) throw new Error(`Scheduled task not found: ${id}`);
@@ -469,14 +502,19 @@ export class ScheduledTaskScheduler {
     return new Date(nextMs).toISOString().replace("T", " ").slice(0, 19);
   }
 
-  runTaskNow(id: string, taskScheduler: TaskScheduler, runInput?: string): Task {
+  runTaskNow(
+    id: string,
+    taskScheduler: TaskScheduler,
+    runInput?: string,
+    extra?: { slackOrigin?: SlackOrigin },
+  ): Task {
     const scheduled = this.getScheduledTask(id);
     if (!scheduled) throw new Error(`Scheduled task not found: ${id}`);
     if (scheduled.status !== "approved") throw new Error("Scheduled task must be approved to run");
 
     const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
-    // The global-store contract rides in the run's task_config so the prompt
-    // builder can inject it without a schema change on tasks.
+    // The global-store contract and Slack origin ride in the run's task_config so
+    // the prompt builder can inject them without a schema change on tasks.
     const task = taskScheduler.createTask({
       title: `${scheduled.title} (${timestamp})`,
       description: scheduled.description ?? undefined,
@@ -485,6 +523,7 @@ export class ScheduledTaskScheduler {
       taskConfig: {
         ...scheduled.task_config,
         ...(scheduled.global_store_instructions ? { global_store_instructions: scheduled.global_store_instructions } : {}),
+        ...(extra?.slackOrigin ? { slack_origin: extra.slackOrigin } : {}),
       } as any,
     });
 

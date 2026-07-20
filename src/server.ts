@@ -130,6 +130,25 @@ addRoute("GET", "/health", () => {
   });
 });
 
+// High-frequency UI poll endpoints — the browser hits these every few seconds
+// (HTMX `hx-trigger="every 5s"`), which drowns the log. Their successful, fast
+// responses are skipped; errors and slow responses still log. Set
+// `SKIPPER_HTTP_LOG=all` to log every request (debugging).
+const QUIET_LOG_PATTERNS: RegExp[] = [
+  /^\/api\/settings\/skipper-connect\/status$/,
+  /^\/workspace\/scheduled\/[^/]+\/runs$/,
+  /^\/workspace\/task\/[^/]+\/phase-strip$/,
+  /^\/health$/,
+  /^\/ping$/,
+];
+
+export function shouldLogRequest(pathname: string, status: number, durationMs: number): boolean {
+  if (process.env.SKIPPER_HTTP_LOG === "all") return true;
+  if (status >= 400) return true; // always surface errors
+  if (durationMs >= 500) return true; // always surface slow responses
+  return !QUIET_LOG_PATTERNS.some((re) => re.test(pathname));
+}
+
 async function handleRequest(req: Request): Promise<Response> {
   try {
     const url = new URL(req.url);
@@ -139,7 +158,10 @@ async function handleRequest(req: Request): Promise<Response> {
     const matched = matchRoute(method, url.pathname);
     if (matched) {
       const resp = await matched.handler(req, matched.params);
-      console.log(`[http] ${method} ${url.pathname} → ${resp.status} (${(performance.now() - start).toFixed(0)}ms)`);
+      const durationMs = performance.now() - start;
+      if (shouldLogRequest(url.pathname, resp.status, durationMs)) {
+        console.log(`[http] ${method} ${url.pathname} → ${resp.status} (${durationMs.toFixed(0)}ms)`);
+      }
       return resp;
     }
 

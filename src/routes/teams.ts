@@ -7,6 +7,7 @@ import type { TeamPhase } from "../config/store";
 import {
   type LocalTeam,
   type LocalTeamAgent,
+  type LocalTeamConfig,
   type LocalTeamInput,
   listLocalTeams,
   getLocalTeam,
@@ -14,6 +15,8 @@ import {
   updateLocalTeam,
   deleteLocalTeam,
 } from "../teams/local-teams";
+import { normalizeSlashCommand } from "../slack/slash-command";
+import { findSlashCommandConflict } from "../slack/bindings";
 
 // ---------------------------------------------------------------------------
 // HTTP routes for teams: CRUD plus JSON import/export. A team embeds its own
@@ -91,18 +94,27 @@ function coerceAgent(raw: unknown, usedIds: Set<string>): LocalTeamAgent | null 
 
 /**
  * Resolve the per-team config blob from a create/update/import body. The team
- * form posts `slack_enabled` (checkbox); import bodies carry a nested `config`
- * object. Form takes precedence when present.
+ * form posts `slack_enabled` (checkbox) + `slash_command`; import bodies carry a
+ * nested `config` object. Form fields take precedence when present.
  */
-function coerceTeamConfig(body: Record<string, unknown>): { slackEnabled: boolean } {
+function coerceTeamConfig(body: Record<string, unknown>): LocalTeamConfig {
   let slackEnabled = false;
+  let slashCommand: string | undefined;
   if (body.config && typeof body.config === "object") {
-    slackEnabled = (body.config as Record<string, unknown>).slackEnabled === true;
+    const c = body.config as Record<string, unknown>;
+    slackEnabled = c.slackEnabled === true;
+    if (typeof c.slashCommand === "string" && c.slashCommand.trim()) {
+      slashCommand = normalizeSlashCommand(c.slashCommand);
+    }
   }
   if ("slack_enabled" in body) {
     slackEnabled = body.slack_enabled === true || body.slack_enabled === "on" || body.slack_enabled === "true";
   }
-  return { slackEnabled };
+  if ("slash_command" in body) {
+    const raw = typeof body.slash_command === "string" ? body.slash_command.trim() : "";
+    slashCommand = raw ? normalizeSlashCommand(raw) : undefined;
+  }
+  return slashCommand ? { slackEnabled, slashCommand } : { slackEnabled };
 }
 
 /** Build a LocalTeamInput from a raw JSON object (used by create/update/import). */
@@ -156,6 +168,7 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
     body.skipper_prompt = (formData.get("skipper_prompt") as string | null) ?? undefined;
     // Unchecked checkboxes are absent from the form; presence ⇒ enabled.
     body.slack_enabled = formData.get("slack_enabled") != null;
+    body.slash_command = (formData.get("slash_command") as string | null) ?? undefined;
     const id = formData.get("id") as string | null;
     if (id) body.id = id;
     // phases / agents / hooks may arrive as JSON-encoded strings from the form.
@@ -176,6 +189,20 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
 
 export function registerTeamRoutes(database?: Database): void {
   const db = database ?? getDb();
+
+  // A slash command binds to one target only: reject a team save that reuses a
+  // command already bound to another team or a recurring task.
+  const slashConflictResponse = (input: LocalTeamInput, excludeTeamId?: string): Response | null => {
+    const cmd = input.config?.slashCommand;
+    if (!cmd) return null;
+    const conflict = findSlashCommandConflict(db, cmd, { teamId: excludeTeamId });
+    if (!conflict) return null;
+    const target = conflict.kind === "team" ? "team" : "recurring task";
+    return Response.json(
+      { error: `Slash command ${cmd} is already bound to ${target} "${conflict.label}".` },
+      { status: 400 },
+    );
+  };
 
   // ----- List -----
   addRoute("GET", "/api/teams", () => {
@@ -273,6 +300,8 @@ export function registerTeamRoutes(database?: Database): void {
     } catch (e) {
       return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 400 });
     }
+    const conflict = slashConflictResponse(input);
+    if (conflict) return conflict;
     try {
       const team = createLocalTeam(db, input);
       if (isHtmx) return hxRedirect("/config");
@@ -296,6 +325,8 @@ export function registerTeamRoutes(database?: Database): void {
     } catch (e) {
       return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 400 });
     }
+    const conflict = slashConflictResponse(input, id);
+    if (conflict) return conflict;
     try {
       const team = updateLocalTeam(db, id, input);
       if (isHtmx) return hxRedirect("/config");

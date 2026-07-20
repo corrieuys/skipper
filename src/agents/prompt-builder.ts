@@ -6,6 +6,10 @@ import { getSkipperConfig, getEntrypointAgentId } from "./skipper";
 import type { ArtifactManager } from "../orchestrator/artifact-manager";
 import { buildSkillsPromptAddition } from "../config-readers/skills";
 import { assetTextSync } from "../assets";
+import { isExperimental } from "../config/feature-flags";
+import { isSlackConfigured } from "../config/slack-settings";
+import { isSlackEnabledForTeam } from "../teams/local-teams";
+import type { SlackOrigin } from "../slack/slash-command";
 
 function loadPrompt(filename: string): string {
   return assetTextSync(`prompts/${filename}`).trimEnd();
@@ -190,6 +194,21 @@ export class PromptBuilder {
       parts.push("You are explicitly authorized to use the global-store MCP tools (set_global_value, get_global_value, query_global_store, delete_global_value) for this task. This state persists across runs of this recurring task. Follow this contract:");
       parts.push(globalStoreInstructions);
       parts.push("--- END GLOBAL STORE INSTRUCTIONS ---");
+    }
+    // Slack origin (task_config.slack_origin) — set when this run was triggered
+    // by a Slack slash command. Tells the agent where to reply via the
+    // slack_send_message MCP tool (only injected when those tools are available).
+    const slackOrigin = this.getSlackOrigin(options.task.id);
+    if (slackOrigin) {
+      const thread = slackOrigin.thread_ts ? ` (thread ${slackOrigin.thread_ts})` : "";
+      parts.push("--- SLACK ORIGIN ---");
+      parts.push(
+        `This task was started from Slack${slackOrigin.user_id ? ` by <@${slackOrigin.user_id}>` : ""} in channel ${slackOrigin.channel}${thread}.`,
+      );
+      parts.push(
+        `If you need to reply or report back, call the slack_send_message tool with channel "${slackOrigin.channel}"${slackOrigin.thread_ts ? ` and thread_ts "${slackOrigin.thread_ts}"` : ""}.`,
+      );
+      parts.push("--- END SLACK ORIGIN ---");
     }
     if (options.task.workingDirectory) {
       parts.push(`WORKING DIRECTORY: ${options.task.workingDirectory}`);
@@ -534,6 +553,30 @@ export class PromptBuilder {
         ? config.global_store_instructions.trim()
         : "";
       return instructions ? instructions : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The Slack origin stashed on this run (task_config.slack_origin), or null.
+   * Only returned when the Slack tools are actually available to the agent
+   * (experimental + bot token + the team opted in), so we never tell the agent to
+   * call a tool it doesn't have.
+   */
+  private getSlackOrigin(taskId: string): SlackOrigin | null {
+    try {
+      if (!isExperimental() || !isSlackConfigured(this.db)) return null;
+      const row = this.db
+        .prepare("SELECT task_config, team_id FROM tasks WHERE id = ?")
+        .get(taskId) as { task_config: string | null; team_id: string | null } | null;
+      if (!row?.task_config || !row.team_id || !isSlackEnabledForTeam(this.db, row.team_id)) return null;
+      const config = parseJsonOr<Record<string, unknown>>(row.task_config, {});
+      const o = config.slack_origin as Partial<SlackOrigin> | undefined;
+      if (o && typeof o.channel === "string" && o.channel) {
+        return { channel: o.channel, thread_ts: o.thread_ts, user_id: o.user_id };
+      }
+      return null;
     } catch {
       return null;
     }

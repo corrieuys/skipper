@@ -57,6 +57,8 @@ export interface ScheduledTaskSummary {
   webhook_debounce_minutes?: number | null;
   /** Global-store usage contract injected into every run's prompt. Detail view only. */
   global_store_instructions?: string | null;
+  /** Parsed per-task config (e.g. the Slack slash-command binding). Detail view only. */
+  task_config?: Record<string, unknown>;
 }
 
 export interface CommandCenterViewModel {

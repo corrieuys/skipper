@@ -21,6 +21,9 @@ import { MonkeyEngine } from "./src/monkey/tick";
 import { getGregDb, closeGregDb } from "./src/monkey/db";
 import { GlobalStoreManager } from "./src/global-store/manager";
 import { initConnectClient } from "./src/connect/client";
+import { initSlackSocket, getSlackSocket } from "./src/slack/socket";
+import { initSlackPush, getSlackPush } from "./src/slack/push";
+import { isSocketModeConfigured, isSlackSocketEnabled } from "./src/config/slack-settings";
 import { getBoolSetting, getStringSetting, SETTING_SKIPPER_CONNECT_ENABLED, SETTING_SKIPPER_CONNECT_KEY } from "./src/config/app-settings";
 
 const experimental = process.argv.includes("--experimental");
@@ -113,6 +116,18 @@ const connectClient = initConnectClient(
   daemon.getPhaseManager(),
 );
 
+// Slack Socket Mode (experimental): inbound slash commands + interactive
+// button/modal handling → Skipper actions.
+const slackSocket = initSlackSocket(
+  daemon.getTaskScheduler(),
+  daemon.getScheduledTaskScheduler(),
+  daemon.getEscalationManager(),
+  daemon.getPhaseManager(),
+);
+
+// Slack push (experimental): post escalations + phase reviews to the channel.
+const slackPush = initSlackPush(getDb());
+
 async function startup() {
   await daemon.start();
   monkeyEngine.start();
@@ -122,6 +137,14 @@ async function startup() {
   if (hasCredentials && getBoolSetting(db, SETTING_SKIPPER_CONNECT_ENABLED, false)) {
     connectClient.start();
   }
+  if (experimental && isSocketModeConfigured(db) && isSlackSocketEnabled(db)) {
+    slackSocket.start();
+  }
+  // Push handlers re-check settings live per event, so subscribe whenever
+  // experimental is on; toggling push in /config needs no restart.
+  if (experimental) {
+    slackPush.start();
+  }
 }
 
 startup().catch((err) => console.error("Startup failed:", err));
@@ -130,6 +153,8 @@ const server = startServer();
 
 function shutdown() {
   connectClient.stop();
+  getSlackSocket()?.stop();
+  getSlackPush()?.stop();
   monkeyEngine.stop();
   closeGregDb();
   mcpServer.close();

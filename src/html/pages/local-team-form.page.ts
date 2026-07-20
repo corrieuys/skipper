@@ -80,6 +80,19 @@ ${isExperimental() ? `
                 Lets this team's agents post to and read Slack via Skipper's app (tools <code>slack_send_message</code>, <code>slack_send_dm</code>, <code>slack_read_channel</code>). Requires a Slack bot token under <a href="/config">Config</a>.
               </p>
             </div>
+
+            <div class="sk-form-group">
+              <label class="sk-label">Slack Slash Command</label>
+              <input type="text" name="slash_command" class="sk-input"
+                value="${escapeHtml(vm.team?.config?.slashCommand ?? "")}"
+                placeholder="/software-team">
+              <p class="sk-muted sk-text-xs" style="margin:var(--sk-space-1) 0 0;">
+                Bind a Slack slash command to this team. An allowlisted user running e.g.
+                <code>/software-team "add a webhook feature"</code> creates a task on this team
+                (arg text = description) and auto-approves it. Register the command in your Slack app
+                and enable Socket Mode under <a href="/config">Config</a>.
+              </p>
+            </div>
 ` : ""}
             <hr style="margin:var(--sk-space-4) 0;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--sk-space-2);">

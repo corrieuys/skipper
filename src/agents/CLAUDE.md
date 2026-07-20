@@ -6,7 +6,7 @@ Agent process runtime. Spawn external CLI, parse stdout, route signals.
 |---|---|
 | `manager.ts` | `AgentManager` — spawn/kill, stdout/stderr readers, JSON stream events, `parseAgentOutput()` extracts signals, session/resume tracking, persists runtime output/state |
 | `manager-daemon.ts` | `ManagerDaemon` facade. Wires every orchestrator module. Subscribes to `agent:exit` / `agent:signal`. Single object passed to routes. |
-| `prompt-builder.ts` | Build initial/resume prompts. Inject phase + delegation context + command templates from `prompts/` |
+| `prompt-builder.ts` | Build initial/resume prompts. Inject phase + delegation context + command templates from `prompts/`. Also injects per-run `task_config` blocks: `run_input` (ADDITIONAL INSTRUCTIONS), `global_store_instructions`, and `slack_origin` (SLACK ORIGIN → reply via `slack_send_message`, only when the team's Slack tools are available) |
 | `state-tracker.ts` | Heartbeat + fingerprint for stuck detect / nudge / escalation |
 | `types.ts` | Agent-type lookup + cache. `clearAgentTypeCache()` for tests |
 | `oneshot.ts` | `runOneShotText()` — provider-generic one-shot text call built from `agent_types` arg templates. Used by Greg's brain + the dictation rewriter; no instance rows/MCP/signals |

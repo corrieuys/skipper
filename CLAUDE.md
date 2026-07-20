@@ -74,6 +74,7 @@ builds every target + `dist/SHA256SUMS` and prints the exact `git tag` +
 | `SKIPPER_RUNTIME_DB_PATH` | `<data dir>/skipper-runtime.db` | runtime DB file |
 | `SKIPPER_CONFIG_DIR` | `<data dir>/config` (binary) · `./config` (dev) | config snapshots |
 | `SKIPPER_CONTEXT_COMPACT_THRESHOLD` | 400000 | input tokens before compact |
+| `SKIPPER_HTTP_LOG` | (unset) | `all` = log every HTTP request; default skips high-frequency UI polls (still logs errors + slow) |
 
 ## Map — where to look
 
@@ -93,7 +94,7 @@ builds every target + `dist/SHA256SUMS` and prints the exact `git tag` +
 | realtime audio/transcribe | [src/realtime/CLAUDE.md](src/realtime/CLAUDE.md) |
 | whisper.cpp local server | [src/whisper/CLAUDE.md](src/whisper/CLAUDE.md) |
 | MCP server (typed tools alt to stdout signals) | [src/mcp/CLAUDE.md](src/mcp/CLAUDE.md) |
-| slack app integration (post as app via bot token) | [src/slack/CLAUDE.md](src/slack/CLAUDE.md) |
+| slack app integration (post as app via bot token; inbound slash commands via Socket Mode) | [src/slack/CLAUDE.md](src/slack/CLAUDE.md) |
 | user hooks (task/escalation events → shell) | [src/hooks/CLAUDE.md](src/hooks/CLAUDE.md) |
 | desktop notification sounds | [src/notifications/CLAUDE.md](src/notifications/CLAUDE.md) |
 | chat conversations w/ skipper | [src/conversations/CLAUDE.md](src/conversations/CLAUDE.md) |

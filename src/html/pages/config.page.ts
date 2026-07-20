@@ -339,12 +339,44 @@ export function slackPanel(slack: SlackConfigView): string {
         </div>
         <div class="sk-panel__body">
           <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
-            Let Skipper agents post to Slack <strong>as your app</strong> (not as you). Paste a Bot User OAuth
-            token (<code>xoxb-…</code>) from your Slack app's OAuth &amp; Permissions page. Required bot scopes:
-            <code>chat:write</code>, <code>im:write</code>, <code>users:read</code>, <code>users:read.email</code>,
-            <code>channels:history</code>, <code>groups:history</code>.
+            Let Skipper post to Slack <strong>as your app</strong> (not as you) and drive tasks from Slack.
+            Paste a Bot User OAuth token (<code>xoxb-…</code>) from your app's OAuth &amp; Permissions page.
             Turn the tools on per team via the "Enable Slack integration" checkbox on each team.
           </p>
+          <details style="margin-bottom:var(--sk-space-3);">
+            <summary class="sk-text-xs" style="cursor:pointer;font-weight:600;">Required Slack app setup &amp; permissions</summary>
+            <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-2);display:flex;flex-direction:column;gap:var(--sk-space-3);">
+              <div>
+                <strong>Bot Token Scopes</strong> — OAuth &amp; Permissions → Bot Token Scopes:
+                <ul style="margin:var(--sk-space-1) 0 0;padding-left:var(--sk-space-4);">
+                  <li><code>chat:write</code> — post &amp; update messages</li>
+                  <li><code>channels:read</code>, <code>groups:read</code> — resolve <code>#channel</code> names to IDs</li>
+                  <li><code>channels:history</code>, <code>groups:history</code> — read public / private channel messages</li>
+                  <li><code>im:write</code> — open direct messages</li>
+                  <li><code>users:read</code>, <code>users:read.email</code> — look up users (incl. DM by email)</li>
+                  <li><code>commands</code> — added automatically when you create a slash command</li>
+                </ul>
+              </div>
+              <div>
+                <strong>App-Level Token</strong> — Basic Information → App-Level Tokens (the <code>xapp-…</code> token):
+                <ul style="margin:var(--sk-space-1) 0 0;padding-left:var(--sk-space-4);">
+                  <li><code>connections:write</code> — required for Socket Mode</li>
+                </ul>
+              </div>
+              <div>
+                <strong>Enable these features</strong> (left sidebar of your app config):
+                <ul style="margin:var(--sk-space-1) 0 0;padding-left:var(--sk-space-4);">
+                  <li><strong>Socket Mode</strong> — delivers slash commands &amp; button clicks with no public URL</li>
+                  <li><strong>Interactivity &amp; Shortcuts</strong> — required for the Approve / Reject / Respond buttons</li>
+                  <li><strong>Slash Commands</strong> — create each command you want to bind to a team or recurring task</li>
+                </ul>
+              </div>
+              <div>
+                <strong>Then:</strong> invite the app to any channel it posts to (<code>/invite @YourApp</code>), and
+                <strong>reinstall the app</strong> after changing scopes or adding commands.
+              </div>
+            </div>
+          </details>
           <form hx-post="/api/config/slack" hx-swap="none"
             hx-on::after-request="if(event.detail.successful&&event.target===this){var b=this.querySelector('[data-save]');if(b){b.textContent='Saved';setTimeout(function(){b.textContent='Save';},1200);}}">
             <div style="display:flex;flex-direction:column;gap:var(--sk-space-3);">
@@ -361,6 +393,39 @@ export function slackPanel(slack: SlackConfigView): string {
                   placeholder="#general or C0123456789 (optional)"
                   class="sk-input sk-input--sm" style="flex:1;">
               </div>
+
+              <hr style="border:none;border-top:1px solid var(--sk-border);margin:var(--sk-space-2) 0;">
+              <p class="sk-muted sk-text-xs" style="margin:0;">
+                <strong>Slash commands (Socket Mode).</strong> Drive Skipper from Slack with no public URL — paste the
+                app-level token (<code>xapp-…</code>) below (see "Required Slack app setup" above). Bind each command to a
+                team or a recurring task; only allowlisted Slack users can trigger actions.
+              </p>
+              <div style="display:flex;align-items:center;gap:var(--sk-space-3);">
+                <label class="sk-muted sk-text-xs" style="width:130px;" for="slack-app-token">App-Level Token</label>
+                <input type="password" id="slack-app-token" name="app_token" autocomplete="off"
+                  placeholder="${slack.appTokenSet ? "(saved — enter to replace)" : "xapp-…"}"
+                  class="sk-input sk-input--sm" style="flex:1;">
+              </div>
+              <div style="display:flex;align-items:flex-start;gap:var(--sk-space-3);">
+                <label class="sk-muted sk-text-xs" style="width:130px;" for="slack-allowed-users">Allowed Users</label>
+                <textarea id="slack-allowed-users" name="allowed_users" rows="2"
+                  placeholder="U012ABCDEF, U345GHIJKL (Slack user IDs, comma or newline separated)"
+                  class="sk-input sk-input--sm" style="flex:1;">${escapeHtml(slack.allowedUsers.join(", "))}</textarea>
+              </div>
+              <label class="sk-checkbox" style="margin-top:0;">
+                <input type="checkbox" id="slack-socket-enabled" name="socket_enabled" ${slack.socketEnabled ? "checked" : ""}>
+                <span class="sk-checkbox__toggle"></span>
+                <span class="sk-checkbox__label">Enable Socket Mode (inbound slash commands)</span>
+              </label>
+              <label class="sk-checkbox" style="margin-top:0;">
+                <input type="checkbox" id="slack-push-enabled" name="push_enabled" ${slack.pushEnabled ? "checked" : ""}>
+                <span class="sk-checkbox__toggle"></span>
+                <span class="sk-checkbox__label">Push escalations &amp; phase reviews to the default channel</span>
+              </label>
+              <p class="sk-muted sk-text-xs" style="margin:0;">
+                Buttons need <strong>Interactivity</strong> enabled in your Slack app (Socket Mode delivers the events; no request URL). Only allowlisted users can act. Pushes are per-team: enable Slack on each team.
+              </p>
+
               <div style="display:flex;gap:var(--sk-space-2);align-items:center;">
                 <button type="submit" data-save class="sk-btn sk-btn--sm sk-btn--primary">Save</button>
                 <button type="button" class="sk-btn sk-btn--sm"

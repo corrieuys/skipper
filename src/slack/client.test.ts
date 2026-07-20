@@ -12,16 +12,22 @@ interface Call { url: string; init: RequestInit }
 let calls: Call[];
 let nextResponse: unknown;
 let nextOk = true; // HTTP-level ok (res.ok)
+// Per-Slack-method responses keyed by the last URL segment (e.g. "conversations.list").
+let responseFor: Record<string, unknown>;
 
 function stubFetch(): void {
   calls = [];
+  responseFor = {};
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-    calls.push({ url: String(url), init: init ?? {} });
+    const u = String(url);
+    calls.push({ url: u, init: init ?? {} });
+    const method = u.split("/").pop() ?? "";
+    const body = method in responseFor ? responseFor[method] : nextResponse;
     return {
       ok: nextOk,
       status: nextOk ? 200 : 500,
-      json: async () => nextResponse,
-      text: async () => JSON.stringify(nextResponse),
+      json: async () => body,
+      text: async () => JSON.stringify(body),
     } as Response;
   }) as typeof fetch;
 }
@@ -40,17 +46,34 @@ describe("SlackClient", () => {
     globalThis.fetch = realFetch;
   });
 
-  it("postMessage hits chat.postMessage with Bearer auth and returns channel + ts", async () => {
+  it("postMessage to a channel ID posts directly (no resolution) with Bearer auth", async () => {
     nextResponse = { ok: true, channel: "C123", ts: "1700000000.000100" };
     const client = new SlackClient(db);
-    const r = await client.postMessage("#general", "hello", { thread_ts: "t1" });
+    const r = await client.postMessage("C123", "hello", { thread_ts: "t1" });
 
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe("https://slack.com/api/chat.postMessage");
     const headers = calls[0]!.init.headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer xoxb-test-token");
-    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ channel: "#general", text: "hello", thread_ts: "t1" });
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ channel: "C123", text: "hello", thread_ts: "t1" });
     expect(r).toEqual({ channel: "C123", ts: "1700000000.000100" });
+  });
+
+  it("postMessage resolves #name to an id via conversations.list, then posts to the id", async () => {
+    responseFor["conversations.list"] = { ok: true, channels: [{ id: "C777", name: "capstone-ghas-reports" }] };
+    responseFor["chat.postMessage"] = { ok: true, channel: "C777", ts: "1.2" };
+    const client = new SlackClient(db);
+    const r = await client.postMessage("#capstone-ghas-reports", "hi");
+
+    expect(calls.map((c) => c.url.split("/").pop())).toEqual(["conversations.list", "chat.postMessage"]);
+    expect(JSON.parse(String(calls[1]!.init.body)).channel).toBe("C777");
+    expect(r.channel).toBe("C777");
+  });
+
+  it("postMessage throws channel_not_found when the #name is not visible to the app", async () => {
+    responseFor["conversations.list"] = { ok: true, channels: [{ id: "C1", name: "other" }], response_metadata: { next_cursor: "" } };
+    const client = new SlackClient(db);
+    await expect(client.postMessage("#missing", "hi")).rejects.toThrow(/channel_not_found/);
   });
 
   it("lookupUserByEmail returns the resolved user id", async () => {

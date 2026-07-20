@@ -24,7 +24,14 @@ interface SlackResponse {
   user_id?: string;
   // conversations.history
   messages?: Array<{ user?: string; bot_id?: string; text?: string; ts?: string }>;
+  // conversations.list
+  channels?: Array<{ id: string; name?: string }>;
+  response_metadata?: { next_cursor?: string };
 }
+
+// Channel IDs are stable across renames, so cache name→id workspace-wide (shared
+// across the per-call SlackClient instances) to avoid a conversations.list per post.
+const channelIdCache = new Map<string, string>();
 
 /**
  * Minimal Slack Web API client. Posts AS the configured Skipper app using the
@@ -61,15 +68,67 @@ export class SlackClient {
     return json;
   }
 
-  /** Post a message to a channel (ID `C…` or `#name`) or an open DM channel. */
+  /**
+   * Resolve a `#name` to a channel ID (the modern Web API rejects `#name` in
+   * chat.postMessage). Anything not starting with `#` (already an ID `C…`/`G…`/
+   * `D…`) passes through. Needs `channels:read` + `groups:read` scopes.
+   */
+  private async resolveChannel(channel: string): Promise<string> {
+    const c = channel.trim();
+    if (!c.startsWith("#")) return c;
+    const name = c.slice(1).toLowerCase();
+    const cached = channelIdCache.get(name);
+    if (cached) return cached;
+
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const body: Record<string, unknown> = {
+        types: "public_channel,private_channel",
+        exclude_archived: true,
+        limit: 1000,
+      };
+      if (cursor) body.cursor = cursor;
+      const r = await this.call("conversations.list", body);
+      for (const ch of r.channels ?? []) {
+        if (ch.name) channelIdCache.set(ch.name.toLowerCase(), ch.id);
+      }
+      const found = channelIdCache.get(name);
+      if (found) return found;
+      cursor = r.response_metadata?.next_cursor || undefined;
+      if (!cursor) break;
+    }
+    throw new Error(`channel_not_found: no channel named ${channel} visible to the app (check the name and that the app is a member)`);
+  }
+
+  /**
+   * Post a message to a channel (ID `C…` or `#name`) or an open DM channel.
+   * `blocks` renders Block Kit (buttons etc.); `text` is the notification/
+   * fallback string shown when blocks can't render.
+   */
   async postMessage(
     channel: string,
     text: string,
-    opts?: { thread_ts?: string },
+    opts?: { thread_ts?: string; blocks?: unknown[] },
   ): Promise<{ channel: string; ts: string }> {
-    const r = await this.call("chat.postMessage", { channel, text, thread_ts: opts?.thread_ts });
-    const ch = typeof r.channel === "string" ? r.channel : r.channel?.id ?? channel;
+    const target = await this.resolveChannel(channel);
+    const r = await this.call("chat.postMessage", {
+      channel: target,
+      text,
+      thread_ts: opts?.thread_ts,
+      blocks: opts?.blocks,
+    });
+    const ch = typeof r.channel === "string" ? r.channel : r.channel?.id ?? target;
     return { channel: ch, ts: r.ts ?? "" };
+  }
+
+  /** Edit an existing message in place (e.g. strip buttons after it is actioned). */
+  async updateMessage(channel: string, ts: string, text: string, blocks?: unknown[]): Promise<void> {
+    await this.call("chat.update", { channel, ts, text, blocks: blocks ?? [] });
+  }
+
+  /** Open a modal in response to an interaction `trigger_id` (button click). */
+  async openView(triggerId: string, view: unknown): Promise<void> {
+    await this.call("views.open", { trigger_id: triggerId, view });
   }
 
   /** Resolve a user's Slack ID (`U…`) from their email address. */
@@ -90,13 +149,14 @@ export class SlackClient {
   /**
    * Read recent messages from a channel, newest first. `oldest`/`latest` are
    * Slack ts bounds (Unix epoch seconds, as strings) — pass undefined for open-ended.
-   * Requires a channel ID (C…); a `#name` must be resolved to an ID first.
+   * Accepts a channel ID (C…) or `#name` (resolved to an ID).
    */
   async readChannel(
     channel: string,
     opts?: { oldest?: string; latest?: string; limit?: number },
   ): Promise<SlackMessage[]> {
-    const body: Record<string, unknown> = { channel, limit: opts?.limit ?? 50 };
+    const target = await this.resolveChannel(channel);
+    const body: Record<string, unknown> = { channel: target, limit: opts?.limit ?? 50 };
     if (opts?.oldest) body.oldest = opts.oldest;
     if (opts?.latest) body.latest = opts.latest;
     const r = await this.call("conversations.history", body);

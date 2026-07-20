@@ -4,6 +4,7 @@ import { initializeDatabase } from "../db/connection";
 import { PromptBuilder } from "./prompt-builder";
 import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { clearAgentTypeCache } from "./types";
+import { saveSlackConfig } from "../config/slack-settings";
 import { unlinkSync } from "fs";
 
 const TEST_DB = "test-prompt-builder.db";
@@ -802,5 +803,56 @@ describe("global store instructions injection", () => {
     });
 
     expect(prompt).not.toContain("GLOBAL STORE INSTRUCTIONS");
+  });
+});
+
+describe("slack origin injection", () => {
+  const origArgv = process.argv;
+  beforeEach(() => {
+    process.argv = [...origArgv, "--experimental"];
+  });
+  afterEach(() => {
+    process.argv = origArgv;
+  });
+
+  function seedTaskWithOrigin(origin: object, slackEnabled: boolean): void {
+    db.prepare("INSERT INTO teams (id, name, entrypoint_agent_id) VALUES ('t-slack', 'T', NULL)").run();
+    db.prepare(
+      "INSERT INTO local_teams (id, name, skipper_prompt, hooks, phases, agents, team_config) VALUES ('t-slack','T','','[]','[]','[]',?)",
+    ).run(JSON.stringify({ slackEnabled }));
+    db.prepare("INSERT INTO tasks (id, title, team_id, task_config) VALUES ('task-s', 'Do work', 't-slack', ?)").run(
+      JSON.stringify({ slack_origin: origin }),
+    );
+  }
+
+  function build(): string {
+    const agentId = createAgent("Dev", "claude-code", "Build");
+    return builder.buildInitialPrompt({
+      agent: { id: agentId, name: "Dev", type: "claude-code", instruction: "Build" },
+      task: { id: "task-s", title: "Do work" },
+      isStreaming: true,
+    });
+  }
+
+  it("injects SLACK ORIGIN with reply instructions when configured + team enabled", () => {
+    saveSlackConfig(db, { botToken: "xoxb-x", defaultChannel: "" });
+    seedTaskWithOrigin({ channel: "C1", thread_ts: "9.9", user_id: "U1" }, true);
+    const prompt = build();
+    expect(prompt).toContain("--- SLACK ORIGIN ---");
+    expect(prompt).toContain("channel C1");
+    expect(prompt).toContain("thread 9.9");
+    expect(prompt).toContain('slack_send_message');
+    expect(prompt).toContain('thread_ts "9.9"');
+  });
+
+  it("omits SLACK ORIGIN when the team has Slack disabled", () => {
+    saveSlackConfig(db, { botToken: "xoxb-x", defaultChannel: "" });
+    seedTaskWithOrigin({ channel: "C1" }, false);
+    expect(build()).not.toContain("SLACK ORIGIN");
+  });
+
+  it("omits SLACK ORIGIN when Slack is unconfigured (no bot token)", () => {
+    seedTaskWithOrigin({ channel: "C1" }, true);
+    expect(build()).not.toContain("SLACK ORIGIN");
   });
 });
