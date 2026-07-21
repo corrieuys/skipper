@@ -69,6 +69,6 @@ Artifacts ready in dist/ for ${tag}. Publish manually when you're ready:
   gh release create ${tag} ${assets} --title "${tag}" --generate-notes
 
 Then anyone can install / update:
-  curl -fsSL https://raw.githubusercontent.com/${GH_REPO}/main/install.sh | bash
+  curl -fsSL https://letskipper.work/install.sh | bash
   skipper update
 `);

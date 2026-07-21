@@ -75,15 +75,20 @@ local/dev fallback — bumping it is optional/cosmetic.
 `git tag` + `gh release create` commands — it makes no git/gh writes itself.
 
 Once a release is published, anyone can:
-- install: `curl -fsSL https://raw.githubusercontent.com/corrieuys/skipper/main/install.sh | bash` ([install.sh](install.sh) picks the OS/arch asset → `~/.local/bin/skipper`)
+- install: `curl -fsSL https://letskipper.work/install.sh | bash` (the install script picks the OS/arch asset → `~/.local/bin/skipper`)
 - update: `skipper update` (checks the releases API, downloads the matching asset, atomic self-swap).
+
+The install script itself is **not** in this repo — it lives in the marketing
+site and is served from `letskipper.work/install.sh` (source:
+`personal/skipper-home/public/install.sh`). It downloads binaries from this
+repo's GitHub Releases.
 
 **Beta / prerelease channel.** Tag with a semver prerelease suffix
 (`v0.2.0-beta.1`, `-rc.1`) → the workflow marks the GitHub Release
 `--prerelease`, which keeps it off the `latest` pointer, so stable installs and
 `skipper update` skip it automatically. Opt in explicitly:
-- install newest incl. prereleases: `SKIPPER_CHANNEL=beta curl -fsSL …install.sh | bash`
-- install an exact release: `SKIPPER_VERSION=v0.2.0-beta.1 curl -fsSL …install.sh | bash`
+- install newest incl. prereleases: `SKIPPER_CHANNEL=beta curl -fsSL https://letskipper.work/install.sh | bash`
+- install an exact release: `SKIPPER_VERSION=v0.2.0-beta.1 curl -fsSL https://letskipper.work/install.sh | bash`
 - update onto the beta channel: `skipper update --beta` (lists `/releases`, takes the newest incl. prereleases).
 
 ## Entry
@@ -102,6 +107,7 @@ Once a release is published, anyone can:
 | `SKIPPER_CONFIG_DIR` | `<data dir>/config` (binary) · `./config` (dev) | config snapshots |
 | `SKIPPER_CONTEXT_COMPACT_THRESHOLD` | 400000 | input tokens before compact |
 | `SKIPPER_HTTP_LOG` | (unset) | `all` = log every HTTP request; default skips high-frequency UI polls (still logs errors + slow) |
+| `SKIPPER_LOG_MAX_BYTES` | 26214400 (25 MB) | size cap for `~/.skipper/skipper.log` (the daemon's stdout/stderr file); the tick loop snapshots it to `skipper.log.old` + truncates when exceeded |
 
 ## Map — where to look
 

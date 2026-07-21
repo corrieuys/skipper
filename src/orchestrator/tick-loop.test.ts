@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
-import { ReconciliationLoop } from "./tick-loop";
+import { ReconciliationLoop, rotateLogIfOversized } from "./tick-loop";
+import { writeFileSync, readFileSync, existsSync as fsExists, statSync as fsStat } from "fs";
 import { TaskScheduler } from "../tasks/scheduler";
 import {
   setNumberSetting,
@@ -186,6 +187,37 @@ describe("autoDeleteOldTasks", () => {
     insertTask("rec-3d", "completed", 3, true);     // keep (< 7)
     loop.autoDeleteOldTasks();
     expect(remaining()).toEqual(["rec-3d", "reg-25d"]);
+  });
+});
+
+describe("rotateLogIfOversized", () => {
+  const LOG = "test-skipper-log.log";
+  const OLD = LOG + ".old";
+  afterEach(() => {
+    for (const f of [LOG, OLD]) { try { unlinkSync(f); } catch {} }
+  });
+
+  it("does nothing when the file is at/under the cap", () => {
+    writeFileSync(LOG, "x".repeat(500));
+    const res = rotateLogIfOversized(LOG, 1000);
+    expect(res.rotated).toBe(false);
+    expect(fsStat(LOG).size).toBe(500);
+    expect(fsExists(OLD)).toBe(false);
+  });
+
+  it("snapshots to .old and truncates when over the cap", () => {
+    const content = "y".repeat(2000);
+    writeFileSync(LOG, content);
+    const res = rotateLogIfOversized(LOG, 1000);
+    expect(res.rotated).toBe(true);
+    expect(res.prevBytes).toBe(2000);
+    expect(fsStat(LOG).size).toBe(0);                 // truncated in place
+    expect(fsExists(OLD)).toBe(true);
+    expect(readFileSync(OLD, "utf8")).toBe(content);  // snapshot preserved
+  });
+
+  it("is a no-op on a missing file", () => {
+    expect(rotateLogIfOversized("does-not-exist.log", 10).rotated).toBe(false);
   });
 });
 

@@ -8,6 +8,8 @@ import type { WorktreeManager } from "./worktree-manager";
 import type { EscalationManager } from "../escalations/manager";
 import type { IdlePokeManager } from "./idle-poke-manager";
 import type { TaskScheduler } from "../tasks/scheduler";
+import { statSync, fstatSync, truncateSync, copyFileSync, existsSync } from "node:fs";
+import { getLogFile } from "../paths";
 import { logError } from "../logging";
 import {
   getNumberSetting,
@@ -21,6 +23,21 @@ interface TimerConfig {
   name: string;
   fn: () => void | Promise<void>;
   intervalMs: number;
+}
+
+/**
+ * Snapshot + truncate a log file once it exceeds `capBytes`. Pure file op (no
+ * inode/ownership guard — the caller decides whether the file is safe to manage),
+ * so it is unit-testable on a plain temp file. Copies the current contents to
+ * `<path>.old` (best-effort) then truncates the original to 0.
+ */
+export function rotateLogIfOversized(logPath: string, capBytes: number): { rotated: boolean; prevBytes: number } {
+  if (!existsSync(logPath)) return { rotated: false, prevBytes: 0 };
+  const size = statSync(logPath).size;
+  if (size <= capBytes) return { rotated: false, prevBytes: size };
+  try { copyFileSync(logPath, logPath + ".old"); } catch { /* best-effort snapshot */ }
+  truncateSync(logPath, 0);
+  return { rotated: true, prevBytes: size };
 }
 
 
@@ -69,6 +86,7 @@ export class ReconciliationLoop {
       // Infrequent: housekeeping
       { name: "worktree-cleanup",   fn: () => this.worktreeManager?.cleanupStaleWorktrees(),        intervalMs: 300_000 },
       { name: "terminal-cleanup",   fn: () => this.cleanupOldTerminalOutputs(),                     intervalMs: 300_000 },
+      { name: "log-file-rotate",    fn: () => this.rotateOversizedLogFile(),                        intervalMs: 300_000 },
       { name: "task-auto-delete",   fn: () => this.autoDeleteOldTasks(),                            intervalMs: 3_600_000 },
 
       // Scheduled tasks
@@ -276,6 +294,37 @@ export class ReconciliationLoop {
         .run(-retentionHours);
     } catch (err) {
       logError(this.db, "terminal_output_cleanup", { retentionHours }, err);
+    }
+  }
+
+  /**
+   * Cap the daemon's stdout/stderr log file (`~/.skipper/skipper.log`), which the
+   * CLI opens in append mode and hands to the detached server — nothing else ever
+   * trims it, so it grows for the life of the process. Only acts on the file our
+   * own stdout (fd 1) is actually redirected to: in a `bun run index.ts` dev run
+   * fd 1 is a terminal, so a stale skipper.log from a prior `skipper start` is left
+   * untouched. Over the cap → snapshot to `skipper.log.old`, then truncate in
+   * place. The fd is O_APPEND, so subsequent writes resume at the new (0) EOF —
+   * truncation does not corrupt ongoing logging. Cap: `SKIPPER_LOG_MAX_BYTES`
+   * (default 25 MB); disk is bounded to ~2× that (live + one .old snapshot).
+   */
+  rotateOversizedLogFile(): void {
+    const cap = Number(process.env.SKIPPER_LOG_MAX_BYTES) || 25 * 1024 * 1024;
+    if (!Number.isFinite(cap) || cap <= 0) return;
+    let logPath: string;
+    try { logPath = getLogFile(); } catch { return; }
+    try {
+      if (!existsSync(logPath)) return;
+      const fileStat = statSync(logPath);
+      let stdoutStat: ReturnType<typeof fstatSync>;
+      try { stdoutStat = fstatSync(1); } catch { return; }
+      if (stdoutStat.ino !== fileStat.ino || stdoutStat.dev !== fileStat.dev) return;
+      const { rotated, prevBytes } = rotateLogIfOversized(logPath, cap);
+      if (rotated) {
+        logError(this.db, "log_file_rotated", { logPath, prevBytes, capBytes: cap }, new Error("info: rotated oversized daemon log"));
+      }
+    } catch (err) {
+      logError(this.db, "log_file_rotate", {}, err);
     }
   }
 

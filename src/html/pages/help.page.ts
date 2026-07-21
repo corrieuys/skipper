@@ -57,7 +57,7 @@ export function helpPage(vm: HelpPageViewModel): string {
     <h3 style="margin-top: var(--sk-space-4);">UI Overview</h3>
     <ul>
       <li>Server-rendered HTML dashboard, updated in real time via <strong>WebSocket push</strong> and HTMX polling.</li>
-      <li>Pages: Dashboard (Command Center), Tasks, Escalations, Config, Logs${experimental ? ", Global Store" : ""}, Help.</li>
+      <li>Pages: Dashboard (Command Center), Tasks, Escalations, Config, Logs, Global Store, Help.</li>
       <li>The sidebar on the Dashboard lists tasks; clicking one loads the task workspace into the main area without a full page reload.</li>
     </ul>
   `);
@@ -234,7 +234,7 @@ export function helpPage(vm: HelpPageViewModel): string {
 
     <h3 style="margin-top: var(--sk-space-4);">Tool sets by role</h3>
     <ul>
-      <li><strong>Root Skipper agent</strong> — full tool set: delegate, delegate_batch, complete_phase, regress_phase, complete_task, escalate, create_note, list_notes, create_artifact, get_artifact, list_artifacts, send_message${experimental ? ", and the global-store tools (set_global_value, get_global_value, query_global_store, delete_global_value)" : ""}.</li>
+      <li><strong>Root Skipper agent</strong> — full tool set: delegate, delegate_batch, complete_phase, regress_phase, complete_task, escalate, create_note, list_notes, create_artifact, get_artifact, list_artifacts, send_message, and the global-store tools (set_global_value, get_global_value, query_global_store, delete_global_value).</li>
       <li><strong>Delegated child agents</strong> — reduced set: create_note, list_notes, create_artifact, list_artifacts, get_artifact, create_escalation. Phase lifecycle tools are rejected.</li>
       <li><strong>External API key holders</strong> — task-management-only tools (for external integrations).</li>
     </ul>

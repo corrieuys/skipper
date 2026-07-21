@@ -1495,8 +1495,8 @@ function registerV2PageRoutes(): void {
     return new Response(null, { status: 302, headers: { Location: "/config" } });
   });
 
-  // ── Global store routes (experimental) ───────────────────────────────────
-  if (isExperimental()) {
+  // ── Global store routes ──────────────────────────────────────────────────
+  {
     const { globalStorePage } = require("../html/pages/global-store.page");
     const { globalStoreEditFragment, globalStoreRowFragment } = require("../html/fragments/global-store-edit.fragment");
     const { GlobalStoreManager } = require("../global-store/manager");

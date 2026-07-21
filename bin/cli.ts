@@ -56,10 +56,17 @@ function clearPidFile(): void {
   }
 }
 
-/** How to re-invoke ourselves in foreground `serve` mode (binary vs `bun run`). */
+/**
+ * How to re-invoke ourselves in foreground `serve` mode (binary vs `bun run`).
+ * Forwards launch flags the server itself reads from argv — `--experimental` gates
+ * experimental features via `isExperimental()`, which inspects the *server*
+ * process's argv, so `start`/`restart` must pass it through to the detached child
+ * or it would be silently dropped. (`--port` is handled separately via PORT env.)
+ */
 function serveInvocation(): { cmd: string; args: string[] } {
-  if (isCompiledBinary()) return { cmd: process.execPath, args: ["serve"] };
-  return { cmd: process.execPath, args: [Bun.main, "serve"] };
+  const passthrough = process.argv.includes("--experimental") ? ["--experimental"] : [];
+  if (isCompiledBinary()) return { cmd: process.execPath, args: ["serve", ...passthrough] };
+  return { cmd: process.execPath, args: [Bun.main, "serve", ...passthrough] };
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -273,14 +280,18 @@ function usage(): void {
   console.log(`skipper ${VERSION}
 
 Usage:
-  skipper start [--port N] [--no-open]   Start in the background (opens the UI)
+  skipper start [--port N] [--no-open] [--experimental]   Start in the background (opens the UI)
   skipper stop               Stop the background server
-  skipper restart            Restart the background server
+  skipper restart [--experimental]   Restart the background server
   skipper status             Show running state + health
   skipper logs [-f]          Print (or follow with -f) the server log
-  skipper serve              Run the server in the foreground
+  skipper serve [--experimental]     Run the server in the foreground
   skipper update [--beta]    Update to the latest release (--beta includes prereleases)
   skipper --version          Print version
+
+  --experimental enables experimental features (Slack, Global Store, API Keys, Task
+  Auto-Delete, extra teams/agents). It is per-launch: a later restart without the
+  flag drops back to stable, so pass it each time you want it on.
 `);
 }
 

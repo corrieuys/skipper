@@ -209,8 +209,7 @@ export function registerDaemonTools(
     },
   );
 
-  // ── Global store (cross-task shared values) — experimental ──
-  if (isExperimental()) {
+  // ── Global store (cross-task shared values) ──
   server.tool(
     "set_global_value",
     "Create or update a globally-shared value keyed by name (visible to agents on any task). Only use when the task, phase, or template explicitly instructs it.",
@@ -276,7 +275,6 @@ export function registerDaemonTools(
       return { content: [{ type: "text" as const, text: JSON.stringify({ status: deleted ? "deleted" : "not_found" }) }] };
     },
   );
-  }
 
   // ── Slack (experimental; per-team opt-in; credential must be configured) ──
   // Visibility is decided at session creation: registered only when the app is
