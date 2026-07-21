@@ -10,7 +10,7 @@ import { handleSlashCommand, type SlackSlashCommandPayload } from "./commands";
 import { handleInteraction, type InteractionPayload } from "./interactions";
 import { SlackClient } from "./client";
 import { slackLog } from "./log";
-import { findRunningTaskByThread } from "./slash-command";
+import { findRunningTaskByThread, findCompletedTaskByThread } from "./slash-command";
 import { isExperimental } from "../config/feature-flags";
 
 const SLACK_API_BASE = "https://slack.com/api";
@@ -257,6 +257,24 @@ export class SlackSocketManager {
     try {
       const taskId = findRunningTaskByThread(this.db, channel, threadTs);
       if (!taskId) {
+        // Not a live task. If the thread belongs to a COMPLETED task, a reply is a
+        // request to keep going — but we never auto-iterate (a full multi-agent
+        // re-run is too expensive/surprising to trigger on a stray reply). Nudge the
+        // operator to the Iterate button on the completion notice instead.
+        const completedTaskId = findCompletedTaskByThread(this.db, channel, threadTs);
+        if (completedTaskId) {
+          slackLog("in.thread_reply.completed", { taskId: completedTaskId, channel, threadTs });
+          try {
+            await new SlackClient(this.db).postMessage(
+              channel,
+              ":checkered_flag: This task has finished. To run another pass, click *Iterate* on the completion message above and enter your instructions there.",
+              { thread_ts: threadTs },
+            );
+          } catch (err) {
+            logError(this.db, "slack_thread_reply_completed", { channel, threadTs }, err);
+          }
+          return;
+        }
         slackLog("in.thread_reply.no_task", { channel, threadTs });
         return;
       }
@@ -293,6 +311,7 @@ export class SlackSocketManager {
           client: new SlackClient(this.db),
           escalationManager: this.escalationManager,
           phaseManager: this.phaseManager,
+          taskScheduler: this.taskScheduler,
         },
         payload,
       );

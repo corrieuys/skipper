@@ -65,6 +65,36 @@ export function findRunningTaskByThread(
 }
 
 /**
+ * Find the most-recent COMPLETED task whose Slack origin matches this thread, or
+ * null. Used to turn a reply in a finished task's thread into an iterate prompt:
+ * plain replies don't auto-iterate (too expensive/surprising), but knowing the
+ * thread belongs to a completed task lets the socket nudge the user toward the
+ * Iterate button. `slack_origin` survives `iterateTask` (it lives on `task_config`,
+ * which iteration never clears), so the thread stays matchable across iterations.
+ */
+export function findCompletedTaskByThread(
+  db: Database,
+  channel: string,
+  threadTs: string,
+): string | null {
+  try {
+    const row = db
+      .prepare(
+        `SELECT id FROM tasks
+         WHERE status = 'completed'
+           AND json_extract(task_config, '$.slack_origin.channel') = ?
+           AND json_extract(task_config, '$.slack_origin.thread_ts') = ?
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get(channel, threadTs) as { id: string } | null;
+    return row?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Normalize a Slack slash-command string for storage + comparison: trim,
  * lowercase, collapse to a single leading slash. Empty/blank input → "".
  * Slack delivers commands as "/software-team"; operators may bind them with or

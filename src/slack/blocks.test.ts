@@ -4,6 +4,7 @@ import {
   decodeActionValue,
   escalationMessageBlocks,
   reviewMessageBlocks,
+  completionMessageBlocks,
   actionModal,
   readModalMessage,
   MODAL_INPUT_BLOCK,
@@ -21,6 +22,11 @@ describe("action value codec", () => {
     const id = "550e8400-e29b-41d4-a716-446655440000";
     const decoded = decodeActionValue(encodeActionValue({ kind: "rev", action: "reject", id }));
     expect(decoded?.id).toBe(id);
+  });
+
+  it("round-trips the task iterate action", () => {
+    const v = { kind: "task" as const, action: "iterate" as const, id: "task-9" };
+    expect(decodeActionValue(encodeActionValue(v))).toEqual(v);
   });
 
   it("rejects malformed values", () => {
@@ -45,6 +51,12 @@ describe("message blocks", () => {
     const values = actions.elements.map((e) => e.value);
     expect(values).toContain("rev:approve:t1");
     expect(values).toContain("rev:reject:t1");
+  });
+
+  it("completion notice carries an Iterate button keyed by task id", () => {
+    const blocks = completionMessageBlocks("t1", "Add webhook") as Array<Record<string, unknown>>;
+    const actions = blocks.find((b) => b.type === "actions") as { elements: Array<{ value: string }> };
+    expect(actions.elements.map((e) => e.value)).toContain("task:iterate:t1");
   });
 });
 

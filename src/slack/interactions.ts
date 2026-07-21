@@ -4,6 +4,7 @@ import { slackLog } from "./log";
 import { isSlackUserAllowed } from "../config/slack-settings";
 import type { EscalationManager } from "../escalations/manager";
 import type { PhaseManager } from "../orchestrator/phase-manager";
+import type { TaskScheduler } from "../tasks/scheduler";
 import type { SlackClient } from "./client";
 import {
   decodeActionValue,
@@ -19,6 +20,7 @@ export interface InteractionDeps {
   client: SlackClient;
   escalationManager: EscalationManager;
   phaseManager: PhaseManager;
+  taskScheduler: TaskScheduler;
 }
 
 /** Minimal shapes of the Slack interactive payloads we consume. */
@@ -158,6 +160,13 @@ async function performAction(deps: InteractionDeps, meta: ModalMeta, message: st
     await deps.phaseManager.rejectReview(meta.id, message);
     return `:leftwards_arrow_with_hook: *Phase rejected* by <@${userId}>\n> ${quote(message)}`;
   }
+  if (meta.kind === "task" && meta.action === "iterate") {
+    // Re-open the completed task with the operator's prompt. iterateTask throws if
+    // the task is no longer `completed` (e.g. an already-clicked button), which the
+    // caller catches and surfaces as an error edit — the stale button self-heals.
+    deps.taskScheduler.iterateTask(meta.id, message);
+    return `:repeat: *Iteration started* by <@${userId}>\n> ${quote(message)}`;
+  }
   return ":grey_question: Unknown action.";
 }
 
@@ -173,6 +182,9 @@ function modalSpecFor(
   }
   if (kind === "rev" && action === "reject") {
     return { title: "Reject phase", label: "What should change?", submit: "Reject", optional: false, placeholder: "Why are you rejecting?" };
+  }
+  if (kind === "task" && action === "iterate") {
+    return { title: "Iterate task", label: "What should this iteration do?", submit: "Iterate", optional: false, placeholder: "Describe the changes or additions…" };
   }
   return null;
 }

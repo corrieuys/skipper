@@ -8,13 +8,13 @@ import { htmlToMrkdwn } from "./html-to-mrkdwn";
 // the origin message coordinates in `private_metadata`, so the message can be
 // edited in place once the action completes.
 
-export type ActionKind = "esc" | "rev";
-export type ActionName = "respond" | "dismiss" | "approve" | "reject";
+export type ActionKind = "esc" | "rev" | "task";
+export type ActionName = "respond" | "dismiss" | "approve" | "reject" | "iterate";
 
 export interface ActionValue {
   kind: ActionKind;
   action: ActionName;
-  /** escalation id (esc) or task id (rev). */
+  /** escalation id (esc) or task id (rev / task). */
   id: string;
 }
 
@@ -24,7 +24,7 @@ export function encodeActionValue(v: ActionValue): string {
 }
 
 export function decodeActionValue(raw: string): ActionValue | null {
-  const m = /^(esc|rev):(respond|dismiss|approve|reject):(.+)$/.exec(raw ?? "");
+  const m = /^(esc|rev|task):(respond|dismiss|approve|reject|iterate):(.+)$/.exec(raw ?? "");
   if (!m) return null;
   return { kind: m[1] as ActionKind, action: m[2] as ActionName, id: m[3]! };
 }
@@ -85,6 +85,28 @@ export function reviewMessageBlocks(taskId: string, taskTitle: string, phaseLabe
       elements: [
         button("Approve", "rev_approve", encodeActionValue({ kind: "rev", action: "approve", id: taskId }), "primary"),
         button("Reject", "rev_reject", encodeActionValue({ kind: "rev", action: "reject", id: taskId }), "danger"),
+      ],
+    },
+  ];
+}
+
+/**
+ * Task-completion notice posted back into the origin thread, carrying an Iterate
+ * button. Clicking it opens a modal that collects the next iteration's prompt
+ * (mirrors the web UI's iterate flow) → `TaskScheduler.iterateTask`. Only used for
+ * completed tasks (a failed task can't be iterated), so the button always targets a
+ * task that is currently iterable — a stale click self-heals with an error edit.
+ */
+export function completionMessageBlocks(taskId: string, taskTitle: string): unknown[] {
+  return [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: `:white_check_mark: Task *${mrkdwn(taskTitle)}* finished running.` },
+    },
+    {
+      type: "actions",
+      elements: [
+        button("Iterate", "task_iterate", encodeActionValue({ kind: "task", action: "iterate", id: taskId }), "primary"),
       ],
     },
   ];

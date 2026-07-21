@@ -6,6 +6,7 @@ import { handleInteraction, type InteractionDeps } from "./interactions";
 import { MODAL_INPUT_BLOCK, MODAL_INPUT_ACTION } from "./blocks";
 import type { EscalationManager } from "../escalations/manager";
 import type { PhaseManager } from "../orchestrator/phase-manager";
+import type { TaskScheduler } from "../tasks/scheduler";
 import type { SlackClient } from "./client";
 
 const USER = "U-allowed";
@@ -16,6 +17,7 @@ let calls: {
   dismiss: string[];
   approve: Array<{ id: string; note?: string }>;
   reject: Array<{ id: string; msg?: string }>;
+  iterate: Array<{ id: string; input: string }>;
   openView: Array<{ triggerId: string; view: Record<string, unknown> }>;
   update: Array<{ channel: string; ts: string; text: string }>;
 };
@@ -25,7 +27,7 @@ beforeEach(() => {
   db = new Database(":memory:");
   initializeDatabase(db);
   saveSlackConfig(db, { botToken: "", defaultChannel: "", allowedUsers: [USER] });
-  calls = { resolve: [], dismiss: [], approve: [], reject: [], openView: [], update: [] };
+  calls = { resolve: [], dismiss: [], approve: [], reject: [], iterate: [], openView: [], update: [] };
 
   const escalationManager = {
     resolveEscalation: async (id: string, resp: string) => {
@@ -55,7 +57,14 @@ beforeEach(() => {
     },
   } as unknown as SlackClient;
 
-  deps = { db, client, escalationManager, phaseManager };
+  const taskScheduler = {
+    iterateTask: (id: string, input: string) => {
+      calls.iterate.push({ id, input });
+      return {} as unknown;
+    },
+  } as unknown as TaskScheduler;
+
+  deps = { db, client, escalationManager, phaseManager, taskScheduler };
 });
 
 afterEach(() => db.close());
@@ -109,6 +118,14 @@ describe("block_actions", () => {
     expect(meta.id).toBe("t1");
   });
 
+  it("iterate opens a modal for the task id", async () => {
+    const res = handleInteraction(deps, blockAction("task:iterate:t9"));
+    await res.run?.();
+    expect(calls.openView).toHaveLength(1);
+    const meta = JSON.parse(calls.openView[0]!.view.private_metadata as string);
+    expect(meta).toEqual({ kind: "task", action: "iterate", id: "t9", channel: "C1", messageTs: "111.22" });
+  });
+
   it("unauthorized user cannot dismiss", async () => {
     const res = handleInteraction(deps, blockAction("esc:dismiss:e1", { user: "U-stranger" }));
     await res.run?.();
@@ -137,6 +154,14 @@ describe("view_submission", () => {
     const meta = { kind: "rev", action: "reject", id: "t1", channel: "C1", messageTs: "111.22" };
     await handleInteraction(deps, viewSubmission(meta, "add tests first")).run?.();
     expect(calls.reject).toEqual([{ id: "t1", msg: "add tests first" }]);
+  });
+
+  it("iterate re-runs the completed task with the typed prompt and edits the notice", async () => {
+    const meta = { kind: "task", action: "iterate", id: "t9", channel: "C1", messageTs: "111.22" };
+    await handleInteraction(deps, viewSubmission(meta, "also handle the empty-input case")).run?.();
+    expect(calls.iterate).toEqual([{ id: "t9", input: "also handle the empty-input case" }]);
+    expect(calls.update).toHaveLength(1);
+    expect(calls.update[0]?.text).toContain("Iteration started");
   });
 
   it("unauthorized submission returns modal errors and performs no action", async () => {

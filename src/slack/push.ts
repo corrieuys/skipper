@@ -13,7 +13,7 @@ import {
 } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
 import { SlackClient } from "./client";
-import { escalationMessageBlocks, reviewMessageBlocks } from "./blocks";
+import { escalationMessageBlocks, reviewMessageBlocks, completionMessageBlocks } from "./blocks";
 import { readTaskSlackOrigin } from "./slash-command";
 import { htmlToMrkdwn } from "./html-to-mrkdwn";
 import { slackLog } from "./log";
@@ -148,7 +148,11 @@ export class SlackPushManager {
     const text = done
       ? `:white_check_mark: Task *${target.task.title}* finished running.`
       : `:x: Task *${target.task.title}* stopped — it failed before finishing.`;
-    void this.post(target.channel, text, undefined, `task_${e.newStatus}`, target.threadTs);
+    // A completed task can be iterated, so its notice carries an Iterate button
+    // (opens a modal for the next iteration's prompt). A failed task cannot be
+    // iterated — it posts the plain notice only.
+    const blocks = done ? completionMessageBlocks(e.taskId, target.task.title) : undefined;
+    void this.post(target.channel, text, blocks, `task_${e.newStatus}`, target.threadTs);
   }
 
   /**
