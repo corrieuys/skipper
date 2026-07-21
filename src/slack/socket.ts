@@ -226,6 +226,15 @@ export class SlackSocketManager {
     if (msg.envelope_id) this.ack(ws, msg.envelope_id);
     const payload = (msg.payload ?? {}) as { event?: SlackMessageEvent };
     const event = payload.event;
+    // Log EVERY events_api arrival so we can tell whether Slack is even
+    // delivering message events (vs the app not being subscribed to
+    // message.channels/message.groups). Diagnostic — cheap, low volume.
+    slackLog("in.event", {
+      type: event?.type ?? "?",
+      subtype: event?.subtype,
+      thread: event?.thread_ts ? "y" : "n",
+      bot: event?.bot_id ? "y" : "n",
+    });
     if (!event || event.type !== "message") return;
     void this.handleThreadReply(event);
   }
@@ -234,12 +243,17 @@ export class SlackSocketManager {
     // Only plain human replies inside a thread. Bot posts carry `bot_id` (so our
     // own anchors / escalations / agent replies are excluded) and edits / deletes
     // / joins carry a `subtype` — skip both. Must be threaded (`thread_ts`).
-    if (event.bot_id || event.subtype) return;
+    // Each skip logs its reason so a dropped reply is never silent.
+    if (event.bot_id) { slackLog("in.thread_reply.skip", { reason: "bot_message" }); return; }
+    if (event.subtype) { slackLog("in.thread_reply.skip", { reason: `subtype:${event.subtype}` }); return; }
     const channel = event.channel?.trim();
     const threadTs = event.thread_ts?.trim();
     const text = (event.text ?? "").trim();
-    if (!channel || !threadTs || !text) return;
-    if (!isExperimental()) return;
+    if (!channel || !threadTs || !text) {
+      slackLog("in.thread_reply.skip", { reason: "not_a_thread_reply", channel: channel ? "y" : "n", thread: threadTs ? "y" : "n", text: text ? "y" : "n" });
+      return;
+    }
+    if (!isExperimental()) { slackLog("in.thread_reply.skip", { reason: "not_experimental" }); return; }
     try {
       const taskId = findRunningTaskByThread(this.db, channel, threadTs);
       if (!taskId) {

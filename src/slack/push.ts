@@ -15,6 +15,7 @@ import { isSlackEnabledForTeam } from "../teams/local-teams";
 import { SlackClient } from "./client";
 import { escalationMessageBlocks, reviewMessageBlocks } from "./blocks";
 import { readTaskSlackOrigin } from "./slash-command";
+import { htmlToMrkdwn } from "./html-to-mrkdwn";
 import { slackLog } from "./log";
 
 interface TaskRow {
@@ -115,7 +116,10 @@ export class SlackPushManager {
     const target = this.targetChannel(e.taskId, "escalation");
     if (!target) return;
     const blocks = escalationMessageBlocks(e.escalationId, target.task.title, e.question);
-    void this.post(target.channel, `Escalation on "${target.task.title}": ${e.question}`, blocks, "escalation", target.threadTs);
+    // The notification/fallback text is agent HTML too — flatten it so it doesn't
+    // show tag soup in notifications / no-blocks clients.
+    const fallback = `Escalation on "${target.task.title}": ${htmlToMrkdwn(e.question)}`;
+    void this.post(target.channel, fallback, blocks, "escalation", target.threadTs);
   }
 
   private onNeedsReviewChanged(e: TaskNeedsReviewChangedEvent): void {

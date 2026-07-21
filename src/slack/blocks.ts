@@ -1,3 +1,5 @@
+import { htmlToMrkdwn } from "./html-to-mrkdwn";
+
 // Block Kit builders + the action-value codec shared by the outbound push
 // (src/slack/push.ts) and the interactive handler (src/slack/interactions.ts).
 //
@@ -52,10 +54,14 @@ function button(text: string, actionId: string, value: string, style?: "primary"
 
 /** Message posted when an escalation opens: question + Respond / Dismiss. */
 export function escalationMessageBlocks(escalationId: string, taskTitle: string, question: string): unknown[] {
+  // The question is agent-authored HTML; translate it to Slack mrkdwn. The title
+  // is plain, so simple escaping is enough. A section's text field caps at 3000
+  // chars — keep headroom for the title + heading prefix.
+  const body = `:warning: *Escalation* — ${mrkdwn(taskTitle)}\n${htmlToMrkdwn(question)}`;
   return [
     {
       type: "section",
-      text: { type: "mrkdwn", text: `:warning: *Escalation* — ${mrkdwn(taskTitle)}\n${mrkdwn(question)}` },
+      text: { type: "mrkdwn", text: truncate(body, 2900) },
     },
     {
       type: "actions",
@@ -138,4 +144,9 @@ export function readModalMessage(view: {
 /** Slack mrkdwn escaping for the three special characters (& < >). */
 function mrkdwn(s: string): string {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Cap a string to Slack's section limit, marking where it was cut. */
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
