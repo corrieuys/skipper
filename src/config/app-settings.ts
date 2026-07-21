@@ -2,6 +2,11 @@ import type { Database } from "bun:sqlite";
 
 export const SETTING_PARALLEL_TASKS = "parallel_task_execution";
 export const SETTING_LOG_RETENTION_HOURS = "log_retention_hours";
+// Auto-delete finished tasks older than N days (based on last activity /
+// `updated_at`). Separate windows for one-off tasks vs recurring-task runs, which
+// pile up much faster. 0 (the default) disables deletion for that category.
+export const SETTING_TASK_RETENTION_DAYS = "task_retention_days";
+export const SETTING_RECURRING_TASK_RETENTION_DAYS = "recurring_task_retention_days";
 
 export const SETTING_SKIPPER_CONNECT_ENABLED = "skipper_connect_enabled";
 export const SETTING_SKIPPER_CONNECT_KEY = "skipper_connect_key";

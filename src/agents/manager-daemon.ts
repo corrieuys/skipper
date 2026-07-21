@@ -251,6 +251,7 @@ export class ManagerDaemon {
       this.escalationManager,
       () => this.processScheduledTasks(),
       this.idlePokeManager,
+      this.taskScheduler,
     );
 
     this.conversationManager = new ConversationManager(this.db, this.agentManager);

@@ -45,10 +45,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A hyphen in the tag = semver prerelease (v0.2.0-beta.1). Mark it
+          # --prerelease so GitHub keeps it off the `latest` pointer that
+          # install.sh and `skipper update` read by default — beta stays opt-in.
+          flags=(--title "$GITHUB_REF_NAME" --generate-notes)
+          [[ "$GITHUB_REF_NAME" == *-* ]] && flags+=(--prerelease)
           gh release create "$GITHUB_REF_NAME" \
             dist/skipper-macos-arm64 \
             dist/skipper-linux-x64 \
             dist/skipper-linux-arm64 \
             dist/SHA256SUMS \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes
+            "${flags[@]}"

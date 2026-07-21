@@ -2,6 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { ReconciliationLoop } from "./tick-loop";
+import { TaskScheduler } from "../tasks/scheduler";
+import {
+  setNumberSetting,
+  SETTING_TASK_RETENTION_DAYS,
+  SETTING_RECURRING_TASK_RETENTION_DAYS,
+} from "../config/app-settings";
 import { unlinkSync } from "fs";
 
 const TEST_DB = "test-tick-loop.db";
@@ -111,6 +117,75 @@ describe("cleanupOldTerminalOutputs", () => {
 
     const rows = db.prepare("SELECT * FROM terminal_outputs WHERE data = 'keep this'").all();
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe("autoDeleteOldTasks", () => {
+  let db: Database;
+  let loop: ReconciliationLoop;
+
+  function makeLoopWithScheduler(database: Database): ReconciliationLoop {
+    const noop = () => {};
+    return new ReconciliationLoop(
+      database,
+      { getRunningAgents: () => new Map() } as any,
+      { processTaskQueue: async () => ({ processed: 0 }) } as any,
+      { cleanupStaleState: noop, recoverAllStaleTasks: async () => {}, persistCheckpoints: noop } as any,
+      { checkStaleDelegations: noop, getActiveDelegationForParent: () => null } as any,
+      { checkProcessHealth: noop, runStuckDetection: noop } as any,
+      undefined, undefined, undefined, undefined,
+      new TaskScheduler(database),
+    );
+  }
+
+  function insertTask(id: string, status: string, ageDays: number, recurring: boolean): void {
+    db.prepare(
+      `INSERT INTO tasks (id, title, status, source_scheduled_task_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, datetime('now', ? || ' days'), datetime('now', ? || ' days'))`,
+    ).run(id, `t-${id}`, status, recurring ? "sched-1" : null, -ageDays, -ageDays);
+  }
+
+  const remaining = (): string[] =>
+    (db.prepare("SELECT id FROM tasks ORDER BY id").all() as { id: string }[]).map((r) => r.id);
+
+  beforeEach(() => {
+    db = new Database(TEST_DB);
+    db.exec("PRAGMA foreign_keys = ON");
+    initializeDatabase(db);
+    loop = makeLoopWithScheduler(db);
+  });
+
+  afterEach(() => {
+    db.close();
+    try { unlinkSync(TEST_DB); } catch {}
+  });
+
+  it("does nothing when both windows are disabled (0/default)", () => {
+    insertTask("old-done", "completed", 100, false);
+    loop.autoDeleteOldTasks();
+    expect(remaining()).toEqual(["old-done"]);
+  });
+
+  it("deletes only finished regular tasks past the regular window", () => {
+    setNumberSetting(db, SETTING_TASK_RETENTION_DAYS, 30);
+    insertTask("reg-old-done", "completed", 40, false);   // delete
+    insertTask("reg-old-failed", "failed", 45, false);    // delete
+    insertTask("reg-recent", "completed", 5, false);      // keep (too recent)
+    insertTask("reg-running", "running", 90, false);      // keep (active)
+    insertTask("reg-approved", "approved", 90, false);    // keep (active)
+    insertTask("rec-old-done", "completed", 40, true);    // keep (recurring window disabled)
+    loop.autoDeleteOldTasks();
+    expect(remaining()).toEqual(["rec-old-done", "reg-approved", "reg-recent", "reg-running"]);
+  });
+
+  it("applies an independent window to recurring runs", () => {
+    setNumberSetting(db, SETTING_TASK_RETENTION_DAYS, 30);
+    setNumberSetting(db, SETTING_RECURRING_TASK_RETENTION_DAYS, 7);
+    insertTask("reg-25d", "completed", 25, false);  // keep (< 30)
+    insertTask("rec-10d", "completed", 10, true);   // delete (> 7)
+    insertTask("rec-3d", "completed", 3, true);     // keep (< 7)
+    loop.autoDeleteOldTasks();
+    expect(remaining()).toEqual(["rec-3d", "reg-25d"]);
   });
 });
 

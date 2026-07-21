@@ -13,6 +13,8 @@ export interface ConfigPageViewModel {
   teams: LocalTeam[];
   notificationPreferences: NotificationPreference[];
   logRetentionHours: number;
+  taskRetentionDays: number;
+  recurringTaskRetentionDays: number;
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
@@ -269,6 +271,35 @@ export function configPage(vm: ConfigPageViewModel): string {
           </div>
         </div>
       </div>
+
+      <!-- Task Auto-Delete Section (experimental only) -->
+      ${isExperimental() ? `
+      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
+        <div class="sk-panel__header">
+          <span class="sk-panel__title">Task Auto-Delete</span>
+        </div>
+        <div class="sk-panel__body">
+          <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
+            Automatically delete finished tasks (completed or failed) once they have gone this many days without activity,
+            measured from their last update. Active tasks are never touched. The daemon sweeps hourly. Set to <strong>0 to disable</strong>.
+          </p>
+          <div class="sk-flex sk-items-center sk-gap-3" style="margin-bottom:var(--sk-space-3);">
+            <label class="sk-muted sk-text-xs" style="width:150px;" for="task-retention-days">Regular tasks (days):</label>
+            <input type="number" id="task-retention-days" name="regular_days" min="0" max="3650" value="${vm.taskRetentionDays}"
+              class="sk-input sk-input--sm" style="width:80px;"
+              hx-post="/api/config/task-retention" hx-trigger="change" hx-swap="none" hx-include="this">
+            <span class="sk-text-xs sk-muted">One-off tasks created directly.</span>
+          </div>
+          <div class="sk-flex sk-items-center sk-gap-3">
+            <label class="sk-muted sk-text-xs" style="width:150px;" for="recurring-task-retention-days">Recurring runs (days):</label>
+            <input type="number" id="recurring-task-retention-days" name="recurring_days" min="0" max="3650" value="${vm.recurringTaskRetentionDays}"
+              class="sk-input sk-input--sm" style="width:80px;"
+              hx-post="/api/config/task-retention" hx-trigger="change" hx-swap="none" hx-include="this">
+            <span class="sk-text-xs sk-muted">Runs spawned by recurring/scheduled tasks (these pile up fastest).</span>
+          </div>
+        </div>
+      </div>
+      ` : ""}
 
       <!-- Skipper Connect Section (experimental only) -->
       ${isExperimental() ? `

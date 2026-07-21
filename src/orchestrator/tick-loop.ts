@@ -7,8 +7,14 @@ import type { HealthMonitor } from "./health-monitor";
 import type { WorktreeManager } from "./worktree-manager";
 import type { EscalationManager } from "../escalations/manager";
 import type { IdlePokeManager } from "./idle-poke-manager";
+import type { TaskScheduler } from "../tasks/scheduler";
 import { logError } from "../logging";
-import { getNumberSetting, SETTING_LOG_RETENTION_HOURS } from "../config/app-settings";
+import {
+  getNumberSetting,
+  SETTING_LOG_RETENTION_HOURS,
+  SETTING_TASK_RETENTION_DAYS,
+  SETTING_RECURRING_TASK_RETENTION_DAYS,
+} from "../config/app-settings";
 const RECONCILIATION_OWNER_PID_KEY = "owner_pid";
 
 interface TimerConfig {
@@ -37,6 +43,7 @@ export class ReconciliationLoop {
     private readonly escalationManager?: EscalationManager,
     private readonly scheduledTaskProcessor?: () => void | Promise<void>,
     private readonly idlePokeManager?: IdlePokeManager,
+    private readonly taskScheduler?: TaskScheduler,
   ) {
     this.timers = [
       // Fast: process liveness
@@ -62,6 +69,7 @@ export class ReconciliationLoop {
       // Infrequent: housekeeping
       { name: "worktree-cleanup",   fn: () => this.worktreeManager?.cleanupStaleWorktrees(),        intervalMs: 300_000 },
       { name: "terminal-cleanup",   fn: () => this.cleanupOldTerminalOutputs(),                     intervalMs: 300_000 },
+      { name: "task-auto-delete",   fn: () => this.autoDeleteOldTasks(),                            intervalMs: 3_600_000 },
 
       // Scheduled tasks
       ...(this.scheduledTaskProcessor
@@ -268,6 +276,66 @@ export class ReconciliationLoop {
         .run(-retentionHours);
     } catch (err) {
       logError(this.db, "terminal_output_cleanup", { retentionHours }, err);
+    }
+  }
+
+  /**
+   * Auto-delete finished tasks older than the configured age. Two independent
+   * windows: one-off tasks (`source_scheduled_task_id IS NULL`) and recurring-task
+   * runs (`IS NOT NULL`), the latter accumulating far faster. 0 days = disabled for
+   * that category. Only `completed`/`failed` tasks are eligible — never active work
+   * (draft/approved/running/paused) — and age is measured from `updated_at` (last
+   * activity/iteration). Deletion goes through `TaskScheduler.deleteTask` so the
+   * full cascade (instances, sessions, terminal output, notes, escalations, events)
+   * is cleaned up exactly like a manual delete.
+   */
+  autoDeleteOldTasks(): void {
+    if (!this.taskScheduler) return;
+    const regularDays = getNumberSetting(this.db, SETTING_TASK_RETENTION_DAYS, 0);
+    const recurringDays = getNumberSetting(this.db, SETTING_RECURRING_TASK_RETENTION_DAYS, 0);
+    if (regularDays <= 0 && recurringDays <= 0) return;
+
+    const ids: string[] = [];
+    try {
+      if (regularDays > 0) {
+        const rows = this.db
+          .prepare(
+            `SELECT id FROM tasks
+             WHERE status IN ('completed', 'failed')
+               AND source_scheduled_task_id IS NULL
+               AND updated_at < datetime('now', ? || ' days')`,
+          )
+          .all(-regularDays) as { id: string }[];
+        ids.push(...rows.map((r) => r.id));
+      }
+      if (recurringDays > 0) {
+        const rows = this.db
+          .prepare(
+            `SELECT id FROM tasks
+             WHERE status IN ('completed', 'failed')
+               AND source_scheduled_task_id IS NOT NULL
+               AND updated_at < datetime('now', ? || ' days')`,
+          )
+          .all(-recurringDays) as { id: string }[];
+        ids.push(...rows.map((r) => r.id));
+      }
+    } catch (err) {
+      logError(this.db, "task_auto_delete_query", { regularDays, recurringDays }, err);
+      return;
+    }
+
+    let deleted = 0;
+    for (const id of ids) {
+      try {
+        if (this.taskScheduler.deleteTask(id)) deleted++;
+      } catch (err) {
+        // deleteTask refuses running tasks; the query already excludes those, but a
+        // task could transition between select and delete — skip and move on.
+        logError(this.db, "task_auto_delete", { taskId: id }, err);
+      }
+    }
+    if (deleted > 0) {
+      logError(this.db, "task_auto_delete_swept", { deleted, regularDays, recurringDays }, new Error("info: swept old tasks"));
     }
   }
 

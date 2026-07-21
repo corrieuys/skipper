@@ -4,7 +4,7 @@ Modules called by `agents/manager-daemon.ts` facade in response to bus events.
 
 | file | use |
 |---|---|
-| `tick-loop.ts` | 30s reconciliation. Health check, stale recovery, queue process, delegation/escalation cleanup, checkpoint persist, log retention |
+| `tick-loop.ts` | 30s reconciliation. Health check, stale recovery, queue process, delegation/escalation cleanup, checkpoint persist, log retention. Hourly `autoDeleteOldTasks` sweep deletes finished (`completed`/`failed`) tasks past a configured age (`updated_at`), with separate day-windows for one-off vs recurring-run tasks (`app_settings.task_retention_days` / `recurring_task_retention_days`, 0 = off); deletes via `TaskScheduler.deleteTask` for the full cascade |
 | `task-runner.ts` | Pull next approved task. Start it. Launch entrypoint agent with prompt + phase context |
 | `phase-manager.ts` | `[PHASE_COMPLETE]` + `[PHASE_REGRESSION]` handling. Regression respawn + dedup guards |
 | `delegation-manager.ts` | Delegation signals. Spawn child instance/batch. Track groups. Resume parent on complete. Limits: depth 3, per-parent 20, batch 8. Timeout 60min |

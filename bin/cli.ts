@@ -8,6 +8,7 @@
  *   skipper restart
  *   skipper status             pid liveness + /health probe
  *   skipper logs [-f]          print (or follow) the daemon log
+ *   skipper update [--beta]    self-update to the latest (or latest prerelease) release
  *   skipper serve | run        run the server in the foreground (what `start` execs)
  *   skipper --version | -v
  *   skipper help
@@ -197,6 +198,30 @@ function platformAsset(): string | null {
   return os && arch ? `skipper-${os}-${arch}` : null;
 }
 
+/**
+ * Resolve the release to update to. Stable channel uses /releases/latest, which
+ * GitHub guarantees excludes prereleases. Beta channel lists /releases (newest
+ * first, prereleases included) and takes the top entry.
+ */
+async function resolveLatestTag(beta: boolean): Promise<string | null> {
+  const headers = { Accept: "application/vnd.github+json", "User-Agent": "skipper-cli" };
+  if (beta) {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=10`, { headers });
+    if (!res.ok) {
+      console.error(`could not list releases: HTTP ${res.status}`);
+      process.exit(1);
+    }
+    const list = (await res.json()) as Array<{ tag_name?: string }>;
+    return list[0]?.tag_name ?? null;
+  }
+  const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers });
+  if (!res.ok) {
+    console.error(`could not check latest release: HTTP ${res.status}`);
+    process.exit(1);
+  }
+  return ((await res.json()) as { tag_name?: string }).tag_name ?? null;
+}
+
 /** Self-update: download the matching binary from the latest GitHub release. */
 async function update(): Promise<void> {
   if (!isCompiledBinary()) {
@@ -208,16 +233,11 @@ async function update(): Promise<void> {
     console.error(`unsupported platform: ${process.platform}/${process.arch}`);
     process.exit(1);
   }
-  const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-    headers: { Accept: "application/vnd.github+json", "User-Agent": "skipper-cli" },
-  });
-  if (!relRes.ok) {
-    console.error(`could not check latest release: HTTP ${relRes.status}`);
-    process.exit(1);
-  }
-  const latest = String(((await relRes.json()) as { tag_name?: string }).tag_name ?? "").replace(/^v/, "");
+  const beta = process.argv.includes("--beta") || process.argv.includes("--pre");
+  const tag = await resolveLatestTag(beta);
+  const latest = String(tag ?? "").replace(/^v/, "");
   if (!latest) {
-    console.error("no published release found");
+    console.error(beta ? "no releases found" : "no published release found");
     process.exit(1);
   }
   if (latest === VERSION) {
@@ -259,7 +279,7 @@ Usage:
   skipper status             Show running state + health
   skipper logs [-f]          Print (or follow with -f) the server log
   skipper serve              Run the server in the foreground
-  skipper update             Update to the latest GitHub release
+  skipper update [--beta]    Update to the latest release (--beta includes prereleases)
   skipper --version          Print version
 `);
 }

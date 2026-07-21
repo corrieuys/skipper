@@ -56,6 +56,7 @@ import { asteroidsPage } from "../html/pages/asteroids.page";
 import { dashboardSteerListFragment, agentInstancesModalFragment, oneshotResumeCardMarkup, type SteeringOption } from "../html/dashboardLatestSteerFragment";
 import {
   getNumberSetting, setNumberSetting, SETTING_LOG_RETENTION_HOURS,
+  SETTING_TASK_RETENTION_DAYS, SETTING_RECURRING_TASK_RETENTION_DAYS,
   getStringSetting, setStringSetting, getSetting,
   SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_URL,
 } from "../config/app-settings";
@@ -1310,6 +1311,8 @@ function registerV2PageRoutes(): void {
       teams: listLocalTeams(db),
       notificationPreferences: listPreferences(db),
       logRetentionHours: getNumberSetting(db, SETTING_LOG_RETENTION_HOURS, 24),
+      taskRetentionDays: getNumberSetting(db, SETTING_TASK_RETENTION_DAYS, 0),
+      recurringTaskRetentionDays: getNumberSetting(db, SETTING_RECURRING_TASK_RETENTION_DAYS, 0),
       daemonState: pausedRow?.value === "true" ? "paused" : "running",
       daemonUptime: process.uptime(),
       escalationCount,
@@ -1363,6 +1366,38 @@ function registerV2PageRoutes(): void {
       return new Response("hours must be 1-720", { status: 400 });
     }
     setNumberSetting(db, SETTING_LOG_RETENTION_HOURS, hours);
+    return new Response(null, { status: 204 });
+  });
+
+  // Task auto-delete windows (days). Experimental. Each input posts only its own
+  // field, so update whichever is present. 0 disables that category.
+  addRoute("POST", "/api/config/task-retention", async (req) => {
+    const { isExperimental } = require("../config/feature-flags");
+    if (!isExperimental()) return new Response("Not found", { status: 404 });
+    const contentType = req.headers.get("content-type") ?? "";
+    let regular: unknown, recurring: unknown;
+    if (contentType.includes("application/x-www-form-urlencoded")) {
+      const fd = await req.formData();
+      regular = fd.get("regular_days");
+      recurring = fd.get("recurring_days");
+    } else {
+      const body = await req.json() as { regular_days?: number; recurring_days?: number };
+      regular = body.regular_days;
+      recurring = body.recurring_days;
+    }
+    const clamp = (v: unknown): number | null => {
+      if (v === null || v === undefined || v === "") return null;
+      const n = Math.floor(Number(v));
+      if (!Number.isFinite(n) || n < 0 || n > 3650) return NaN;
+      return n;
+    };
+    const r = clamp(regular);
+    const rr = clamp(recurring);
+    if (Number.isNaN(r) || Number.isNaN(rr)) {
+      return new Response("days must be 0-3650", { status: 400 });
+    }
+    if (r !== null) setNumberSetting(db, SETTING_TASK_RETENTION_DAYS, r);
+    if (rr !== null) setNumberSetting(db, SETTING_RECURRING_TASK_RETENTION_DAYS, rr);
     return new Response(null, { status: 204 });
   });
 

@@ -78,6 +78,14 @@ Once a release is published, anyone can:
 - install: `curl -fsSL https://raw.githubusercontent.com/corrieuys/skipper/main/install.sh | bash` ([install.sh](install.sh) picks the OS/arch asset → `~/.local/bin/skipper`)
 - update: `skipper update` (checks the releases API, downloads the matching asset, atomic self-swap).
 
+**Beta / prerelease channel.** Tag with a semver prerelease suffix
+(`v0.2.0-beta.1`, `-rc.1`) → the workflow marks the GitHub Release
+`--prerelease`, which keeps it off the `latest` pointer, so stable installs and
+`skipper update` skip it automatically. Opt in explicitly:
+- install newest incl. prereleases: `SKIPPER_CHANNEL=beta curl -fsSL …install.sh | bash`
+- install an exact release: `SKIPPER_VERSION=v0.2.0-beta.1 curl -fsSL …install.sh | bash`
+- update onto the beta channel: `skipper update --beta` (lists `/releases`, takes the newest incl. prereleases).
+
 ## Entry
 
 - `index.ts` — boot DB, build `ManagerDaemon`, register routes, start Bun server, SIGINT/SIGTERM shutdown. Reached via `bin/cli.ts serve`.

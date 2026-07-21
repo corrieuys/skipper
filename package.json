@@ -32,11 +32,11 @@
     "@types/bun": "latest"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "gray-matter": "^4.0.3",
-    "smol-toml": "^1.6.1"
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "gray-matter": "4.0.3",
+    "smol-toml": "1.6.1"
   }
 }

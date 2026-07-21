@@ -3,6 +3,11 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/corrieuys/skipper/main/install.sh | bash
 #
+# By default this installs the latest STABLE release; GitHub prereleases are
+# skipped automatically (they never count as `latest`). Opt into a prerelease:
+#   SKIPPER_CHANNEL=beta  curl -fsSL ...install.sh | bash   # newest release incl. prereleases
+#   SKIPPER_VERSION=v0.2.0-beta.1  curl -fsSL ...install.sh | bash   # pin an exact release
+#
 # Override the install dir with SKIPPER_BIN_DIR (default: ~/.local/bin).
 set -euo pipefail
 
@@ -21,7 +26,24 @@ case "$(uname -m)" in
 esac
 
 asset="skipper-${os}-${arch}"
-url="https://github.com/${REPO}/releases/latest/download/${asset}"
+
+# Resolve which release to pull. Precedence: explicit pin > beta channel > stable.
+channel="${SKIPPER_CHANNEL:-stable}"
+if [ -n "${SKIPPER_VERSION:-}" ]; then
+  url="https://github.com/${REPO}/releases/download/${SKIPPER_VERSION}/${asset}"
+  echo "channel: pinned ${SKIPPER_VERSION}"
+elif [ "$channel" = "beta" ]; then
+  # The list endpoint (unlike /releases/latest) includes prereleases, newest first.
+  tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=10" \
+    | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+  if [ -z "$tag" ]; then
+    echo "could not resolve a beta release from the GitHub API" >&2; exit 1
+  fi
+  url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
+  echo "channel: beta (${tag})"
+else
+  url="https://github.com/${REPO}/releases/latest/download/${asset}"
+fi
 
 echo "installing ${asset} -> ${BIN_DIR}/skipper"
 mkdir -p "$BIN_DIR"

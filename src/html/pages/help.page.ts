@@ -280,7 +280,7 @@ export function helpPage(vm: HelpPageViewModel): string {
       <li><strong>Teams</strong> — create, edit, delete, import, and export team definitions (skipper prompt, phases, and inline agent members). Export produces JSON you can paste or upload via Import; team config is also written back to <code>config/teams.json</code> so it survives a database reset.</li>
       <li><strong>Sound Notifications</strong> — per-event audio toggles (task started/completed/failed, escalation created, phase review pending).</li>
       <li><strong>Terminal Output Retention</strong> — set the retention window and purge old terminal output, agent sessions, and events to reclaim disk space.</li>
-      <li><strong>System</strong> — current daemon state and uptime.</li>
+      ${experimental ? `<li><strong>Task Auto-Delete</strong> — auto-delete finished (completed/failed) tasks after a set number of days of inactivity, with separate windows for one-off tasks and recurring-task runs. The daemon sweeps hourly; 0 disables it. Active tasks are never deleted.</li>` : ""}
     </ul>
   `);
 
