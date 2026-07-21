@@ -13,16 +13,17 @@ export function globalStoreRowFragment(row: GlobalStoreRow): string {
   const by = row.updated_by_agent_id ?? "";
   return `<tbody class="gs-row">
     <tr>
-      <td class="sk-mono">${escapeHtml(row.name)}</td>
+      <td class="sk-mono sk-gs-cell-name" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</td>
       <td>${row.type ? escapeHtml(row.type) : '<span class="sk-muted">-</span>'}</td>
       <td>${row.status ? `<span class="sk-badge">${escapeHtml(row.status)}</span>` : '<span class="sk-muted">-</span>'}</td>
-      <td class="sk-mono sk-text-xs" title="${escapeHtml(data)}">${data ? escapeHtml(truncate(data, 80)) : '<span class="sk-muted">-</span>'}</td>
-      <td class="sk-muted sk-text-xs">${escapeHtml(row.updated_at)}</td>
-      <td class="sk-muted sk-text-xs sk-mono" title="${escapeHtml(by)}">${by ? escapeHtml(truncate(by, 12)) : '<span class="sk-muted">ui</span>'}</td>
-      <td style="text-align:right;white-space:nowrap;">
+      <td class="sk-mono sk-text-xs sk-gs-cell-data" title="${escapeHtml(data)}">${data ? escapeHtml(truncate(data, 200)) : '<span class="sk-muted">-</span>'}</td>
+      <td class="sk-muted sk-text-xs sk-gs-cell-nowrap">${escapeHtml(row.updated_at)}</td>
+      <td class="sk-muted sk-text-xs sk-mono sk-gs-cell-nowrap" title="${escapeHtml(by)}">${by ? escapeHtml(truncate(by, 12)) : '<span class="sk-muted">ui</span>'}</td>
+      <td class="sk-gs-actions">
         <button class="sk-btn sk-btn--sm"
           hx-get="/fragments/global-store/edit?name=${encodeURIComponent(row.name)}"
-          hx-target="closest tbody" hx-swap="beforeend">Edit</button>
+          hx-target="closest tbody" hx-swap="beforeend"
+          hx-trigger="click[!this.closest('tbody').querySelector('.sk-edit-row')]">Edit</button>
         <button class="sk-btn sk-btn--sm sk-btn--danger"
           hx-delete="/api/global-store?name=${encodeURIComponent(row.name)}"
           hx-confirm="Delete global value '${escapeHtml(row.name)}'?"

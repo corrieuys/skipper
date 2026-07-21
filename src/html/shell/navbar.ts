@@ -20,7 +20,7 @@ export function navbar(data: NavbarData): string {
     { href: "/", label: "Dashboard", match: "/" },
     { href: "/tasks", label: "Tasks", match: "/tasks" },
     { href: "/config", label: "Config", match: "/config" },
-    ...(isExperimental() ? [{ href: "/global-store", label: "Store", match: "/global-store" }] : []),
+    ...(isExperimental() ? [{ href: "/global-store", label: "Global Store", match: "/global-store" }] : []),
     { href: "/logs", label: "Logs", match: "/logs" },
     { href: "/help", label: "Help", match: "/help" },
   ];

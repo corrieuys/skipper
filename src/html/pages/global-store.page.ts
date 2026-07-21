@@ -26,10 +26,20 @@ export function globalStorePage(vm: GlobalStorePageViewModel): string {
           <span class="sk-panel__count">${vm.rows.length}</span>
           <button class="sk-btn sk-btn--sm sk-btn--primary" style="margin-left:auto;"
             hx-get="/fragments/global-store/new"
-            hx-target="#gs-table" hx-swap="beforeend">New value</button>
+            hx-target="#gs-table" hx-swap="beforeend"
+            hx-trigger="click[!document.getElementById('gs-table').querySelector('.gs-row--new')]">New value</button>
         </div>
-        <div class="sk-panel__body--flush">
-          <table class="sk-table" id="gs-table">
+        <div class="sk-panel__body--flush" style="overflow-x:auto;">
+          <table class="sk-table sk-table--gs" id="gs-table">
+            <colgroup>
+              <col style="width:17%">
+              <col style="width:8%">
+              <col style="width:9%">
+              <col>
+              <col style="width:132px">
+              <col style="width:80px">
+              <col style="width:130px">
+            </colgroup>
             <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Data</th><th>Updated</th><th>By</th><th></th></tr></thead>
             ${rows}
           </table>

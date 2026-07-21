@@ -213,6 +213,19 @@ export function componentStyles(): string {
     }
     .sk-table tr:hover td { background: rgba(255, 255, 255, 0.02); }
 
+    /* Global store table. table-layout:fixed + width:100% pins the table to its
+       container so a very wide value can never push the Edit/Delete column off the
+       edge — column widths come from the colgroup, and in fixed layout a plain
+       max-width on a td would be ignored, so the fixed layout is what makes the
+       ellipsis actually clip. Free-form cells ellipsize (full text on the title);
+       the timestamp / By / actions cells never wrap. */
+    .sk-table--gs { table-layout: fixed; width: 100%; }
+    .sk-table--gs td, .sk-table--gs th { overflow: hidden; }
+    .sk-gs-cell-name,
+    .sk-gs-cell-data { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sk-gs-cell-nowrap { white-space: nowrap; }
+    .sk-gs-actions { text-align: right; white-space: nowrap; }
+
     /* ── Utility text ── */
     .sk-muted { color: var(--sk-text-muted); }
     .sk-mono { font-family: var(--sk-font-mono); font-size: var(--sk-text-sm); }

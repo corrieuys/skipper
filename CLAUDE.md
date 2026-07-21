@@ -52,10 +52,29 @@ release), `--version`.
 
 ## Release + distribute (manual)
 
-Binaries ship via **GitHub Releases** (`corrieuys/skipper`), not npm. Publishing
-is fully manual: [scripts/release.ts](scripts/release.ts) (`bun run release`)
-builds every target + `dist/SHA256SUMS` and prints the exact `git tag` +
-`gh release create` commands — it makes no git/gh writes itself. Then:
+Binaries ship via **GitHub Releases** (`corrieuys/skipper`), not npm.
+
+**Automated (default):** push a version tag and CI does the rest —
+[.github/workflows/release.yml](.github/workflows/release.yml) builds all three
+targets on one Linux runner (Bun cross-compiles macOS too), writes
+`SHA256SUMS`, and `gh release create`s the release with assets + generated notes.
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The **git tag is the single source of version truth**: the workflow derives
+`SKIPPER_VERSION` from the tag (`v0.2.0` → `0.2.0`) and `build-binary.ts` bakes
+it into the binary, so `skipper --version` matches the release tag and
+`skipper update` compares correctly. `package.json`'s version is only the
+local/dev fallback — bumping it is optional/cosmetic.
+
+**Manual fallback (local):** [scripts/release.ts](scripts/release.ts)
+(`bun run release`) builds every target + `dist/SHA256SUMS` and prints the exact
+`git tag` + `gh release create` commands — it makes no git/gh writes itself.
+
+Once a release is published, anyone can:
 - install: `curl -fsSL https://raw.githubusercontent.com/corrieuys/skipper/main/install.sh | bash` ([install.sh](install.sh) picks the OS/arch asset → `~/.local/bin/skipper`)
 - update: `skipper update` (checks the releases API, downloads the matching asset, atomic self-swap).
 
