@@ -227,6 +227,9 @@ export class SlackSocketManager {
     // user-facing reply is delivered out-of-band via the command's response_url.
     if (msg.envelope_id) this.ack(ws, msg.envelope_id);
     const payload = (msg.payload ?? {}) as SlackSlashCommandPayload;
+    console.log(
+      `[slack] Slash command received: ${payload.command ?? "?"} from ${payload.user_name ?? "?"} (${payload.user_id ?? "?"}) in ${payload.channel_id ?? "?"} text=${JSON.stringify(payload.text ?? "")}`,
+    );
     void this.runSlash(payload);
   }
 
