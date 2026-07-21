@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { logError } from "../logging";
+import { slackLog } from "./log";
 import { isSlackUserAllowed } from "../config/slack-settings";
 import type { EscalationManager } from "../escalations/manager";
 import type { PhaseManager } from "../orchestrator/phase-manager";
@@ -74,6 +75,7 @@ function handleBlockAction(deps: InteractionDeps, payload: BlockActionsPayload):
   if (!decoded) return {};
 
   if (!isSlackUserAllowed(deps.db, userId)) {
+    slackLog("interaction.denied", { userId, action: `${decoded.kind}:${decoded.action}`, id: decoded.id });
     return { run: () => postEphemeral(payload.response_url, "You are not authorized to act on Skipper items.") };
   }
 
@@ -83,6 +85,7 @@ function handleBlockAction(deps: InteractionDeps, payload: BlockActionsPayload):
       run: async () => {
         try {
           deps.escalationManager.dismissEscalation(decoded.id);
+          slackLog("interaction.dismissed", { id: decoded.id, userId });
           await editMessage(deps.client, channel, messageTs, `:heavy_multiplication_x: *Escalation dismissed* by <@${userId}>`);
         } catch (err) {
           logError(deps.db, "slack_interaction_dismiss", { id: decoded.id }, err);
@@ -131,6 +134,7 @@ function handleViewSubmission(deps: InteractionDeps, payload: ViewSubmissionPayl
     run: async () => {
       try {
         const notice = await performAction(deps, meta, message, userId);
+        slackLog("interaction.submitted", { action: `${meta.kind}:${meta.action}`, id: meta.id, userId });
         await editMessage(deps.client, meta.channel, meta.messageTs, notice);
       } catch (err) {
         logError(deps.db, "slack_interaction_submit", { kind: meta.kind, action: meta.action, id: meta.id }, err);

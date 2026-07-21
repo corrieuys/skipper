@@ -9,6 +9,9 @@ import type { PhaseManager } from "../orchestrator/phase-manager";
 import { handleSlashCommand, type SlackSlashCommandPayload } from "./commands";
 import { handleInteraction, type InteractionPayload } from "./interactions";
 import { SlackClient } from "./client";
+import { slackLog } from "./log";
+import { findRunningTaskByThread } from "./slash-command";
+import { isExperimental } from "../config/feature-flags";
 
 const SLACK_API_BASE = "https://slack.com/api";
 const MAX_BACKOFF_MS = 60_000;
@@ -26,6 +29,18 @@ interface SocketEnvelope {
   envelope_id?: string;
   reason?: string;
   payload?: unknown;
+}
+
+/** Subset of a Slack `message` event delivered over the Events API. */
+interface SlackMessageEvent {
+  type?: string;
+  subtype?: string;
+  bot_id?: string;
+  user?: string;
+  channel?: string;
+  text?: string;
+  ts?: string;
+  thread_ts?: string;
 }
 
 // Auth errors from apps.connections.open that no amount of reconnecting fixes —
@@ -97,11 +112,12 @@ export class SlackSocketManager {
 
     const appToken = getSlackAppToken(this.db);
     if (!appToken) {
-      console.warn("[slack] Missing app-level token, not connecting");
+      slackLog("socket.skip", { reason: "no_app_token" });
       this.running = false;
       this._status = "disabled";
       return;
     }
+    slackLog("socket.connecting");
 
     let url: string;
     try {
@@ -117,7 +133,7 @@ export class SlackSocketManager {
         if (data.error && FATAL_AUTH_ERRORS.has(data.error)) {
           this._status = "auth_failed";
           this.running = false;
-          console.error(`[slack] apps.connections.open auth failed (${data.error}) — reconnect stopped`);
+          slackLog("socket.auth_failed", { error: data.error, note: "reconnect stopped" });
           return;
         }
         throw new Error(data.error ?? "apps.connections.open returned no url");
@@ -143,7 +159,7 @@ export class SlackSocketManager {
 
     ws.onopen = () => {
       this.backoffMs = 1_000;
-      console.log("[slack] Socket Mode open — awaiting hello");
+      slackLog("socket.open", { note: "awaiting hello" });
     };
 
     ws.onmessage = (event: MessageEvent) => {
@@ -173,12 +189,12 @@ export class SlackSocketManager {
     switch (msg.type) {
       case "hello":
         this._status = "connected";
-        console.log("[slack] Socket Mode connected");
+        slackLog("socket.connected");
         return;
       case "disconnect":
         // Slack rotates sockets; it asks us to reconnect. Closing triggers the
         // onclose reconnect path with backoff.
-        console.log(`[slack] Socket Mode disconnect (${msg.reason ?? "unknown"}) — reconnecting`);
+        slackLog("socket.disconnect", { reason: msg.reason ?? "unknown", note: "reconnecting" });
         try {
           ws.close();
         } catch {
@@ -191,15 +207,70 @@ export class SlackSocketManager {
       case "interactive":
         this.handleInteractiveEnvelope(ws, msg);
         return;
+      case "events_api":
+        this.handleEventEnvelope(ws, msg);
+        return;
       default:
-        // events_api and anything else is ignored, but every envelope must be
+        // Anything else (keep-alives etc.) is ignored, but every envelope must be
         // ACK'd so Slack does not retry it.
         if (msg.envelope_id) this.ack(ws, msg.envelope_id);
     }
   }
 
+  /**
+   * Events API envelope (Socket Mode). We only care about `message` events: a
+   * human reply inside a task's originating thread becomes a note on that task.
+   * ACK first (3s budget), then do the lookup + note out of band.
+   */
+  private handleEventEnvelope(ws: WebSocket, msg: SocketEnvelope): void {
+    if (msg.envelope_id) this.ack(ws, msg.envelope_id);
+    const payload = (msg.payload ?? {}) as { event?: SlackMessageEvent };
+    const event = payload.event;
+    if (!event || event.type !== "message") return;
+    void this.handleThreadReply(event);
+  }
+
+  private async handleThreadReply(event: SlackMessageEvent): Promise<void> {
+    // Only plain human replies inside a thread. Bot posts carry `bot_id` (so our
+    // own anchors / escalations / agent replies are excluded) and edits / deletes
+    // / joins carry a `subtype` — skip both. Must be threaded (`thread_ts`).
+    if (event.bot_id || event.subtype) return;
+    const channel = event.channel?.trim();
+    const threadTs = event.thread_ts?.trim();
+    const text = (event.text ?? "").trim();
+    if (!channel || !threadTs || !text) return;
+    if (!isExperimental()) return;
+    try {
+      const taskId = findRunningTaskByThread(this.db, channel, threadTs);
+      if (!taskId) {
+        slackLog("in.thread_reply.no_task", { channel, threadTs });
+        return;
+      }
+      const attribution = event.user ? `Slack reply from <@${event.user}>` : "Slack reply";
+      const noteId = this.taskScheduler.addExternalNote(taskId, `${attribution}: ${text}`, "user");
+      slackLog("in.thread_reply.noted", { taskId, channel, threadTs, noteId: noteId ?? "none" });
+      if (noteId) {
+        // Confirm back in-thread. The ack is a bot message (carries bot_id) so the
+        // next events_api frame for it is filtered out above — no capture loop.
+        try {
+          await new SlackClient(this.db).postMessage(channel, ":memo: Added to this task's notes.", { thread_ts: threadTs });
+        } catch (err) {
+          logError(this.db, "slack_thread_reply_ack", { channel, threadTs }, err);
+        }
+      }
+    } catch (err) {
+      logError(this.db, "slack_thread_reply", { channel, threadTs }, err);
+    }
+  }
+
   private handleInteractiveEnvelope(ws: WebSocket, msg: SocketEnvelope): void {
     const payload = (msg.payload ?? {}) as InteractionPayload;
+    const p = payload as { type?: string; user?: { id?: string }; actions?: Array<{ action_id?: string; value?: string }> };
+    slackLog("in.interaction", {
+      type: p.type ?? "?",
+      user: p.user?.id,
+      action: p.actions?.[0]?.action_id ?? p.actions?.[0]?.value,
+    });
     let result: { ackPayload?: Record<string, unknown>; run?: () => Promise<void> };
     try {
       result = handleInteraction(
@@ -227,9 +298,12 @@ export class SlackSocketManager {
     // user-facing reply is delivered out-of-band via the command's response_url.
     if (msg.envelope_id) this.ack(ws, msg.envelope_id);
     const payload = (msg.payload ?? {}) as SlackSlashCommandPayload;
-    console.log(
-      `[slack] Slash command received: ${payload.command ?? "?"} from ${payload.user_name ?? "?"} (${payload.user_id ?? "?"}) in ${payload.channel_id ?? "?"} text=${JSON.stringify(payload.text ?? "")}`,
-    );
+    slackLog("in.slash", {
+      command: payload.command ?? "?",
+      user: `${payload.user_name ?? "?"}/${payload.user_id ?? "?"}`,
+      channel: payload.channel_id ?? "?",
+      text: payload.text ?? "",
+    });
     void this.runSlash(payload);
   }
 
@@ -244,6 +318,7 @@ export class SlackSocketManager {
       );
       // If a public anchor message was already posted, don't also send an
       // ephemeral reply — a single "started" message is enough.
+      slackLog("in.slash.replied", { command: payload.command ?? "?", posted: reply.posted ?? false });
       if (!reply.posted) await postToResponseUrl(payload.response_url, reply.text);
     } catch (err) {
       logError(this.db, "slack_slash_envelope", { command: payload.command }, err);
@@ -260,7 +335,7 @@ export class SlackSocketManager {
     if (!this.running) return;
     const delay = this.backoffMs;
     this.backoffMs = Math.min(this.backoffMs * 2, MAX_BACKOFF_MS);
-    console.log(`[slack] Reconnecting in ${delay}ms`);
+    slackLog("socket.reconnect", { delayMs: delay });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.connect();

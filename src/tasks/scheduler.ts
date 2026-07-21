@@ -355,6 +355,33 @@ export class TaskScheduler {
     return updated;
   }
 
+  /**
+   * Record a note authored outside the agent runtime — e.g. a human reply in the
+   * task's originating Slack thread. Attributes it to the team's entrypoint agent
+   * (or first team member) to satisfy the `task_notes.agent_id` FK; `source` marks
+   * provenance. Returns the note id, or null if the task/agent can't be resolved or
+   * the content is empty. Notes surface to the agent on its next prompt build.
+   */
+  addExternalNote(taskId: string, content: string, source: string = "user"): string | null {
+    const task = this.getTask(taskId);
+    if (!task) return null;
+    const trimmed = content.trim();
+    if (!trimmed) return null;
+    if (!task.team_id) return null;
+    const noteAgent = this.db.prepare(
+      `SELECT COALESCE(t.entrypoint_agent_id, (SELECT agent_id FROM team_agents WHERE team_id = t.id LIMIT 1))
+       AS agent_id FROM teams t WHERE t.id = ?`,
+    ).get(task.team_id) as { agent_id: string | null } | null;
+    const agentId = noteAgent?.agent_id;
+    if (!agentId) return null;
+    const noteId = crypto.randomUUID();
+    this.db
+      .prepare("INSERT INTO task_notes (id, task_id, agent_id, content, source) VALUES (?, ?, ?, ?, ?)")
+      .run(noteId, taskId, agentId, trimmed, source);
+    eventBus.emit("task:note_added", { noteId, taskId, agentId, content: trimmed });
+    return noteId;
+  }
+
   failTask(id: string, error?: string): Task {
     this.requireTaskStatus(id, "running", "fail running tasks");
 

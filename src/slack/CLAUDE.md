@@ -15,13 +15,14 @@ Everything here is **experimental** (`isExperimental()`), consistent with the
 | file | use |
 |---|---|
 | `client.ts` | `SlackClient` — thin Web API wrapper (`chat.postMessage` w/ Block Kit, `chat.update`, `views.open`, `users.lookupByEmail`, `conversations.open`, `conversations.history`, `auth.test`). Bot token read lazily from `app_settings` per call (config changes need no restart) |
-| `socket.ts` | `SlackSocketManager` — inbound **Socket Mode** WS. `apps.connections.open` (app-level token) → WS → ACK `slash_commands` + `interactive` envelopes within 3s, then do the (slower) work out-of-band. Mirrors `connect/client.ts` connect/reconnect/backoff. Singletons `initSlackSocket`/`getSlackSocket`; started/stopped in `index.ts` (gated `isExperimental() && isSocketModeConfigured && isSlackSocketEnabled`) and restarted by `/api/config/slack` |
+| `socket.ts` | `SlackSocketManager` — inbound **Socket Mode** WS. `apps.connections.open` (app-level token) → WS → ACK `slash_commands` + `interactive` + `events_api` envelopes within 3s, then do the (slower) work out-of-band. `events_api` message events in a task's origin thread become notes (see below). Mirrors `connect/client.ts` connect/reconnect/backoff. Singletons `initSlackSocket`/`getSlackSocket`; started/stopped in `index.ts` (gated `isExperimental() && isSocketModeConfigured && isSlackSocketEnabled`) and restarted by `/api/config/slack` |
 | `commands.ts` | `handleSlashCommand` (async) — authorize against the allowlist, then: scheduled-task binding → `runTaskNow` (arg text = run input); team binding → `createTask` + `approveTask` (arg text = description, cwd = daemon's); else unbound. Also captures the **Slack origin** (see below). Returns the reply text; never throws into the socket loop |
 | `push.ts` | `SlackPushManager` — outbound subscriber. Posts new escalations + phase reviews (with buttons) to the default channel. Stateless; gating re-checked live per event so the push toggle needs no restart. Singletons `initSlackPush`/`getSlackPush`; `start()` on boot (when experimental), `stop()` on shutdown |
 | `interactions.ts` | `handleInteraction` — routes `block_actions` (button) + `view_submission` (modal). Dismiss acts immediately; Respond/Approve/Reject open a modal (`private_metadata` carries kind/action/id + origin channel+ts). On submit: authorize, then `resolveEscalation` / `approveReview` / `rejectReview`, then edit the origin message in place |
 | `blocks.ts` | Block Kit builders (escalation + review messages, action modal, notices) + the `encodeActionValue`/`decodeActionValue` codec (`<kind>:<action>:<id>`) shared by push + interactions |
 | `bindings.ts` | `findSlashCommandConflict` — a command binds to one target only; used by the team + scheduled-task save routes to reject duplicate bindings |
-| `slash-command.ts` | `normalizeSlashCommand` (trim/lowercase/single-leading-slash) + the `SlackOrigin` type (`{ channel, thread_ts?, user_id? }`) |
+| `slash-command.ts` | `normalizeSlashCommand` (trim/lowercase/single-leading-slash), the `SlackOrigin` type (`{ channel, thread_ts?, user_id? }`), `readTaskSlackOrigin(db, taskId)` (shared reader of `task_config.slack_origin`, used by prompt injection + push thread-routing), and `findRunningTaskByThread(db, channel, thread_ts)` (match an inbound thread reply to its live task) |
+| `log.ts` | `slackLog(action, details)` — consistent `[slack] <action> k=v …` activity logging across the whole integration (never logs tokens). Excludes WS keep-alive / pass-through ACK noise |
 
 ## Outbound: posting as the app
 
@@ -38,13 +39,25 @@ it. Sending always goes through the bot token over HTTPS.
 
 ## Push escalations + phase reviews (with buttons)
 
-When `slack_push_enabled` is on (+ bot token + default channel), new **escalations**
-and **phase reviews** post to the default channel with action buttons, gated
-per-team by `slackEnabled` on the task's team. `SlackPushManager` subscribes to
-`escalation:created` and `task:needs_review_changed` (posts only when a review
-opens). Acting on the buttons needs Slack **Interactivity** enabled in the app
-(Socket Mode delivers the events; no request URL). Only allowlisted users
-(`slack_allowed_users`) can act.
+When `slack_push_enabled` is on (+ bot token), new **escalations** and **phase
+reviews** post with action buttons, gated per-team by `slackEnabled` on the task's
+team. `SlackPushManager` subscribes to `escalation:created` and
+`task:needs_review_changed` (posts only when a review opens). Acting on the buttons
+needs Slack **Interactivity** enabled in the app (Socket Mode delivers the events;
+no request URL). Only allowlisted users (`slack_allowed_users`) can act.
+
+**Thread routing.** If the task carries a `slack_origin` (it was started from a
+slash command — see below), the push posts **into that thread** (origin `channel` +
+`thread_ts`), so escalations, reviews, and the agent's own `slack_send_message`
+replies all stay scoped to the one originating conversation. Tasks with no origin
+(e.g. UI-created) fall back to the **default channel** — which is therefore only
+required when there is no origin. `readTaskSlackOrigin` (in `slash-command.ts`) is
+the shared reader; delegation is intra-task (agents share one `tasks` row), so a
+delegated child's escalation still resolves to the root run's origin via its task id.
+
+Each negative gate in `SlackPushManager.targetChannel` logs a `[slack] push.skip
+reason=…` line (`push_disabled`, `team_slack_disabled`, `no_target_channel`, …), so
+a silently-dropped push is now traceable in the logs.
 
 - **Escalation** → *Respond* (modal, required message → `resolveEscalation`) /
   *Dismiss* (immediate → `dismissEscalation`).
@@ -56,6 +69,33 @@ carries no reference to the message it was typed under. Acting on an
 already-handled item is a no-op (`approve`/`reject`) or shows an "already resolved"
 edit (`respond`). Reflecting a web-UI resolution back onto the Slack message is out
 of scope (stale buttons self-heal on click).
+
+## Task-completion notice (daemon default)
+
+`SlackPushManager` also subscribes to `task:state_changed`; when a task with a
+Slack **thread** origin reaches `completed`/`failed`, it posts a one-line system
+notice back into that thread (`completionTarget`). This is a **daemon default** —
+unlike escalations/reviews it is **not** gated by the push toggle (it's a courtesy
+reply to a user-started slash command, not the chatty stream), only by experimental
++ bot token + the team's `slackEnabled` + an origin `thread_ts`. Tasks with no
+thread origin (e.g. UI-created) are silently skipped.
+
+## Inbound thread replies → task notes
+
+The socket also handles **`events_api`** envelopes (Events API over Socket Mode).
+A plain human reply inside a task's origin thread becomes a **note** on that task
+(`socket.ts:handleThreadReply` → `findRunningTaskByThread` → `TaskScheduler.addExternalNote`,
+source `user`). Filtered hard: only `type:message` events with a `thread_ts`, **no**
+`bot_id` (so Skipper's own anchors / escalations / `slack_send_message` agent replies
+are excluded — no feedback loop) and **no** `subtype` (edits/deletes/joins skipped).
+Matched only against a **running** task whose `slack_origin` channel + `thread_ts`
+line up. The note surfaces to the agent on its next prompt build (not injected into a
+live turn). On success the socket posts a short in-thread **ack** (":memo: Added to
+this task's notes.") — itself a bot message, so the events frame for it is filtered
+out (no capture loop). The "Started …" **anchor** posted at task create also tells the
+operator up front that replies here become notes (`THREAD_NOTE_HINT` in `commands.ts`).
+Requires the app to subscribe to the `message.channels` / `message.groups` bot events
+(see setup).
 
 ## Inbound slash commands → tasks
 
@@ -114,3 +154,9 @@ targets it manually); there is no dedicated reply tool.
   **app-level token** (`xapp-…`, scope `connections:write`); add each slash command
   under "Slash Commands" + the `commands` scope; enable **Interactivity** (needed
   for the push buttons/modals); reinstall.
+- **Event Subscriptions** (for thread-reply → note): enable Events, and under "Subscribe
+  to bot events" add `message.channels` (public) and/or `message.groups` (private) —
+  these arrive as `events_api` envelopes over the same socket. Needs the matching
+  `channels:history` / `groups:history` scopes (already required for reading). Without
+  this the daemon never sees thread replies; escalations/reviews/completion push still
+  work (they are outbound-only).

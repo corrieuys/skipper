@@ -6,6 +6,7 @@ import { findTeamBySlashCommand } from "../teams/local-teams";
 import { logError } from "../logging";
 import type { SlackClient } from "./client";
 import type { SlackOrigin } from "./slash-command";
+import { slackLog } from "./log";
 
 /**
  * Minimal shape of a Slack slash-command payload (Socket Mode `slash_commands`
@@ -33,6 +34,11 @@ export interface SlackCommandReply {
 
 const MAX_TITLE = 80;
 
+// Appended to the anchor message so the operator knows the thread is live: any
+// reply here is captured as a note on the task (see socket.ts:handleThreadReply).
+// Only shows when we actually posted an anchor (a thread exists to reply in).
+const THREAD_NOTE_HINT = "\n_Reply in this thread to add a note to the task._";
+
 /**
  * Map an inbound Slack slash command to a Skipper action and return the ephemeral
  * reply text. Async because it posts an anchor message (to thread later replies)
@@ -58,6 +64,7 @@ export async function handleSlashCommand(
   const userId = payload.user_id ?? "";
 
   if (!isSlackUserAllowed(db, userId)) {
+    slackLog("cmd.denied", { command, userId });
     return { text: "Not authorized to trigger Skipper actions." };
   }
 
@@ -65,11 +72,13 @@ export async function handleSlashCommand(
     const scheduled = scheduledScheduler.findScheduledTaskBySlashCommand(command);
     if (scheduled) {
       if (scheduled.status !== "approved") {
+        slackLog("cmd.scheduled.not_approved", { command, scheduledId: scheduled.id });
         return { text: `Scheduled task "${scheduled.title}" is not approved, so it can't be run.` };
       }
-      const anchor = `:arrow_forward: Started *${scheduled.title}*${mention(userId)}`;
+      const anchor = `:arrow_forward: Started *${scheduled.title}*${mention(userId)}${THREAD_NOTE_HINT}`;
       const { origin, anchored } = await captureOrigin(db, client, payload, anchor);
       const run = scheduledScheduler.runTaskNow(scheduled.id, taskScheduler, text || undefined, { slackOrigin: origin ?? undefined });
+      slackLog("cmd.scheduled.started", { command, scheduledId: scheduled.id, taskId: run.id, anchored });
       // The anchor is the single "started" message; only send an ephemeral when
       // we couldn't post it publicly (no channel / post failed / Slack off).
       return anchored ? { text: anchor, posted: true } : { text: `▶️ Started "${scheduled.title}" — task ${run.id}` };
@@ -78,9 +87,10 @@ export async function handleSlashCommand(
     const team = findTeamBySlashCommand(db, command);
     if (team) {
       if (!text) {
+        slackLog("cmd.team.no_text", { command, teamId: team.id });
         return { text: `Add a description, e.g. \`${command} "add a webhook feature"\`` };
       }
-      const anchor = `:rocket: Started a *${team.name}* task${mention(userId)}`;
+      const anchor = `:rocket: Started a *${team.name}* task${mention(userId)}${THREAD_NOTE_HINT}`;
       const { origin, anchored } = await captureOrigin(db, client, payload, anchor);
       const task = taskScheduler.createTask({
         title: text.length > MAX_TITLE ? `${text.slice(0, MAX_TITLE - 1)}…` : text,
@@ -90,11 +100,14 @@ export async function handleSlashCommand(
         taskConfig: origin ? ({ slack_origin: origin } as unknown as RealtimeTaskConfig) : undefined,
       });
       taskScheduler.approveTask(task.id);
+      slackLog("cmd.team.started", { command, teamId: team.id, taskId: task.id, anchored });
       return anchored ? { text: anchor, posted: true } : { text: `✅ Started task ${task.id} on ${team.name}` };
     }
 
+    slackLog("cmd.unbound", { command });
     return { text: `No Skipper action is bound to ${command}.` };
   } catch (err) {
+    slackLog("cmd.error", { command, error: err instanceof Error ? err.message : String(err) });
     logError(db, "slack_slash_command", { command, userId }, err);
     return { text: `Failed to run ${command}: ${err instanceof Error ? err.message : String(err)}` };
   }

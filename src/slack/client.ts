@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { getSlackBotToken } from "../config/slack-settings";
+import { slackLog } from "./log";
 
 const SLACK_API_BASE = "https://slack.com/api";
 
@@ -47,7 +48,13 @@ export class SlackClient {
 
   private async call(method: string, body: Record<string, unknown>): Promise<SlackResponse> {
     const token = getSlackBotToken(this.db);
-    if (!token) throw new Error("Slack bot token not configured");
+    if (!token) {
+      slackLog("out.skip", { method, reason: "no_bot_token" });
+      throw new Error("Slack bot token not configured");
+    }
+    // channel is the one field worth tracing on every call; never log the token.
+    const channel = typeof body.channel === "string" ? body.channel : undefined;
+    slackLog("out.call", { method, channel });
 
     const res = await fetch(`${SLACK_API_BASE}/${method}`, {
       method: "POST",
@@ -60,11 +67,16 @@ export class SlackClient {
 
     if (!res.ok) {
       const text = await res.text();
+      slackLog("out.http_error", { method, channel, status: res.status });
       throw new Error(`Slack ${method} HTTP ${res.status}: ${text.slice(0, 200)}`);
     }
 
     const json = (await res.json()) as SlackResponse;
-    if (!json.ok) throw new Error(`Slack ${method} failed: ${json.error ?? "unknown_error"}`);
+    if (!json.ok) {
+      slackLog("out.error", { method, channel, error: json.error ?? "unknown_error" });
+      throw new Error(`Slack ${method} failed: ${json.error ?? "unknown_error"}`);
+    }
+    slackLog("out.ok", { method, channel });
     return json;
   }
 
