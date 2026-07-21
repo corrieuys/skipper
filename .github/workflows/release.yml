@@ -1,0 +1,54 @@
+name: release
+
+# Push a version tag → CI builds all three standalone binaries and publishes a
+# GitHub Release with them attached. install.sh and `skipper update` both read
+# these release assets, so nothing else is needed to ship an install/update.
+#
+#   git tag v0.2.0
+#   git push origin v0.2.0
+#
+# The tag is the single source of version truth: SKIPPER_VERSION (derived below)
+# is baked into the binary, so `skipper --version` and the release tag always
+# agree and `skipper update` compares correctly.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the release + upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest # Bun cross-compiles all targets (incl. macOS) from one Linux host
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Derive version from tag
+        run: echo "SKIPPER_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Build binaries
+        run: bun run scripts/build-binary.ts # regenerates the asset manifest, then compiles all 3 targets
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum skipper-macos-arm64 skipper-linux-x64 skipper-linux-arm64 > SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/skipper-macos-arm64 \
+            dist/skipper-linux-x64 \
+            dist/skipper-linux-arm64 \
+            dist/SHA256SUMS \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

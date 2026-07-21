@@ -19,7 +19,11 @@ const ENTRY = join(REPO, "bin", "cli.ts");
 const DIST = join(REPO, "dist");
 
 const pkg = (await Bun.file(join(REPO, "package.json")).json()) as { version: string };
-const VERSION = pkg.version;
+// CI (release workflow) sets SKIPPER_VERSION from the git tag so the tag is the
+// single source of version truth — the baked-in version matches the published
+// release, which is what `skipper update` compares against. Falls back to
+// package.json for local/dev builds.
+const VERSION = process.env.SKIPPER_VERSION?.replace(/^v/, "") || pkg.version;
 
 interface Target {
   label: string; // dist filename suffix
