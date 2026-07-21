@@ -458,10 +458,20 @@ export class AgentManager {
   }
 
   async spawnAgent(agentId: string, options: SpawnAgentOptions): Promise<RunningAgent> {
-    if (this.spawnLocks.has(agentId)) {
+    // Scope the lock to the task, not the shared template id. Every root task
+    // uses the same entrypoint template (e.g. `skipper`), so a template-keyed
+    // lock hard-fails any second root spawn that overlaps the async spawn window
+    // — a top-of-hour scheduled dispatch colliding with a resume / idle-poke /
+    // escalation respawn of a *different* task would lose the race and the task
+    // would fail to start with "Spawn already in flight". Keying on taskId keeps
+    // the guard against a genuine same-task double-spawn while letting distinct
+    // tasks spawn concurrently. Internal compact/resume calls pass no taskId and
+    // fall back to the template key (unchanged behaviour).
+    const spawnKey = options.taskId ? `${agentId}:${options.taskId}` : agentId;
+    if (this.spawnLocks.has(spawnKey)) {
       throw new Error(`Spawn already in flight for agent ${agentId}`);
     }
-    this.spawnLocks.add(agentId);
+    this.spawnLocks.add(spawnKey);
     try {
       const runtimeId = crypto.randomUUID();
       return await this.spawnRuntimeAgent(
@@ -471,7 +481,7 @@ export class AgentManager {
         true,
       );
     } finally {
-      this.spawnLocks.delete(agentId);
+      this.spawnLocks.delete(spawnKey);
     }
   }
 
