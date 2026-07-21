@@ -57,7 +57,7 @@ export function escalationMessageBlocks(escalationId: string, taskTitle: string,
   // The question is agent-authored HTML; translate it to Slack mrkdwn. The title
   // is plain, so simple escaping is enough. A section's text field caps at 3000
   // chars — keep headroom for the title + heading prefix.
-  const body = `:warning: *Escalation* — ${mrkdwn(taskTitle)}\n${htmlToMrkdwn(question)}`;
+  const body = `:warning: *Escalation* — ${escapeMrkdwn(taskTitle)}\n${htmlToMrkdwn(question)}`;
   return [
     {
       type: "section",
@@ -78,7 +78,7 @@ export function reviewMessageBlocks(taskId: string, taskTitle: string, phaseLabe
   return [
     {
       type: "section",
-      text: { type: "mrkdwn", text: `:mag: *Phase review required* — ${mrkdwn(taskTitle)}\nPhase: ${mrkdwn(phaseLabel)}` },
+      text: { type: "mrkdwn", text: `:mag: *Phase review required* — ${escapeMrkdwn(taskTitle)}\nPhase: ${escapeMrkdwn(phaseLabel)}` },
     },
     {
       type: "actions",
@@ -101,7 +101,7 @@ export function completionMessageBlocks(taskId: string, taskTitle: string): unkn
   return [
     {
       type: "section",
-      text: { type: "mrkdwn", text: `:white_check_mark: Task *${mrkdwn(taskTitle)}* finished running.` },
+      text: { type: "mrkdwn", text: `:white_check_mark: Task *${escapeMrkdwn(taskTitle)}* finished running.` },
     },
     {
       type: "actions",
@@ -112,9 +112,15 @@ export function completionMessageBlocks(taskId: string, taskTitle: string): unkn
   ];
 }
 
-/** A single-section replacement for a message once it has been actioned. */
+/**
+ * A single-section replacement for a message once it has been actioned. `text` is
+ * ALREADY composed mrkdwn (bold, `<@user>` mentions, `> quotes`) — escaping it here
+ * would turn `<@U…>` into literal text instead of a rendered mention, so it passes
+ * through untouched. Callers must escape any untrusted interpolated content with
+ * `escapeMrkdwn` before it reaches this function.
+ */
 export function noticeBlocks(text: string): unknown[] {
-  return [{ type: "section", text: { type: "mrkdwn", text: mrkdwn(text) } }];
+  return [{ type: "section", text: { type: "mrkdwn", text } }];
 }
 
 export const MODAL_INPUT_BLOCK = "message";
@@ -164,7 +170,7 @@ export function readModalMessage(view: {
 }
 
 /** Slack mrkdwn escaping for the three special characters (& < >). */
-function mrkdwn(s: string): string {
+export function escapeMrkdwn(s: string): string {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 

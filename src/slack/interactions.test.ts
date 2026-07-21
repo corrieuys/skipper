@@ -19,7 +19,7 @@ let calls: {
   reject: Array<{ id: string; msg?: string }>;
   iterate: Array<{ id: string; input: string }>;
   openView: Array<{ triggerId: string; view: Record<string, unknown> }>;
-  update: Array<{ channel: string; ts: string; text: string }>;
+  update: Array<{ channel: string; ts: string; text: string; blocks?: unknown }>;
 };
 let deps: InteractionDeps;
 
@@ -52,8 +52,8 @@ beforeEach(() => {
     openView: async (triggerId: string, view: Record<string, unknown>) => {
       calls.openView.push({ triggerId, view });
     },
-    updateMessage: async (channel: string, ts: string, text: string) => {
-      calls.update.push({ channel, ts, text });
+    updateMessage: async (channel: string, ts: string, text: string, blocks?: unknown) => {
+      calls.update.push({ channel, ts, text, blocks });
     },
   } as unknown as SlackClient;
 
@@ -148,6 +148,23 @@ describe("view_submission", () => {
     const meta = { kind: "rev", action: "approve", id: "t1", channel: "C1", messageTs: "111.22" };
     await handleInteraction(deps, viewSubmission(meta, "")).run?.();
     expect(calls.approve).toEqual([{ id: "t1", note: undefined }]);
+  });
+
+  it("renders the user mention (not escaped) in the edited notice block", async () => {
+    const meta = { kind: "rev", action: "approve", id: "t1", channel: "C1", messageTs: "111.22" };
+    await handleInteraction(deps, viewSubmission(meta, "")).run?.();
+    const blocks = calls.update[0]?.blocks as Array<{ text?: { text?: string } }>;
+    const sectionText = blocks?.[0]?.text?.text ?? "";
+    expect(sectionText).toContain(`<@${USER}>`);
+    expect(sectionText).not.toContain("&lt;@");
+  });
+
+  it("escapes mrkdwn specials in the operator-typed quote body", async () => {
+    const meta = { kind: "esc", action: "respond", id: "e1", channel: "C1", messageTs: "111.22" };
+    await handleInteraction(deps, viewSubmission(meta, "use <prod> & staging")).run?.();
+    const blocks = calls.update[0]?.blocks as Array<{ text?: { text?: string } }>;
+    const sectionText = blocks?.[0]?.text?.text ?? "";
+    expect(sectionText).toContain("&lt;prod&gt; &amp; staging");
   });
 
   it("reject regresses the review with the required feedback", async () => {

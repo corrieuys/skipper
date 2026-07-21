@@ -11,6 +11,7 @@ import {
   actionModal,
   noticeBlocks,
   readModalMessage,
+  escapeMrkdwn,
   MODAL_INPUT_BLOCK,
   type ModalMeta,
 } from "./blocks";
@@ -223,8 +224,12 @@ async function postEphemeral(responseUrl: string | undefined, text: string): Pro
   }
 }
 
+// The quoted body is operator-typed text (a response / note / rejection reason), so
+// escape its mrkdwn specials — otherwise a stray `<`/`>` in the message could render
+// oddly. The surrounding notice (`*bold*`, `<@user>` mention) is composed by us and
+// stays intact because it never passes through here.
 function quote(s: string): string {
-  return s.replace(/\n/g, "\n> ");
+  return escapeMrkdwn(s).replace(/\n/g, "\n> ");
 }
 
 function stripMrkdwn(s: string): string {
