@@ -101,7 +101,10 @@ export function completionMessageBlocks(taskId: string, taskTitle: string): unkn
   return [
     {
       type: "section",
-      text: { type: "mrkdwn", text: `:white_check_mark: Task *${escapeMrkdwn(taskTitle)}* finished running.` },
+      text: {
+        type: "mrkdwn",
+        text: `:white_check_mark: Task *${escapeMrkdwn(taskTitle)}* finished running.\nTo run another pass, click *Iterate* below and enter your instructions.`,
+      },
     },
     {
       type: "actions",

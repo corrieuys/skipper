@@ -28,7 +28,7 @@ beforeEach(() => {
   db = new Database(":memory:");
   initializeDatabase(db);
   db.exec("PRAGMA foreign_keys=OFF");
-  saveSlackConfig(db, { botToken: "xoxb-x", defaultChannel: "C1", pushEnabled: true });
+  saveSlackConfig(db, { botToken: "xoxb-x", defaultChannel: "C1" });
 
   origArgv = process.argv;
   process.argv = [...origArgv, "--experimental"];
@@ -99,9 +99,11 @@ describe("SlackPushManager gating", () => {
     expect(posts).toHaveLength(0);
   });
 
-  it("does not post when push is disabled", async () => {
+  it("does not post when there is no bot token configured", async () => {
     seedTeam(true);
-    saveSlackConfig(db, { botToken: "xoxb-x", defaultChannel: "C1", pushEnabled: false });
+    saveSlackConfig(db, { botToken: "", defaultChannel: "" });
+    // Clear the token set in beforeEach so isSlackConfigured is false.
+    db.prepare("DELETE FROM app_settings WHERE key = 'slack_bot_token'").run();
     fireEscalation();
     await flush();
     expect(posts).toHaveLength(0);
@@ -147,9 +149,9 @@ describe("SlackPushManager gating", () => {
     expect(posts).toHaveLength(0);
   });
 
-  it("posts the completion notice even when the push toggle is off (daemon default)", async () => {
+  it("posts the completion notice with no default channel set (thread-only, daemon default)", async () => {
     seedTeam(true, { slack_origin: { channel: "C-origin", thread_ts: "1700.500" } });
-    saveSlackConfig(db, { botToken: "xoxb-x", defaultChannel: "C1", pushEnabled: false });
+    saveSlackConfig(db, { botToken: "xoxb-x", defaultChannel: "" });
     eventBus.emit("task:state_changed", { taskId: "task-1", previousStatus: "running", newStatus: "completed" });
     await flush();
     expect(posts).toHaveLength(1);

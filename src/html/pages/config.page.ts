@@ -74,7 +74,7 @@ function modelSettingsPanel(ms: ConfigPageViewModel["modelSettings"]): string {
   );
   return `<div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
     <div class="sk-panel__header">
-      <span class="sk-panel__title">Agent Models</span>
+      <span class="sk-panel__title">Default Agent Models</span>
     </div>
     <div class="sk-panel__body">
       <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
@@ -144,14 +144,18 @@ function teamsPanel(teams: LocalTeam[]): string {
           </table>
         </div>
         <div class="sk-panel__body">
-          <h4 style="margin:0 0 var(--sk-space-2);">Import Teams</h4>
-          <p class="sk-muted sk-text-xs" style="margin:0 0 var(--sk-space-2);">Paste an export (an array of teams, or <code>{"teams":[...]}</code>), or choose a file. Existing ids are updated; new ids are created.</p>
-          <textarea id="team-import-json" class="sk-textarea" rows="5" placeholder='{"teams":[ ... ]}'></textarea>
-          <div style="display:flex;gap:var(--sk-space-3);align-items:center;margin-top:var(--sk-space-2);">
-            <input type="file" id="team-import-file" accept="application/json,.json" class="sk-input" style="max-width:280px;">
-            <button type="button" class="sk-btn sk-btn--sm sk-btn--primary" id="team-import-btn">Import</button>
-          </div>
-          <div id="team-import-result" class="sk-text-xs" style="margin-top:var(--sk-space-2);"></div>
+          <details>
+            <summary class="sk-text-sm" style="cursor:pointer;font-weight:600;">Import Teams</summary>
+            <div style="margin-top:var(--sk-space-3);">
+              <p class="sk-muted sk-text-xs" style="margin:0 0 var(--sk-space-2);">Paste an export (an array of teams, or <code>{"teams":[...]}</code>), or choose a file. Existing ids are updated; new ids are created.</p>
+              <textarea id="team-import-json" class="sk-textarea" rows="5" placeholder='{"teams":[ ... ]}'></textarea>
+              <div style="display:flex;gap:var(--sk-space-3);align-items:center;margin-top:var(--sk-space-2);">
+                <input type="file" id="team-import-file" accept="application/json,.json" class="sk-input" style="max-width:280px;">
+                <button type="button" class="sk-btn sk-btn--sm sk-btn--primary" id="team-import-btn">Import</button>
+              </div>
+              <div id="team-import-result" class="sk-text-xs" style="margin-top:var(--sk-space-2);"></div>
+            </div>
+          </details>
         </div>
       </div>
       <script>
@@ -214,11 +218,7 @@ export function configPage(vm: ConfigPageViewModel): string {
         <h1 class="sk-page-header__title">Configuration</h1>
       </div>
 
-      ${teamsPanel(vm.teams)}
-
-      ${modelSettingsPanel(vm.modelSettings)}
-
-      <!-- Appearance Section -->
+      <!-- Appearance Section (first) -->
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
         <div class="sk-panel__header">
           <span class="sk-panel__title">Appearance</span>
@@ -231,6 +231,10 @@ export function configPage(vm: ConfigPageViewModel): string {
           </div>
         </div>
       </div>
+
+      ${teamsPanel(vm.teams)}
+
+      ${modelSettingsPanel(vm.modelSettings)}
 
       <!-- Sound Notifications Section -->
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
@@ -314,19 +318,6 @@ export function configPage(vm: ConfigPageViewModel): string {
 
       <!-- Slack Integration Section (experimental only) -->
       ${isExperimental() && vm.slack ? slackPanel(vm.slack) : ""}
-
-      <!-- System Section -->
-      <div class="sk-panel">
-        <div class="sk-panel__header">
-          <span class="sk-panel__title">System</span>
-        </div>
-        <div class="sk-panel__body">
-          <table class="sk-table">
-            <tr><td class="sk-muted">Daemon State</td><td><span class="sk-badge sk-badge--${vm.daemonState === "running" ? "running" : "draft"}">${escapeHtml(vm.daemonState)}</span></td></tr>
-            <tr><td class="sk-muted">Uptime</td><td>${Math.floor(vm.daemonUptime / 60)}m</td></tr>
-          </table>
-        </div>
-      </div>
     </div>
   `, "/config");
 }
@@ -366,9 +357,12 @@ export function slackPanel(slack: SlackConfigView): string {
               <div>
                 <strong>Enable these features</strong> (left sidebar of your app config):
                 <ul style="margin:var(--sk-space-1) 0 0;padding-left:var(--sk-space-4);">
-                  <li><strong>Socket Mode</strong> — delivers slash commands &amp; button clicks with no public URL</li>
-                  <li><strong>Interactivity &amp; Shortcuts</strong> — required for the Approve / Reject / Respond buttons</li>
+                  <li><strong>Socket Mode</strong> — delivers slash commands, button clicks &amp; events with no public URL</li>
+                  <li><strong>Interactivity &amp; Shortcuts</strong> — required for the Approve / Reject / Respond / Iterate buttons</li>
                   <li><strong>Slash Commands</strong> — create each command you want to bind to a team or recurring task</li>
+                  <li><strong>Event Subscriptions</strong> — turn on <em>Enable Events</em>, then under "Subscribe to bot events" add
+                    <code>message.channels</code> (public) and/or <code>message.groups</code> (private).
+                    <strong>Required to capture thread replies as task notes</strong> — without it, replies in a task's thread are never received (escalations, reviews &amp; completion notices still post, they are outbound-only).</li>
                 </ul>
               </div>
               <div>
@@ -415,15 +409,10 @@ export function slackPanel(slack: SlackConfigView): string {
               <label class="sk-checkbox" style="margin-top:0;">
                 <input type="checkbox" id="slack-socket-enabled" name="socket_enabled" ${slack.socketEnabled ? "checked" : ""}>
                 <span class="sk-checkbox__toggle"></span>
-                <span class="sk-checkbox__label">Enable Socket Mode (inbound slash commands)</span>
-              </label>
-              <label class="sk-checkbox" style="margin-top:0;">
-                <input type="checkbox" id="slack-push-enabled" name="push_enabled" ${slack.pushEnabled ? "checked" : ""}>
-                <span class="sk-checkbox__toggle"></span>
-                <span class="sk-checkbox__label">Push escalations &amp; phase reviews to the default channel</span>
+                <span class="sk-checkbox__label">Enable Socket Mode (inbound slash commands, buttons &amp; thread replies)</span>
               </label>
               <p class="sk-muted sk-text-xs" style="margin:0;">
-                Buttons need <strong>Interactivity</strong> enabled in your Slack app (Socket Mode delivers the events; no request URL). Only allowlisted users can act. Pushes are per-team: enable Slack on each team.
+                Escalations, phase reviews &amp; completion notices post to each task's origin thread (or the default channel for tasks not started from Slack) — there is no separate push toggle; it is <strong>per-team</strong>, so enable Slack on each team. Action buttons need <strong>Interactivity</strong> enabled in your Slack app, and only allowlisted users can act. Capturing thread replies as notes additionally needs <strong>Event Subscriptions</strong> (see setup above).
               </p>
 
               <div style="display:flex;gap:var(--sk-space-2);align-items:center;">

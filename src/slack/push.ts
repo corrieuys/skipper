@@ -8,7 +8,6 @@ import {
 } from "../config/feature-flags";
 import {
   isSlackConfigured,
-  isSlackPushEnabled,
   getSlackDefaultChannel,
 } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
@@ -29,9 +28,10 @@ interface TaskRow {
  * correlation, so a resolution made in the web UI simply leaves stale buttons
  * that no-op / self-heal when clicked (see src/slack/interactions.ts).
  *
- * Gating is re-checked live per event, so toggling push in /config takes effect
- * with no restart: experimental + bot token + push enabled + a default channel +
- * the task's team has Slack enabled.
+ * Gating is re-checked live per event, so changing Slack config in /config takes
+ * effect with no restart: experimental + bot token + a target channel (the task's
+ * origin thread, else the default channel) + the task's team has Slack enabled.
+ * There is no separate push toggle — the per-team Slack opt-in is the switch.
  */
 export class SlackPushManager {
   private db: Database;
@@ -80,10 +80,6 @@ export class SlackPushManager {
     }
     if (!isSlackConfigured(this.db)) {
       slackLog("push.skip", { kind, taskId, reason: "no_bot_token" });
-      return null;
-    }
-    if (!isSlackPushEnabled(this.db)) {
-      slackLog("push.skip", { kind, taskId, reason: "push_disabled" });
       return null;
     }
     const task = this.db
@@ -156,9 +152,9 @@ export class SlackPushManager {
   }
 
   /**
-   * Gate + target for a task-completion notice. Unlike `targetChannel` this does
-   * not require the push toggle and always posts into the origin thread (never the
-   * default channel), so non-Slack tasks are silently skipped.
+   * Gate + target for a task-completion notice. Unlike `targetChannel` this always
+   * posts into the origin thread (never the default channel), so non-Slack tasks
+   * are silently skipped.
    */
   private completionTarget(
     taskId: string,

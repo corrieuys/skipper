@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { resolveAgentFromToken, type AgentIdentity } from "./auth";
+import { resolveAgentFromToken, describeTokenState, type AgentIdentity } from "./auth";
 import { registerDaemonTools, registerExternalTools, type DaemonDeps } from "./tools";
 import { logError } from "../logging";
 
@@ -86,6 +86,17 @@ export class DaemonMcpServer {
 
     const identity = resolveAgentFromToken(this.db, token);
     if (!identity) {
+      // Log WHY the token failed (row states, not the token) — this path was
+      // silent, which is why "token expired mid-run" (a live process whose
+      // instance was raced off status='running') has been undiagnosable. The
+      // method is included so we can tell a benign tools/list probe from a real
+      // mid-turn tool call.
+      logError(
+        this.db,
+        "mcp_auth_reject",
+        { method, ...describeTokenState(this.db, token) },
+        new Error("bearer did not resolve to a live agent identity"),
+      );
       // RFC 6750 §3.1 — 401 + error="invalid_token" is the right signal for a
       // supplied-but-unknown bearer (was 403 here which masks "Bearer scheme"
       // from clients that scan WWW-Authenticate on 401 only).

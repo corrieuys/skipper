@@ -5,7 +5,7 @@ Model Context Protocol server. Alternative to stdout signal parsing — agents c
 | file | use |
 |---|---|
 | `server.ts` | `DaemonMcpServer`. Streamable HTTP transport (POST `/mcp` msg, GET `/mcp` SSE, DELETE `/mcp` end). Bearer token = agent runtimeId or API key |
-| `auth.ts` | Token → `AgentIdentity` resolve. Union type: `InternalAgentIdentity` (running agents) or `ExternalIdentity` (API keys) |
+| `auth.ts` | Token → `AgentIdentity` resolve. Union type: `InternalAgentIdentity` (running agents) or `ExternalIdentity` (API keys). Internal-instance validity is **task-scoped**: an instance token resolves while `ai.status='running'` OR its **task** is still `running` — the instance id belongs to the task for the task's lifetime, so a live process is not 401'd when a concurrent exit handler momentarily parks `agent_instances.status` off `running` (the old "token expired mid-run" race — a root awaiting delegations while resolving an escalation). `describeTokenState()` snapshots the row states for the `mcp_auth_reject` log emitted by `server.ts` on every 401 (previously silent) |
 | `tools.ts` | Tool definitions + impl. Three session modes: root (all tools), delegated (no phase-control), external (task management only) |
 | `tools-registration.test.ts` | tests |
 | `signal-bridge.ts` | Convert MCP tool calls → `agent:signal` events (so handlers stay one path) |

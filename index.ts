@@ -23,7 +23,7 @@ import { GlobalStoreManager } from "./src/global-store/manager";
 import { initConnectClient } from "./src/connect/client";
 import { initSlackSocket, getSlackSocket } from "./src/slack/socket";
 import { initSlackPush, getSlackPush } from "./src/slack/push";
-import { isSocketModeConfigured, isSlackSocketEnabled } from "./src/config/slack-settings";
+import { isSocketModeConfigured, isSlackSocketEnabled, isSlackConfigured } from "./src/config/slack-settings";
 import { getBoolSetting, getStringSetting, SETTING_SKIPPER_CONNECT_ENABLED, SETTING_SKIPPER_CONNECT_KEY } from "./src/config/app-settings";
 
 const experimental = process.argv.includes("--experimental");
@@ -140,9 +140,12 @@ async function startup() {
   if (experimental && isSocketModeConfigured(db) && isSlackSocketEnabled(db)) {
     slackSocket.start();
   }
-  // Push handlers re-check settings live per event, so subscribe whenever
-  // experimental is on; toggling push in /config needs no restart.
-  if (experimental) {
+  // Push is OUTBOUND (bot token over HTTPS) and independent of Socket Mode
+  // (inbound). Subscribe only when a bot token is configured — otherwise there is
+  // nothing to post with, so the subscription (and its push.subscribed log) is
+  // just noise. Actual posting is still re-checked live per event (per-team
+  // slackEnabled), and /api/config/slack starts/stops this without a restart.
+  if (experimental && isSlackConfigured(db)) {
     slackPush.start();
   }
 }

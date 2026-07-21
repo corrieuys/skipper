@@ -382,35 +382,53 @@ export function componentStyles(): string {
     /* Agent Models config rows — each label is glued to its own control, and the
        label+control pairs are spaced apart, so the "Provider"/"Model" labels read
        against their select rather than floating between two of them. */
+    /* Grid so the name / Provider / Model / Save columns line up across every
+       row. Each row is its OWN <form> (independent grid), so the flexible tracks
+       MUST be minmax(0, 1fr) — plain 1fr is minmax(auto, 1fr), which sizes each
+       column to that row's own content (empty vs a long model string), leaving
+       the Provider/Model columns misaligned between rows. minmax(0, …) makes the
+       tracks a fixed fraction of the row width, identical for every row. */
     .sk-model-row {
-      display: flex;
+      display: grid;
+      grid-template-columns: 180px minmax(0, 1fr) minmax(0, 1fr) auto;
       align-items: center;
-      gap: var(--sk-space-5);
-      padding: var(--sk-space-2) 0;
-      flex-wrap: wrap;
+      column-gap: var(--sk-space-4);
+      row-gap: var(--sk-space-2);
+      padding: var(--sk-space-3) 0;
     }
     .sk-model-row + .sk-model-row {
       border-top: 1px solid var(--sk-border-subtle);
     }
     .sk-model-row__name {
-      width: 160px;
-      flex-shrink: 0;
+      min-width: 0;
     }
     .sk-model-row__field {
       display: flex;
       align-items: center;
       gap: var(--sk-space-2);
+      min-width: 0;
     }
     .sk-model-row__label {
       font-size: var(--sk-text-xs);
       color: var(--sk-text-muted);
       white-space: nowrap;
+      width: 62px;
+      flex-shrink: 0;
     }
-    .sk-model-row__field select {
-      min-width: 160px;
+    .sk-model-row__field select,
+    .sk-model-row__field input {
+      flex: 1;
+      min-width: 0;
     }
     .sk-model-row__save {
-      margin-left: auto;
+      justify-self: end;
+    }
+    @media (max-width: 640px) {
+      .sk-model-row {
+        grid-template-columns: 1fr;
+        row-gap: var(--sk-space-2);
+      }
+      .sk-model-row__save { justify-self: start; }
     }
 
     /* Weekly schedule matrix (7 days x 24 hours) */

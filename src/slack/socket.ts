@@ -257,22 +257,13 @@ export class SlackSocketManager {
     try {
       const taskId = findRunningTaskByThread(this.db, channel, threadTs);
       if (!taskId) {
-        // Not a live task. If the thread belongs to a COMPLETED task, a reply is a
-        // request to keep going — but we never auto-iterate (a full multi-agent
-        // re-run is too expensive/surprising to trigger on a stray reply). Nudge the
-        // operator to the Iterate button on the completion notice instead.
+        // Not a live task. If the thread belongs to a COMPLETED task, ignore the
+        // reply silently (no auto-nudge): we never auto-iterate a finished task,
+        // and the "click Iterate to run another pass" instruction now lives in the
+        // completion notice itself (see completionMessageBlocks). Just log it.
         const completedTaskId = findCompletedTaskByThread(this.db, channel, threadTs);
         if (completedTaskId) {
-          slackLog("in.thread_reply.completed", { taskId: completedTaskId, channel, threadTs });
-          try {
-            await new SlackClient(this.db).postMessage(
-              channel,
-              ":checkered_flag: This task has finished. To run another pass, click *Iterate* on the completion message above and enter your instructions there.",
-              { thread_ts: threadTs },
-            );
-          } catch (err) {
-            logError(this.db, "slack_thread_reply_completed", { channel, threadTs }, err);
-          }
+          slackLog("in.thread_reply.completed_ignored", { taskId: completedTaskId, channel, threadTs });
           return;
         }
         slackLog("in.thread_reply.no_task", { channel, threadTs });

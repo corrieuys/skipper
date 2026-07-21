@@ -1236,17 +1236,31 @@ function registerV2PageRoutes(): void {
     }));
   });
 
-  // Task List
+  // Task List. Split into two sections: regular task instances (created directly)
+  // and recurring task instances (each run spawned by a scheduled/recurring task,
+  // carrying `source_scheduled_task_id`). Keeping the recurring runs out of the
+  // main list stops the one-off tasks from being buried under a firehose of
+  // scheduled runs.
   addRoute("GET", "/tasks", () => {
     const tasks = db.prepare(
       `SELECT t.id, t.title, t.status, t.current_phase, t.task_type, t.created_at,
               tm.name AS team_name
        FROM tasks t LEFT JOIN teams tm ON tm.id = t.team_id
+       WHERE t.source_scheduled_task_id IS NULL
        ORDER BY t.created_at DESC`
     ).all() as Array<{ id: string; title: string; status: string; current_phase: number; task_type: string; created_at: string; team_name: string | null }>;
+    const scheduledRuns = db.prepare(
+      `SELECT t.id, t.title, t.status, t.current_phase, t.task_type, t.created_at,
+              tm.name AS team_name, st.title AS source_scheduled_title
+       FROM tasks t
+       LEFT JOIN teams tm ON tm.id = t.team_id
+       LEFT JOIN scheduled_tasks st ON st.id = t.source_scheduled_task_id
+       WHERE t.source_scheduled_task_id IS NOT NULL
+       ORDER BY t.created_at DESC`
+    ).all() as Array<{ id: string; title: string; status: string; current_phase: number; task_type: string; created_at: string; team_name: string | null; source_scheduled_title: string | null }>;
     const escalationCount = getOpenEscalationCount(db);
     const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
-    return html(taskListPage({ tasks, escalationCount, daemonState: pausedRow?.value === "true" ? "paused" : "running", daemonUptime: process.uptime() }));
+    return html(taskListPage({ tasks, scheduledRuns, escalationCount, daemonState: pausedRow?.value === "true" ? "paused" : "running", daemonUptime: process.uptime() }));
   });
 
   // Task Execution
@@ -1387,9 +1401,8 @@ function registerV2PageRoutes(): void {
     const defaultChannel = (formData.get("default_channel") ?? "").toString();
     const appToken = (formData.get("app_token") ?? "").toString();
     const socketEnabled = formData.get("socket_enabled") != null;
-    const pushEnabled = formData.get("push_enabled") != null;
     const allowedUsers = parseAllowedUsersInput((formData.get("allowed_users") ?? "").toString());
-    const err = saveSlackConfig(db, { botToken, defaultChannel, appToken, socketEnabled, allowedUsers, pushEnabled });
+    const err = saveSlackConfig(db, { botToken, defaultChannel, appToken, socketEnabled, allowedUsers });
     if (err) return new Response(err, { status: 400 });
     // Apply socket changes without a daemon restart: stop, then re-start if still
     // configured + enabled.
@@ -1398,6 +1411,17 @@ function registerV2PageRoutes(): void {
     if (socket) {
       socket.stop();
       if (isSocketModeConfigured(db) && isSlackSocketEnabled(db)) socket.start();
+    }
+    // Push (outbound) follows the bot token, not Socket Mode: subscribe when a
+    // token is set, unsubscribe when it is cleared — no restart. start()/stop()
+    // are idempotent, so re-applying the current state is safe.
+    const { getSlackPush } = require("../slack/push");
+    const { isSlackConfigured } = require("../config/slack-settings");
+    const push = getSlackPush();
+    if (push) {
+      // Route is already experimental-gated above.
+      if (isSlackConfigured(db)) push.start();
+      else push.stop();
     }
     return new Response(null, { status: 204 });
   });

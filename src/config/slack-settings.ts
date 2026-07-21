@@ -17,10 +17,10 @@ export const SETTING_SLACK_DEFAULT_CHANNEL = "slack_default_channel";
 export const SETTING_SLACK_APP_TOKEN = "slack_app_token";
 export const SETTING_SLACK_SOCKET_ENABLED = "slack_socket_enabled";
 export const SETTING_SLACK_ALLOWED_USERS = "slack_allowed_users";
-// Outbound push: when on, new escalations + phase reviews are posted to the
-// default channel with Approve/Reject/Respond buttons (still gated per-team by
-// slackEnabled). Requires the bot token + a default channel.
-export const SETTING_SLACK_PUSH_ENABLED = "slack_push_enabled";
+// Outbound push (escalations + phase reviews) has no dedicated toggle: it is
+// scoped to each task's origin thread (or the default channel for UI-created
+// tasks) and gated per-team by `slackEnabled`. The former `slack_push_enabled`
+// switch was removed as redundant — the per-team opt-in is the control.
 
 export interface SlackConfigView {
   // Presence indicators only — the tokens themselves are never echoed back to the UI.
@@ -29,7 +29,6 @@ export interface SlackConfigView {
   appTokenSet: boolean;
   socketEnabled: boolean;
   allowedUsers: string[];
-  pushEnabled: boolean;
 }
 
 export function getSlackBotToken(db: Database): string {
@@ -46,10 +45,6 @@ export function getSlackAppToken(db: Database): string {
 
 export function isSlackSocketEnabled(db: Database): boolean {
   return getBoolSetting(db, SETTING_SLACK_SOCKET_ENABLED, false);
-}
-
-export function isSlackPushEnabled(db: Database): boolean {
-  return getBoolSetting(db, SETTING_SLACK_PUSH_ENABLED, false);
 }
 
 /** Parsed allowlist of Slack user ids. Junk/missing → []. */
@@ -87,7 +82,6 @@ export function getSlackConfigView(db: Database): SlackConfigView {
     appTokenSet: !!getSlackAppToken(db),
     socketEnabled: isSlackSocketEnabled(db),
     allowedUsers: getSlackAllowedUsers(db),
-    pushEnabled: isSlackPushEnabled(db),
   };
 }
 
@@ -113,7 +107,6 @@ export function saveSlackConfig(
     appToken?: string;
     socketEnabled?: boolean;
     allowedUsers?: string[];
-    pushEnabled?: boolean;
   },
 ): string | null {
   const botToken = input.botToken.trim();
@@ -132,9 +125,6 @@ export function saveSlackConfig(
   }
   if (input.socketEnabled !== undefined) {
     setBoolSetting(db, SETTING_SLACK_SOCKET_ENABLED, input.socketEnabled);
-  }
-  if (input.pushEnabled !== undefined) {
-    setBoolSetting(db, SETTING_SLACK_PUSH_ENABLED, input.pushEnabled);
   }
   return null;
 }

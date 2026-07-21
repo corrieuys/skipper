@@ -34,15 +34,67 @@ export function resolveApiKey(db: Database, token: string): { id: string; name: 
 }
 
 /**
+ * Diagnose WHY a bearer token failed to resolve, without leaking the token. The
+ * MCP 401 path is otherwise silent, which makes "token expired mid-run" almost
+ * impossible to debug: it only says the token no longer resolves, not that the
+ * instance row exists but its `status` flipped off `running` (the common cause —
+ * a live process whose instance was raced to `completed`/`stopped` by an exit
+ * handler while a resume was in flight). Returns a compact, log-safe snapshot of
+ * the row states the resolver checks, so the next occurrence is explainable.
+ */
+export function describeTokenState(db: Database, token: string): Record<string, unknown> {
+  const out: Record<string, unknown> = { tokenPrefix: token ? token.slice(0, 8) : "(empty)", len: token?.length ?? 0 };
+  try {
+    const inst = db
+      .prepare(
+        `SELECT ai.status, ai.process_pid, ai.task_id, t.status AS task_status
+         FROM agent_instances ai LEFT JOIN tasks t ON t.id = ai.task_id WHERE ai.id = ?`,
+      )
+      .get(token) as { status: string; process_pid: number | null; task_id: string | null; task_status: string | null } | null;
+    if (inst) {
+      out.instance = { status: inst.status, hasPid: inst.process_pid != null, taskStatus: inst.task_status ?? "(none)" };
+    }
+    const agent = db
+      .prepare("SELECT status, current_task_id FROM agents WHERE id = ?")
+      .get(token) as { status: string; current_task_id: string | null } | null;
+    if (agent) {
+      out.agent = { status: agent.status, hasTask: agent.current_task_id != null };
+    }
+    if (!inst && !agent) out.match = "none";
+  } catch (err) {
+    out.error = err instanceof Error ? err.message : String(err);
+  }
+  return out;
+}
+
+/**
  * Resolves an agent identity from a Bearer token.
  * Checks: 1) agent_instances (running), 2) agents (busy), 3) api_keys (external).
  */
 export function resolveAgentFromToken(db: Database, token: string): AgentIdentity | null {
   if (!token || token.length < 8) return null;
 
-  // Check agent_instances (covers both entrypoints and delegation children)
+  // Check agent_instances (covers both entrypoints and delegation children).
+  //
+  // Validity is scoped to the TASK being live, not the instance's momentary
+  // `status`. The instance id IS the bearer token, so it belongs to this task for
+  // the task's lifetime — but `agent_instances.status` is a single bit written by
+  // many concurrent actors (process-exit → 'completed'/'stopped'/'failed',
+  // escalation resume → 'running', delegation-child completion resuming the same
+  // parent → 'running', health-monitor, idle-poke). A live process routinely makes
+  // an MCP call in a window where an exit handler's write briefly parked the row
+  // off 'running' (e.g. a root awaiting delegations while resolving an escalation),
+  // which surfaced to the agent as a spurious "token expired" 401 mid-run. Accepting
+  // the token while the task is still 'running' removes that whole race class; the
+  // old `status='running'` check is kept as an OR so task-less instances
+  // (conversations/realtime with no task row) still resolve exactly as before, and
+  // role-based tool gating is unchanged (locked at session create in server.ts).
   const instance = db
-    .prepare("SELECT id, template_agent_id, task_id FROM agent_instances WHERE id = ? AND status = 'running'")
+    .prepare(
+      `SELECT ai.id, ai.template_agent_id, ai.task_id
+       FROM agent_instances ai LEFT JOIN tasks t ON t.id = ai.task_id
+       WHERE ai.id = ? AND (ai.status = 'running' OR t.status = 'running')`,
+    )
     .get(token) as { id: string; template_agent_id: string; task_id: string | null } | null;
 
   if (instance) {

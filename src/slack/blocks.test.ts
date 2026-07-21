@@ -53,10 +53,14 @@ describe("message blocks", () => {
     expect(values).toContain("rev:reject:t1");
   });
 
-  it("completion notice carries an Iterate button keyed by task id", () => {
+  it("completion notice carries an Iterate button keyed by task id + iterate instruction", () => {
     const blocks = completionMessageBlocks("t1", "Add webhook") as Array<Record<string, unknown>>;
     const actions = blocks.find((b) => b.type === "actions") as { elements: Array<{ value: string }> };
     expect(actions.elements.map((e) => e.value)).toContain("task:iterate:t1");
+    const section = blocks.find((b) => b.type === "section") as { text: { text: string } };
+    expect(section.text.text).toContain("finished running");
+    expect(section.text.text).toContain("Iterate");
+    expect(section.text.text).toContain("will not restart");
   });
 });
 

@@ -22,7 +22,7 @@ Everything here is **experimental** (`isExperimental()`), consistent with the
 | `blocks.ts` | Block Kit builders (escalation + review + **completion** messages, action modal, notices) + the `encodeActionValue`/`decodeActionValue` codec (`<kind>:<action>:<id>`, kinds `esc`/`rev`/`task`) shared by push + interactions. The escalation **question** is agent-authored HTML, run through `htmlToMrkdwn` before it hits a `mrkdwn` field, and the section text is capped at Slack's 3000-char limit |
 | `html-to-mrkdwn.ts` | `htmlToMrkdwn(html)` — translate an agent HTML fragment to Slack mrkdwn at the boundary (tags → mrkdwn, `<a>` → `<url\|label>`, entities decoded, `& < >` re-escaped, unknown tags stripped). Agents stay oblivious to Slack; plain text passes through as plain escaping |
 | `bindings.ts` | `findSlashCommandConflict` — a command binds to one target only; used by the team + scheduled-task save routes to reject duplicate bindings |
-| `slash-command.ts` | `normalizeSlashCommand` (trim/lowercase/single-leading-slash), the `SlackOrigin` type (`{ channel, thread_ts?, user_id? }`), `readTaskSlackOrigin(db, taskId)` (shared reader of `task_config.slack_origin`, used by prompt injection + push thread-routing), and `findRunningTaskByThread` / `findCompletedTaskByThread` (`db, channel, thread_ts`) (match an inbound thread reply to its live task → note, or its completed task → Iterate nudge) |
+| `slash-command.ts` | `normalizeSlashCommand` (trim/lowercase/single-leading-slash), the `SlackOrigin` type (`{ channel, thread_ts?, user_id? }`), `readTaskSlackOrigin(db, taskId)` (shared reader of `task_config.slack_origin`, used by prompt injection + push thread-routing), and `findRunningTaskByThread` / `findCompletedTaskByThread` (`db, channel, thread_ts`) (match an inbound thread reply to its live task → note, or its completed task → ignored, since the Iterate instruction lives on the completion notice) |
 | `log.ts` | `slackLog(action, details)` — consistent `[slack] <action> k=v …` activity logging across the whole integration (never logs tokens). Excludes WS keep-alive / pass-through ACK noise |
 
 ## Outbound: posting as the app
@@ -40,9 +40,11 @@ it. Sending always goes through the bot token over HTTPS.
 
 ## Push escalations + phase reviews (with buttons)
 
-When `slack_push_enabled` is on (+ bot token), new **escalations** and **phase
-reviews** post with action buttons, gated per-team by `slackEnabled` on the task's
-team. `SlackPushManager` subscribes to `escalation:created` and
+With a bot token set, new **escalations** and **phase reviews** post with action
+buttons, gated per-team by `slackEnabled` on the task's team. There is **no global
+push toggle** — the per-team opt-in is the switch (the old `slack_push_enabled`
+setting was removed as redundant now that pushes are thread-scoped).
+`SlackPushManager` subscribes to `escalation:created` and
 `task:needs_review_changed` (posts only when a review opens). Acting on the buttons
 needs Slack **Interactivity** enabled in the app (Socket Mode delivers the events;
 no request URL). Only allowlisted users (`slack_allowed_users`) can act.
@@ -57,8 +59,8 @@ the shared reader; delegation is intra-task (agents share one `tasks` row), so a
 delegated child's escalation still resolves to the root run's origin via its task id.
 
 Each negative gate in `SlackPushManager.targetChannel` logs a `[slack] push.skip
-reason=…` line (`push_disabled`, `team_slack_disabled`, `no_target_channel`, …), so
-a silently-dropped push is now traceable in the logs.
+reason=…` line (`no_bot_token`, `team_slack_disabled`, `no_target_channel`, …), so
+a silently-dropped push is traceable in the logs.
 
 - **Escalation** → *Respond* (modal, required message → `resolveEscalation`) /
   *Dismiss* (immediate → `dismissEscalation`).
@@ -75,15 +77,14 @@ of scope (stale buttons self-heal on click).
 
 `SlackPushManager` also subscribes to `task:state_changed`; when a task with a
 Slack **thread** origin reaches `completed`/`failed`, it posts a one-line system
-notice back into that thread (`completionTarget`). This is a **daemon default** —
-unlike escalations/reviews it is **not** gated by the push toggle (it's a courtesy
-reply to a user-started slash command, not the chatty stream), only by experimental
-+ bot token + the team's `slackEnabled` + an origin `thread_ts`. Tasks with no
-thread origin (e.g. UI-created) are silently skipped.
+notice back into that thread (`completionTarget`). This is a **daemon default**,
+gated by experimental + bot token + the team's `slackEnabled` + an origin
+`thread_ts`. Tasks with no thread origin (e.g. UI-created) are silently skipped.
 
-The **completed** notice carries an **Iterate** button (`completionMessageBlocks`);
-clicking it opens a modal for the next iteration's prompt (mirrors the web UI iterate
-flow), and on submit calls `TaskScheduler.iterateTask(taskId, prompt)` — completed →
+The **completed** notice carries an **Iterate** button (`completionMessageBlocks`) plus
+an inline instruction to click it (and a note that replying in the thread won't restart
+the task); clicking it opens a modal for the next iteration's prompt (mirrors the web UI
+iterate flow), and on submit calls `TaskScheduler.iterateTask(taskId, prompt)` — completed →
 approved, re-run picked up on the next daemon tick. `slack_origin` survives iteration
 (it lives on `task_config`), so escalations/reviews/completion routing keep working
 on the re-run, and each re-completion posts a fresh Iterate button. The **failed**
@@ -101,10 +102,10 @@ source `user`). Filtered hard: only `type:message` events with a `thread_ts`, **
 are excluded — no feedback loop) and **no** `subtype` (edits/deletes/joins skipped).
 Matched only against a **running** task whose `slack_origin` channel + `thread_ts`
 line up. The note surfaces to the agent on its next prompt build (not injected into a
-live turn). A reply that matches instead a **completed** task in the same thread does
-**not** auto-iterate (a full re-run is too costly to trigger on a stray reply) —
-`findCompletedTaskByThread` detects it and the socket posts a nudge to click the
-**Iterate** button on the completion notice. On success the socket posts a short in-thread **ack** (":memo: Added to
+live turn). A reply that matches instead a **completed** task in the same thread is
+**ignored silently** (logged `in.thread_reply.completed_ignored`, no reply posted) — we
+never auto-iterate a finished task, and the "click Iterate to run another pass"
+instruction lives in the completion notice itself. On success the socket posts a short in-thread **ack** (":memo: Added to
 this task's notes.") — itself a bot message, so the events frame for it is filtered
 out (no capture loop). The "Started …" **anchor** posted at task create also tells the
 operator up front that replies here become notes (`THREAD_NOTE_HINT` in `commands.ts`).
@@ -148,8 +149,8 @@ targets it manually); there is no dedicated reply tool.
   Tokens stored plaintext (replayed per call), never echoed back to the UI. Set on
   `/config`; saving restarts the socket. `app_settings` keys: `slack_bot_token`,
   `slack_default_channel`, `slack_app_token`, `slack_socket_enabled`,
-  `slack_push_enabled`, `slack_allowed_users` (JSON array of Slack user ids — the
-  auth allowlist; **empty ⇒ deny everyone**, fail closed).
+  `slack_allowed_users` (JSON array of Slack user ids — the auth allowlist;
+  **empty ⇒ deny everyone**, fail closed).
 - **Per-team opt-in**: `slackEnabled` on the team's `team_config` JSON (runtime
   `local_teams`), `isSlackEnabledForTeam(db, teamId)`. Gates the MCP tools, push,
   and the origin prompt injection for that team's tasks.

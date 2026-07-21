@@ -235,4 +235,37 @@ describe("resolveAgentFromToken — API key auth", () => {
     const identity = resolveAgentFromToken(db, "short");
     expect(identity).toBeNull();
   });
+
+  function seedInstance(instanceId: string, instanceStatus: string, taskStatus: string): void {
+    db.prepare("INSERT OR IGNORE INTO agents (id, name, type) VALUES (?, ?, ?)").run("tmpl-1", "Tmpl", "claude-code");
+    db.prepare("INSERT OR IGNORE INTO tasks (id, title, status) VALUES (?, ?, ?)").run("task-x", "t", taskStatus);
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES (?, ?, ?, ?)",
+    ).run(instanceId, "task-x", "tmpl-1", instanceStatus);
+  }
+
+  it("resolves a live-task instance even when its status was raced off 'running'", () => {
+    // The core fix: instance status flipped to 'completed' by an exit handler mid-run,
+    // but the task is still running, so the token must remain valid.
+    seedInstance("inst-raced", "completed", "running");
+    const identity = resolveAgentFromToken(db, "inst-raced");
+    expect(identity).not.toBeNull();
+    expect(identity!.type).toBe("internal");
+    if (identity!.type === "internal") {
+      expect(identity!.runtimeId).toBe("inst-raced");
+      expect(identity!.taskId).toBe("task-x");
+    }
+  });
+
+  it("still resolves a running instance whose task is not running (task-less/preserve old path)", () => {
+    seedInstance("inst-running", "running", "completed");
+    const identity = resolveAgentFromToken(db, "inst-running");
+    expect(identity).not.toBeNull();
+    expect(identity!.type).toBe("internal");
+  });
+
+  it("rejects a finished instance on a finished task", () => {
+    seedInstance("inst-done", "completed", "completed");
+    expect(resolveAgentFromToken(db, "inst-done")).toBeNull();
+  });
 });

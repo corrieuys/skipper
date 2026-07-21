@@ -10,7 +10,7 @@ JSON-backed config snapshot layer.
 | `app-settings.ts` | App-wide settings R/W (persisted in DB `app_settings`) |
 | `model-settings.ts` | Machine-scoped provider+model overrides (config page "Agent Models"): skipper, chat, greg, dictation (experimental). `PROVIDER_ALLOWLIST` gates which agent types are selectable; `codex`, `opencode`, and `grok` are experimental providers, selectable only when `isExperimental()` |
 | `feature-flags.ts` | Feature flag read |
-| `slack-settings.ts` | Slack credentials + Socket Mode / push config (runtime `app_settings`). Bot token/default channel, app-level token (`slack_app_token`), socket toggle (`slack_socket_enabled`), push toggle (`slack_push_enabled`), and auth allowlist (`slack_allowed_users`, fail-closed). `getSlackBotToken`, `isSlackConfigured`, `isSocketModeConfigured`, `isSlackSocketEnabled`, `isSlackPushEnabled`, `isSlackUserAllowed`, `saveSlackConfig`. Credentials only — per-team opt-in + slash-command bindings live on the team / scheduled-task records. See [../slack/CLAUDE.md](../slack/CLAUDE.md) |
+| `slack-settings.ts` | Slack credentials + Socket Mode config (runtime `app_settings`). Bot token/default channel, app-level token (`slack_app_token`), socket toggle (`slack_socket_enabled`), and auth allowlist (`slack_allowed_users`, fail-closed). `getSlackBotToken`, `isSlackConfigured`, `isSocketModeConfigured`, `isSlackSocketEnabled`, `isSlackUserAllowed`, `saveSlackConfig`. No push toggle — outbound escalations/reviews are gated by the per-team `slackEnabled` opt-in, not a global switch. Credentials only — per-team opt-in + slash-command bindings live on the team / scheduled-task records. See [../slack/CLAUDE.md](../slack/CLAUDE.md) |
 | `teams.ts` | Team config persistence helpers |
 
 ## Snapshot files
