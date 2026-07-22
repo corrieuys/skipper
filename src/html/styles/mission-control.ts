@@ -397,6 +397,10 @@ export function missionControlStyles(): string {
       background: var(--sk-warn, #f5a524);
       color: #111;
     }
+    /* The class rule above beats the UA [hidden] rule, so an empty/hidden badge
+       would still reserve width (min-width + margin) and pad the button — hide it
+       explicitly. */
+    .mc-tab__badge[hidden] { display: none; }
     @keyframes mc-tab-blocked { 0%,100% { transform: none; } 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
     .mc-tab--blocked { animation: mc-tab-blocked 0.35s; border-color: var(--sk-danger, #e5484d); }
     /* Hide the "nothing needs input" hint once an escalation card
@@ -1753,6 +1757,58 @@ export function missionControlStyles(): string {
       bottom: 0;
       left: -4px;
       right: -4px;
+    }
+
+    /* Artifact inset window: opening an artifact renders a window laid OVER the
+     * artifacts panel body (not full-screen), with its own close button. The
+     * artifacts column body is its positioning context. */
+    .mc-outputs__col[data-dock-panel="artifacts"] .mc-outputs__col-body { position: relative; }
+    .artifact-inset {
+      position: absolute;
+      inset: 0;
+      z-index: 6;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--sk-surface-2);
+      border: 1px solid var(--sk-border);
+      border-radius: var(--sk-btn-radius);
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+    }
+    .artifact-inset[hidden] { display: none; }
+    .artifact-inset__bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      padding: var(--sk-space-2);
+      border-bottom: 1px solid var(--sk-border);
+    }
+    .artifact-inset__bar-title {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--sk-text-muted);
+    }
+    .artifact-inset__close {
+      width: 28px;
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--sk-border);
+      background: var(--sk-surface-3);
+      color: var(--sk-text-muted);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+      border-radius: var(--sk-btn-radius);
+    }
+    .artifact-inset__close:hover { color: var(--sk-text); background: var(--sk-surface-1); }
+    .artifact-inset__body {
+      flex: 1;
+      overflow: auto;
+      padding: var(--sk-space-3);
     }
 
     /* Sidebar drawer backdrop — fixed-position and hidden at all viewports

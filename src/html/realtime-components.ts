@@ -691,7 +691,7 @@ export function realtimeTaskDetailPage(
             </div>
           </section>
 
-          <section class="card">
+          <section class="card" style="position:relative;">
             <div class="section-heading">
               <div>
                 <h2>Artifacts</h2>
@@ -706,8 +706,14 @@ export function realtimeTaskDetailPage(
                  hx-on:htmx:response-error="event.detail.shouldSwap=false">
               <p class="muted">Loading...</p>
             </div>
-            <!-- Opened artifact renders here, inside the panel (not full-screen). -->
-            <div id="sk-artifact-detail" data-sk-artifact-detail style="display:none;margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid rgba(173,170,170,0.15);"></div>
+            <!-- Opened artifact renders in an inset window over this panel (not full-screen). -->
+            <div id="sk-artifact-detail-window" class="artifact-inset" hidden>
+              <div class="artifact-inset__bar">
+                <span class="artifact-inset__bar-title">Artifact</span>
+                <button type="button" class="artifact-inset__close" data-sk-artifact-close title="Close" aria-label="Close artifact">&times;</button>
+              </div>
+              <div class="artifact-inset__body"><div id="sk-artifact-detail" data-sk-artifact-detail></div></div>
+            </div>
           </section>
         </div>
       </div>
@@ -723,9 +729,22 @@ export function realtimeTaskDetailPage(
       // opener the artifact list-item onclick expects locally. htmx performs the
       // fetch into #sk-artifact-detail; this just reveals + scrolls to it.
       window.skOpenArtifactPanel = function () {
+        var win = document.getElementById('sk-artifact-detail-window');
+        if (win) { win.hidden = false; win.scrollTop = 0; }
         var d = document.getElementById('sk-artifact-detail');
-        if (d) { d.style.display = 'block'; d.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+        if (d) d.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       };
+      // Close (✕) the artifact inset: hide the window and drop its content so the
+      // artifacts list underneath returns.
+      document.addEventListener('click', function (e) {
+        var btn = e.target.closest && e.target.closest('[data-sk-artifact-close]');
+        if (!btn) return;
+        e.preventDefault();
+        var win = document.getElementById('sk-artifact-detail-window');
+        if (win) win.hidden = true;
+        var d = document.getElementById('sk-artifact-detail');
+        if (d) d.innerHTML = '';
+      });
     </script>
     </div>
 

@@ -106,16 +106,20 @@
     var blobParts;
     var hasOverlap = false;
 
-    if (flushCount === 1 || overlapChunks.length === 0) {
-      // First flush: allChunks[0] has the header — blob is already valid.
+    if (flushCount === 1) {
+      // First flush only: allChunks[0] is the header — blob is already valid.
       // No overlap to prepend.
       blobParts = allChunks;
     } else {
-      // Subsequent flushes: prepend [headerChunk, ...overlapChunks] to new chunks.
-      // headerChunk provides the EBML header; overlapChunks are Cluster data from
-      // the tail of the previous period; allChunks are new Cluster data.
-      blobParts = [headerChunk].concat(overlapChunks, allChunks);
-      hasOverlap = true;
+      // Every subsequent flush: allChunks is Cluster-only data (the header was
+      // spliced out on the first flush), so we MUST prepend the saved headerChunk
+      // to make a valid standalone WebM. overlapChunks (Cluster data from the tail
+      // of the previous period) go between the header and the new chunks; on the
+      // final post-stop flush overlapChunks is empty and we just send header+tail.
+      // Do NOT gate the header on overlapChunks.length — a headerless blob makes
+      // whisper's ffmpeg fail with "EBML header parsing failed".
+      blobParts = (headerChunk ? [headerChunk] : []).concat(overlapChunks, allChunks);
+      hasOverlap = overlapChunks.length > 0;
     }
 
     // Save tail of the NEW chunks (not including old overlap) for next flush

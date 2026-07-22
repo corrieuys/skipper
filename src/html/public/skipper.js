@@ -1160,9 +1160,23 @@
   // artifact list-item onclick (ARTIFACT_MODAL_VARIANTS openFn).
   window.skOpenArtifactPanel = function () {
     if (window.Skipper && Skipper.dock) Skipper.dock.open("artifacts");
+    var win = document.getElementById("sk-artifact-detail-window");
+    if (win) { win.hidden = false; win.scrollTop = 0; }
     var d = document.getElementById("sk-artifact-detail");
     if (d) d.scrollIntoView({ block: "nearest", behavior: "smooth" });
   };
+
+  // Close the artifact inset window (✕) — hide it and drop the detail content so
+  // the artifacts list underneath is shown again.
+  document.addEventListener("click", function (e) {
+    var closeBtn = e.target.closest && e.target.closest("[data-sk-artifact-close]");
+    if (!closeBtn) return;
+    e.preventDefault();
+    var win = document.getElementById("sk-artifact-detail-window");
+    if (win) win.hidden = true;
+    var d = document.getElementById("sk-artifact-detail");
+    if (d) d.innerHTML = "";
+  });
 
   // Escape key: close modals
   document.addEventListener("keydown", function (e) {

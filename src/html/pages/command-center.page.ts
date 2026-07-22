@@ -358,7 +358,13 @@ function renderTaskDock(taskId: string, opts: {
   const escalationsBody = `<div id="mc-task-escalations-${eid}" hx-get="/fragments/tasks/${eid}/escalations" hx-trigger="load" hx-swap="innerHTML"></div>${opts.escalationsExtra ?? ""}`;
   const notesBody = `<div id="mc-notes-${eid}" style="padding:var(--sk-space-2);" hx-get="/fragments/tasks/${eid}/notes" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading notes...</span></div>`;
   const artifactsBody = `<div id="mc-artifacts-${eid}" style="padding:var(--sk-space-2);" hx-get="/fragments/tasks/${eid}/artifacts" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading artifacts...</span></div>
-        <div id="sk-artifact-detail" data-sk-artifact-detail style="padding:var(--sk-space-2);"></div>`;
+        <div id="sk-artifact-detail-window" class="artifact-inset" hidden>
+          <div class="artifact-inset__bar">
+            <span class="artifact-inset__bar-title">Artifact</span>
+            <button type="button" class="artifact-inset__close" data-sk-artifact-close title="Close" aria-label="Close artifact">&times;</button>
+          </div>
+          <div class="artifact-inset__body"><div id="sk-artifact-detail" data-sk-artifact-detail></div></div>
+        </div>`;
 
   return `
     <div class="mc-tabs" role="tablist">
