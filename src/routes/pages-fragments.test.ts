@@ -233,13 +233,13 @@ describe("fragment polling routes", () => {
     expect(html).toContain('id="task-list"');
   });
 
-  it("GET /fragments/tasks/:id/artifacts launches task artifacts into the modal body", async () => {
+  it("GET /fragments/tasks/:id/artifacts opens artifacts in the in-panel detail (not a full-screen modal)", async () => {
     const res = await fetch(`${baseUrl}/fragments/tasks/task-1/artifacts`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain('onclick="openTaskArtifactModal(); return false;"');
-    expect(html).toContain('hx-target="#task-artifact-modal-body"');
-    expect(html).not.toContain('hx-target="#artifact-detail"');
+    expect(html).toContain('onclick="skOpenArtifactPanel(); return false;"');
+    expect(html).toContain('hx-target="#sk-artifact-detail"');
+    expect(html).not.toContain('hx-target="#task-artifact-modal-body"');
   });
 
   it("POST /fragments/tasks/:id/artifacts/:name/publish publishes the version and shows the public URL", () => withExperimental(async () => {

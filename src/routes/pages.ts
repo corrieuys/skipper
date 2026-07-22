@@ -1710,7 +1710,9 @@ interface ArtifactModalVariant {
 }
 
 const ARTIFACT_MODAL_VARIANTS: ArtifactModalVariant[] = [
-  { routePrefix: "/fragments/tasks", openFn: "openTaskArtifactModal", target: "#task-artifact-modal-body", listId: (id) => `mc-artifacts-${id}` },
+  // Primary surface (dashboard task view + realtime page): the artifact opens
+  // INSIDE its own dock panel (#sk-artifact-detail), not a full-screen modal.
+  { routePrefix: "/fragments/tasks", openFn: "skOpenArtifactPanel", target: "#sk-artifact-detail", listId: (id) => `mc-artifacts-${id}` },
   { routePrefix: "/fragments/dashboard/tasks", openFn: "openDashboardArtifactModal", target: "#dashboard-artifact-modal-body", listId: () => "dashboard-artifact-list" },
 ];
 

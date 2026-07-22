@@ -706,6 +706,8 @@ export function realtimeTaskDetailPage(
                  hx-on:htmx:response-error="event.detail.shouldSwap=false">
               <p class="muted">Loading...</p>
             </div>
+            <!-- Opened artifact renders here, inside the panel (not full-screen). -->
+            <div id="sk-artifact-detail" data-sk-artifact-detail style="display:none;margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid rgba(173,170,170,0.15);"></div>
           </section>
         </div>
       </div>
@@ -715,30 +717,14 @@ export function realtimeTaskDetailPage(
       </div>
     </div>
 
-    <div id="task-artifact-modal" class="artifact-modal" style="display:none;" onclick="if(event.target===this){closeTaskArtifactModal();}">
-      <div class="artifact-modal-dialog">
-        <div class="artifact-modal-head">
-          <h3 class="artifact-modal-title">Artifact</h3>
-          <button type="button" class="btn-sm" onclick="closeTaskArtifactModal()">Close</button>
-        </div>
-        <div id="task-artifact-modal-body" class="artifact-modal-body">
-          <p class="muted">Loading artifact...</p>
-        </div>
-      </div>
-    </div>
-
     <script>
-      window.openTaskArtifactModal = function () {
-        var modal = document.getElementById('task-artifact-modal');
-        if (!modal) return;
-        modal.style.display = 'flex';
-        document.body.style.overflow = 'hidden';
-      };
-      window.closeTaskArtifactModal = function () {
-        var modal = document.getElementById('task-artifact-modal');
-        if (!modal) return;
-        modal.style.display = 'none';
-        document.body.style.overflow = '';
+      // Artifacts open INSIDE the Artifacts panel (#sk-artifact-detail), not a
+      // full-screen modal. This page does not load skipper.js, so define the
+      // opener the artifact list-item onclick expects locally. htmx performs the
+      // fetch into #sk-artifact-detail; this just reveals + scrolls to it.
+      window.skOpenArtifactPanel = function () {
+        var d = document.getElementById('sk-artifact-detail');
+        if (d) { d.style.display = 'block'; d.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
       };
     </script>
     </div>

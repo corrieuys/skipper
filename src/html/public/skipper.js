@@ -424,57 +424,196 @@
   };
 
   // ── Tabs ──
-  Skipper.tabs = {
-    show: function (name) {
-      // Deactivate all tabs and panels
-      document.querySelectorAll(".mc-tab").forEach(function (t) { t.classList.remove("mc-tab--active"); });
-      document.querySelectorAll(".mc-tab-panel").forEach(function (p) { p.classList.remove("mc-tab-panel--active"); });
-      // Activate the target
-      var panel = document.getElementById("mc-tab-" + name);
-      if (panel) panel.classList.add("mc-tab-panel--active");
-      // Activate the button (matched by data attribute, so the label can differ
-      // from the tab name — e.g. "User Input" → "input").
-      var btn = document.querySelector('.mc-tab[data-mc-tab="' + name + '"]');
-      if (btn) btn.classList.add("mc-tab--active");
+  // ── Panel dock ──────────────────────────────────────────────────────────
+  // The running-task view is a "dock" of toggleable, resizable, reorderable
+  // columns (Timeline, Details, Escalations[input], Notes, Artifacts). 1-3 show
+  // side by side (manual toggles blocked at 3). All 5 panels stay mounted in the
+  // DOM (so their hx-get / WS-OOB targets stay stable); toggling flips display +
+  // re-inserts the resize dividers between visible columns. State (open set,
+  // order, widths) persists globally in Skipper.prefs.dockState.
+  Skipper.dock = {
+    PANELS: ["timeline", "details", "input", "notes", "artifacts"],
+    MAX: 3,
+    _state: null,           // { open: [names, in display order], widths: {name: ratio} }
+    _containerEl: null,     // the #mc-outputs element we last initialized against
+    _inputCount: undefined,
+
+    _container: function () { return document.getElementById("mc-outputs"); },
+
+    _loadState: function () {
+      var valid = function (n) { return Skipper.dock.PANELS.indexOf(n) >= 0; };
+      var saved = Skipper.prefs.get("dockState", "");
+      if (saved) {
+        try {
+          var s = JSON.parse(saved);
+          if (s && Array.isArray(s.open) && s.open.filter(valid).length) {
+            return { open: s.open.filter(valid), widths: s.widths || {} };
+          }
+        } catch (_) {}
+      }
+      var c = Skipper.dock._container();
+      var def = c && c.getAttribute("data-dock-default");
+      var open = def ? def.split(",").filter(valid) : ["timeline", "notes"];
+      return { open: open.length ? open : ["timeline"], widths: {} };
     },
-    // Badge the User Input tab with the count of pending items — the review
-    // gate (.mc-escalation) plus each escalation card (id^="escalation-").
-    // Its content loads async, so recompute on every swap.
-    //
-    // opts.reset (passed on a full task re-render) re-baselines the count
-    // without auto-switching, so changing tasks never counts as "answered".
+
+    _saveState: function () {
+      if (Skipper.dock._state) Skipper.prefs.set("dockState", JSON.stringify(Skipper.dock._state));
+    },
+
+    // Reconcile the DOM to _state: show/hide + order the columns and (re)insert
+    // numbered dividers between the visible ones.
+    render: function () {
+      var c = Skipper.dock._container();
+      if (!c || !Skipper.dock._state) return;
+      var st = Skipper.dock._state;
+
+      var existing = {};
+      c.querySelectorAll(".mc-outputs__col[data-dock-panel]").forEach(function (col) {
+        existing[col.getAttribute("data-dock-panel")] = col;
+      });
+      st.open = st.open.filter(function (n) { return existing[n]; });
+      if (!st.open.length) {
+        var fb = ["timeline", "notes"].filter(function (n) { return existing[n]; });
+        st.open = fb.length ? fb.slice(0, 1) : Object.keys(existing).slice(0, 1);
+      }
+      if (st.open.length > Skipper.dock.MAX) st.open = st.open.slice(0, Skipper.dock.MAX);
+
+      c.querySelectorAll(".mc-outputs__divider").forEach(function (d) { d.remove(); });
+
+      Object.keys(existing).forEach(function (n) {
+        var col = existing[n];
+        var isOpen = st.open.indexOf(n) >= 0;
+        col.style.display = isOpen ? "flex" : "none";
+        var r = st.widths[n];
+        col.style.flex = (isOpen && r) ? (Number(r).toFixed(4) + " 1 0") : "1 1 0";
+      });
+      // Open columns first (in order) with dividers between; then hidden ones.
+      st.open.forEach(function (n, i) {
+        c.appendChild(existing[n]);
+        if (i < st.open.length - 1) {
+          var div = document.createElement("div");
+          div.className = "mc-outputs__divider";
+          div.setAttribute("data-sk-outputs-resize", String(i));
+          c.appendChild(div);
+        }
+      });
+      Object.keys(existing).forEach(function (n) {
+        if (st.open.indexOf(n) < 0) c.appendChild(existing[n]);
+      });
+
+      document.querySelectorAll(".mc-tab[data-mc-tab]").forEach(function (b) {
+        var n = b.getAttribute("data-mc-tab");
+        b.classList.toggle("mc-tab--active", st.open.indexOf(n) >= 0);
+      });
+      Skipper.dock._saveState();
+    },
+
+    toggle: function (name) {
+      if (!Skipper.dock._state) Skipper.dock.init();
+      var st = Skipper.dock._state; if (!st) return;
+      var idx = st.open.indexOf(name);
+      if (idx >= 0) {
+        if (st.open.length <= 1) return;      // keep at least one open
+        st.open.splice(idx, 1);
+        st.widths = {};                        // closing resets the rest to even
+      } else {
+        if (st.open.length >= Skipper.dock.MAX) { Skipper.dock._flashFull(name); return; }
+        st.open.push(name);
+      }
+      Skipper.dock.render();
+      Skipper.dock._lazyLoad(name);
+    },
+
+    // Ensure a panel is visible. opts.force evicts the oldest non-`name` panel
+    // when full (used to guarantee escalations surface past the manual cap).
+    open: function (name, opts) {
+      if (!Skipper.dock._state) Skipper.dock.init();
+      var st = Skipper.dock._state; if (!st) return;
+      if (st.open.indexOf(name) >= 0) { Skipper.dock._lazyLoad(name); return; }
+      if (st.open.length >= Skipper.dock.MAX) {
+        if (!(opts && opts.force)) return;
+        var vi = -1;
+        for (var i = 0; i < st.open.length; i++) { if (st.open[i] !== name) { vi = i; break; } }
+        if (vi >= 0) st.open.splice(vi, 1);
+      }
+      st.open.push(name);
+      Skipper.dock.render();
+      Skipper.dock._lazyLoad(name);
+    },
+
+    close: function (name) {
+      var st = Skipper.dock._state; if (!st) return;
+      var idx = st.open.indexOf(name);
+      if (idx >= 0 && st.open.length > 1) {
+        st.open.splice(idx, 1);
+        st.widths = {};                        // closing resets the rest to even
+        Skipper.dock.render();
+      }
+    },
+
+    // Reorder: move `name` to sit before `targetName` (or to the end).
+    moveBefore: function (name, targetName) {
+      var st = Skipper.dock._state; if (!st) return;
+      var from = st.open.indexOf(name); if (from < 0) return;
+      st.open.splice(from, 1);
+      var to = targetName ? st.open.indexOf(targetName) : st.open.length;
+      if (to < 0) to = st.open.length;
+      st.open.splice(to, 0, name);
+      Skipper.dock.render();
+    },
+
+    // Some panels defer their fetch until first shown (details). Fire the
+    // one-time `dockopen` htmx trigger on the panel's deferred loadable.
+    _lazyLoad: function (name) {
+      var c = Skipper.dock._container(); if (!c) return;
+      var col = c.querySelector('.mc-outputs__col[data-dock-panel="' + name + '"]');
+      if (!col) return;
+      var lazy = col.querySelector("[data-dock-lazy]:not([data-dock-loaded])");
+      if (lazy && window.htmx) { lazy.setAttribute("data-dock-loaded", ""); window.htmx.trigger(lazy, "dockopen"); }
+    },
+
+    _flashFull: function (name) {
+      var b = document.querySelector('.mc-tab[data-mc-tab="' + name + '"]');
+      if (!b) return;
+      b.classList.add("mc-tab--blocked");
+      setTimeout(function () { b.classList.remove("mc-tab--blocked"); }, 450);
+    },
+
+    // Initialize once per #mc-outputs element (i.e. per task-view swap). No-op on
+    // partial fragment swaps that leave the dock element in place.
+    init: function () {
+      var c = Skipper.dock._container();
+      if (!c) { Skipper.dock._state = null; Skipper.dock._containerEl = null; return; }
+      if (c === Skipper.dock._containerEl && Skipper.dock._state) return;
+      Skipper.dock._containerEl = c;
+      Skipper.dock._state = Skipper.dock._loadState();
+      Skipper.dock.render();
+      Skipper.dock._state.open.forEach(function (n) { Skipper.dock._lazyLoad(n); });
+    },
+
+    // Badge/attention on the Escalations toggle; auto-open it when a new item is
+    // raised (forced past the cap since escalations take priority). Recomputed on
+    // every swap; opts.reset (full task re-render) re-baselines without opening.
     refreshAttention: function (opts) {
-      var panel = document.getElementById("mc-tab-input");
+      var col = document.querySelector('.mc-outputs__col[data-dock-panel="input"]');
       var btn = document.querySelector('.mc-tab[data-mc-tab="input"]');
-      if (!panel || !btn) { this._inputCount = undefined; return; }
-      // Count only OPEN items: the review/recovery gate ([data-mc-pending])
-      // plus each escalation card that still shows its resolve form. A resolved
-      // card keeps its id but drops the form, so counting forms lets the
-      // badge/switch react to the instant direct swap, not the later WS push.
-      var reviews = panel.querySelectorAll("[data-mc-pending]").length;
-      var openEscalations = panel.querySelectorAll('form[hx-post*="/resolve"]').length;
+      if (!col || !btn) { Skipper.dock._inputCount = undefined; return; }
+      var reviews = col.querySelectorAll("[data-mc-pending]").length;
+      var openEscalations = col.querySelectorAll('form[hx-post*="/resolve"]').length;
       var count = reviews + openEscalations;
       var badge = btn.querySelector("[data-mc-tab-badge]");
       if (badge) {
         if (count > 0) { badge.textContent = String(count); badge.removeAttribute("hidden"); }
         else { badge.textContent = ""; badge.setAttribute("hidden", ""); }
       }
-      if (count > 0) btn.classList.add("mc-tab--attention");
-      else btn.classList.remove("mc-tab--attention");
+      btn.classList.toggle("mc-tab--attention", count > 0);
 
-      // Auto-navigate on transitions. opts.reset (full task re-render) just
-      // re-baselines so switching tasks never counts as raised/answered.
-      var prev = this._inputCount;
-      this._inputCount = count;
+      var prev = Skipper.dock._inputCount;
+      Skipper.dock._inputCount = count;
       if (opts && opts.reset) return;
       if (typeof prev !== "number") return;
-      if (prev === 0 && count > 0) {
-        // Something was raised → surface the User Input tab.
-        Skipper.tabs.show("input");
-      } else if (prev > 0 && count === 0 && panel.classList.contains("mc-tab-panel--active")) {
-        // Last item answered while viewing it → back to Outputs.
-        Skipper.tabs.show("outputs");
-      }
+      if (prev === 0 && count > 0) Skipper.dock.open("input", { force: true });
     },
   };
 
@@ -523,20 +662,25 @@
       e.preventDefault();
       var container = document.getElementById("mc-outputs");
       if (!container) return;
-      Skipper.outputs._resizing = true;
 
-      var cols = container.querySelectorAll(".mc-outputs__col");
+      // Operate on the VISIBLE columns only — hidden (toggled-off) panels stay in
+      // the DOM but must not participate in the resize index math. The divider's
+      // index counts from the left among visible columns.
+      var cols = Array.prototype.filter.call(
+        container.querySelectorAll(".mc-outputs__col"),
+        function (c) { return c.style.display !== "none"; }
+      );
       if (cols.length < 2) return;
+      var leftIdx = dividerIndex;
+      var rightIdx = dividerIndex + 1;
+      if (!cols[leftIdx] || !cols[rightIdx]) return;
 
-      var dividers = container.querySelectorAll(".mc-outputs__divider");
-      var divider = dividers[dividerIndex];
+      Skipper.outputs._resizing = true;
+      var divider = container.querySelectorAll(".mc-outputs__divider")[dividerIndex];
       if (divider) divider.classList.add("mc-outputs__divider--active");
 
       var startX = e.clientX;
-      var widths = Array.from(cols).map(function (c) { return c.offsetWidth; });
-
-      var leftIdx = dividerIndex;
-      var rightIdx = dividerIndex + 1;
+      var widths = cols.map(function (c) { return c.offsetWidth; });
 
       function onMove(ev) {
         if (!Skipper.outputs._resizing) return;
@@ -544,9 +688,6 @@
         var newLeft = widths[leftIdx] + delta;
         var newRight = widths[rightIdx] - delta;
         if (newLeft < 120 || newRight < 120) return;
-        // During the drag we use absolute px so the divider tracks the cursor
-        // 1:1. The final flex-grow ratios are applied in onUp() so the
-        // columns reflow when the viewport / sidebar changes width later.
         cols[leftIdx].style.flex = "0 0 " + newLeft + "px";
         cols[rightIdx].style.flex = "0 0 " + newRight + "px";
       }
@@ -554,14 +695,21 @@
       function onUp() {
         Skipper.outputs._resizing = false;
         if (divider) divider.classList.remove("mc-outputs__divider--active");
-        // Snap-to-ratios: take the final pixel widths, normalize them, and
-        // apply as flex-grow values with flex-basis:0 so the columns scale
-        // proportionally with their container instead of getting stuck at
-        // fixed pixel widths. Persisted values are the same px array — the
-        // restore path turns them into ratios on load.
-        var saved = Array.from(cols).map(function (c) { return c.offsetWidth; });
+        var saved = cols.map(function (c) { return c.offsetWidth; });
         applyOutputsRatios(cols, saved);
-        Skipper.prefs.set("outputsCols", JSON.stringify(saved));
+        // Persist per-panel ratios into the dock state so widths survive toggles
+        // and reorders (which change column position but not identity).
+        if (Skipper.dock && Skipper.dock._state) {
+          var total = 0;
+          saved.forEach(function (w) { total += Number(w) || 0; });
+          if (total > 0) {
+            cols.forEach(function (c, i) {
+              var n = c.getAttribute("data-dock-panel");
+              if (n) Skipper.dock._state.widths[n] = saved[i] / total;
+            });
+            Skipper.dock._saveState();
+          }
+        }
         document.removeEventListener("mousemove", onMove);
         document.removeEventListener("mouseup", onUp);
       }
@@ -861,17 +1009,10 @@
       return;
     }
 
-    // Output pane tab (Notes / Artifacts)
-    var outputTab = e.target.closest("[data-sk-output-tab]");
-    if (outputTab) {
-      var which = outputTab.getAttribute("data-sk-output-tab");
-      outputTab.parentElement.querySelectorAll("[data-sk-output-tab]").forEach(function (b) {
-        b.classList.remove("mc-activity__filter--active");
-      });
-      outputTab.classList.add("mc-activity__filter--active");
-      document.querySelectorAll("[data-sk-output-panel]").forEach(function (p) {
-        p.style.display = p.getAttribute("data-sk-output-panel") === which ? "" : "none";
-      });
+    // Dock panel close (✕ in a column header)
+    var dockClose = e.target.closest("[data-dock-close]");
+    if (dockClose) {
+      Skipper.dock.close(dockClose.getAttribute("data-dock-close"));
       return;
     }
 
@@ -946,14 +1087,13 @@
         body: JSON.stringify({ body: textarea.value, kind: kind })
       }).then(function(res) {
         if (!res.ok) throw new Error("Save failed");
-        var modalBody = container.closest("[id$='artifact-modal-body']");
-        if (modalBody) {
-          var hxGet = modalBody.querySelector("[hx-get]");
-          var url = hxGet ? hxGet.getAttribute("hx-get") : null;
-          if (!url) {
-            url = "/fragments/tasks/" + encodeURIComponent(taskId) + "/artifacts/" + encodeURIComponent(artifactName);
-          }
-          htmx.ajax("GET", url.split("?")[0], { target: modalBody, swap: "innerHTML" });
+        // Re-fetch the fresh detail into whatever container is showing it — the
+        // in-panel artifact detail (#sk-artifact-detail) or, for legacy surfaces,
+        // a modal body ending in artifact-modal-body.
+        var detailHost = container.closest("[data-sk-artifact-detail]") || container.closest("[id$='artifact-modal-body']");
+        if (detailHost) {
+          var url = "/fragments/tasks/" + encodeURIComponent(taskId) + "/artifacts/" + encodeURIComponent(artifactName);
+          htmx.ajax("GET", url, { target: detailHost, swap: "innerHTML" });
         }
       }).catch(function(err) {
         saveBtn.disabled = false;
@@ -989,6 +1129,40 @@
       Skipper.outputs._startResize(e, idx);
     }
   });
+
+  // Dock column reorder — drag a column header ([data-dock-handle]) onto another
+  // column to change the side-by-side order.
+  document.addEventListener("dragstart", function (e) {
+    var handle = e.target.closest("[data-dock-handle]");
+    if (handle && e.dataTransfer) {
+      e.dataTransfer.setData("text/x-sk-dock", handle.getAttribute("data-dock-handle"));
+      e.dataTransfer.effectAllowed = "move";
+    }
+  });
+  document.addEventListener("dragover", function (e) {
+    var col = e.target.closest(".mc-outputs__col[data-dock-panel]");
+    if (col && e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types, "text/x-sk-dock") >= 0) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+    }
+  });
+  document.addEventListener("drop", function (e) {
+    var col = e.target.closest(".mc-outputs__col[data-dock-panel]");
+    if (!col || !e.dataTransfer) return;
+    var name = e.dataTransfer.getData("text/x-sk-dock");
+    if (!name) return;
+    e.preventDefault();
+    var target = col.getAttribute("data-dock-panel");
+    if (target && target !== name) Skipper.dock.moveBefore(name, target);
+  });
+
+  // Open an artifact inside its own panel (not full-screen). Referenced by the
+  // artifact list-item onclick (ARTIFACT_MODAL_VARIANTS openFn).
+  window.skOpenArtifactPanel = function () {
+    if (window.Skipper && Skipper.dock) Skipper.dock.open("artifacts");
+    var d = document.getElementById("sk-artifact-detail");
+    if (d) d.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  };
 
   // Escape key: close modals
   document.addEventListener("keydown", function (e) {
@@ -1073,13 +1247,15 @@
 
   // ── HTMX Integration ──
   document.addEventListener("htmx:afterSwap", function (evt) {
-    // Restore output column widths after any HTMX swap
-    restoreOutputsCols();
+    // (Re)initialize the panel dock when a task view is (re)inserted; no-op on
+    // partial fragment swaps that leave #mc-outputs in place. Restores the
+    // persisted open-set / order / column widths.
+    Skipper.dock.init();
 
-    // Flag the User Input tab when review/escalation content lands in it. A
-    // full task re-render (target #mc-main) re-baselines instead of switching.
+    // Flag the Escalations panel when review/escalation content lands in it. A
+    // full task re-render (target #mc-main) re-baselines instead of auto-opening.
     var tgt = evt && evt.detail && evt.detail.target;
-    Skipper.tabs.refreshAttention(tgt && tgt.id === "mc-main" ? { reset: true } : undefined);
+    Skipper.dock.refreshAttention(tgt && tgt.id === "mc-main" ? { reset: true } : undefined);
 
     renderMarkdownBlocks();
 
@@ -1159,8 +1335,9 @@
       if (ws) ws.classList.add("mc-workspace--sidebar-pinned");
     }
 
-    // Restore output column widths
-    restoreOutputsCols();
+    // Initialize the panel dock on first (server-rendered) load — afterSwap
+    // handles subsequent sidebar-click task swaps.
+    Skipper.dock.init();
 
     renderMarkdownBlocks();
   });

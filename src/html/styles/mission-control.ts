@@ -376,15 +376,32 @@ export function missionControlStyles(): string {
       color: var(--sk-text-muted);
       border-color: var(--sk-border);
     }
+    /* Toggle buttons are multi-active now (each drives one dock panel on/off). */
     .mc-tab--active,
     .mc-tab--active:hover {
       color: var(--sk-accent-secondary);
       border-color: rgba(0, 251, 251, 0.35);
       background: rgba(0, 251, 251, 0.06);
     }
+    /* Escalations toggle: attention (pending items) + blocked flash (max-3). */
+    .mc-tab--attention { color: var(--sk-warn, #f5a524); border-color: rgba(245, 165, 36, 0.4); }
+    .mc-tab__badge {
+      display: inline-block;
+      margin-left: 6px;
+      min-width: 15px;
+      padding: 0 4px;
+      font-size: 10px;
+      line-height: 15px;
+      text-align: center;
+      border-radius: 8px;
+      background: var(--sk-warn, #f5a524);
+      color: #111;
+    }
+    @keyframes mc-tab-blocked { 0%,100% { transform: none; } 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
+    .mc-tab--blocked { animation: mc-tab-blocked 0.35s; border-color: var(--sk-danger, #e5484d); }
     /* Hide the "nothing needs input" hint once an escalation card
-       (id^="escalation-") lands in the Escalations tab. */
-    #mc-tab-input:has([id^="escalation-"]) .mc-userinput__empty { display: none; }
+       (id^="escalation-") lands in the Escalations panel. */
+    .mc-outputs__col[data-dock-panel="input"]:has([id^="escalation-"]) .mc-userinput__empty { display: none; }
     .mc-tab-panel { display: none; flex: 1; overflow-y: auto; padding: var(--sk-space-3); }
     .mc-tab-panel--active { display: flex; flex-direction: column; }
 
@@ -1666,6 +1683,9 @@ export function missionControlStyles(): string {
       overflow: hidden;
     }
     .mc-outputs__col-header {
+      display: flex;
+      align-items: center;
+      gap: var(--sk-space-2);
       padding: var(--sk-space-2) var(--sk-space-3);
       font-size: 9px;
       text-transform: uppercase;
@@ -1675,7 +1695,40 @@ export function missionControlStyles(): string {
       background: var(--sk-surface-1);
       border-bottom: 1px solid var(--sk-border);
       flex-shrink: 0;
+      cursor: grab;              /* the whole header is the reorder drag handle */
+      user-select: none;
     }
+    .mc-outputs__col-header:active { cursor: grabbing; }
+    /* Drag affordance drawn in CSS (three lines) rather than the ☰ glyph, whose
+       ink sits high in its em box and reads as misaligned with the title. */
+    .mc-outputs__col-header::before {
+      content: '';
+      flex-shrink: 0;
+      width: 13px;
+      height: 10px;
+      opacity: 0.5;
+      background:
+        linear-gradient(currentColor, currentColor) left top / 100% 2px no-repeat,
+        linear-gradient(currentColor, currentColor) left 50% / 100% 2px no-repeat,
+        linear-gradient(currentColor, currentColor) left bottom / 100% 2px no-repeat;
+    }
+    .mc-outputs__col-title { flex: 1; min-width: 0; line-height: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mc-outputs__col-close {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      background: transparent;
+      border: none;
+      color: var(--sk-text-subtle);
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      border-radius: var(--sk-btn-radius);
+    }
+    .mc-outputs__col-close:hover { color: var(--sk-text); background: var(--sk-surface-3); }
     .mc-outputs__col-body {
       flex: 1;
       overflow-y: auto;

@@ -831,7 +831,7 @@ export class UIWebSocketManager {
     } else {
       const tableRows = rows.map((r) =>
         `<tr>
-          <td><a href="#" hx-get="/fragments/tasks/${taskId}/artifacts/${encodeURIComponent(r.name)}" hx-target="#artifact-detail" hx-swap="innerHTML">${esc(r.name)}</a></td>
+          <td><a href="#" onclick="skOpenArtifactPanel(); return false;" hx-get="/fragments/tasks/${taskId}/artifacts/${encodeURIComponent(r.name)}" hx-target="#sk-artifact-detail" hx-swap="innerHTML">${esc(r.name)}</a></td>
           <td>${esc(r.kind)}</td>
           <td>v${r.version}</td>
           <td>${r.created_at}</td>
@@ -1059,7 +1059,7 @@ export class UIWebSocketManager {
     } else {
       const tableRows = rows.map((r) =>
         `<tr>
-          <td><a href="#" onclick="openTaskArtifactModal(); return false;" hx-get="/fragments/tasks/${escapeHtml(taskId)}/artifacts/${encodeURIComponent(r.name)}" hx-target="#task-artifact-modal-body" hx-swap="innerHTML">${escapeHtml(r.name)}</a></td>
+          <td><a href="#" onclick="skOpenArtifactPanel(); return false;" hx-get="/fragments/tasks/${escapeHtml(taskId)}/artifacts/${encodeURIComponent(r.name)}" hx-target="#sk-artifact-detail" hx-swap="innerHTML">${escapeHtml(r.name)}</a></td>
           <td>${escapeHtml(r.kind)}</td>
           <td>v${r.version}</td>
           <td>${formatTimestamp(r.created_at)}</td>

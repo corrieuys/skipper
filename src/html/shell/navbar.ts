@@ -45,7 +45,7 @@ export function navbar(data: NavbarData): string {
     </div>
     <div class="sk-navbar__right">
       <a href="/games/asteroids" class="sk-navbar__game-btn" title="Asteroids">🎲</a>
-      <span class="sk-navbar__monkey-toggle mc-mobile-hide" id="monkey-toggle" title="Toggle Greg"
+      <span class="sk-navbar__monkey-toggle mc-mobile-hide" id="monkey-toggle" title="Toggle Greg" style="opacity:0.5"
         onclick="const on=this.dataset.enabled!=='false';this.dataset.enabled=on?'false':'true';this.style.opacity=on?'0.5':'1';window.dispatchEvent(new CustomEvent('monkey-toggle',{detail:{enabled:!on}}));localStorage.setItem('monkey-enabled',!on)">🐒</span>
       ${isExperimental() && data.skipperConnectEnabled !== undefined ? `<span class="sk-connect mc-mobile-hide" title="Skipper Connect" style="opacity:${data.skipperConnectEnabled ? "1" : "0.5"}"><span class="sk-connect__status" data-status="disabled" hx-get="/api/settings/skipper-connect/status" hx-trigger="load, every 5s" hx-swap="outerHTML"></span><span class="sk-connect__icon" id="skipper-connect-toggle" role="button"
         hx-post="/api/settings/skipper-connect" hx-vals='${JSON.stringify({ enabled: data.skipperConnectEnabled ? "false" : "true" })}'

@@ -231,8 +231,8 @@
       { sel: ".mc-sidebar", type: "sidebar" },
       { sel: "#sk-agent-tree", type: "agent-tree" },
       { sel: ".mc-activity__feed", type: "activity-feed" },
-      { sel: "[data-sk-output-panel='notes']", type: "notes-panel" },
-      { sel: "[data-sk-output-panel='artifacts']", type: "artifacts-panel" },
+      { sel: "[data-dock-panel='notes']", type: "notes-panel" },
+      { sel: "[data-dock-panel='artifacts']", type: "artifacts-panel" },
       { sel: "[id^='mc-steer-']", type: "steer-panel" },
       { sel: ".mc-phase-stepper", type: "phase-stepper" },
       { sel: ".mc-task-header", type: "task-header" },
@@ -1163,8 +1163,11 @@
   }
 
   // --- TOGGLE SUPPORT ---
+  // Disabled by default: Greg only runs once the user has explicitly turned him
+  // on via the navbar toggle (which persists "true"). A clean first start — no
+  // stored preference — is off. Never on mobile.
   const isMobile = window.matchMedia("(max-width: 768px)").matches;
-  let monkeyEnabled = !isMobile && localStorage.getItem("monkey-enabled") !== "false";
+  let monkeyEnabled = !isMobile && localStorage.getItem("monkey-enabled") === "true";
   let activeWs = null;
   let activeRenderer = null;
   let focusTrackingSetup = false;

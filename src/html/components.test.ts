@@ -230,7 +230,7 @@ describe("realtimeTaskDetailPage", () => {
     expect(html).toContain("rt-panel-section");
   });
 
-  it("uses a denser composer and includes the artifact modal shell", () => {
+  it("uses a denser composer and opens artifacts in-panel (no full-screen modal)", () => {
     const html = realtimeTaskDetailPage(
       {
         id: "rt2",
@@ -263,9 +263,10 @@ describe("realtimeTaskDetailPage", () => {
 
     expect(html).toContain('class="rt-composer-wrap"');
     expect(html).toContain('class="rt-secondary-grid"');
-    expect(html).toContain('id="task-artifact-modal"');
-    expect(html).toContain('id="task-artifact-modal-body"');
-    expect(html).toContain("openTaskArtifactModal");
+    // Artifacts now open inside their panel, not a full-screen modal.
+    expect(html).toContain('id="sk-artifact-detail"');
+    expect(html).toContain("skOpenArtifactPanel");
+    expect(html).not.toContain('id="task-artifact-modal"');
   });
 });
 

@@ -314,6 +314,69 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
 }
 
 /** Real-time task view — shows timeline, session controls, and audio pipeline */
+/**
+ * The panel dock: a toggle bar (Timeline · Details · Escalations · Notes ·
+ * Artifacts) over a row of resizable, reorderable columns. `Skipper.dock`
+ * (skipper.js) shows 1-3 of them side by side, persists the layout, and inserts
+ * the resize dividers. All five panels stay mounted so their hx-get / WS-OOB
+ * targets (mc-notes-<id>, mc-artifacts-<id>, mc-task-escalations-<id>, feed ids)
+ * stay stable; the JS just flips `display`. Shared by the standard and realtime
+ * task renderers below.
+ */
+function renderTaskDock(taskId: string, opts: {
+  variant: "standard" | "realtime";
+  escalationsExtra?: string;
+  defaultOpen?: string;
+}): string {
+  const eid = escapeHtml(taskId);
+  const tl = opts.variant === "realtime"
+    ? { title: "Timeline", feedId: `mc-rt-feed-${eid}`, url: `/workspace/task/${eid}/realtime-activity`, def: "all",
+        filters: [["all", "All"], ["timeline", "Timeline"], ["activity", "Activity"]] as [string, string][] }
+    : { title: "Activity", feedId: `mc-activity-feed-${eid}`, url: `/workspace/task/${eid}/activity`, def: "messages",
+        filters: [["all", "All"], ["messages", "Messages"], ["tools", "Tools"]] as [string, string][] };
+
+  const timelineControls = `<div class="mc-activity__controls">${tl.filters.map(([k, l]) =>
+    `<button class="mc-activity__filter${k === tl.def ? " mc-activity__filter--active" : ""}" data-sk-activity-filter="${k}">${l}</button>`).join("")}</div>`;
+  const timelineBody = `<div class="mc-activity__feed" id="${tl.feedId}" data-activity-filter="${tl.def}"
+       hx-get="${tl.url}" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading...</span></div>`;
+
+  // Column shell: header is the reorder drag handle + a close ✕. `flush` = no body
+  // padding (the inner container pads itself).
+  const col = (name: string, title: string, controls: string, body: string, flush: boolean) => `
+      <div class="mc-outputs__col" data-dock-panel="${name}">
+        <div class="mc-outputs__col-header" draggable="true" data-dock-handle="${name}">
+          <span class="mc-outputs__col-title">${title}</span>
+          <button type="button" class="mc-outputs__col-close" data-dock-close="${name}" title="Close panel" aria-label="Close panel">&times;</button>
+        </div>
+        ${controls}
+        <div class="mc-outputs__col-body"${flush ? ' style="padding:0;"' : ""}>${body}</div>
+      </div>`;
+
+  // Details is heavy (agent tree) — defer its fetch until the panel is first
+  // opened via the `dockopen` trigger that Skipper.dock fires.
+  const detailsBody = `<div data-dock-lazy hx-get="/workspace/task/${eid}/details" hx-trigger="dockopen" hx-swap="innerHTML"><span class="sk-muted" style="padding:var(--sk-space-4);">Loading...</span></div>`;
+  const escalationsBody = `<div id="mc-task-escalations-${eid}" hx-get="/fragments/tasks/${eid}/escalations" hx-trigger="load" hx-swap="innerHTML"></div>${opts.escalationsExtra ?? ""}`;
+  const notesBody = `<div id="mc-notes-${eid}" style="padding:var(--sk-space-2);" hx-get="/fragments/tasks/${eid}/notes" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading notes...</span></div>`;
+  const artifactsBody = `<div id="mc-artifacts-${eid}" style="padding:var(--sk-space-2);" hx-get="/fragments/tasks/${eid}/artifacts" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading artifacts...</span></div>
+        <div id="sk-artifact-detail" data-sk-artifact-detail style="padding:var(--sk-space-2);"></div>`;
+
+  return `
+    <div class="mc-tabs" role="tablist">
+      <button type="button" class="mc-tab" data-mc-tab="timeline" onclick="Skipper.dock.toggle('timeline')">${tl.title}</button>
+      <button type="button" class="mc-tab" data-mc-tab="details" onclick="Skipper.dock.toggle('details')">Details</button>
+      <button type="button" class="mc-tab" data-mc-tab="input" onclick="Skipper.dock.toggle('input')">Escalations<span data-mc-tab-badge class="mc-tab__badge" hidden></span></button>
+      <button type="button" class="mc-tab" data-mc-tab="notes" onclick="Skipper.dock.toggle('notes')">Notes</button>
+      <button type="button" class="mc-tab" data-mc-tab="artifacts" onclick="Skipper.dock.toggle('artifacts')">Artifacts</button>
+    </div>
+    <div class="mc-outputs" id="mc-outputs" data-dock-default="${escapeHtml(opts.defaultOpen ?? "timeline,notes")}">
+      ${col("timeline", tl.title, timelineControls, timelineBody, false)}
+      ${col("details", "Details", "", detailsBody, false)}
+      ${col("input", "Escalations", "", escalationsBody, false)}
+      ${col("notes", "Notes", "", notesBody, true)}
+      ${col("artifacts", "Artifacts", "", artifactsBody, true)}
+    </div>`;
+}
+
 export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummary, isSessionActive?: boolean): string {
   const eid = escapeHtml(task.id);
   const isRunning = task.status === "running";
@@ -383,9 +446,6 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
   const reviewGate = task.status === "failed" && task.needs_review
     ? renderRecoveryPausedBanner(task)
     : needsReview ? renderReviewBanner(task) : "";
-  const defaultTab = "outputs";
-  const tabCls = (name: string) => name === defaultTab ? "mc-tab mc-tab--active" : "mc-tab";
-  const panelCls = (name: string) => name === defaultTab ? "mc-tab-panel mc-tab-panel--active" : "mc-tab-panel";
 
   return `
     <!-- Task bar — phase stepper + agent orbs inlined (shared chrome) -->
@@ -435,70 +495,8 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
     <!-- Review gate / recovery banner — between the task bar and the tabs -->
     ${reviewGate ? `<div class="mc-attention-slot">${reviewGate}</div>` : ""}
 
-    <!-- Tabs flush against the composer / task bar -->
-    <div class="mc-tabs">
-      <button class="${tabCls("outputs")}" data-mc-tab="outputs" onclick="Skipper.tabs.show('outputs')">Outputs</button>
-      <button class="${tabCls("details")}" data-mc-tab="details" onclick="Skipper.tabs.show('details')">Details</button>
-      <button class="${tabCls("input")}" data-mc-tab="input" onclick="Skipper.tabs.show('input')">Escalations</button>
-    </div>
-
-    <!-- Outputs tab — Timeline+Activity | Notes | Artifacts side-by-side -->
-    <div class="${panelCls("outputs")}" id="mc-tab-outputs">
-      <div class="mc-outputs" id="mc-outputs">
-        <!-- Unified feed column (timeline entries + agent activity merged) -->
-        <div class="mc-outputs__col" data-outputs-col="activity">
-          <div class="mc-outputs__col-header">Timeline</div>
-          <div class="mc-activity__controls">
-            <button class="mc-activity__filter mc-activity__filter--active" data-sk-activity-filter="all">All</button>
-            <button class="mc-activity__filter" data-sk-activity-filter="timeline">Timeline</button>
-            <button class="mc-activity__filter" data-sk-activity-filter="activity">Activity</button>
-          </div>
-          <div class="mc-outputs__col-body">
-            <div class="mc-activity__feed" id="mc-rt-feed-${eid}" data-activity-filter="all"
-                 hx-get="/workspace/task/${eid}/realtime-activity"
-                 hx-trigger="load" hx-swap="innerHTML">
-              <span class="sk-muted">Loading...</span>
-            </div>
-          </div>
-        </div>
-        <!-- Divider -->
-        <div class="mc-outputs__divider" data-sk-outputs-resize="0"></div>
-        <!-- Output column — Notes / Artifacts tabs -->
-        <div class="mc-outputs__col" data-outputs-col="output">
-          <div class="mc-outputs__col-header">Output</div>
-          <div class="mc-activity__controls">
-            <button class="mc-activity__filter mc-activity__filter--active" data-sk-output-tab="notes">Notes</button>
-            <button class="mc-activity__filter" data-sk-output-tab="artifacts">Artifacts</button>
-          </div>
-          <div class="mc-outputs__col-body" style="padding:0;">
-            <div id="mc-notes-${eid}" data-sk-output-panel="notes" style="padding:var(--sk-space-2);"
-                 hx-get="/fragments/tasks/${eid}/notes"
-                 hx-trigger="load" hx-swap="innerHTML">
-              <span class="sk-muted">Loading notes...</span>
-            </div>
-            <div id="mc-artifacts-${eid}" data-sk-output-panel="artifacts" style="padding:var(--sk-space-2);display:none;"
-                 hx-get="/fragments/tasks/${eid}/artifacts"
-                 hx-trigger="load" hx-swap="innerHTML">
-              <span class="sk-muted">Loading artifacts...</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Details tab -->
-    <div class="${panelCls("details")}" id="mc-tab-details"
-         hx-get="/workspace/task/${eid}/details" hx-trigger="revealed" hx-swap="innerHTML">
-      <span class="sk-muted" style="padding: var(--sk-space-4);">Loading...</span>
-    </div>
-
-    <!-- Escalations tab — agent escalation prompts -->
-    <div class="${panelCls("input")}" id="mc-tab-input">
-      <div id="mc-task-escalations-${eid}"
-           hx-get="/fragments/tasks/${eid}/escalations"
-           hx-trigger="load"
-           hx-swap="innerHTML"></div>
-    </div>
+    <!-- Toggle bar + resizable panel dock (flush against the composer) -->
+    ${renderTaskDock(task.id, { variant: "realtime" })}
 
     <!-- Activity detail modal -->
     <div id="activity-detail-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
@@ -527,18 +525,6 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
       </div>
     </div>
 
-    <!-- Artifact modal (used by v1 fragment onclick handlers) -->
-    <div id="task-artifact-modal" class="sk-modal" data-sk-modal-backdrop style="padding:0.5rem;">
-      <div class="sk-modal__content" style="width:99vw;height:99vh;max-width:none;max-height:none;display:flex;flex-direction:column;overflow:hidden;">
-        <div class="sk-modal__header" style="padding:0.4rem 0.85rem;">
-          <span>Artifact</span>
-          <button class="sk-btn sk-btn--sm" data-sk-modal-close="task-artifact-modal">Close</button>
-        </div>
-        <div class="sk-modal__body" id="task-artifact-modal-body" style="flex:1;min-height:0;overflow:auto;padding:0.75rem 1rem;">
-          <span class="sk-muted">Loading...</span>
-        </div>
-      </div>
-    </div>
   `;
 }
 
@@ -572,12 +558,12 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
   // The iterate panel sits in the same banner slot as the review gate (between
   // the task bar and the tabs), not inside a tab.
   const iterate = task.status === "completed" ? iteratePanel(task.id) : "";
-  // Default to the Escalations tab when it holds a result summary worth seeing;
-  // else Outputs.
+  // Open the Escalations panel by default (first-ever load, no saved layout) when
+  // it holds a result summary worth seeing; else Timeline + Notes.
   const inputHasContent = !!resultHtml;
-  const defaultTab = inputHasContent ? "input" : "outputs";
-  const tabCls = (name: string) => name === defaultTab ? "mc-tab mc-tab--active" : "mc-tab";
-  const panelCls = (name: string) => name === defaultTab ? "mc-tab-panel mc-tab-panel--active" : "mc-tab-panel";
+  const escalationsExtra = `${resultHtml}${!resultHtml
+    ? `<div class="sk-panel"><div class="sk-panel__body mc-userinput__empty sk-muted" style="padding: var(--sk-space-4); text-align:center;">Nothing needs your input right now.</div></div>`
+    : ""}`;
 
   return `
     <!-- Task header (phase stepper + agent orbs inlined) -->
@@ -603,78 +589,8 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
          and the tabs -->
     ${reviewGate || iterate ? `<div class="mc-attention-slot">${reviewGate}${iterate}</div>` : ""}
 
-    <!-- Tabbed content — flush against the task bar. -->
-    <div class="mc-tabs">
-      <button class="${tabCls("outputs")}" data-mc-tab="outputs" onclick="Skipper.tabs.show('outputs')">Outputs</button>
-      <button class="${tabCls("details")}" data-mc-tab="details" onclick="Skipper.tabs.show('details')">Details</button>
-      <button class="${tabCls("input")}" data-mc-tab="input" onclick="Skipper.tabs.show('input')">Escalations</button>
-    </div>
-
-    <!-- Outputs tab — Activity | Notes | Artifacts side-by-side -->
-    <div class="${panelCls("outputs")}" id="mc-tab-outputs">
-      <div class="mc-outputs" id="mc-outputs">
-        <!-- Activity column -->
-        <div class="mc-outputs__col" data-outputs-col="activity">
-          <div class="mc-outputs__col-header">Activity</div>
-          <!-- Filters live OUTSIDE the scrollable body so they stay pinned
-               while the feed scrolls. -->
-          <div class="mc-activity__controls">
-            <button class="mc-activity__filter" data-sk-activity-filter="all">All</button>
-            <button class="mc-activity__filter mc-activity__filter--active" data-sk-activity-filter="messages">Messages</button>
-            <button class="mc-activity__filter" data-sk-activity-filter="tools">Tools</button>
-          </div>
-          <div class="mc-outputs__col-body">
-            <div class="mc-activity__feed" id="mc-activity-feed-${escapeHtml(task.id)}" data-activity-filter="messages"
-                 hx-get="/workspace/task/${escapeHtml(task.id)}/activity"
-                 hx-trigger="load" hx-swap="innerHTML">
-              <span class="sk-muted">Loading activity...</span>
-            </div>
-          </div>
-        </div>
-        <!-- Divider 1 -->
-        <div class="mc-outputs__divider" data-sk-outputs-resize="0"></div>
-        <!-- Output column — Notes / Artifacts tabs -->
-        <div class="mc-outputs__col" data-outputs-col="output">
-          <div class="mc-outputs__col-header">Output</div>
-          <!-- Tab strip OUTSIDE the scrollable body so Notes/Artifacts buttons
-               stay pinned while the panel below scrolls. -->
-          <div class="mc-activity__controls">
-            <button class="mc-activity__filter mc-activity__filter--active" data-sk-output-tab="notes">Notes</button>
-            <button class="mc-activity__filter" data-sk-output-tab="artifacts">Artifacts</button>
-          </div>
-          <div class="mc-outputs__col-body" style="padding:0;">
-            <div id="mc-notes-${escapeHtml(task.id)}" data-sk-output-panel="notes" style="padding:var(--sk-space-2);"
-                 hx-get="/fragments/tasks/${escapeHtml(task.id)}/notes"
-                 hx-trigger="load" hx-swap="innerHTML">
-              <span class="sk-muted">Loading notes...</span>
-            </div>
-            <div id="mc-artifacts-${escapeHtml(task.id)}" data-sk-output-panel="artifacts" style="padding:var(--sk-space-2);display:none;"
-                 hx-get="/fragments/tasks/${escapeHtml(task.id)}/artifacts"
-                 hx-trigger="load" hx-swap="innerHTML">
-              <span class="sk-muted">Loading artifacts...</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Details tab -->
-    <div class="${panelCls("details")}" id="mc-tab-details"
-         hx-get="/workspace/task/${escapeHtml(task.id)}/details" hx-trigger="revealed" hx-swap="innerHTML">
-      <span class="sk-muted" style="padding: var(--sk-space-4);">Loading...</span>
-    </div>
-
-    <!-- Escalations tab — agent escalation prompts + result summary -->
-    <div class="${panelCls("input")}" id="mc-tab-input">
-      <div id="mc-task-escalations-${escapeHtml(task.id)}"
-           hx-get="/fragments/tasks/${escapeHtml(task.id)}/escalations"
-           hx-trigger="load"
-           hx-swap="innerHTML"></div>
-      ${resultHtml}
-      ${!resultHtml
-        ? `<div class="sk-panel"><div class="sk-panel__body mc-userinput__empty sk-muted" style="padding: var(--sk-space-4); text-align:center;">Nothing needs your input right now.</div></div>`
-        : ""}
-    </div>
+    <!-- Toggle bar + resizable panel dock (flush against the task bar) -->
+    ${renderTaskDock(task.id, { variant: "standard", escalationsExtra, defaultOpen: inputHasContent ? "timeline,input" : "timeline,notes" })}
 
     <!-- Activity detail modal -->
     <div id="activity-detail-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
@@ -703,18 +619,6 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
       </div>
     </div>
 
-    <!-- Artifact modal -->
-    <div id="task-artifact-modal" class="sk-modal" data-sk-modal-backdrop style="padding:0.5rem;">
-      <div class="sk-modal__content" style="width:99vw;height:99vh;max-width:none;max-height:none;display:flex;flex-direction:column;overflow:hidden;">
-        <div class="sk-modal__header" style="padding:0.4rem 0.85rem;">
-          <span>Artifact</span>
-          <button class="sk-btn sk-btn--sm" data-sk-modal-close="task-artifact-modal">Close</button>
-        </div>
-        <div class="sk-modal__body" id="task-artifact-modal-body" style="flex:1;min-height:0;overflow:auto;padding:0.75rem 1rem;">
-          <span class="sk-muted">Loading...</span>
-        </div>
-      </div>
-    </div>
   `;
 }
 
