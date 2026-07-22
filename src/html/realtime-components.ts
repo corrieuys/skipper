@@ -657,13 +657,13 @@ export function realtimeTaskDetailPage(
       </form>
     </section>
 
-    ${isRunning
+    ${isRunning && isSessionActive
       ? realtimeInputPanel(task, config, visibleActionButtons)
       : visibleActionButtons.length > 0 ? `<section class="card">
       <div class="section-heading">
         <div>
           <h2>Task Controls</h2>
-          <p class="muted">Available task actions for this session state.</p>
+          <p class="muted">${isPaused ? "Session paused. Resume to add text or audio input." : "Available task actions for this session state."}</p>
         </div>
       </div>
       <div class="form-actions">${visibleActionButtons.join("")}</div>

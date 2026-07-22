@@ -49,7 +49,50 @@ export class RealtimeSessionManager {
   };
   private readonly onAgentExit = (event: import("../events/bus").AgentExitEvent): void => {
     this.handleSummarizerExit(event);
+    this.maybeRefeedAfterEntrypointExit(event);
   };
+
+  /**
+   * When a realtime task's entrypoint (Skipper) finishes a turn, drain any
+   * timeline entries that piled up while it was busy — instead of waiting for
+   * the next cadence tick. This makes text input feel responsive again right
+   * after a pause/resume, where a fresh input would otherwise sit unfed.
+   *
+   * No-op for regular tasks: the `this.sessions` guard is only ever true for a
+   * realtime task with a live (recording/resumed) session. This handler already
+   * runs for every agent exit (see handleSummarizerExit), so it adds no new
+   * fan-out — just an early return for anything that isn't a live entrypoint.
+   */
+  private maybeRefeedAfterEntrypointExit(event: import("../events/bus").AgentExitEvent): void {
+    // Respawns reuse the same instance id and are about to come back — ignore.
+    if (event.isRespawn) return;
+
+    const row = this.db
+      .prepare("SELECT task_id, template_agent_id FROM agent_instances WHERE id = ?")
+      .get(event.agentId) as { task_id: string | null; template_agent_id: string | null } | null;
+    const taskId = row?.task_id;
+    if (!taskId) return;
+
+    // Only realtime tasks with a live session are relevant.
+    const session = this.sessions.get(taskId);
+    if (!session || session.stopped) return;
+
+    // Confirm the exited agent is this task's entrypoint (not a delegate/summarizer).
+    const entrypointAgentId = this.resolveRealtimeEntrypointAgentId(taskId);
+    if (!entrypointAgentId || row?.template_agent_id !== entrypointAgentId) return;
+
+    // Still busy (a delegation is outstanding) — the delegation's own completion
+    // path will drive the next feed. Nothing to do yet.
+    if (this.isSkipperBusy(taskId)) return;
+
+    const unfed = (this.db
+      .prepare("SELECT COUNT(*) as c FROM realtime_timeline WHERE task_id = ? AND fed_to_skipper = 0")
+      .get(taskId) as { c: number }).c;
+    if (unfed === 0) return;
+
+    console.log(`[realtime-session] entrypoint exit — draining ${unfed} unfed timeline entries for task=${taskId}`);
+    this.feedSkipper(taskId);
+  }
 
   private emitTimelineUpdated(taskId: string, entryId: string, entryType: string): void {
     eventBus.emit("realtime:timeline_updated", { taskId, entryId, entryType });
@@ -296,9 +339,14 @@ export class RealtimeSessionManager {
     const entrypointAgentId = this.resolveRealtimeEntrypointAgentId(taskId);
     if (!entrypointAgentId) return false;
 
-    // 1. Entrypoint process is currently running (producing output)
+    // 1. This task's entrypoint instance is currently running (producing output).
+    // Scope to the task's own runtime instance — the shared 'skipper' template
+    // can have live instances under other tasks (realtime or regular), and a
+    // template-wide lookup would falsely report THIS task's Skipper as busy.
     if (this.agentManager) {
-      const runningAgent = this.agentManager.getRunningAgent(entrypointAgentId);
+      const runningAgent = typeof this.agentManager.getRunningInstanceForTask === "function"
+        ? this.agentManager.getRunningInstanceForTask(entrypointAgentId, taskId)
+        : this.agentManager.getRunningAgent(entrypointAgentId);
       if (runningAgent) {
         return true;
       }
@@ -1110,10 +1158,20 @@ export class RealtimeSessionManager {
       )
       .run(taskId);
 
-    // Mark any running entrypoint instances as completed so the agent tree
-    // doesn't show stale "running" rows after pause.
+    // Terminate this task's entrypoint process (if any) and mark its running
+    // instances completed. Killing the actual process is important: otherwise a
+    // Skipper still mid-response at pause lingers in AgentManager's in-memory
+    // map, so after Resume `isSkipperBusy` keeps returning true and new input is
+    // never fed. Scope the kill to THIS task's runtime instance so a sibling
+    // task's Skipper (shared 'skipper' template) is untouched.
     const entrypointAgentId = this.resolveRealtimeEntrypointAgentId(taskId);
     if (entrypointAgentId) {
+      if (this.agentManager && typeof this.agentManager.getRunningInstanceForTask === "function") {
+        const runningInstance = this.agentManager.getRunningInstanceForTask(entrypointAgentId, taskId);
+        if (runningInstance) {
+          try { this.agentManager.killAgent(runningInstance.id); } catch { /* best effort */ }
+        }
+      }
       this.db
         .prepare("UPDATE agent_instances SET status = 'completed' WHERE template_agent_id = ? AND task_id = ? AND status = 'running'")
         .run(entrypointAgentId, taskId);
