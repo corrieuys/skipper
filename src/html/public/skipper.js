@@ -682,6 +682,17 @@
       var startX = e.clientX;
       var widths = cols.map(function (c) { return c.offsetWidth; });
 
+      // Pin EVERY visible column to its current pixel width for the duration of
+      // the drag. Without this, the non-adjacent column keeps its saved grow
+      // ratio (e.g. `flex: 0.33 1 0`). During the move the two adjacent columns
+      // are frozen to grow 0, so that lone remaining column becomes the only
+      // grow item — and per the flexbox spec, when the flex-grow values sum to
+      // < 1 the container distributes only that FRACTION of the free space. The
+      // column then fills ~33% of the gap and collapses, so panels jump. Pinning
+      // all columns keeps the total equal to the container (the adjacent pair's
+      // net delta is zero) with no lone sub-1 grow item.
+      cols.forEach(function (c, i) { c.style.flex = "0 0 " + widths[i] + "px"; });
+
       function onMove(ev) {
         if (!Skipper.outputs._resizing) return;
         var delta = ev.clientX - startX;

@@ -6,6 +6,7 @@ import { findTeamBySlashCommand } from "../teams/local-teams";
 import { logError } from "../logging";
 import type { SlackClient } from "./client";
 import type { SlackOrigin } from "./slash-command";
+import { escapeMrkdwn } from "./blocks";
 import { slackLog } from "./log";
 
 /**
@@ -33,6 +34,9 @@ export interface SlackCommandReply {
 }
 
 const MAX_TITLE = 80;
+// Cap the prompt echoed back in the "Started …" ack so a long run-input doesn't
+// dominate the message. Only shown when a prompt was actually supplied.
+const MAX_PROMPT_ECHO = 280;
 
 // Appended to the anchor message so the operator knows the thread is live: any
 // reply here is captured as a note on the task (see socket.ts:handleThreadReply).
@@ -75,13 +79,14 @@ export async function handleSlashCommand(
         slackLog("cmd.scheduled.not_approved", { command, scheduledId: scheduled.id });
         return { text: `Scheduled task "${scheduled.title}" is not approved, so it can't be run.` };
       }
-      const anchor = `:arrow_forward: Started *${scheduled.title}*${mention(userId)}${THREAD_NOTE_HINT}`;
+      const promptEcho = promptSuffix(text);
+      const anchor = `:arrow_forward: Started *${scheduled.title}*${mention(userId)}${promptEcho}${THREAD_NOTE_HINT}`;
       const { origin, anchored } = await captureOrigin(db, client, payload, anchor);
       const run = scheduledScheduler.runTaskNow(scheduled.id, taskScheduler, text || undefined, { slackOrigin: origin ?? undefined });
       slackLog("cmd.scheduled.started", { command, scheduledId: scheduled.id, taskId: run.id, anchored });
       // The anchor is the single "started" message; only send an ephemeral when
       // we couldn't post it publicly (no channel / post failed / Slack off).
-      return anchored ? { text: anchor, posted: true } : { text: `▶️ Started "${scheduled.title}" — task ${run.id}` };
+      return anchored ? { text: anchor, posted: true } : { text: `▶️ Started "${scheduled.title}" — task ${run.id}${promptEcho}` };
     }
 
     const team = findTeamBySlashCommand(db, command);
@@ -140,4 +145,15 @@ async function captureOrigin(
 
 function mention(userId: string): string {
   return userId ? ` for <@${userId}>` : "";
+}
+
+/**
+ * ` with prompt "…"` clause for the ack, only when the slash command carried a
+ * prompt (its arg text = the run input). Empty string when no prompt was given.
+ * User-supplied, so mrkdwn-escaped and length-capped.
+ */
+function promptSuffix(text: string): string {
+  if (!text) return "";
+  const capped = text.length > MAX_PROMPT_ECHO ? `${text.slice(0, MAX_PROMPT_ECHO - 1)}…` : text;
+  return ` with prompt "${escapeMrkdwn(capped)}"`;
 }

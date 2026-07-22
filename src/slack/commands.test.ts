@@ -118,12 +118,33 @@ describe("handleSlashCommand", () => {
     });
     // No channel_id → no anchor → a single ephemeral reply.
     expect(reply.text).toContain("Started");
+    // The supplied prompt is echoed back in the ack.
+    expect(reply.text).toContain('with prompt "focus on errors"');
     expect(reply.posted).toBeFalsy();
     const run = db
       .prepare("SELECT run_input FROM tasks WHERE source_scheduled_task_id = ?")
       .get(st.id) as { run_input: string | null } | null;
     expect(run).not.toBeNull();
     expect(run!.run_input).toBe("focus on errors");
+  });
+
+  it("omits the prompt echo when no prompt was supplied", async () => {
+    makeTeam("team-1");
+    const st = scheduled.createScheduledTask({
+      title: "Nightly report",
+      teamId: "team-1",
+      workingDirectory: "/repo",
+      taskConfig: { slashCommand: "/nightly-report" },
+    });
+    scheduled.approveScheduledTask(st.id);
+
+    const reply = await handleSlashCommand(db, taskScheduler, scheduled, {
+      command: "/nightly-report",
+      text: "",
+      user_id: USER,
+    });
+    expect(reply.text).toContain("Started");
+    expect(reply.text).not.toContain("with prompt");
   });
 
   it("suppresses the ephemeral reply when it posted a public anchor (single message)", async () => {
