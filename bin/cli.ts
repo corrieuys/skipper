@@ -106,7 +106,11 @@ function openBrowser(url: string): void {
 async function start(): Promise<void> {
   const existing = readPid();
   if (existing && isAlive(existing)) {
-    console.log(`skipper already running (pid ${existing})`);
+    const url = `http://localhost:${PORT}`;
+    console.log(`skipper already running (pid ${existing}) on ${url}`);
+    // Still open the UI — re-running `skipper start` is a common way to just
+    // reopen the dashboard. Skip with --no-open; only open once it's healthy.
+    if (!process.argv.includes("--no-open") && (await waitForHealth(url))) openBrowser(url);
     return;
   }
   if (existing) clearPidFile(); // stale
