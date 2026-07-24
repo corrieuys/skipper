@@ -16,6 +16,7 @@ import { isExperimental } from "../config/feature-flags";
 import { isSlackConfigured, getSlackDefaultChannel } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
 import { SlackClient } from "../slack/client";
+import { registerTaskTools } from "./task-tools";
 
 export interface DaemonDeps {
   db: Database;
@@ -709,115 +710,22 @@ export function registerDaemonTools(
       }
     },
   );
+
+  // Audience-tagged task-management tools. Currently every entry is external-only,
+  // so nothing registers here — but this is the seam that lets a tool be flipped to
+  // "internal"/"both" and appear for daemon agents without touching this file.
+  registerTaskTools(server, deps, getIdentity, "internal");
 }
 
 /**
  * Register MCP tools for external agents (authenticated via API key).
- * Limited surface: task management + discovery only.
+ * Limited surface: task management + discovery only. The concrete tool set and
+ * its visibility live in the audience-tagged registry (see task-tools.ts).
  */
 export function registerExternalTools(
   server: McpServer,
   deps: DaemonDeps,
   getIdentity: () => AgentIdentity | null,
 ): void {
-  const { db, taskScheduler } = deps;
-
-  const authError = { content: [{ type: "text" as const, text: "Error: not authenticated" }] };
-
-  server.tool(
-    "create_task",
-    "Create a new task in Skipper (created as draft — approve separately)",
-    {
-      title: z.string().describe("Task title"),
-      description: z.string().optional().describe("Task description"),
-      team_id: z.string().optional().describe("Team ID (use list_teams to discover)"),
-      working_directory: z.string().optional().describe("Working directory path"),
-    },
-    async ({ title, description, team_id, working_directory }) => {
-      const identity = getIdentity();
-      if (!identity) return authError;
-
-      try {
-        const task = taskScheduler.createTask({
-          title,
-          description,
-          teamId: team_id,
-          workingDirectory: working_directory || process.cwd(),
-        });
-
-        return { content: [{ type: "text" as const, text: JSON.stringify({
-          id: task.id,
-          title: task.title,
-          status: task.status,
-          team_id: task.team_id,
-        }) }] };
-      } catch (err) {
-        return errorResult(err);
-      }
-    },
-  );
-
-  server.tool(
-    "list_tasks",
-    "List tasks in Skipper, optionally filtered by status",
-    {
-      status: z.enum(["draft", "approved", "running", "completed", "failed"]).optional().describe("Filter by status"),
-      limit: z.number().optional().describe("Max results (default 20)"),
-    },
-    async ({ status, limit }) => {
-      const identity = getIdentity();
-      if (!identity) return authError;
-
-      let tasks = taskScheduler.listTasks();
-      if (status) tasks = tasks.filter((t) => t.status === status);
-      const capped = tasks.slice(0, limit ?? 20);
-
-      return { content: [{ type: "text" as const, text: JSON.stringify(
-        capped.map((t) => ({
-          id: t.id,
-          title: t.title,
-          status: t.status,
-          team_id: t.team_id,
-          current_phase: t.current_phase,
-          created_at: t.created_at,
-        })),
-      ) }] };
-    },
-  );
-
-  server.tool(
-    "approve_task",
-    "Approve a draft task so Skipper's daemon picks it up",
-    {
-      task_id: z.string().describe("Task ID to approve"),
-    },
-    async ({ task_id }) => {
-      const identity = getIdentity();
-      if (!identity) return authError;
-
-      try {
-        const task = taskScheduler.approveTask(task_id);
-        return { content: [{ type: "text" as const, text: JSON.stringify({
-          id: task.id,
-          status: task.status,
-          approved_at: task.approved_at,
-        }) }] };
-      } catch (err) {
-        return errorResult(err);
-      }
-    },
-  );
-
-  server.tool(
-    "list_teams",
-    "List available teams (needed for create_task team_id)",
-    {},
-    async () => {
-      const identity = getIdentity();
-      if (!identity) return authError;
-
-      const teams = db.prepare("SELECT id, name FROM teams ORDER BY name").all() as { id: string; name: string }[];
-      return { content: [{ type: "text" as const, text: JSON.stringify(teams) }] };
-    },
-  );
+  registerTaskTools(server, deps, getIdentity, "external");
 }

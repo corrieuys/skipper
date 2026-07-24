@@ -152,7 +152,11 @@ describe("registerDaemonTools — Slack tools (experimental + configured + team 
   });
 });
 
-const EXTERNAL_TOOLS = ["create_task", "list_tasks", "approve_task", "list_teams"];
+const EXTERNAL_TOOLS = [
+  "create_task", "get_task", "list_tasks", "list_active_tasks", "update_task",
+  "approve_task", "pause_task", "resume_task", "cancel_task", "complete_task", "list_teams",
+  "list_recurring_tasks", "run_recurring_task",
+];
 
 describe("registerExternalTools — external agent registration", () => {
   beforeEach(() => {
