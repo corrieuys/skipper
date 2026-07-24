@@ -37,6 +37,8 @@ beforeEach(() => {
       calls.dismiss.push(id);
       return {} as unknown;
     },
+    // Re-derived when editing the message so the original question stays visible.
+    getEscalation: (id: string) => ({ id, task_id: "t-esc", question: "Which database should I use?" }),
   } as unknown as EscalationManager;
 
   const phaseManager = {
@@ -79,6 +81,13 @@ function blockAction(value: string, opts: { user?: string; triggerId?: string } 
     message: { ts: "111.22" },
     actions: [{ action_id: "x", value }],
   };
+}
+
+/** Join every section's mrkdwn text from an updated message's blocks. */
+function updateBlockText(blocks: unknown): string {
+  return ((blocks as Array<{ text?: { text?: string } }>) ?? [])
+    .map((b) => b?.text?.text ?? "")
+    .join("\n");
 }
 
 function viewSubmission(meta: object, message: string, user = USER) {
@@ -153,18 +162,28 @@ describe("view_submission", () => {
   it("renders the user mention (not escaped) in the edited notice block", async () => {
     const meta = { kind: "rev", action: "approve", id: "t1", channel: "C1", messageTs: "111.22" };
     await handleInteraction(deps, viewSubmission(meta, "")).run?.();
-    const blocks = calls.update[0]?.blocks as Array<{ text?: { text?: string } }>;
-    const sectionText = blocks?.[0]?.text?.text ?? "";
-    expect(sectionText).toContain(`<@${USER}>`);
-    expect(sectionText).not.toContain("&lt;@");
+    const allText = updateBlockText(calls.update[0]?.blocks);
+    expect(allText).toContain(`<@${USER}>`);
+    expect(allText).not.toContain("&lt;@");
   });
 
   it("escapes mrkdwn specials in the operator-typed quote body", async () => {
     const meta = { kind: "esc", action: "respond", id: "e1", channel: "C1", messageTs: "111.22" };
     await handleInteraction(deps, viewSubmission(meta, "use <prod> & staging")).run?.();
-    const blocks = calls.update[0]?.blocks as Array<{ text?: { text?: string } }>;
-    const sectionText = blocks?.[0]?.text?.text ?? "";
-    expect(sectionText).toContain("&lt;prod&gt; &amp; staging");
+    expect(updateBlockText(calls.update[0]?.blocks)).toContain("&lt;prod&gt; &amp; staging");
+  });
+
+  it("keeps the original escalation question on screen after resolving", async () => {
+    const meta = { kind: "esc", action: "respond", id: "e1", channel: "C1", messageTs: "111.22" };
+    await handleInteraction(deps, viewSubmission(meta, "use the staging DB")).run?.();
+    const allText = updateBlockText(calls.update[0]?.blocks);
+    // Original question survives...
+    expect(allText).toContain("Which database should I use?");
+    // ...alongside the resolution notice.
+    expect(allText).toContain("Escalation resolved");
+    // ...but the action buttons are gone (no actions block remains).
+    const blocks = calls.update[0]?.blocks as Array<{ type?: string }>;
+    expect(blocks.some((b) => b.type === "actions")).toBe(false);
   });
 
   it("reject regresses the review with the required feedback", async () => {

@@ -12,6 +12,8 @@ import {
   noticeBlocks,
   readModalMessage,
   escapeMrkdwn,
+  escalationMessageBlocks,
+  completionMessageBlocks,
   MODAL_INPUT_BLOCK,
   type ModalMeta,
 } from "./blocks";
@@ -89,7 +91,8 @@ function handleBlockAction(deps: InteractionDeps, payload: BlockActionsPayload):
         try {
           deps.escalationManager.dismissEscalation(decoded.id);
           slackLog("interaction.dismissed", { id: decoded.id, userId });
-          await editMessage(deps.client, channel, messageTs, `:heavy_multiplication_x: *Escalation dismissed* by <@${userId}>`);
+          const context = keepContextBlocks(deps, { kind: "esc", action: "dismiss", id: decoded.id, channel, messageTs });
+          await editMessage(deps.client, channel, messageTs, `:heavy_multiplication_x: *Escalation dismissed* by <@${userId}>`, context);
         } catch (err) {
           logError(deps.db, "slack_interaction_dismiss", { id: decoded.id }, err);
           await editMessage(deps.client, channel, messageTs, `:warning: Could not dismiss: ${errMsg(err)}`);
@@ -138,7 +141,9 @@ function handleViewSubmission(deps: InteractionDeps, payload: ViewSubmissionPayl
       try {
         const notice = await performAction(deps, meta, message, userId);
         slackLog("interaction.submitted", { action: `${meta.kind}:${meta.action}`, id: meta.id, userId });
-        await editMessage(deps.client, meta.channel, meta.messageTs, notice);
+        // Keep the original question/context on screen (buttons dropped) and append
+        // the resolution below it, so the chain of decisions stays visible.
+        await editMessage(deps.client, meta.channel, meta.messageTs, notice, keepContextBlocks(deps, meta));
       } catch (err) {
         logError(deps.db, "slack_interaction_submit", { kind: meta.kind, action: meta.action, id: meta.id }, err);
         await editMessage(deps.client, meta.channel, meta.messageTs, `:warning: Action failed: ${errMsg(err)}`);
@@ -201,13 +206,56 @@ function parseMeta(raw: string | undefined): ModalMeta | null {
   return null;
 }
 
-async function editMessage(client: SlackClient, channel: string, ts: string, text: string): Promise<void> {
+async function editMessage(
+  client: SlackClient,
+  channel: string,
+  ts: string,
+  text: string,
+  contextBlocks: unknown[] = [],
+): Promise<void> {
   if (!channel || !ts) return;
   try {
-    await client.updateMessage(channel, ts, stripMrkdwn(text), noticeBlocks(text));
+    // Preserved context (the original question/notice, sans buttons) first, then
+    // the resolution notice appended below it.
+    await client.updateMessage(channel, ts, stripMrkdwn(text), [...contextBlocks, ...noticeBlocks(text)]);
   } catch {
     /* best-effort: the action already succeeded even if the edit fails */
   }
+}
+
+/**
+ * Rebuild the original context block(s) for an actioned item so resolving it KEEPS
+ * the question / what-was-decided visible (only the action buttons drop off),
+ * instead of replacing the whole message with a one-line notice. Re-derived from the
+ * source record so it works for the modal-submission flow too (which carries no
+ * original message). Best-effort: returns [] if the source can't be recovered, in
+ * which case the notice stands alone (prior behaviour).
+ */
+function keepContextBlocks(deps: InteractionDeps, meta: ModalMeta): unknown[] {
+  try {
+    if (meta.kind === "esc") {
+      const e = deps.escalationManager.getEscalation(meta.id);
+      if (!e) return [];
+      // Section only (index 0) — the question stays; the Respond/Dismiss buttons drop.
+      return escalationMessageBlocks(meta.id, taskTitle(deps.db, e.task_id), e.question).slice(0, 1);
+    }
+    if (meta.kind === "task") {
+      return completionMessageBlocks(meta.id, taskTitle(deps.db, meta.id)).slice(0, 1);
+    }
+    if (meta.kind === "rev") {
+      // Phase label isn't reliably recoverable after the action, so keep a minimal
+      // header — the point is that the review message itself stays on screen.
+      return [{ type: "section", text: { type: "mrkdwn", text: `:mag: *Phase review* — ${escapeMrkdwn(taskTitle(deps.db, meta.id))}` } }];
+    }
+  } catch {
+    /* best-effort — fall back to the notice alone */
+  }
+  return [];
+}
+
+function taskTitle(db: Database, taskId: string): string {
+  const row = db.prepare("SELECT title FROM tasks WHERE id = ?").get(taskId) as { title?: string } | null;
+  return row?.title ?? "task";
 }
 
 /** Post an ephemeral reply to the clicking user via the interaction response_url. */
