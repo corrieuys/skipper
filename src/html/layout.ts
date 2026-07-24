@@ -5,6 +5,7 @@ import { themeBootScript, appearanceBackgroundCss } from "./styles/themes";
 import { STYLESHEET_PATH } from "./styles/stylesheet";
 import { getAppearanceConfig } from "../config/store";
 import { getDb } from "../db/connection";
+import { APP_VERSION_LABEL } from "../version";
 
 
 export function layout(
@@ -77,7 +78,7 @@ export function layout(
   <nav class="navbar">
     <div class="navbar-left">
       ${navDropdownHtml(currentPath)}
-      <a href="/" class="brand">Skipper</a>
+      <a href="/" class="brand">Skipper<span class="brand__version" title="Skipper version">${APP_VERSION_LABEL}</span></a>
     </div>
     <div class="navbar-daemon-slot">
       ${daemonControl}

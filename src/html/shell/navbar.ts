@@ -1,6 +1,7 @@
 // escapeHtml import kept for the commented-out daemon strip; re-enable when restoring.
 // import { escapeHtml } from "../atoms/escape-html";
 import { isExperimental } from "../../config/feature-flags";
+import { APP_VERSION_LABEL } from "../../version";
 
 export interface NavbarData {
   currentPath: string;
@@ -41,7 +42,7 @@ export function navbar(data: NavbarData): string {
   return `<nav class="sk-navbar">
     <div class="sk-navbar__left">
       <button class="sk-navbar__hamburger" data-sk-sidebar-toggle aria-label="Open task list" title="Tasks">&#x2630;</button>
-      <a href="/" class="sk-navbar__brand" style="display:flex;align-items:center;"><img src="/icon2.png" alt="Skipper" style="height:24px;vertical-align:middle;margin-right:0.5rem;"><h2 style="display:inline;margin:0;text-transform:lowercase">Skipper</h2></a>
+      <a href="/" class="sk-navbar__brand" style="display:flex;align-items:center;"><img src="/icon2.png" alt="Skipper" style="height:24px;vertical-align:middle;margin-right:0.5rem;"><h2 style="display:inline;margin:0;text-transform:lowercase">Skipper</h2><span class="sk-navbar__version" title="Skipper version">${APP_VERSION_LABEL}</span></a>
     </div>
     <div class="sk-navbar__right">
       <a href="/games/asteroids" class="sk-navbar__game-btn" title="Asteroids">🎲</a>

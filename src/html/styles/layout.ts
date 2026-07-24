@@ -27,6 +27,18 @@ export function layoutStyles(): string {
       color: var(--sk-accent-primary);
       text-transform: uppercase;
     }
+    .sk-navbar__version {
+      margin-left: var(--sk-space-2);
+      padding: 0.05em 0.4em;
+      border-radius: var(--sk-radius-sm);
+      font-size: 0.6rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: var(--sk-text-muted);
+      background: var(--sk-surface-3);
+      text-transform: none; /* brand is uppercased; keep "v0.2.0" literal */
+      vertical-align: middle;
+    }
     .sk-navbar__right {
       margin-left: auto;
       display: flex;

@@ -76,6 +76,18 @@ export function baseStyles(): string {
       color: var(--primary);
       text-transform: uppercase;
     }
+    .brand__version {
+      margin-left: 0.4rem;
+      padding: 0.05em 0.4em;
+      border-radius: 4px;
+      font-size: 0.6rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: var(--text-muted, #888);
+      background: var(--surface-3, rgba(127, 127, 127, 0.15));
+      text-transform: none;
+      vertical-align: middle;
+    }
     .navbar-daemon-slot { margin-left: auto; display: flex; justify-content: flex-end; min-width: auto; }
 
     /* Nav Dropdown Hamburger Menu */

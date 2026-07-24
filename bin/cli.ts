@@ -21,10 +21,7 @@ import { spawn } from "node:child_process";
 import { openSync, readFileSync, writeFileSync, existsSync, unlinkSync, chmodSync, renameSync } from "node:fs";
 import { isCompiledBinary } from "../src/assets";
 import { getPidFile, getLogFile, ensureDataDir } from "../src/paths";
-
-// Injected at build time via `--define`; falls back to "dev" under `bun run`.
-declare const __SKIPPER_VERSION__: string;
-const VERSION = typeof __SKIPPER_VERSION__ !== "undefined" ? __SKIPPER_VERSION__ : "dev";
+import { APP_VERSION as VERSION } from "../src/version";
 
 const PORT = process.env.PORT || "5005";
 const REPO = "corrieuys/skipper"; // GitHub owner/repo for `update`
