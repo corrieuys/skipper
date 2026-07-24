@@ -29,6 +29,11 @@ export interface ConfigPageViewModel {
     options: AgentTypeOption[];
   };
   slack?: SlackConfigView;
+  autoUpdate: {
+    enabled: boolean;
+    currentVersion: string;
+    availableVersion: string | null;
+  };
 }
 
 /** One provider (agent type) + model row for a subsystem. Model list is filtered
@@ -269,6 +274,27 @@ export function configPage(vm: ConfigPageViewModel): string {
               hx-include="this">
             <span class="sk-text-xs sk-muted">Deletes terminal_outputs, agent_sessions, and events older than this. Default: 24h.</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Auto Update Section -->
+      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
+        <div class="sk-panel__header">
+          <span class="sk-panel__title">Auto Update</span>
+          <span class="sk-text-xs sk-muted" style="margin-left:auto;">Current: ${escapeHtml(vm.autoUpdate.currentVersion === "dev" ? "dev" : "v" + vm.autoUpdate.currentVersion)}${vm.autoUpdate.availableVersion ? ` · latest available: v${escapeHtml(vm.autoUpdate.availableVersion)}` : ""}</span>
+        </div>
+        <div class="sk-panel__body">
+          <label class="sk-checkbox" style="margin-top:0;">
+            <input type="checkbox" id="auto-update-enabled" name="enabled" ${vm.autoUpdate.enabled ? "checked" : ""}
+              hx-post="/api/config/auto-update" hx-trigger="change" hx-swap="none" hx-include="this">
+            <span class="sk-checkbox__toggle"></span>
+            <span class="sk-checkbox__label">Automatically apply patch updates</span>
+          </label>
+          <p class="sk-muted sk-text-xs" style="margin:var(--sk-space-2) 0 0;">
+            When this is on, <strong>patch</strong> releases (x.y.<strong>Z</strong>) are downloaded and applied automatically, and Skipper
+            restarts itself <strong>only when no task is running</strong>. <strong>Minor and major</strong>
+            updates are never auto-applied — run <code>skipper update</code> then <code>skipper restart</code> yourself. Applies to installed binaries only.
+          </p>
         </div>
       </div>
 

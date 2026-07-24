@@ -10,6 +10,21 @@
   var heartbeatTimer = null;
   var ws = null;
   var currentTopics = [];
+  var hasConnected = false;
+
+  // On a RECONNECT (not the first connect), the daemon may have been replaced by
+  // a self-update restart. Compare the running server's version against the one
+  // this page was loaded with; hard-reload onto the new binary if it changed.
+  function checkVersionAndMaybeReload() {
+    var loaded = document.body ? document.body.getAttribute("data-sk-version") : null;
+    if (!loaded) return;
+    fetch("/api/version", { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.text() : null; })
+      .then(function (serverVersion) {
+        if (serverVersion && serverVersion.trim() !== loaded) location.reload();
+      })
+      .catch(function () { /* transient — try again on the next reconnect */ });
+  }
 
   function getTopics() {
     var body = document.body;
@@ -98,6 +113,11 @@
     reconnectDelay = 1000;
     showReconnectBanner(false);
     startHeartbeatMonitor();
+
+    // First open just marks the baseline; a later open means we reconnected
+    // (possibly onto a newly-updated binary) — check whether to reload.
+    if (hasConnected) checkVersionAndMaybeReload();
+    hasConnected = true;
 
     // Subscribe to page topics. On a reconnect after HTMX navigation the URL
     // may have moved past the body attribute, so pick whichever set applies:

@@ -837,6 +837,27 @@
 
   // ── Event Delegation ──
   document.addEventListener("click", function (e) {
+    // Update snackbar dismiss: remove the toast, remember it, tell the server so
+    // it doesn't come back (available → record version; applied → clear notice).
+    var toastClose = e.target.closest("[data-sk-toast-close]");
+    if (toastClose) {
+      var toast = toastClose.closest(".sk-toast");
+      if (toast) {
+        var kind = toast.getAttribute("data-kind") || "";
+        var version = toast.getAttribute("data-version") || "";
+        if (kind === "available") Skipper.prefs.set("updateNoticeDismissed", version);
+        toast.remove();
+        try {
+          fetch("/api/updates/dismiss", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ kind: kind, version: version }),
+          });
+        } catch (err) { /* best-effort */ }
+      }
+      return;
+    }
+
     // Hooks editor: + Add Hook
     var hookAddBtn = e.target.closest("[data-sk-hooks-add]");
     if (hookAddBtn) {
@@ -1300,6 +1321,18 @@
 
     // Re-apply expand state to agent tree nodes after a tree swap
     if (Skipper.tree) Skipper.tree.restoreExpanded();
+  });
+
+  // After the update-notice poll swaps in, drop an "available" toast the user
+  // already dismissed this session (guards the race where a poll lands before the
+  // server records the dismissal).
+  document.addEventListener("htmx:afterSwap", function (evt) {
+    var t = evt.detail && evt.detail.target;
+    if (!t || t.id !== "sk-update-notice") return;
+    var dismissed = Skipper.prefs.get("updateNoticeDismissed", "");
+    if (!dismissed) return;
+    var toast = t.querySelector('.sk-toast[data-kind="available"][data-version="' + dismissed + '"]');
+    if (toast) toast.remove();
   });
 
   // WS ping + notification handler

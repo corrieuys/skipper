@@ -25,6 +25,8 @@ import { initSlackSocket, getSlackSocket } from "./src/slack/socket";
 import { initSlackPush, getSlackPush } from "./src/slack/push";
 import { isSocketModeConfigured, isSlackSocketEnabled, isSlackConfigured } from "./src/config/slack-settings";
 import { getBoolSetting, getStringSetting, SETTING_SKIPPER_CONNECT_ENABLED, SETTING_SKIPPER_CONNECT_KEY } from "./src/config/app-settings";
+import { recordBootVersion } from "./src/config/auto-update-settings";
+import { initUpdateRestartOnIdle } from "./src/updater/restart-scheduler";
 
 const experimental = process.argv.includes("--experimental");
 if (experimental) {
@@ -128,11 +130,19 @@ const slackSocket = initSlackSocket(
 // Slack push (experimental): post escalations + phase reviews to the channel.
 const slackPush = initSlackPush(getDb());
 
+// Unsubscribe handle for the event-driven auto-restart (set in startup).
+let stopUpdateRestart: (() => void) | null = null;
+
 async function startup() {
   await daemon.start();
   monkeyEngine.start();
 
   const db = getDb();
+  // Reconcile the recorded version vs the running one: queues the "app updated"
+  // toast after a self-update, and records this boot's version.
+  recordBootVersion(db);
+  // Apply a downloaded patch promptly once all tasks finish (event-driven restart).
+  stopUpdateRestart = initUpdateRestartOnIdle(db, daemon.getAgentManager());
   const hasCredentials = !!getStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, "");
   if (hasCredentials && getBoolSetting(db, SETTING_SKIPPER_CONNECT_ENABLED, false)) {
     connectClient.start();
@@ -155,6 +165,7 @@ startup().catch((err) => console.error("Startup failed:", err));
 const server = startServer();
 
 function shutdown() {
+  stopUpdateRestart?.();
   connectClient.stop();
   getSlackSocket()?.stop();
   getSlackPush()?.stop();

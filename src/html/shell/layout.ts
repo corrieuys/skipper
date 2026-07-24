@@ -4,6 +4,7 @@ import { themeBootScript } from "../styles/themes";
 import { STYLESHEET_PATH } from "../styles/stylesheet";
 import { getAppearanceConfig } from "../../config/store";
 import { getDb } from "../../db/connection";
+import { APP_VERSION } from "../../version";
 
 /**
  * New layout shell for v2 pages.
@@ -39,7 +40,7 @@ export function v2layout(
   <link rel="stylesheet" href="${STYLESHEET_PATH}">
   ${appearanceCss ? `<style>${appearanceCss}</style>` : ""}
 </head>
-<body hx-ext="ws" ws-connect="/ws/ui"${topicsAttr}>
+<body hx-ext="ws" ws-connect="/ws/ui" data-sk-version="${APP_VERSION}"${topicsAttr}>
   ${content}
 </body>
 </html>`;

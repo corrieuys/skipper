@@ -57,5 +57,6 @@ export function navbar(data: NavbarData): string {
         <div class="sk-dropdown__menu">${links}</div>
       </div>
     </div>
-  </nav>`;
+  </nav>
+  <div id="sk-update-notice" class="sk-toast-host" hx-get="/api/updates/notice" hx-trigger="load, every 120s" hx-swap="innerHTML"></div>`;
 }

@@ -17,6 +17,7 @@ import {
   SETTING_TASK_RETENTION_DAYS,
   SETTING_RECURRING_TASK_RETENTION_DAYS,
 } from "../config/app-settings";
+import { checkForUpdates, isSystemFullyIdle } from "../updater/auto-updater";
 const RECONCILIATION_OWNER_PID_KEY = "owner_pid";
 
 interface TimerConfig {
@@ -88,6 +89,7 @@ export class ReconciliationLoop {
       { name: "terminal-cleanup",   fn: () => this.cleanupOldTerminalOutputs(),                     intervalMs: 300_000 },
       { name: "log-file-rotate",    fn: () => this.rotateOversizedLogFile(),                        intervalMs: 300_000 },
       { name: "task-auto-delete",   fn: () => this.autoDeleteOldTasks(),                            intervalMs: 3_600_000 },
+      { name: "auto-update",        fn: () => checkForUpdates(this.db, { isSystemIdle: () => this.isSystemIdle() }), intervalMs: 3_600_000 },
 
       // Scheduled tasks
       ...(this.scheduledTaskProcessor
@@ -338,6 +340,14 @@ export class ReconciliationLoop {
    * full cascade (instances, sessions, terminal output, notes, escalations, events)
    * is cleaned up exactly like a manual delete.
    */
+  /**
+   * True when nothing is running or queued, so an auto-update restart is safe.
+   * Shared with the task-completion restart subscriber (see updater/auto-updater).
+   */
+  private isSystemIdle(): boolean {
+    return isSystemFullyIdle(this.db, this.agentManager);
+  }
+
   autoDeleteOldTasks(): void {
     if (!this.taskScheduler) return;
     const regularDays = getNumberSetting(this.db, SETTING_TASK_RETENTION_DAYS, 0);

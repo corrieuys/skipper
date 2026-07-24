@@ -14,6 +14,7 @@ import { chatStyles } from "./chat";
 import { utilityStyles } from "./utilities";
 import { animationStyles } from "./animations";
 import { missionControlStyles } from "./mission-control";
+import { toastStyles } from "./toast";
 
 /** New design system styles (sk- prefixed). Used by v2 pages. */
 export function skStyles(): string {
@@ -30,6 +31,7 @@ export function skStyles(): string {
     utilityStyles(),
     animationStyles(),
     missionControlStyles(),
+    toastStyles(),
   ].join("\n");
 }
 

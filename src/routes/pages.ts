@@ -60,6 +60,12 @@ import {
   getStringSetting, setStringSetting, getSetting,
   SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_URL,
 } from "../config/app-settings";
+import { APP_VERSION } from "../version";
+import {
+  isAutoUpdateEnabled, setAutoUpdateEnabled, getUpdateNoticeView,
+  dismissAvailableNotice, clearAppliedNotice, SETTING_UPDATE_AVAILABLE_VERSION,
+} from "../config/auto-update-settings";
+import { renderUpdateNotice } from "../html/fragments/update-toast";
 import { recentActivityFragment } from "../html/recentActivityFragment";
 import type {
   DashboardData,
@@ -1321,6 +1327,11 @@ function registerV2PageRoutes(): void {
       apiKeys: listKeys(),
       modelSettings: getModelSettingsView(db),
       slack: isExperimental() ? getSlackConfigView(db) : undefined,
+      autoUpdate: {
+        enabled: isAutoUpdateEnabled(db),
+        currentVersion: APP_VERSION,
+        availableVersion: getStringSetting(db, SETTING_UPDATE_AVAILABLE_VERSION, "") || null,
+      },
     }));
   });
 
@@ -1398,6 +1409,49 @@ function registerV2PageRoutes(): void {
     }
     if (r !== null) setNumberSetting(db, SETTING_TASK_RETENTION_DAYS, r);
     if (rr !== null) setNumberSetting(db, SETTING_RECURRING_TASK_RETENTION_DAYS, rr);
+    return new Response(null, { status: 204 });
+  });
+
+  // The running version — the open tab polls this on WS reconnect and hard-reloads
+  // itself when it changes (after a self-update restart). Plain text, no gate.
+  addRoute("GET", "/api/version", () => new Response(APP_VERSION, {
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  }));
+
+  // Toggle auto-updates (patch releases apply automatically when on).
+  addRoute("POST", "/api/config/auto-update", async (req) => {
+    const contentType = req.headers.get("content-type") ?? "";
+    let enabled: boolean;
+    if (contentType.includes("application/x-www-form-urlencoded")) {
+      const fd = await req.formData();
+      enabled = fd.get("enabled") != null; // unchecked checkbox omits the field
+    } else {
+      const body = await req.json() as { enabled?: boolean };
+      enabled = !!body.enabled;
+    }
+    setAutoUpdateEnabled(db, enabled);
+    return new Response(null, { status: 204 });
+  });
+
+  // Bottom-right update snackbar(s). Polled on load + every 120s by the toast host
+  // in the navbar; returns "" when nothing is pending.
+  addRoute("GET", "/api/updates/notice", () => html(renderUpdateNotice(getUpdateNoticeView(db))));
+
+  // Dismiss a toast so it doesn't return: "available" records the version dismissed;
+  // "applied" clears the one-time "updated" notice.
+  addRoute("POST", "/api/updates/dismiss", async (req) => {
+    const contentType = req.headers.get("content-type") ?? "";
+    let kind = "", version = "";
+    if (contentType.includes("application/x-www-form-urlencoded")) {
+      const fd = await req.formData();
+      kind = String(fd.get("kind") ?? "");
+      version = String(fd.get("version") ?? "");
+    } else {
+      const body = await req.json() as { kind?: string; version?: string };
+      kind = body.kind ?? ""; version = body.version ?? "";
+    }
+    if (kind === "available") dismissAvailableNotice(db, version);
+    else if (kind === "applied") clearAppliedNotice(db);
     return new Response(null, { status: 204 });
   });
 
