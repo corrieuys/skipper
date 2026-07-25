@@ -60,7 +60,7 @@ import {
   getStringSetting, setStringSetting, getSetting,
   SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_URL,
 } from "../config/app-settings";
-import { APP_VERSION } from "../version";
+import { APP_VERSION, SERVER_ID } from "../version";
 import {
   isAutoUpdateEnabled, setAutoUpdateEnabled, getUpdateNoticeView,
   dismissAvailableNotice, clearAppliedNotice, SETTING_UPDATE_AVAILABLE_VERSION,
@@ -1412,9 +1412,10 @@ function registerV2PageRoutes(): void {
     return new Response(null, { status: 204 });
   });
 
-  // The running version — the open tab polls this on WS reconnect and hard-reloads
-  // itself when it changes (after a self-update restart). Plain text, no gate.
-  addRoute("GET", "/api/version", () => new Response(APP_VERSION, {
+  // The running server's identity ("<version> <boot-id>") — the open tab polls
+  // this on WS reconnect and hard-reloads itself when it changes: a self-update
+  // (version differs) or any restart (boot id differs). Plain text, no gate.
+  addRoute("GET", "/api/version", () => new Response(SERVER_ID, {
     headers: { "content-type": "text/plain; charset=utf-8" },
   }));
 

@@ -12,16 +12,19 @@
   var currentTopics = [];
   var hasConnected = false;
 
-  // On a RECONNECT (not the first connect), the daemon may have been replaced by
-  // a self-update restart. Compare the running server's version against the one
-  // this page was loaded with; hard-reload onto the new binary if it changed.
+  // On a RECONNECT (not the first connect), the daemon may have been restarted
+  // (a plain `skipper restart` or a self-update). Compare the running server's
+  // identity ("<version> <boot-id>") against the one this page was loaded with;
+  // hard-reload onto the new process if it differs. The boot id changes on every
+  // restart even when the version is unchanged, so a manual restart refreshes the
+  // tab too — while a transient WS blip (same daemon, same id) does not.
   function checkVersionAndMaybeReload() {
     var loaded = document.body ? document.body.getAttribute("data-sk-version") : null;
     if (!loaded) return;
     fetch("/api/version", { cache: "no-store" })
       .then(function (r) { return r.ok ? r.text() : null; })
-      .then(function (serverVersion) {
-        if (serverVersion && serverVersion.trim() !== loaded) location.reload();
+      .then(function (serverId) {
+        if (serverId && serverId.trim() !== loaded) location.reload();
       })
       .catch(function () { /* transient — try again on the next reconnect */ });
   }

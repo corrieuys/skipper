@@ -14,6 +14,19 @@ export const APP_VERSION: string =
 /** Header label: "v0.2.0" for a real release, "dev" in a dev checkout. */
 export const APP_VERSION_LABEL: string = APP_VERSION === "dev" ? "dev" : `v${APP_VERSION}`;
 
+// A fresh id per daemon process. The open UI tab compares this (via SERVER_ID)
+// on every WS reconnect and hard-reloads when it changes, so a plain
+// `skipper restart` — same binary, same APP_VERSION — still refreshes the tab
+// instead of leaving it on the old process. Stable within one process, so a
+// transient WS blip (same daemon) does not trigger a needless reload.
+export const BOOT_ID: string = crypto.randomUUID();
+
+/**
+ * Identity of the running server the tab checks on reconnect: version + boot id.
+ * Changes on a self-update (version differs) AND on any restart (boot differs).
+ */
+export const SERVER_ID: string = `${APP_VERSION} ${BOOT_ID}`;
+
 // ── Semver helpers (used by the auto-update checker) ───────────────────────
 // Deliberately dependency-free: we only need X.Y.Z ordering and bump
 // classification against our own release tags, not full semver range logic.

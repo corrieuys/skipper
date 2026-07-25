@@ -100,14 +100,18 @@ function openBrowser(url: string): void {
   }
 }
 
-async function start(): Promise<void> {
+async function start(forceNoOpen = false): Promise<void> {
+  // `restart` passes forceNoOpen: the already-open UI tab hard-reloads itself
+  // onto the new daemon (see /api/version + ws-subscribe.js), so opening a second
+  // tab would be redundant. `start` still opens unless the caller says --no-open.
+  const noOpen = forceNoOpen || process.argv.includes("--no-open");
   const existing = readPid();
   if (existing && isAlive(existing)) {
     const url = `http://localhost:${PORT}`;
     console.log(`skipper already running (pid ${existing}) on ${url}`);
     // Still open the UI — re-running `skipper start` is a common way to just
     // reopen the dashboard. Skip with --no-open; only open once it's healthy.
-    if (!process.argv.includes("--no-open") && (await waitForHealth(url))) openBrowser(url);
+    if (!noOpen && (await waitForHealth(url))) openBrowser(url);
     return;
   }
   if (existing) clearPidFile(); // stale
@@ -128,7 +132,7 @@ async function start(): Promise<void> {
   console.log(`logs: ${logPath}`);
 
   // Open the UI once the server is actually responding (skip with --no-open).
-  if (!process.argv.includes("--no-open")) {
+  if (!noOpen) {
     if (await waitForHealth(url)) openBrowser(url);
     else console.log(`server not responding yet — open ${url} once it's up (see logs)`);
   }
@@ -318,7 +322,8 @@ async function main(): Promise<void> {
       break;
     case "restart":
       await stop();
-      await start();
+      // No new tab — the already-open UI hard-reloads itself onto the new daemon.
+      await start(true);
       break;
     case "status":
       await status();

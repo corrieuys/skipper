@@ -5,7 +5,7 @@ import { themeBootScript, appearanceBackgroundCss } from "./styles/themes";
 import { STYLESHEET_PATH } from "./styles/stylesheet";
 import { getAppearanceConfig } from "../config/store";
 import { getDb } from "../db/connection";
-import { APP_VERSION_LABEL, APP_VERSION } from "../version";
+import { APP_VERSION_LABEL, SERVER_ID } from "../version";
 
 
 export function layout(
@@ -74,7 +74,7 @@ export function layout(
   <link rel="stylesheet" href="${STYLESHEET_PATH}">
   ${appearanceCss ? `<style>${appearanceCss}</style>` : ""}
 </head>
-<body hx-ext="ws" ws-connect="/ws/ui" data-sk-version="${APP_VERSION}"${wsTopics && wsTopics.length > 0 ? ` data-ws-topics="${wsTopics.join(",")}"` : ""}>
+<body hx-ext="ws" ws-connect="/ws/ui" data-sk-version="${SERVER_ID}"${wsTopics && wsTopics.length > 0 ? ` data-ws-topics="${wsTopics.join(",")}"` : ""}>
   <nav class="navbar">
     <div class="navbar-left">
       ${navDropdownHtml(currentPath)}

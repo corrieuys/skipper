@@ -4,6 +4,7 @@ import { logError } from "../logging";
 import { isCompiledBinary } from "../assets";
 import { APP_VERSION, compareSemver, classifyBump } from "../version";
 import { getStringSetting, setStringSetting } from "../config/app-settings";
+import { isExperimental } from "../config/feature-flags";
 import {
   isAutoUpdateEnabled,
   SETTING_UPDATE_AVAILABLE_VERSION,
@@ -50,7 +51,11 @@ function defaultRunRestart(): void {
     // Detached + unref: `skipper restart` SIGTERMs THIS daemon (its own pid), so
     // the child must outlive us to run start() afterwards. --no-open: the tab
     // hard-refreshes itself on WS reconnect instead of a new one opening.
-    const { cmd, args } = cliInvocation(["restart", "--no-open"]);
+    // Forward --experimental when this server is running it, so the restarted
+    // daemon keeps experimental features on (serveInvocation reads it from argv).
+    const restartArgs = ["restart", "--no-open"];
+    if (isExperimental()) restartArgs.push("--experimental");
+    const { cmd, args } = cliInvocation(restartArgs);
     const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
     child.on("error", () => {});
     child.unref();
