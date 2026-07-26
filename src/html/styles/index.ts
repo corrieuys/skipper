@@ -10,7 +10,6 @@ import { panelStyles } from "./panels";
 import { treeStyles } from "./tree";
 import { terminalStyles } from "./terminal";
 import { dashboardStyles } from "./dashboard";
-import { chatStyles } from "./chat";
 import { utilityStyles } from "./utilities";
 import { animationStyles } from "./animations";
 import { missionControlStyles } from "./mission-control";
@@ -27,7 +26,6 @@ export function skStyles(): string {
     treeStyles(),
     terminalStyles(),
     dashboardStyles(),
-    chatStyles(),
     utilityStyles(),
     animationStyles(),
     missionControlStyles(),

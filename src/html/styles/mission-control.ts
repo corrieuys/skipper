@@ -49,17 +49,6 @@ export function missionControlStyles(): string {
     }
     .mc-sidebar__create:hover { opacity: 0.9; color: var(--on-primary); }
 
-    /* Footer container pinned to the bottom of the sidebar (list above it
-       takes flex:1) — holds machine-wide quick settings like the parallel
-       task toggle. */
-    .mc-sidebar__footer {
-      padding: var(--sk-space-2) var(--sk-space-3) var(--sk-space-3);
-      border-top: 1px solid var(--sk-border);
-      background: var(--sk-surface-1);
-      flex-shrink: 0;
-    }
-    .mc-sidebar__footer .sk-checkbox { margin-top: 0; padding: var(--sk-space-1) 0; }
-
     .mc-sidebar__filters {
       display: flex;
       gap: 1px;
@@ -1237,364 +1226,6 @@ export function missionControlStyles(): string {
       50% { opacity: 0.4; }
     }
 
-    /* ── Chat toggle button in navbar ── */
-    .mc-chat-toggle {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-height: var(--sk-btn-height-sm);
-      padding: var(--sk-btn-pad-y-sm) var(--sk-btn-pad-x-sm);
-      background: var(--sk-surface-2);
-      border: 1px solid var(--sk-border);
-      border-radius: var(--sk-btn-radius);
-      color: var(--sk-text-muted);
-      font-size: var(--sk-btn-font-sm);
-      font-weight: 600;
-      line-height: 1.1;
-      white-space: nowrap;
-      cursor: pointer;
-    }
-    .mc-chat-toggle:hover {
-      background: var(--sk-surface-3);
-      color: var(--sk-text);
-      border-color: var(--sk-border-subtle);
-    }
-    .mc-chat-toggle--active {
-      background: var(--sk-accent-primary);
-      color: var(--on-primary);
-      border-color: var(--sk-accent-primary);
-    }
-    .mc-chat-toggle--active:hover {
-      opacity: 0.9;
-      color: var(--on-primary);
-    }
-
-    /* ── Chat bottom panel ── */
-    .mc-chat-panel {
-      display: none;
-      grid-column: 1 / -1;
-      height: 300px;
-      min-height: 120px;
-      max-height: 80vh;
-      background: var(--sk-surface-1);
-      border-top: 1px solid var(--sk-border);
-      flex-direction: column;
-      overflow: hidden;
-      position: relative;
-    }
-    .mc-workspace--chat-open {
-      grid-template-rows: 1fr auto;
-    }
-    .mc-workspace--chat-open .mc-chat-panel {
-      display: flex;
-    }
-    /* Blur everything in the workspace except the chat panel itself when chat is open.
-       Direct children only so the filter does not propagate down into the chat panel
-       (CSS filter applies to all descendants of the element it is on). */
-    .mc-workspace--chat-open > *:not(.mc-chat-panel) {
-      filter: blur(6px);
-      pointer-events: none;
-      user-select: none;
-      transition: filter 0.18s ease;
-    }
-    .mc-workspace > *:not(.mc-chat-panel) {
-      transition: filter 0.18s ease;
-    }
-    .mc-chat-panel__resize-handle {
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 4px;
-      cursor: ns-resize;
-      background: transparent;
-      z-index: 10;
-      transition: background 0.15s;
-    }
-    .mc-chat-panel__resize-handle:hover,
-    .mc-chat-panel__resize-handle--active {
-      background: var(--sk-accent-primary);
-    }
-    .mc-chat-panel__header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: var(--sk-space-2) var(--sk-space-3);
-      background: var(--sk-surface-2);
-      border-bottom: 1px solid var(--sk-border);
-      flex-shrink: 0;
-    }
-    .mc-chat-panel__title {
-      font-size: var(--sk-text-xs);
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--sk-text-muted);
-    }
-    .mc-chat-panel__close {
-      background: none;
-      border: none;
-      color: var(--sk-text-subtle);
-      font-size: 16px;
-      cursor: pointer;
-      padding: 0 4px;
-      line-height: 1;
-      transition: color 0.15s;
-    }
-    .mc-chat-panel__close:hover {
-      color: var(--sk-text);
-    }
-    .mc-chat-panel--fullscreen {
-      height: 100% !important;
-      max-height: none;
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      /* Above the overlay sidebar (z-index 100), below modals (200): the
-         collapsed sidebar rail must not paint over full-height chat. */
-      z-index: 150;
-    }
-    .mc-chat-panel__body {
-      flex: 1;
-      overflow: hidden;
-      display: flex;
-      flex-direction: row;
-    }
-    /* Override v1 defaults: show conversation sidebar in v2 chat panel.
-       The v1 fragment puts .chat-fullscreen-sidebar + .chat-main as direct
-       children of #dashboard-chat-panel. We force them side-by-side. */
-    .mc-chat-panel #dashboard-chat-panel {
-      display: flex !important;
-      flex-direction: row !important;
-      height: 100%;
-    }
-    .mc-chat-panel #dashboard-chat-panel > .chat-fullscreen-sidebar,
-    .mc-chat-panel #chat-sidebar {
-      display: flex !important;
-      width: 240px;
-      min-width: 180px;
-      flex-shrink: 0;
-      flex-direction: column;
-      border-right: 1px solid var(--sk-border);
-      overflow-y: auto;
-      background: var(--sk-surface-2);
-    }
-    /* Style the + New Chat button to match sk-btn--primary */
-    .mc-chat-panel .conversation-list .btn-sm {
-      background: var(--sk-accent-primary) !important;
-      color: var(--on-primary) !important;
-      border: none !important;
-      border-radius: var(--sk-radius-sm);
-      font-weight: 700;
-      font-size: var(--sk-text-xs);
-      padding: 6px 10px;
-    }
-    .mc-chat-panel .conversation-list .btn-sm:hover {
-      opacity: 0.9;
-    }
-    .mc-chat-panel #dashboard-chat-panel > .chat-main {
-      flex: 1 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      overflow: hidden;
-      min-width: 0;
-    }
-    .mc-chat-panel .chat-messages {
-      flex: 1;
-      overflow-y: auto;
-    }
-    .mc-chat-panel .chat-input-area {
-      flex-shrink: 0;
-      padding: var(--sk-space-3);
-      border-top: 1px solid var(--sk-border);
-    }
-    .mc-chat-panel .chat-input-area textarea {
-      width: 100%;
-      padding: var(--sk-space-2) var(--sk-space-3);
-      background: var(--sk-surface-0);
-      border: 1px solid var(--sk-border-subtle);
-      border-radius: var(--sk-radius-md);
-      color: var(--sk-text);
-      font-size: var(--sk-text-sm);
-      resize: none;
-      margin-bottom: var(--sk-space-2);
-    }
-    .mc-chat-panel .chat-input-area textarea:focus {
-      outline: none;
-      border-color: var(--sk-accent-primary);
-    }
-    .mc-chat-panel .chat-input-row {
-      display: flex;
-      gap: var(--sk-space-2);
-      justify-content: flex-end;
-    }
-    /* Normalize v1 btn-sm to match v2 sk-btn inside chat panel */
-    .mc-chat-panel .btn-sm,
-    .mc-chat-panel button[type="submit"] {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4em;
-      padding: 0.35rem 0.65rem;
-      border: 1px solid var(--sk-border-subtle);
-      border-radius: var(--sk-radius-sm);
-      background: var(--sk-surface-3);
-      color: var(--sk-text-muted);
-      cursor: pointer;
-      font-size: var(--sk-text-xs);
-      font-weight: 600;
-      transition: background 0.15s, color 0.15s;
-    }
-    .mc-chat-panel .btn-sm:hover,
-    .mc-chat-panel button[type="submit"]:hover {
-      background: var(--sk-surface-4);
-      color: var(--sk-text);
-    }
-    /* Send button — primary style */
-    .mc-chat-panel .chat-input-row button[type="submit"] {
-      background: var(--sk-accent-primary);
-      color: var(--on-primary);
-      border-color: var(--sk-accent-primary);
-      font-weight: 700;
-    }
-    .mc-chat-panel .chat-input-row button[type="submit"]:hover {
-      opacity: 0.9;
-      color: var(--on-primary);
-    }
-    .mc-chat-panel .cmd-panel-header {
-      flex-shrink: 0;
-      padding: var(--sk-space-2) var(--sk-space-3);
-      background: var(--sk-surface-2);
-      border-bottom: 1px solid var(--sk-border);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      min-height: 36px;
-    }
-    .mc-chat-panel .cmd-panel-title {
-      font-size: var(--sk-text-xs);
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      color: var(--sk-text-muted);
-    }
-    /* Normalize v1 badge styling inside chat */
-    .mc-chat-panel .badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 0.15em 0.5em;
-      border-radius: var(--sk-radius-sm);
-      font-size: var(--sk-text-xs);
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-    .mc-chat-panel .badge-running { background: rgba(0,251,251,0.15); color: var(--sk-accent-secondary); border: 1px solid rgba(0,251,251,0.3); }
-    .mc-chat-panel .badge-stopped { background: rgba(173,170,170,0.1); color: var(--sk-text-muted); border: 1px solid var(--sk-border-subtle); }
-
-    /* Conversation item action buttons (rename, delete) — absolute so they don't shift layout */
-    .conversation-item {
-      position: relative;
-    }
-    .conv-item-actions {
-      display: none;
-      gap: 2px;
-      position: absolute;
-      right: 4px;
-      top: 50%;
-      transform: translateY(-50%);
-      background: var(--sk-surface-3);
-      padding: 1px 2px;
-      border-radius: var(--sk-radius-xs);
-    }
-    .conversation-item:hover .conv-item-actions {
-      display: flex;
-    }
-    .conv-action-btn {
-      background: none;
-      border: none;
-      color: var(--sk-text-subtle);
-      cursor: pointer;
-      font-size: 11px;
-      padding: 2px 4px;
-      border-radius: var(--sk-radius-xs);
-      transition: color 0.15s, background 0.15s;
-      line-height: 1;
-    }
-    .conv-action-btn:hover {
-      color: var(--sk-text);
-      background: var(--sk-surface-4);
-    }
-    .conv-action-btn--danger:hover {
-      color: var(--sk-accent-danger);
-      background: rgba(255,107,107,0.1);
-    }
-
-    /* ── Chat typing indicator ── */
-    .chat-typing-indicator {
-      opacity: 0.7;
-    }
-    /* Server-driven busy slot rendered below the chat messages container.
-       Empty (data-busy="0") collapses to nothing; populated (data-busy="1")
-       shows the model label + animated dots so the user knows the agent is
-       still working between streamed chunks. */
-    .chat-busy {
-      display: flex;
-      padding: 0 0.55rem;
-    }
-    .chat-busy[data-busy="0"] { display: none; }
-    .chat-busy__bubble {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.2rem 0;
-      font-size: 0.72rem;
-      color: var(--on-surface-variant, #adaaaa);
-      background: transparent;
-      border: none;
-    }
-    .chat-busy__label {
-      font-family: var(--sk-font-mono, monospace);
-      letter-spacing: -0.01em;
-    }
-    .chat-typing-dots {
-      display: inline-flex;
-      gap: 4px;
-      align-items: center;
-      height: 1.2em;
-    }
-    .chat-typing-dots span {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--sk-accent-secondary);
-      animation: chat-typing-bounce 1.4s ease-in-out infinite;
-    }
-    .chat-typing-dots span:nth-child(2) { animation-delay: 0.2s; }
-    .chat-typing-dots span:nth-child(3) { animation-delay: 0.4s; }
-    @keyframes chat-typing-bounce {
-      0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
-      40% { opacity: 1; transform: scale(1); }
-    }
-
-    /* Collapsible conversation sidebar */
-    .mc-chat-panel--sidebar-collapsed #dashboard-chat-panel > .chat-fullscreen-sidebar,
-    .mc-chat-panel--sidebar-collapsed #chat-sidebar {
-      display: none !important;
-    }
-    .conv-sidebar-toggle {
-      background: none;
-      border: none;
-      color: var(--sk-text-subtle);
-      cursor: pointer;
-      font-size: 14px;
-      padding: 2px 6px;
-      line-height: 1;
-      transition: color 0.15s;
-    }
-    .conv-sidebar-toggle:hover { color: var(--sk-text); }
-
     /* ── Desktop sidebar: collapsed rail, hover to overlay, pin to dock ──
        Closed by default: a 40px rail with just the arrow button. Hovering
        the rail slides the full sidebar out OVER the main area (it sits in
@@ -1625,8 +1256,7 @@ export function missionControlStyles(): string {
       }
       /* Closed rail: content hidden, arrow centered. */
       .mc-sidebar__create,
-      .mc-sidebar__list,
-      .mc-sidebar__footer {
+      .mc-sidebar__list {
         display: none;
       }
       .mc-sidebar__header {
@@ -1639,8 +1269,6 @@ export function missionControlStyles(): string {
       .mc-workspace--sidebar-pinned .mc-sidebar__create { display: block; }
       .mc-sidebar:hover .mc-sidebar__list,
       .mc-workspace--sidebar-pinned .mc-sidebar__list { display: block; }
-      .mc-sidebar:hover .mc-sidebar__footer,
-      .mc-workspace--sidebar-pinned .mc-sidebar__footer { display: block; }
       .mc-sidebar:hover .mc-sidebar__header,
       .mc-workspace--sidebar-pinned .mc-sidebar__header {
         justify-content: flex-start;
@@ -1649,10 +1277,8 @@ export function missionControlStyles(): string {
       }
       .mc-sidebar:hover .mc-sidebar__header,
       .mc-sidebar:hover .mc-sidebar__list,
-      .mc-sidebar:hover .mc-sidebar__footer,
       .mc-workspace--sidebar-pinned .mc-sidebar__header,
-      .mc-workspace--sidebar-pinned .mc-sidebar__list,
-      .mc-workspace--sidebar-pinned .mc-sidebar__footer {
+      .mc-workspace--sidebar-pinned .mc-sidebar__list {
         min-width: 260px;
       }
       /* Arrow points right (open me) when unpinned, left (unpin) when pinned. */
@@ -1831,7 +1457,7 @@ export function missionControlStyles(): string {
     /* ── Mobile (≤ 768px) ─────────────────────────────────────────────
      * Operator monitoring console: keep notes / artifacts / steer /
      * escalations; hide activity feed, task details tab, agent tree,
-     * chat panel, resize dividers. Sidebar becomes an off-canvas
+     * resize dividers. Sidebar becomes an off-canvas
      * drawer toggled via the existing data-sk-sidebar-toggle button.
      * The JS branch in Skipper.sidebar.toggle picks the right class
      * (--sidebar-open here vs --sidebar-pinned on desktop) based
@@ -1878,12 +1504,6 @@ export function missionControlStyles(): string {
        * the Details tab content itself (agent tree + delegations). */
       .mc-tabs { display: none; }
       #mc-tab-details { display: none !important; }
-
-      /* Hide the Skipper chat panel + its toggle button. */
-      .mc-chat-panel,
-      [data-sk-chat-toggle] {
-        display: none !important;
-      }
 
       /* Phase strip: keep it but allow horizontal scroll for long chains. */
       .mc-phase-stepper {

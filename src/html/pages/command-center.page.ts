@@ -17,13 +17,11 @@ interface ScheduledTaskOverride {
 }
 
 export function commandCenterPage(vm: CommandCenterViewModel, selectedTaskId?: string, scheduledOverride?: ScheduledTaskOverride): string {
-  const experimental = isExperimental();
   const navHtml = navbar({
     currentPath: "/",
     daemonState: vm.daemonState,
     daemonUptime: vm.daemonUptime,
     escalationCount: vm.escalationCount,
-    showChatToggle: experimental,
     skipperConnectEnabled: vm.skipperConnectEnabled,
   });
 
@@ -46,21 +44,6 @@ export function commandCenterPage(vm: CommandCenterViewModel, selectedTaskId?: s
       : selected ? renderTaskView(vm, selected) : renderWelcome(vm)}
       </div>
       <div id="mc-main-refresh" style="display:none;"></div>
-      ${experimental ? `
-      <!-- Chat bottom panel -->
-      <div class="mc-chat-panel" id="mc-chat-panel">
-        <div class="mc-chat-panel__resize-handle" data-sk-chat-resize></div>
-        <div class="mc-chat-panel__header">
-          <button class="conv-sidebar-toggle" onclick="document.getElementById('mc-chat-panel').classList.toggle('mc-chat-panel--sidebar-collapsed')" title="Toggle conversation list">&#x2630;</button>
-          <span class="mc-chat-panel__title">Chat</span>
-          <button class="mc-chat-panel__close" data-sk-chat-toggle title="Close Chat">&times;</button>
-        </div>
-        <div class="mc-chat-panel__body" id="dashboard-chat-panel"
-             hx-get="/fragments/dashboard/chat" hx-trigger="load" hx-swap="innerHTML">
-          <span class="sk-muted" style="padding: var(--sk-space-4); display:block; text-align:center;">Loading chat...</span>
-        </div>
-      </div>
-      ` : ""}
     </div>
   `, "/", selected ? ["dashboard", `task:${selected.id}`] : ["dashboard"]);
 }
@@ -74,15 +57,6 @@ function renderSidebar(vm: CommandCenterViewModel, activeId: string | null): str
 
     <div class="mc-sidebar__list" id="mc-sidebar-list">
       ${renderSidebarListBody(vm, activeId)}
-    </div>
-
-    <div class="mc-sidebar__footer">
-      <label class="sk-checkbox">
-        <input type="checkbox" name="enabled" ${vm.parallelExecution ? "checked" : ""}
-          hx-post="/api/settings/parallel-tasks" hx-trigger="change" hx-swap="none">
-        <span class="sk-checkbox__toggle"></span>
-        <span class="sk-checkbox__label">Run tasks in parallel</span>
-      </label>
     </div>
   </aside>`;
 }
@@ -123,13 +97,6 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
       <div class="mc-sidebar__group-label">Recurring</div>
       ${vm.scheduledTasks.map(st => sidebarScheduledItem(st, activeId)).join("")}
     ` : ""}
-
-    ${isExperimental() && vm.recentConversations.length > 0 ? `
-      <div id="mc-sidebar-chats">
-        <div class="mc-sidebar__group-label">Chats</div>
-        ${vm.recentConversations.map(c => sidebarChatItem(c)).join("")}
-      </div>
-    ` : `<div id="mc-sidebar-chats"></div>`}
   `;
 }
 
@@ -169,19 +136,6 @@ function formatScheduleBadge(unit: string | null, amount: number | null, matrix:
   if (unit === "hours") return amount === 1 ? "1h" : `${amount}h`;
   if (unit === "days") return amount === 1 ? "daily" : `${amount}d`;
   return `${amount}${unit[0]}`;
-}
-
-function sidebarChatItem(conv: { id: string; title: string; status: string; updated_at: string }): string {
-  const dotClass = conv.status === "active" ? "mc-sidebar__item-dot--active" : "mc-sidebar__item-dot--archived";
-  const eid = escapeHtml(conv.id);
-  return `<a class="mc-sidebar__item"
-      hx-get="/fragments/chat/${eid}" hx-target="#dashboard-chat-panel" hx-swap="innerHTML"
-      onclick="if(!document.getElementById('mc-workspace').classList.contains('mc-workspace--chat-open')){Skipper.chat.toggle();}"
-      style="cursor:pointer;">
-    <span class="mc-sidebar__item-dot ${dotClass}"></span>
-    <span class="mc-sidebar__item-title">${escapeHtml(conv.title)}</span>
-    <span class="mc-sidebar__item-time">${formatTimestamp(conv.updated_at)}</span>
-  </a>`;
 }
 
 // Architecture map shown as the dashboard backdrop when no task is selected.

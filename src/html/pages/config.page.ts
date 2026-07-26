@@ -15,6 +15,7 @@ export interface ConfigPageViewModel {
   logRetentionHours: number;
   taskRetentionDays: number;
   recurringTaskRetentionDays: number;
+  parallelExecution: boolean;
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
@@ -23,7 +24,6 @@ export interface ConfigPageViewModel {
   apiKeys: ApiKeyData[];
   modelSettings: {
     skipper: ModelChoice;
-    chat: ModelChoice;
     greg: ModelChoice;
     dictation: ModelChoice;
     options: AgentTypeOption[];
@@ -39,7 +39,7 @@ export interface ConfigPageViewModel {
 /** One provider (agent type) + model row for a subsystem. Model list is filtered
  *  client-side when the provider changes (see the script in modelSettingsPanel). */
 function modelSettingRow(
-  target: "skipper" | "chat" | "greg" | "dictation",
+  target: "skipper" | "greg" | "dictation",
   label: string,
   hint: string,
   current: ModelChoice,
@@ -88,7 +88,6 @@ function modelSettingsPanel(ms: ConfigPageViewModel["modelSettings"]): string {
         Provider + model for each core agent. Stored on this machine only (not committed).
       </p>
       ${modelSettingRow("skipper", "Skipper", "Root task orchestrator", ms.skipper, ms.options)}
-      ${modelSettingRow("chat", "Skipper Chat", "Conversational chat agent", ms.chat, ms.options)}
       ${modelSettingRow("greg", "Greg", "Heckler bot", ms.greg, ms.options)}
       ${isExperimental() ? modelSettingRow("dictation", "Dictation Rewriter", "Cleans up dictated task descriptions", ms.dictation, ms.options) : ""}
     </div>
@@ -220,7 +219,29 @@ function notificationRows(prefs: NotificationPreference[]): string {
 export function configPage(vm: ConfigPageViewModel): string {
   return v2layout("Configuration", `
     ${navbar({ currentPath: "/config", daemonState: vm.daemonState, daemonUptime: vm.daemonUptime, escalationCount: vm.escalationCount })}
-    <div class="sk-container">
+    <style>
+      /* Clearer visual separation between config sections. Scoped with :where()
+         (zero specificity) so themes that give panels their own chrome — win95
+         title bars, geocities, artemis glass — keep it and win. The token-only
+         dark themes, where stacked panels blur together behind an 8% hairline,
+         instead get a tinted header bar, a firmer border, and card elevation.
+         No border-radius: the UI reads square everywhere and it avoids rounding
+         win95's beveled panels. */
+      :where(.sk-config) .sk-panel {
+        border-color: var(--sk-border-subtle);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.30);
+      }
+      :where(.sk-config) .sk-panel__header {
+        background: var(--sk-surface-2);
+        border-bottom-color: var(--sk-border-subtle);
+        min-height: 2.6rem;
+      }
+      :where(.sk-config) .sk-panel__title {
+        font-size: var(--sk-text-base);
+        letter-spacing: 0.06em;
+      }
+    </style>
+    <div class="sk-container sk-config">
       <div class="sk-page-header">
         <h1 class="sk-page-header__title">Configuration</h1>
       </div>
@@ -240,6 +261,24 @@ export function configPage(vm: ConfigPageViewModel): string {
       </div>
 
       ${teamsPanel(vm.teams)}
+
+      <!-- Task Execution Section -->
+      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
+        <div class="sk-panel__header">
+          <span class="sk-panel__title">Task Execution</span>
+        </div>
+        <div class="sk-panel__body">
+          <label class="sk-checkbox" style="margin-top:0;">
+            <input type="checkbox" id="parallel-tasks-enabled" name="enabled" ${vm.parallelExecution ? "checked" : ""}
+              hx-post="/api/settings/parallel-tasks" hx-trigger="change" hx-swap="none" hx-include="this">
+            <span class="sk-checkbox__toggle"></span>
+            <span class="sk-checkbox__label">Run tasks in parallel</span>
+          </label>
+          <p class="sk-muted sk-text-xs" style="margin:var(--sk-space-2) 0 0;">
+            When on, the daemon runs multiple approved tasks at once. When off, tasks run one at a time.
+          </p>
+        </div>
+      </div>
 
       ${modelSettingsPanel(vm.modelSettings)}
 

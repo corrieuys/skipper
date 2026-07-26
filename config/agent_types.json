@@ -55,29 +55,6 @@
       "resume_flag": null
     },
     {
-      "name": "conversation-skipper",
-      "command": "claude",
-      "args": [
-        "--print",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--dangerously-skip-permissions"
-      ],
-      "resume_args": null,
-      "model_flag": "--model",
-      "available_models": [
-        "claude-opus-4-8",
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-sonnet-4-6"
-      ],
-      "env_vars": {},
-      "supports_stdin": false,
-      "supports_resume": true,
-      "resume_flag": "--resume"
-    },
-    {
       "name": "opencode",
       "command": "opencode",
       "args": [

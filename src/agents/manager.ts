@@ -125,8 +125,6 @@ export interface UpdateAgentInput {
   instruction?: string;
 }
 
-export type PermissionMode = "default" | "plan" | "bypassPermissions";
-
 export interface SpawnAgentOptions {
   workingDir: string;
   sessionId?: string;
@@ -138,18 +136,11 @@ export interface SpawnAgentOptions {
    *               (orphan-prevention guard: every spawned process must have a
    *               tracked agent_instances row).
    *   string    → explicit task association; row gets created.
-   *   null      → explicit opt-out (conversations / realtime); spawn proceeds
-   *               without creating an agent_instances row. The caller is
-   *               responsible for any tracking it needs.
+   *   null      → explicit opt-out (realtime); spawn proceeds without creating
+   *               an agent_instances row. The caller is responsible for any
+   *               tracking it needs.
    */
   taskId?: string | null;
-  /**
-   * Claude Code --permission-mode override. When set on a `claude`-backed
-   * agent type, the spawn drops --dangerously-skip-permissions from the base
-   * args and appends `--permission-mode <mode>` instead. Ignored for other
-   * commands (codex, etc.) — they have their own approval mechanisms.
-   */
-  permissionMode?: PermissionMode;
   /**
    * Machine-scoped provider (agent type) / model override applied at spawn
    * instead of the agent row's committed `type` / `model`. Used to honor the
@@ -182,14 +173,7 @@ export type SignalType =
   | "message"
   | "delegate_complete"
   | "json"
-  | "text"
-  // Conversation-agent-only signals (guarded in handleAgentSignal)
-  | "conversation_create_task"
-  | "conversation_task_status"
-  | "conversation_steer"
-  | "conversation_task_note"
-  | "conversation_query_tasks"
-  | "conversation_query_task";
+  | "text";
 
 export interface ParsedSignal {
   type: SignalType;
@@ -259,17 +243,10 @@ function truncatePrompt(prompt: string, agentId: string, db: Database, method: s
 const SIGNAL_PATTERNS = {
   message: /^\[MSG:(\S+)\s+to:(\S+)\]\s*(.*)/,
   delegateComplete: /^\[DELEGATE_COMPLETE\]\s*(.*)/,
-  // Conversation-agent signals (only handled when agent is a conversation agent)
-  conversationCreateTask: /^\[CREATE_TASK\s+title:(.+?)\s+team:(\S+)(?:\s+description:(.+))?\]$/,
-  conversationTaskStatus: /^\[TASK_STATUS\s+task:(\S+)\s+status:(\S+)\]$/,
-  conversationSteer: /^\[STEER\s+agent:(\S+)\s+message:(.+)\]$/,
-  conversationTaskNote: /^\[TASK_NOTE\s+task:(\S+)\s+content:(.+)\]$/,
-  conversationQueryTasks: /^\[QUERY_TASKS\]$/,
-  conversationQueryTask: /^\[QUERY_TASK\s+id:(\S+)\]$/,
 } as const;
 
 function isSignalStart(line: string): boolean {
-  return /^\[(MSG:|DELEGATE_COMPLETE\b|CREATE_TASK\b|TASK_STATUS\b|STEER\b|TASK_NOTE\b|QUERY_TASKS\b|QUERY_TASK\b)/.test(line);
+  return /^\[(MSG:|DELEGATE_COMPLETE\b)/.test(line);
 }
 
 function buildSignalFingerprint(signal: ParsedSignal): string | null {
@@ -278,14 +255,6 @@ function buildSignalFingerprint(signal: ParsedSignal): string | null {
       return `delegate_complete|${signalTextSnippet(signal.content)}`;
     case "message":
       return `message|${signal.messageType ?? ""}|${signal.targetAgent ?? ""}|${signalTextSnippet(signal.content)}`;
-    case "conversation_create_task":
-    case "conversation_task_status":
-    case "conversation_steer":
-    case "conversation_task_note":
-    case "conversation_query_task":
-      return `${signal.type}|${signalTextSnippet(signal.content)}`;
-    case "conversation_query_tasks":
-      return "conversation_query_tasks";
     default:
       return null;
   }
@@ -596,16 +565,6 @@ export class AgentManager {
       args.push(typeDef.model_flag, resolvedModel);
     }
 
-    // Claude Code --permission-mode override (chat conversation picker).
-    // The base claude-code args hardcode --dangerously-skip-permissions; that
-    // conflicts with --permission-mode, so strip it before appending.
-    if (options.permissionMode && typeDef.command === "claude") {
-      for (let i = args.length - 1; i >= 0; i--) {
-        if (args[i] === "--dangerously-skip-permissions") args.splice(i, 1);
-      }
-      args.push("--permission-mode", options.permissionMode);
-    }
-
     // Prepare environment
     const env: Record<string, string> = { ...process.env as Record<string, string> };
     // Ensure agent CLIs in ~/.local/bin resolve regardless of launch context.
@@ -652,8 +611,8 @@ export class AgentManager {
     // the new Skipper instance was hitting the same race and getting MCP
     // disconnected for the whole run.
     // Resolve the task this spawn belongs to. Three branches:
-    //   options.taskId === null      → explicit opt-out (conversations, realtime
-    //                                   manual-insert flows). Skip INSERT silently.
+    //   options.taskId === null      → explicit opt-out (realtime manual-insert
+    //                                   flows). Skip INSERT silently.
     //   options.taskId === string    → use it.
     //   options.taskId === undefined → fall back to agents.current_task_id
     //                                   (meaningful for template-runtimes only).
@@ -671,10 +630,9 @@ export class AgentManager {
           : null));
 
     if (!explicitOptOut && !preSpawnTaskId) {
-      // Loud log instead of throw — throwing breaks the conversations chat
-      // flow and ad-hoc test fixtures that legitimately spawn without a
-      // task. Operators grep error_log for `orphan_spawn` to find spawn
-      // sites that should be passing taskId.
+      // Loud log instead of throw — throwing breaks ad-hoc test fixtures that
+      // legitimately spawn without a task. Operators grep error_log for
+      // `orphan_spawn` to find spawn sites that should be passing taskId.
       logError(
         this.db,
         "orphan_spawn",
@@ -749,7 +707,7 @@ export class AgentManager {
       });
     } catch (err) {
       // Only mark the row failed when one was actually inserted above.
-      // Explicit-opt-out spawns (conversations, realtime) skip the INSERT.
+      // Explicit-opt-out spawns (realtime) skip the INSERT.
       if (preSpawnTaskId) {
         const reason = err instanceof Error ? err.message : String(err);
         try {
@@ -1547,32 +1505,7 @@ export class AgentManager {
       return { ...base, type: "delegate_complete", content: delCompleteMatch[1] };
     }
 
-    // 4. Conversation signals (only acted upon for conversation agents — guarded in handleAgentSignal)
-    const convCreateTaskMatch = line.trim().match(SIGNAL_PATTERNS.conversationCreateTask);
-    if (convCreateTaskMatch) {
-      return { ...base, type: "conversation_create_task", content: line.trim() };
-    }
-    const convTaskStatusMatch = line.trim().match(SIGNAL_PATTERNS.conversationTaskStatus);
-    if (convTaskStatusMatch) {
-      return { ...base, type: "conversation_task_status", content: line.trim() };
-    }
-    const convSteerMatch = line.trim().match(SIGNAL_PATTERNS.conversationSteer);
-    if (convSteerMatch) {
-      return { ...base, type: "conversation_steer", content: line.trim() };
-    }
-    const convTaskNoteMatch = line.trim().match(SIGNAL_PATTERNS.conversationTaskNote);
-    if (convTaskNoteMatch) {
-      return { ...base, type: "conversation_task_note", content: line.trim() };
-    }
-    if (SIGNAL_PATTERNS.conversationQueryTasks.test(line.trim())) {
-      return { ...base, type: "conversation_query_tasks" };
-    }
-    const convQueryTaskMatch = line.trim().match(SIGNAL_PATTERNS.conversationQueryTask);
-    if (convQueryTaskMatch) {
-      return { ...base, type: "conversation_query_task", content: line.trim() };
-    }
-
-    // 5. Default: plain text
+    // 4. Default: plain text
     return { ...base, type: "text" };
   }
 
@@ -2198,32 +2131,6 @@ export function detectAllSignalsInText(agentId: string, text: string): ParsedSig
         content: contentLines.join("\n").trim(),
       });
       i = j - 1;
-      continue;
-    }
-
-    // Conversation signals (single-line, guarded in handleAgentSignal)
-    if (SIGNAL_PATTERNS.conversationCreateTask.test(trimmed)) {
-      signals.push({ type: "conversation_create_task", agentId, raw: trimmed, content: trimmed });
-      continue;
-    }
-    if (SIGNAL_PATTERNS.conversationTaskStatus.test(trimmed)) {
-      signals.push({ type: "conversation_task_status", agentId, raw: trimmed, content: trimmed });
-      continue;
-    }
-    if (SIGNAL_PATTERNS.conversationSteer.test(trimmed)) {
-      signals.push({ type: "conversation_steer", agentId, raw: trimmed, content: trimmed });
-      continue;
-    }
-    if (SIGNAL_PATTERNS.conversationTaskNote.test(trimmed)) {
-      signals.push({ type: "conversation_task_note", agentId, raw: trimmed, content: trimmed });
-      continue;
-    }
-    if (SIGNAL_PATTERNS.conversationQueryTasks.test(trimmed)) {
-      signals.push({ type: "conversation_query_tasks", agentId, raw: trimmed });
-      continue;
-    }
-    if (SIGNAL_PATTERNS.conversationQueryTask.test(trimmed)) {
-      signals.push({ type: "conversation_query_task", agentId, raw: trimmed, content: trimmed });
       continue;
     }
   }

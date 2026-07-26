@@ -11,4 +11,4 @@ JSON config snapshots. Loaded into in-memory config DB at startup. Persisted bac
 
 Edit via API/UI normally — direct edits picked up only on restart.
 
-Not read anymore: `_agents.json` / `_teams.json` are legacy snapshots kept for reference. Infra agents (`skipper`, `chat-skipper`) are code defaults in `src/config/builtin-infra.ts`; teams live in the runtime DB (local teams).
+Not read anymore: `_agents.json` / `_teams.json` are legacy snapshots kept for reference. Infra agents (`skipper`) are code defaults in `src/config/builtin-infra.ts`; teams live in the runtime DB (local teams).

@@ -502,8 +502,7 @@ function geocitiesOverridesCss(): string {
     }
     ${G} .sk-panel__header,
     ${G} .sk-modal__header,
-    ${G} .mc-terminal__header,
-    ${G} .mc-chat-panel__header {
+    ${G} .mc-terminal__header {
       background: linear-gradient(90deg, #d36fc4, #e0c66e, #7ec77e, #5fc8c8);
       color: #1a1a3d;
       font-weight: 700;
@@ -511,8 +510,7 @@ function geocitiesOverridesCss(): string {
     }
     ${G} .sk-panel__header *,
     ${G} .sk-modal__header *,
-    ${G} .mc-terminal__header *,
-    ${G} .mc-chat-panel__header * { color: #1a1a3d; }
+    ${G} .mc-terminal__header * { color: #1a1a3d; }
 
     /* Headings gently rainbow-cycle like a tasteful <marquee> dream */
     ${G} h1,
@@ -683,35 +681,6 @@ function win95OverridesCss(): string {
       border-right: 2px solid #001010;
       border-radius: 0;
     }
-    ${W} .conv-action-btn {
-      border-top: 2px solid #a0a0a0;
-      border-left: 2px solid #a0a0a0;
-      border-bottom: 2px solid #001010;
-      border-right: 2px solid #001010;
-      border-radius: 0;
-    }
-
-    /* ── Chat panel buttons ── */
-    ${W} .mc-chat-panel .btn-sm,
-    ${W} .mc-chat-panel button[type="submit"] {
-      background: #004050;
-      border-top: 2px solid #a0a0a0;
-      border-left: 2px solid #a0a0a0;
-      border-bottom: 2px solid #001010;
-      border-right: 2px solid #001010;
-      border-radius: 0;
-      box-shadow: none;
-    }
-    ${W} .mc-chat-panel .btn-sm:hover,
-    ${W} .mc-chat-panel button[type="submit"]:hover {
-      background: #005060;
-      box-shadow: none;
-    }
-    ${W} .mc-chat-panel .chat-input-row button[type="submit"] {
-      background: #0078d4;
-      color: #ffffff;
-    }
-
     /* ── Sidebar create button ── */
     ${W} .mc-sidebar__create {
       background: #0078d4;
@@ -740,7 +709,6 @@ function win95OverridesCss(): string {
     ${W} .mc-terminal,
     ${W} .mc-steer-card,
     ${W} .mc-stat-card,
-    ${W} .mc-chat-panel,
     ${W} .mc-task-header,
     ${W} .card,
     ${W} .stat-card,
@@ -1060,18 +1028,6 @@ function win95OverridesCss(): string {
     }
     ${W} .mc-idle__feed-item:hover { background: #004050; }
 
-    /* Chat panel */
-    ${W} .mc-chat-panel {
-      background: #002830;
-      border-left: 2px solid #a0a0a0;
-    }
-    ${W} .mc-chat-panel__header {
-      background: linear-gradient(90deg, #00007b, #0078d4);
-      color: #ffffff;
-      font-weight: 700;
-    }
-    ${W} .mc-chat-panel__header * { color: #ffffff; }
-
     /* Escalation bar */
     ${W} .sk-escalation-bar { border-radius: 0; }
 
@@ -1297,16 +1253,6 @@ export function glassOverridesCss(): string {
     }
     ${G} .mc-idle__feed-item:hover {
       background: rgba(16, 20, 30, 0.55);
-    }
-
-    /* Chat panel */
-    ${G} .mc-chat-panel {
-      background: rgba(12, 16, 24, 0.45);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-    }
-    ${G} .mc-chat-panel__header {
-      background: rgba(16, 20, 30, 0.4);
     }
 
     /* Escalation bar */

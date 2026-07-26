@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { isTeamVisible } from "../../config/feature-flags";
 import {
-  getBoolSetting, SETTING_PARALLEL_TASKS,
+  getBoolSetting,
   SETTING_SKIPPER_CONNECT_ENABLED, getStringSetting, SETTING_SKIPPER_CONNECT_KEY,
 } from "../../config/app-settings";
 import { getOpenEscalationCount } from "../../data/queries";
@@ -72,12 +72,10 @@ export interface CommandCenterViewModel {
   allTasks: TaskSummary[];
   scheduledTasks: ScheduledTaskSummary[];
   recentTasks: Array<{ id: string; title: string; status: string; completed_at: string | null }>;
-  recentConversations: Array<{ id: string; title: string; status: string; updated_at: string }>;
   teams: Array<{ id: string; name: string }>;
   escalationCount: number;
   daemonState: string;
   daemonUptime: number;
-  parallelExecution: boolean;
   skipperConnectEnabled: boolean;
   realtimeSessionActive: Map<string, boolean>;
 }
@@ -221,13 +219,6 @@ export function buildCommandCenterViewModel(
     if (m) missionsByTask.set(t.id, m);
   }
 
-  // Recent conversations — all active. The sidebar list scrolls (mc-sidebar__list
-  // has overflow-y:auto) so unbounded count is fine; an archived conversation
-  // drops out via status='active' filter when the user archives it.
-  const recentConversations = db.prepare(
-    "SELECT id, title, status, updated_at FROM conversations WHERE status = 'active' ORDER BY updated_at DESC"
-  ).all() as Array<{ id: string; title: string; status: string; updated_at: string }>;
-
   // Teams for draft editing — exclude the Real Time team (it's only selectable
   // through the real-time task flow, not for standard task edits).
   const rtTeam = db.prepare("SELECT id FROM teams WHERE lower(name) = 'real time' LIMIT 1").get() as { id: string } | undefined;
@@ -337,12 +328,10 @@ export function buildCommandCenterViewModel(
     scheduledTasks,
     queue: queuedTasks.map((t) => ({ id: t.id, title: t.title, status: t.status, created_at: t.created_at })),
     recentTasks: recentTasks.map((t) => ({ id: t.id, title: t.title, status: t.status, completed_at: t.completed_at })),
-    recentConversations,
     teams,
     escalationCount,
     daemonState,
     daemonUptime: process.uptime(),
-    parallelExecution: getBoolSetting(db, SETTING_PARALLEL_TASKS, true),
     skipperConnectEnabled: !!getStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, "") && getBoolSetting(db, SETTING_SKIPPER_CONNECT_ENABLED, false),
     realtimeSessionActive,
   };

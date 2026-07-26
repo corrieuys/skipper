@@ -18,12 +18,6 @@ export function dashboardStyles(): string {
       flex-direction: column;
       gap: var(--sk-space-4);
     }
-    .sk-dashboard__chat {
-      overflow-y: hidden;
-      display: flex;
-      flex-direction: column;
-    }
-
     /* ── Metrics bar ── */
     .sk-metrics {
       display: flex;

@@ -22,7 +22,6 @@ import { selectDashboardFocusTasks } from "../html/selectDashboardFocusTasks";
 import { dashboardSteerPanelSlotFragment } from "../html/dashboardSteerPanelFragment";
 import { dashboardActiveTaskFragment } from "../html/dashboardActiveTaskFragment";
 import { recentActivityFragment } from "../html/recentActivityFragment";
-import { chatPartFragment, chatUserBubble, chatAssistantMessage } from "../html/chatPartFragment";
 import { renderSidebarListBody } from "../html/pages/command-center.page";
 import { buildCommandCenterViewModel } from "../html/view-models/command-center.vm";
 import type {
@@ -117,7 +116,7 @@ export class UIWebSocketManager {
 
   constructor(
     private readonly db: Database,
-    private readonly daemon: Pick<ManagerDaemon, "listRuntimeSteeringOptions" | "getConversationManager">,
+    private readonly daemon: Pick<ManagerDaemon, "listRuntimeSteeringOptions">,
   ) {
     this.registerEventHandlers();
     this.startHeartbeat();
@@ -162,14 +161,6 @@ export class UIWebSocketManager {
           for (const t of msg.topics) {
             if (typeof t === "string") {
               data.subscriptions.add(t);
-              // When a client (re)subscribes to a chat topic, push the current
-              // busy state for that conversation so a page that reconnected
-              // after a crash or network blip doesn't get stuck on a stale
-              // "thinking" indicator (or miss an in-flight one).
-              if (t.startsWith("conversation:") && data.format === "html") {
-                const convId = t.slice("conversation:".length);
-                this.pushBusyToSocket(ws, convId);
-              }
             }
           }
         } else if (msg.type === "unsubscribe" && Array.isArray(msg.topics)) {
@@ -444,32 +435,6 @@ export class UIWebSocketManager {
       this.pushDashboardInstances();
       if (event.taskId) this.pushV2TaskEscalations(event.taskId);
     });
-
-    // --- Conversation messages ---
-    eventBus.on("conversation:message", (event) => {
-      this.pushConversationMessage(
-        event.conversationId,
-        event.messageId,
-        event.role,
-        event.content,
-        event.parts ?? [],
-      );
-      this.pushSidebarChats();
-    });
-    eventBus.on("conversation:stream_chunk", (event) => {
-      this.pushConversationStreamChunk(event.conversationId, event.turnId, event.blockIndex, event.part);
-    });
-
-    // --- Conversation lifecycle ---
-    eventBus.on("conversation:created", () => {
-      this.pushSidebarChats();
-    });
-    eventBus.on("conversation:archived", () => {
-      this.pushSidebarChats();
-    });
-    eventBus.on("conversation:busy_changed", (event) => {
-      this.pushConversationBusy(event.conversationId, event.busy, event.model);
-    });
   }
 
   // --- Fragment renderers (with topic annotations) ---
@@ -699,116 +664,6 @@ export class UIWebSocketManager {
     ).all(taskId) as RunningAgentInstance[];
     this.broadcast(`<div id="rt-running-agents">${runningAgentsFragment(agents)}</div>`, [`task:${taskId}`]);
     this.broadcastJson("updated", "task:running-agents", taskId, { agents });
-  }
-
-  private pushConversationMessage(
-    conversationId: string,
-    messageId: string,
-    role: string,
-    content: string,
-    parts: import("../events/bus").MessagePart[],
-  ): void {
-    let html: string | null = null;
-    if (role === "user") {
-      html = chatUserBubble(messageId, content);
-    } else if (role === "assistant" && parts.length === 0) {
-      // Non-streaming agent: render consolidated message as a single text bubble.
-      html = chatAssistantMessage(messageId, content, parts);
-    }
-    // role === "assistant" with parts: each bubble was already streamed via
-    // pushConversationStreamChunk; skipping HTML push avoids duplicating them on screen.
-
-    if (html) {
-      this.broadcastRaw(
-        `<div id="chat-messages-${esc(conversationId)}" hx-swap-oob="beforeend">${html}</div>`,
-        ["dashboard", `conversation:${conversationId}`],
-      );
-    }
-    this.broadcastJson("created", "conversation:message", conversationId, {
-      messageId,
-      role,
-      content,
-      parts,
-    });
-  }
-
-  private pushConversationStreamChunk(
-    conversationId: string,
-    turnId: string,
-    blockIndex: number,
-    part: import("../events/bus").MessagePart,
-  ): void {
-    const bubble = chatPartFragment(part);
-    // Each part bubble is appended to the chat message stream directly. Turn id is
-    // attached to the wrapper so future grouping (e.g. visually highlighting one turn)
-    // can target it without re-rendering history.
-    const wrapped = `<div class="chat-stream-part" data-turn-id="${esc(turnId)}" data-block-index="${blockIndex}">${bubble}</div>`;
-    this.broadcastRaw(
-      `<div id="chat-messages-${esc(conversationId)}" hx-swap-oob="beforeend">${wrapped}</div>`,
-      ["dashboard", `conversation:${conversationId}`],
-    );
-    this.broadcastJson("created", "conversation:stream_chunk", conversationId, {
-      turnId,
-      blockIndex,
-      part,
-    });
-  }
-
-  /**
-   * Send the current busy fragment to a single socket. Used on subscribe so
-   * a freshly-(re)connected client gets the truth instead of relying on
-   * whatever stale state it had before the disconnect.
-   */
-  private pushBusyToSocket(ws: ServerWebSocket<WSData>, conversationId: string): void {
-    const cm = this.daemon.getConversationManager();
-    const conv = this.db
-      .prepare("SELECT template_agent_id FROM conversations WHERE id = ?")
-      .get(conversationId) as { template_agent_id: string | null } | null;
-    let model: string | undefined;
-    if (conv?.template_agent_id) {
-      const row = this.db
-        .prepare("SELECT model FROM agents WHERE id = ?")
-        .get(conv.template_agent_id) as { model: string } | null;
-      model = row?.model ?? undefined;
-    }
-    const busy = cm.isBusy(conversationId);
-    const id = esc(conversationId);
-    const label = model ? esc(model) : "skipper";
-    const inner = busy
-      ? `<div class="chat-busy__bubble"><span class="chat-busy__label">${label}</span><span class="chat-typing-dots"><span></span><span></span><span></span></span></div>`
-      : "";
-    const html = `<div id="chat-busy-${id}" class="chat-busy" data-busy="${busy ? "1" : "0"}" hx-swap-oob="outerHTML">${inner}</div>`;
-    try {
-      ws.send(oob(html));
-    } catch {
-      this.clients.delete(ws);
-    }
-  }
-
-  private pushConversationBusy(conversationId: string, busy: boolean, model?: string): void {
-    const id = esc(conversationId);
-    const label = model ? esc(model) : "skipper";
-    const inner = busy
-      ? `<div class="chat-busy__bubble"><span class="chat-busy__label">${label}</span><span class="chat-typing-dots"><span></span><span></span><span></span></span></div>`
-      : "";
-    this.broadcastRaw(
-      `<div id="chat-busy-${id}" class="chat-busy" data-busy="${busy ? "1" : "0"}" hx-swap-oob="outerHTML">${inner}</div>`,
-      ["dashboard", `conversation:${conversationId}`],
-    );
-  }
-
-  private pushSidebarChats(): void {
-    const conversations = this.db.prepare(
-      // Unbounded — the sidebar scrolls. Archived conversations drop out via
-      // status='active'. Matches the initial-render query in command-center.vm.ts.
-      "SELECT id, title, status, updated_at FROM conversations WHERE status = 'active' ORDER BY updated_at DESC",
-    ).all() as { id: string; title: string; status: string; updated_at: string }[];
-
-    const items = conversations.map(conv => sidebarChatItem(conv)).join("");
-    const inner = conversations.length > 0
-      ? `<div class="mc-sidebar__group-label">Chats</div>${items}`
-      : "";
-    this.broadcast(`<div id="mc-sidebar-chats">${inner}</div>`, ["dashboard"]);
   }
 
   private pushArtifactList(taskId: string): void {
@@ -1072,17 +927,6 @@ export class UIWebSocketManager {
     }
     this.broadcastRaw(`<div hx-swap-oob="innerHTML:#mc-artifacts-${esc(taskId)}">${content}</div>`, [`dashboard`, `task:${taskId}`]);
   }
-}
-
-function sidebarChatItem(conv: { id: string; title: string; status: string; updated_at: string }): string {
-  const dotClass = conv.status === "active" ? "mc-sidebar__item-dot--active" : "mc-sidebar__item-dot--archived";
-  return `<a class="mc-sidebar__item" style="cursor:pointer;"
-      hx-get="/fragments/chat/${esc(conv.id)}" hx-target="#dashboard-chat-panel" hx-swap="innerHTML"
-      onclick="if(!document.getElementById('mc-workspace').classList.contains('mc-workspace--chat-open')){Skipper.chat.toggle();}">
-    <span class="mc-sidebar__item-dot ${dotClass}"></span>
-    <span class="mc-sidebar__item-title">${esc(conv.title)}</span>
-    <span class="mc-sidebar__item-time">${formatTimestamp(conv.updated_at)}</span>
-  </a>`;
 }
 
 function esc(str: string): string {

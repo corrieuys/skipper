@@ -1,6 +1,6 @@
 /**
  * Skipper UI — unified client-side module.
- * Handles modals, terminal auto-scroll, chat input, preferences, and event delegation.
+ * Handles modals, terminal auto-scroll, preferences, and event delegation.
  * No build step required.
  */
 (function (window, document) {
@@ -192,216 +192,6 @@
     setFilter: function (containerId, filter) {
       var el = document.getElementById(containerId);
       if (el) el.setAttribute("data-filter", filter || "all");
-    },
-  };
-
-  // ── Chat ──
-  Skipper.chat = {
-    handleKeydown: function (event) {
-      if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
-        var form = event.target.closest("form");
-        if (form) htmx.trigger(form, "submit");
-      }
-    },
-    scrollToBottom: function (containerId) {
-      var el = document.getElementById(containerId);
-      if (el) el.scrollTop = el.scrollHeight;
-    },
-    toggle: function () {
-      var workspace = document.getElementById("mc-workspace");
-      var panel = document.getElementById("mc-chat-panel");
-      if (!workspace || !panel) return;
-      var isOpen = workspace.classList.toggle("mc-workspace--chat-open");
-      // Update toggle button active state
-      document.querySelectorAll("[data-sk-chat-toggle]").forEach(function (btn) {
-        if (btn.classList.contains("mc-chat-toggle")) {
-          btn.classList.toggle("mc-chat-toggle--active", isOpen);
-        }
-      });
-      // Restore saved height
-      if (isOpen) {
-        var savedHeight = Skipper.prefs.get("chatPanelHeight", "");
-        if (savedHeight) panel.style.height = savedHeight;
-      }
-      // Persist state
-      Skipper.prefs.set("chatPanelOpen", isOpen ? "1" : "0");
-    },
-    // ── Slash-command autocomplete ──
-    _skillCatalog: null,
-    _skillCatalogFetch: null,
-    _loadSkillCatalog: function () {
-      if (Skipper.chat._skillCatalog) return Promise.resolve(Skipper.chat._skillCatalog);
-      if (Skipper.chat._skillCatalogFetch) return Skipper.chat._skillCatalogFetch;
-      Skipper.chat._skillCatalogFetch = fetch("/api/skills/catalog", { credentials: "same-origin" })
-        .then(function (r) { return r.ok ? r.json() : { skills: [] }; })
-        .then(function (data) {
-          Skipper.chat._skillCatalog = Array.isArray(data.skills) ? data.skills : [];
-          return Skipper.chat._skillCatalog;
-        })
-        .catch(function () { return []; });
-      return Skipper.chat._skillCatalogFetch;
-    },
-    initSlashAutocomplete: function (textarea) {
-      if (!textarea || textarea.dataset.slashInit === "1") return;
-      textarea.dataset.slashInit = "1";
-
-      var menu = document.createElement("div");
-      menu.className = "sk-slash-menu";
-      menu.style.display = "none";
-      menu.setAttribute("role", "listbox");
-      // Anchor menu inside the form so it follows the textarea in the layout.
-      var anchor = textarea.parentElement || document.body;
-      anchor.style.position = anchor.style.position || "relative";
-      anchor.appendChild(menu);
-
-      var state = {
-        open: false,
-        items: [],
-        active: 0,
-        tokenStart: -1, // index of "/" in the textarea value
-        tokenEnd: -1,   // exclusive end of token (caret position when typing)
-      };
-
-      function close() {
-        if (!state.open) return;
-        state.open = false;
-        menu.style.display = "none";
-        menu.innerHTML = "";
-      }
-
-      function render() {
-        menu.innerHTML = "";
-        if (state.items.length === 0) {
-          var empty = document.createElement("div");
-          empty.className = "sk-slash-menu__empty";
-          empty.textContent = "No matching skills";
-          menu.appendChild(empty);
-          return;
-        }
-        state.items.forEach(function (item, i) {
-          var el = document.createElement("div");
-          el.className = "sk-slash-menu__item" + (i === state.active ? " is-active" : "");
-          el.setAttribute("role", "option");
-          var name = document.createElement("div");
-          name.className = "sk-slash-menu__name";
-          name.textContent = "/" + item.name;
-          var desc = document.createElement("div");
-          desc.className = "sk-slash-menu__desc";
-          desc.textContent = item.description || "";
-          el.appendChild(name);
-          el.appendChild(desc);
-          el.addEventListener("mousedown", function (ev) {
-            // mousedown so we beat the textarea blur
-            ev.preventDefault();
-            choose(i);
-          });
-          menu.appendChild(el);
-        });
-      }
-
-      function choose(index) {
-        var item = state.items[index];
-        if (!item) return;
-        var before = textarea.value.substring(0, state.tokenStart);
-        var after = textarea.value.substring(state.tokenEnd);
-        var insertion = "/" + item.name + " ";
-        textarea.value = before + insertion + after;
-        var caret = before.length + insertion.length;
-        textarea.setSelectionRange(caret, caret);
-        textarea.focus();
-        close();
-      }
-
-      function findToken() {
-        var caret = textarea.selectionStart;
-        var val = textarea.value.substring(0, caret);
-        // Find start of current whitespace-delimited token.
-        var match = /(^|\s)(\/[^\s]*)$/.exec(val);
-        if (!match) return null;
-        var tokenStart = match.index + match[1].length;
-        return { tokenStart: tokenStart, tokenEnd: caret, query: match[2].slice(1) };
-      }
-
-      function update() {
-        var t = findToken();
-        if (!t) { close(); return; }
-        Skipper.chat._loadSkillCatalog().then(function (catalog) {
-          var q = t.query.toLowerCase();
-          var filtered = catalog.filter(function (s) {
-            return s.name.toLowerCase().indexOf(q) !== -1;
-          }).slice(0, 8);
-          state.items = filtered;
-          state.active = 0;
-          state.tokenStart = t.tokenStart;
-          state.tokenEnd = t.tokenEnd;
-          state.open = true;
-          menu.style.display = "block";
-          render();
-        });
-      }
-
-      textarea.addEventListener("input", update);
-      textarea.addEventListener("click", update);
-      textarea.addEventListener("keyup", function (ev) {
-        // arrow keys move caret without firing 'input' — re-check token position
-        if (ev.key === "ArrowLeft" || ev.key === "ArrowRight" || ev.key === "Home" || ev.key === "End") {
-          update();
-        }
-      });
-
-      textarea.addEventListener("keydown", function (ev) {
-        if (!state.open || state.items.length === 0) return;
-        if (ev.key === "ArrowDown") {
-          ev.preventDefault();
-          state.active = (state.active + 1) % state.items.length;
-          render();
-        } else if (ev.key === "ArrowUp") {
-          ev.preventDefault();
-          state.active = (state.active - 1 + state.items.length) % state.items.length;
-          render();
-        } else if (ev.key === "Enter" || ev.key === "Tab") {
-          ev.preventDefault();
-          ev.stopPropagation();
-          choose(state.active);
-        } else if (ev.key === "Escape") {
-          ev.preventDefault();
-          close();
-        }
-      }, true); // capture so we beat the Enter-to-submit handler on the textarea
-
-      textarea.addEventListener("blur", function () {
-        // small delay so a click on a menu item can fire first
-        setTimeout(close, 120);
-      });
-    },
-
-    _resizing: false,
-    _startResize: function (e) {
-      e.preventDefault();
-      var panel = document.getElementById("mc-chat-panel");
-      if (!panel) return;
-      Skipper.chat._resizing = true;
-      var handle = panel.querySelector("[data-sk-chat-resize]");
-      if (handle) handle.classList.add("mc-chat-panel__resize-handle--active");
-      var startY = e.clientY;
-      var startH = panel.offsetHeight;
-
-      function onMove(ev) {
-        if (!Skipper.chat._resizing) return;
-        var delta = startY - ev.clientY;
-        var newH = Math.min(Math.max(startH + delta, 120), window.innerHeight * 0.8);
-        panel.style.height = newH + "px";
-      }
-      function onUp() {
-        Skipper.chat._resizing = false;
-        if (handle) handle.classList.remove("mc-chat-panel__resize-handle--active");
-        Skipper.prefs.set("chatPanelHeight", panel.style.height);
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-      }
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
     },
   };
 
@@ -977,13 +767,6 @@
       return;
     }
 
-    // Chat panel toggle
-    var chatToggle = e.target.closest("[data-sk-chat-toggle]");
-    if (chatToggle) {
-      Skipper.chat.toggle();
-      return;
-    }
-
     // Sidebar mobile-drawer backdrop — tap to close
     var sidebarClose = e.target.closest("[data-sk-sidebar-close]");
     if (sidebarClose) {
@@ -1148,13 +931,8 @@
     });
   });
 
-  // Chat panel resize handle + outputs column resize
+  // Outputs column resize
   document.addEventListener("mousedown", function (e) {
-    var resizeHandle = e.target.closest("[data-sk-chat-resize]");
-    if (resizeHandle) {
-      Skipper.chat._startResize(e);
-      return;
-    }
     var outputsHandle = e.target.closest("[data-sk-outputs-resize]");
     if (outputsHandle) {
       var idx = parseInt(outputsHandle.getAttribute("data-sk-outputs-resize"), 10);
@@ -1234,63 +1012,6 @@
     }
   });
 
-  // ── Chat "hide tools" filter ──
-  // Persisted in localStorage and reapplied after every HTMX settle. It must
-  // run on afterSettle, not from an inline fragment script: htmx's settle
-  // phase (~20ms after a swap) restores the incoming element's original
-  // attributes, wiping any class an inline script added during the swap.
-  var CHAT_HIDE_TOOLS_KEY = "skipper.chat.hideToolCalls";
-  function applyChatToolFilter() {
-    var boxes = document.querySelectorAll(".chat-filter-tool-calls");
-    if (boxes.length === 0) return;
-    var on = localStorage.getItem(CHAT_HIDE_TOOLS_KEY) === "1";
-    boxes.forEach(function (box) {
-      box.checked = on;
-    });
-    document.querySelectorAll(".chat-messages").forEach(function (msgs) {
-      msgs.classList.toggle("hide-tool-calls", on);
-    });
-  }
-  document.addEventListener("change", function (e) {
-    if (!e.target.matches || !e.target.matches(".chat-filter-tool-calls")) return;
-    localStorage.setItem(CHAT_HIDE_TOOLS_KEY, e.target.checked ? "1" : "0");
-    applyChatToolFilter();
-  });
-  document.addEventListener("htmx:afterSettle", applyChatToolFilter);
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", applyChatToolFilter);
-  } else {
-    applyChatToolFilter();
-  }
-
-  // ── Chat busy indicator ──
-  // The busy indicator is server-driven: the conversation manager emits
-  // `conversation:busy_changed` whenever the agent process starts or finishes
-  // a turn, and the WS push layer broadcasts an OOB swap to the
-  // `#chat-busy-{conversationId}` slot. The client only needs to do one
-  // thing — show an optimistic indicator the moment the user submits a
-  // message, so the user gets sub-roundtrip feedback. Once the server's
-  // WS push lands, it overwrites the slot via hx-swap-oob.
-  document.addEventListener("htmx:afterRequest", function (evt) {
-    var form = evt.detail.elt;
-    if (!form || !form.closest || !form.closest(".chat-input-area")) return;
-    if (!evt.detail.successful) return;
-    document.querySelectorAll(".chat-busy").forEach(function (slot) {
-      if (slot.getAttribute("data-busy") === "1") return;
-      var msgs = slot.previousElementSibling;
-      var model =
-        (msgs && msgs.classList && msgs.classList.contains("chat-messages")
-          ? msgs.getAttribute("data-chat-model")
-          : null) || "skipper";
-      var modelEsc = model.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      slot.setAttribute("data-busy", "1");
-      slot.innerHTML =
-        '<div class="chat-busy__bubble"><span class="chat-busy__label">' +
-        modelEsc +
-        '</span><span class="chat-typing-dots"><span></span><span></span><span></span></span></div>';
-    });
-  });
-
   // ── HTMX Integration ──
   document.addEventListener("htmx:afterSwap", function (evt) {
     // (Re)initialize the panel dock when a task view is (re)inserted; no-op on
@@ -1310,13 +1031,6 @@
       .querySelectorAll("[data-sk-terminal-autoscroll]")
       .forEach(function (el) {
         Skipper.terminal.observeAppend(el.id);
-      });
-
-    // Re-initialize chat scroll
-    document
-      .querySelectorAll("[data-sk-chat-autoscroll]")
-      .forEach(function (el) {
-        Skipper.chat.scrollToBottom(el.id);
       });
 
     // Re-apply expand state to agent tree nodes after a tree swap
@@ -1369,23 +1083,7 @@
     }
   });
 
-  // ── Chat Panel Restore ──
-  // Restore chat panel visibility from localStorage on page load
   document.addEventListener("DOMContentLoaded", function () {
-    var wasOpen = Skipper.prefs.get("chatPanelOpen", "0") === "1";
-    if (wasOpen) {
-      var workspace = document.getElementById("mc-workspace");
-      var panel = document.getElementById("mc-chat-panel");
-      if (workspace && panel) {
-        workspace.classList.add("mc-workspace--chat-open");
-        var savedHeight = Skipper.prefs.get("chatPanelHeight", "");
-        if (savedHeight) panel.style.height = savedHeight;
-        document.querySelectorAll("[data-sk-chat-toggle].mc-chat-toggle").forEach(function (btn) {
-          btn.classList.add("mc-chat-toggle--active");
-        });
-      }
-    }
-
     // Restore sidebar pinned state — desktop only. Default is the closed
     // hover-to-open rail; on mobile the drawer is always closed on load.
     if (!Skipper.sidebar.isMobile() && Skipper.prefs.get("sidebarPinned", "0") === "1") {
@@ -1401,7 +1099,7 @@
   });
 
   // Render markdown in any [data-artifact-md] block. Used for agent-authored
-  // text (notes, escalations, chat messages) — content is server-escaped so
+  // text (notes, escalations) — content is server-escaped so
   // .textContent recovers the raw source for marked to parse. Idempotent: each
   // element is rendered at most once via the data-rendered flag.
   function renderMarkdownBlocks(root) {
@@ -1419,7 +1117,7 @@
     });
   }
 
-  // OOB swaps (WebSocket-pushed chat messages, notes, escalations) bypass
+  // OOB swaps (WebSocket-pushed notes, escalations) bypass
   // htmx:afterSwap — listen on oobAfterSwap too so streaming content renders.
   document.addEventListener("htmx:oobAfterSwap", function (evt) {
     renderMarkdownBlocks(evt && evt.detail ? evt.detail.target : null);
@@ -1430,27 +1128,6 @@
 
   // Expose globally
   window.Skipper = Skipper;
-
-  // Global chat fullscreen toggle expected by v1 chat fragments
-  window.toggleChatFullscreen = function () {
-    var chatPanel = document.getElementById("mc-chat-panel");
-    if (!chatPanel) {
-      // Fallback for v1 dashboard
-      var panel = document.getElementById("dashboard-chat-panel");
-      if (panel) panel.classList.toggle("chat-fullscreen");
-      return;
-    }
-    var isFs = chatPanel.classList.contains("mc-chat-panel--fullscreen");
-    if (isFs) {
-      chatPanel.classList.remove("mc-chat-panel--fullscreen");
-      chatPanel.style.height = Skipper.prefs.get("chatPanelHeight", "300px");
-    } else {
-      chatPanel.classList.add("mc-chat-panel--fullscreen");
-      chatPanel.style.height = "100%";
-      var msgs = chatPanel.querySelector(".chat-messages");
-      if (msgs) msgs.scrollTop = msgs.scrollHeight;
-    }
-  };
 
   // Global artifact modal helpers expected by v1 fragments
   window.openTaskArtifactModal = function () {

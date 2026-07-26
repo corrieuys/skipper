@@ -135,9 +135,9 @@ describe("getAgent", () => {
 
 describe("listAgents", () => {
   it("returns only seeded agents when no manual agents exist", () => {
-    // chat-skipper is seeded by initializeDatabase via seedDefaultAgents
+    // skipper is seeded by initializeDatabase via seedDefaultAgents
     const agents = manager.listAgents();
-    expect(agents.some(a => a.id === "chat-skipper")).toBe(true);
+    expect(agents.some(a => a.id === "skipper")).toBe(true);
   });
 
   it("returns all created agents plus seeded agents", () => {
@@ -1530,11 +1530,6 @@ describe("detectSignalsInText", () => {
     expect(results[0].content).toContain("3 pairs generated");
   });
 
-  it("detects conversation signals", () => {
-    const results = detectAllSignalsInText(agentId, "[CREATE_TASK title:Test team:dev description:A test task]");
-    expect(results.length).toBe(1);
-    expect(results[0].type).toBe("conversation_create_task");
-  });
 });
 
 

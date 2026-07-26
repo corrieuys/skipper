@@ -130,7 +130,6 @@ repo's GitHub Releases.
 | slack app integration (post as app via bot token; inbound slash commands via Socket Mode) | [src/slack/CLAUDE.md](src/slack/CLAUDE.md) |
 | user hooks (task/escalation events → shell) | [src/hooks/CLAUDE.md](src/hooks/CLAUDE.md) |
 | desktop notification sounds | [src/notifications/CLAUDE.md](src/notifications/CLAUDE.md) |
-| chat conversations w/ skipper | [src/conversations/CLAUDE.md](src/conversations/CLAUDE.md) |
 | greg/grug heckler bot | [src/monkey/CLAUDE.md](src/monkey/CLAUDE.md) |
 | query helpers for HTML view-models | [src/data/CLAUDE.md](src/data/CLAUDE.md) |
 | global cross-task shared key/value store | [src/global-store/CLAUDE.md](src/global-store/CLAUDE.md) |
@@ -152,12 +151,6 @@ Two paths feed `agent:signal` on the bus:
 ```
 [MSG:<type> to:<agent>] <content>     ← agent ↔ agent message
 [DELEGATE_COMPLETE] <result>           ← terminal sentinel printed by delegated child
-[CREATE_TASK title:<t> team:<id> ...]  ┐
-[TASK_STATUS task:<id> status:<s>]     │
-[STEER agent:<id> message:<m>]         ├ conversation-agent only
-[TASK_NOTE task:<id> content:<c>]      │
-[QUERY_TASKS]                          │
-[QUERY_TASK id:<id>]                   ┘
 ```
 
 JSON-mode agents (claude-code, codex) also scan assistant text via `detectSignalsInText()` for the same surviving set.

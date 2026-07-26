@@ -6,7 +6,6 @@ import { TaskScheduler } from "../tasks/scheduler";
 import { TeamManager } from "../teams/manager";
 import { StateTracker } from "./state-tracker";
 import { EscalationManager } from "../escalations/manager";
-import { ConversationManager } from "../conversations/manager";
 import { HookManager } from "../hooks/manager";
 import { eventBus } from "../events/bus";
 import { updateInstanceStatus, finalizeActiveInstancesForTask } from "./instance-status";
@@ -91,7 +90,6 @@ export class ManagerDaemon {
   private worktreeManager: WorktreeManager;
   private consensusManager: ConsensusManager;
   private realtimeSessionManager: RealtimeSessionManager;
-  private conversationManager: ConversationManager;
   private hookManager: HookManager;
   private scheduledTaskScheduler: ScheduledTaskScheduler;
 
@@ -254,7 +252,6 @@ export class ManagerDaemon {
       this.taskScheduler,
     );
 
-    this.conversationManager = new ConversationManager(this.db, this.agentManager);
     this.hookManager = new HookManager(this.db);
 
     this.registerExitHandler();
@@ -314,10 +311,6 @@ export class ManagerDaemon {
 
   getConsensusManager(): ConsensusManager {
     return this.consensusManager;
-  }
-
-  getConversationManager(): ConversationManager {
-    return this.conversationManager;
   }
 
   listRuntimeSteeringOptions(templateAgentId: string): RuntimeSteeringOption[] {
@@ -504,10 +497,6 @@ export class ManagerDaemon {
   // --- Lifecycle (delegated to ReconciliationLoop) ---
 
   async start(): Promise<void> {
-    // Restore active conversations from previous server session
-    this.conversationManager.restoreConversations().catch((err) => {
-      logError(this.db, "conversation.restore_all", {}, err);
-    });
     return this.reconciliationLoop.start();
   }
 
@@ -663,14 +652,6 @@ export class ManagerDaemon {
   }
 
   private handleAgentSignal(event: AgentSignalEvent): void {
-    // Route conversation-agent signals separately; skip task orchestration signals for them
-    if (this.conversationManager.isConversationAgent(event.agentId)) {
-      this.handleConversationSignal(event).catch((err) => {
-        logError(this.db, "conversation_signal_handler", { agentId: event.agentId, signalType: event.signalType }, err);
-      });
-      return;
-    }
-
     // Track signal activity for stuck-agent detection.
     // Use the template agent ID so the state row is always on the canonical agent.
     const templateAgentId = this.agentManager.getTemplateAgentId(event.agentId) ?? event.agentId;
@@ -698,171 +679,6 @@ export class ManagerDaemon {
 
       default:
         break;
-    }
-  }
-
-  private async handleConversationSignal(event: AgentSignalEvent): Promise<void> {
-    const conversationId = this.conversationManager.isConversationAgent(event.agentId);
-    if (!conversationId) return;
-
-    const runtimeId = event.agentId;
-
-    const injectResult = async (result: string): Promise<void> => {
-      const closeStdin = this.shouldCloseStdinForAgent(runtimeId);
-      try {
-        await this.agentManager.sendResumeMessage(runtimeId, `[SYSTEM] Command result:\n\n${result}`, closeStdin);
-      } catch (err) {
-        logError(this.db, "conversation_signal_inject", { conversationId, signalType: event.signalType }, err);
-      }
-    };
-
-    const content = event.content ?? "";
-    switch (event.signalType) {
-      case "conversation_query_tasks":
-        await this.conversationQueryTasks(injectResult);
-        break;
-      case "conversation_query_task":
-        await this.conversationQueryTask(content, injectResult);
-        break;
-      case "conversation_create_task":
-        await this.conversationCreateTask(content, injectResult);
-        break;
-      case "conversation_task_status":
-        await this.conversationTaskStatus(content, injectResult);
-        break;
-      case "conversation_steer":
-        await this.conversationSteer(content, injectResult);
-        break;
-      case "conversation_task_note":
-        await this.conversationTaskNote(content, injectResult);
-        break;
-      default:
-        // Non-conversation signals from conversation agents are silently ignored
-        break;
-    }
-  }
-
-  private async conversationQueryTasks(inject: (result: string) => Promise<void>): Promise<void> {
-    const tasks = this.db
-      .prepare(
-        `SELECT id, title, status, current_phase, team_id, created_at, updated_at
-         FROM tasks
-         WHERE task_type != 'real_time'
-         ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'approved' THEN 1 WHEN 'draft' THEN 2 ELSE 3 END, updated_at DESC
-         LIMIT 20`,
-      )
-      .all() as { id: string; title: string; status: string; current_phase: number; team_id: string | null; created_at: string }[];
-    const lines = tasks.map((t) => `- [${t.id}] ${t.title} | status: ${t.status} | phase: ${t.current_phase}`);
-    await inject(lines.length > 0 ? lines.join("\n") : "No tasks found.");
-  }
-
-  private async conversationQueryTask(content: string, inject: (result: string) => Promise<void>): Promise<void> {
-    const match = content.match(/\[QUERY_TASK\s+id:(\S+)\]/);
-    if (!match) return;
-    const taskId = match[1]!;
-    const task = this.taskScheduler.getTask(taskId);
-    if (!task) {
-      await inject(`Task not found: ${taskId}`);
-      return;
-    }
-    const notes = this.db
-      .prepare("SELECT content, agent_id, created_at FROM task_notes WHERE task_id = ? ORDER BY created_at DESC LIMIT 5")
-      .all(taskId) as { content: string; agent_id: string; created_at: string }[];
-    const noteLines = notes.map((n) => `  - [${n.agent_id}] ${n.content.slice(0, 200)}`).join("\n");
-    const result = [
-      `Task: ${task.title} (${task.id})`,
-      `Status: ${task.status}`,
-      `Phase: ${task.current_phase}`,
-      `Description: ${task.description ?? "(none)"}`,
-      notes.length > 0 ? `Recent notes:\n${noteLines}` : "Notes: none",
-    ].join("\n");
-    await inject(result);
-  }
-
-  private async conversationCreateTask(content: string, inject: (result: string) => Promise<void>): Promise<void> {
-    const match = content.match(/\[CREATE_TASK\s+title:(.+?)\s+team:(\S+)(?:\s+description:(.+))?\]/);
-    if (!match) return;
-    const title = match[1]!;
-    const teamId = match[2]!;
-    const description = match[3];
-    try {
-      const task = this.taskScheduler.createTask({
-        title: title.trim(),
-        description: description?.trim() || undefined,
-        teamId: teamId.trim(),
-        workingDirectory: process.cwd(),
-      });
-      await inject(`Task created: [${task.id}] ${task.title} | status: draft`);
-    } catch (err) {
-      await inject(`Failed to create task: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  private async conversationTaskStatus(content: string, inject: (result: string) => Promise<void>): Promise<void> {
-    const match = content.match(/\[TASK_STATUS\s+task:(\S+)\s+status:(\S+)\]/);
-    if (!match) return;
-    const taskId = match[1]!;
-    const newStatus = match[2]!;
-    try {
-      const validStatuses = ["draft", "approved", "completed", "failed"];
-      if (!validStatuses.includes(newStatus)) {
-        await inject(`Invalid status '${newStatus}'. Valid: ${validStatuses.join(", ")}`);
-        return;
-      }
-      if (newStatus === "approved") this.taskScheduler.approveTask(taskId);
-      else if (newStatus === "completed") this.taskScheduler.completeTask(taskId);
-      else if (newStatus === "failed") this.taskScheduler.failTask(taskId, "Set via conversation Skipper");
-      else {
-        this.db.prepare("UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE id = ?").run(newStatus, taskId);
-      }
-      await inject(`Task ${taskId} status updated to: ${newStatus}`);
-    } catch (err) {
-      await inject(`Failed to update task status: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  private async conversationSteer(content: string, inject: (result: string) => Promise<void>): Promise<void> {
-    const match = content.match(/\[STEER\s+agent:(\S+)\s+message:(.+)\]/);
-    if (!match) return;
-    const targetRuntimeId = match[1]!;
-    const steerMessage = match[2]!;
-    // Find the template agent for this runtime
-    const templateId = this.agentManager.getTemplateAgentId(targetRuntimeId);
-    if (!templateId) {
-      await inject(`Agent runtime not found: ${targetRuntimeId}`);
-      return;
-    }
-    try {
-      await this.steerRuntime(templateId, targetRuntimeId, steerMessage.trim());
-      await inject(`Steering message sent to agent ${targetRuntimeId}.`);
-    } catch (err) {
-      await inject(`Failed to steer agent: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  private async conversationTaskNote(content: string, inject: (result: string) => Promise<void>): Promise<void> {
-    const match = content.match(/\[TASK_NOTE\s+task:(\S+)\s+content:(.+)\]/);
-    if (!match) return;
-    const taskId = match[1]!;
-    const noteContent = match[2]!;
-    const task = this.taskScheduler.getTask(taskId);
-    if (!task) {
-      await inject(`Task not found: ${taskId}`);
-      return;
-    }
-    try {
-      const noteId = crypto.randomUUID();
-      // Find entrypoint agent for FK constraint
-      let agentId = "user";
-      if (task.team_id) {
-        const teamRow = this.db.prepare("SELECT entrypoint_agent_id FROM teams WHERE id = ?").get(task.team_id) as { entrypoint_agent_id: string | null } | null;
-        if (teamRow?.entrypoint_agent_id) agentId = teamRow.entrypoint_agent_id;
-      }
-      this.db.prepare("INSERT INTO task_notes (id, task_id, agent_id, content, source) VALUES (?, ?, ?, ?, 'user')").run(noteId, taskId, agentId, noteContent.trim());
-      eventBus.emit("task:note_added", { noteId, taskId, agentId, content: noteContent.trim() });
-      await inject(`Note added to task ${taskId}.`);
-    } catch (err) {
-      await inject(`Failed to add note: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

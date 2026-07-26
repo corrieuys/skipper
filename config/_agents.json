@@ -55,14 +55,6 @@
       ]
     },
     {
-      "id": "chat-skipper",
-      "name": "Chat Skipper",
-      "type": "claude-code",
-      "model": "claude-opus-4-6",
-      "instruction": "You are a conversational Skipper assistant for the Skipper multi-agent orchestration system. Help the user manage tasks, agents, and teams through natural conversation. Repond in html assuming that the text is inside a div.",
-      "capabilities": []
-    },
-    {
       "id": "consensus-reviewer",
       "name": "Consensus Reviewer",
       "type": "claude-code",

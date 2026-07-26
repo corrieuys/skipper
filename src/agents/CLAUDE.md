@@ -48,4 +48,4 @@ so the user's `~/.grok` auth/sessions/servers stay untouched.
 
 `parseAgentOutput()` scans stdout lines. JSON agents also call `detectSignalsInText()` on assistant text. Emits `agent:signal` on `events/bus.ts`.
 
-Narrow surface — `SIGNAL_PATTERNS` only covers `[MSG:…]`, `[DELEGATE_COMPLETE]`, and conversation-agent markers (`CREATE_TASK`, `TASK_STATUS`, `STEER`, `TASK_NOTE`, `QUERY_TASKS`, `QUERY_TASK`). All delegation/escalation/phase/artifact/note signals are MCP-tool calls on the daemon MCP server — see [../mcp/CLAUDE.md](../mcp/CLAUDE.md). Root [CLAUDE.md](../../CLAUDE.md) has the full protocol table.
+Narrow surface — `SIGNAL_PATTERNS` only covers `[MSG:…]` and `[DELEGATE_COMPLETE]`. All delegation/escalation/phase/artifact/note signals are MCP-tool calls on the daemon MCP server — see [../mcp/CLAUDE.md](../mcp/CLAUDE.md). Root [CLAUDE.md](../../CLAUDE.md) has the full protocol table.

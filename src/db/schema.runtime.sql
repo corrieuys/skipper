@@ -348,31 +348,6 @@ CREATE TABLE IF NOT EXISTS realtime_pipeline_state (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Conversational Skipper chat conversations (template_agent_id has no FK in runtime mode)
-CREATE TABLE IF NOT EXISTS conversations (
-  id TEXT PRIMARY KEY,
-  title TEXT NOT NULL DEFAULT 'New Conversation',
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
-  agent_instance_id TEXT,
-  session_id TEXT,
-  template_agent_id TEXT,
-  permission_mode TEXT NOT NULL DEFAULT 'bypassPermissions'
-    CHECK (permission_mode IN ('default', 'plan', 'bypassPermissions')),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_conversations_status ON conversations(status, updated_at DESC);
-
--- Chat messages for conversational Skipper
-CREATE TABLE IF NOT EXISTS conversation_messages (
-  id TEXT PRIMARY KEY,
-  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-  role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
-  content TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_conversation_messages_conv ON conversation_messages(conversation_id, created_at);
-
 -- Tracks which task notes have been delivered to which agent instances
 CREATE TABLE IF NOT EXISTS agent_note_receipts (
   agent_instance_id TEXT NOT NULL,

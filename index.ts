@@ -6,7 +6,6 @@ import { registerPageRoutes } from "./src/routes/pages";
 import { registerDaemonRoutes } from "./src/routes/daemon";
 import { registerRealtimeRoutes } from "./src/routes/realtime";
 import { registerDataRoutes } from "./src/routes/data/index";
-import { registerConversationRoutes } from "./src/routes/conversations";
 import { registerScheduledTaskRoutes } from "./src/routes/scheduled-tasks";
 import { registerApiKeyRoutes } from "./src/routes/api-keys";
 import { registerDictationRoutes } from "./src/routes/dictation";
@@ -64,7 +63,6 @@ registerDaemonRoutes(daemon);
 registerPageRoutes(daemon);
 registerRealtimeRoutes(daemon);
 registerDataRoutes(getDb(), daemon);
-registerConversationRoutes(daemon.getConversationManager());
 registerScheduledTaskRoutes(daemon);
 registerApiKeyRoutes();
 // Dictation (experimental): transcribe + LLM cleanup for task-description fields.

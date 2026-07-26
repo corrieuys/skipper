@@ -8,6 +8,13 @@ import { eventBus } from "../events/bus";
 
 const EXIT_CODE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const EXIT_CODE_CLUSTER_THRESHOLD = 3;
+// A running/waiting instance is legitimately pid-null for a short window: the row
+// is INSERTed status='running', process_pid=NULL and the pid is only patched in
+// after Bun.spawn returns (and again on every resume/parent-revive that flips the
+// row back to running without a pid). Past this window with no pid and no
+// in-memory runtime, the row is a ghost — a process that exited before its status
+// was written — and must be reaped.
+const GHOST_PID_NULL_GRACE_MS = 60 * 1000; // 1 minute
 
 interface ExitCodeEntry {
   agentId: string;
@@ -95,14 +102,38 @@ export class HealthMonitor {
    * Kills orphan processes and cleans up DB state for dead instances.
    */
   checkInstanceProcessHealth(): void {
+    // NOTE: no `process_pid IS NOT NULL` filter. A row left at status='running'
+    // with a null pid (a process that exited before its status was written — see
+    // GHOST_PID_NULL_GRACE_MS) would otherwise never be probed and would show as
+    // running in the UI forever. We select all live-status rows and reconcile
+    // both the pid-present (probe) and pid-null (ghost) cases.
     const instances = this.db
       .prepare(
-        "SELECT id, template_agent_id, parent_instance_id, process_pid, task_id, status FROM agent_instances WHERE process_pid IS NOT NULL AND status IN ('running', 'waiting_delegation')",
+        "SELECT id, template_agent_id, parent_instance_id, process_pid, task_id, status, updated_at FROM agent_instances WHERE status IN ('running', 'waiting_delegation')",
       )
-      .all() as Array<{ id: string; template_agent_id: string; parent_instance_id: string | null; process_pid: number; task_id: string; status: string }>;
+      .all() as Array<{ id: string; template_agent_id: string; parent_instance_id: string | null; process_pid: number | null; task_id: string; status: string; updated_at: string }>;
 
     for (const inst of instances) {
       const memTracked = !!this.agentManager.getRunningAgent(inst.id);
+
+      // Pid-null rows: an in-memory runtime means the row is mid-spawn (pid not
+      // patched in yet) — leave it. Otherwise honour the grace window, then reap
+      // it as a ghost. This is the safety net the old pid-gated query skipped.
+      if (inst.process_pid === null) {
+        if (memTracked) continue;
+        // updated_at is UTC (`datetime('now')`); parse as UTC explicitly.
+        const updatedMs = new Date(inst.updated_at.replace(" ", "T") + "Z").getTime();
+        const ageMs = Number.isNaN(updatedMs) ? Infinity : Date.now() - updatedMs;
+        if (ageMs < GHOST_PID_NULL_GRACE_MS) continue;
+
+        updateInstanceStatus(this.db, inst.id, "failed", { clearPid: true });
+        this.emitRemediationEvent("instance_ghost_reaped", inst.template_agent_id, inst.task_id, {
+          instanceId: inst.id,
+          ageMs,
+        });
+        this.failTaskIfRootInstanceDied(inst);
+        continue;
+      }
 
       let osAlive = false;
       try {
@@ -129,24 +160,36 @@ export class HealthMonitor {
         pid: inst.process_pid,
       });
 
-      // Fail the owning task only when the ENTRYPOINT (root) instance died — not a
-      // delegated child, and not an instance parked waiting on its children or on
-      // an open escalation. Per-instance task_id is accurate under parallel tasks,
-      // unlike the clobber-prone template row in checkProcessHealth.
-      if (inst.status === "running" && inst.parent_instance_id === null) {
-        const task = this.taskScheduler.getTask(inst.task_id);
-        if (
-          task &&
-          task.status === "running" &&
-          !this.hasOpenEscalation(inst.task_id) &&
-          !this.getActiveDelegationForChild(inst.id)
-        ) {
-          try {
-            this.taskScheduler.failTask(inst.task_id, "Agent process died unexpectedly");
-          } catch (err) {
-            logError(this.db, "health_check_fail_task", { agentId: inst.id, taskId: inst.task_id }, err);
-          }
-        }
+      this.failTaskIfRootInstanceDied(inst);
+    }
+  }
+
+  /**
+   * Fail the owning task only when the ENTRYPOINT (root) instance died — not a
+   * delegated child, and not an instance parked waiting on its children or on an
+   * open escalation. Per-instance task_id is accurate under parallel tasks,
+   * unlike the clobber-prone template row in checkProcessHealth. A dead
+   * delegated child is settled by checkDelegationOrphans (which revives its
+   * waiting parent), so we deliberately do nothing to the task here.
+   */
+  private failTaskIfRootInstanceDied(inst: {
+    id: string;
+    parent_instance_id: string | null;
+    task_id: string;
+    status: string;
+  }): void {
+    if (inst.status !== "running" || inst.parent_instance_id !== null) return;
+    const task = this.taskScheduler.getTask(inst.task_id);
+    if (
+      task &&
+      task.status === "running" &&
+      !this.hasOpenEscalation(inst.task_id) &&
+      !this.getActiveDelegationForChild(inst.id)
+    ) {
+      try {
+        this.taskScheduler.failTask(inst.task_id, "Agent process died unexpectedly");
+      } catch (err) {
+        logError(this.db, "health_check_fail_task", { agentId: inst.id, taskId: inst.task_id }, err);
       }
     }
   }
@@ -238,10 +281,17 @@ export class HealthMonitor {
    */
   checkOrphanedTasks(): void {
     const runningTasks = this.db
-      .prepare("SELECT id FROM tasks WHERE status = 'running' AND task_type != 'real_time'")
-      .all() as Array<{ id: string }>;
+      .prepare("SELECT id, needs_review FROM tasks WHERE status = 'running' AND task_type != 'real_time'")
+      .all() as Array<{ id: string; needs_review: number }>;
 
     for (const task of runningTasks) {
+      // Intentionally parked tasks are not orphans: a task awaiting human review,
+      // or one with an open escalation, has no live runtime by design and would
+      // otherwise re-emit orphaned_task every tick forever. recoverAllStaleTasks
+      // skips these for the same reason; keep the two in sync.
+      if (task.needs_review) continue;
+      if (this.hasOpenEscalation(task.id)) continue;
+
       // Check if any agent is assigned
       const assignedAgent = this.db
         .prepare("SELECT id, process_pid FROM agents WHERE current_task_id = ?")

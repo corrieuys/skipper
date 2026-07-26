@@ -403,36 +403,6 @@ CREATE TABLE IF NOT EXISTS realtime_pipeline_state (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Conversational Skipper chat conversations
-CREATE TABLE IF NOT EXISTS conversations (
-  id TEXT PRIMARY KEY,
-  title TEXT NOT NULL DEFAULT 'New Conversation',
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
-  agent_instance_id TEXT,
-  session_id TEXT,
-  template_agent_id TEXT REFERENCES agents(id),
-  system_prompt TEXT NOT NULL DEFAULT '',
-  permission_mode TEXT NOT NULL DEFAULT 'bypassPermissions'
-    CHECK (permission_mode IN ('default', 'plan', 'bypassPermissions')),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_conversations_status ON conversations(status, updated_at DESC);
-
--- Chat messages for conversational Skipper
--- `parts` is a JSON array of stream blocks (text/thinking/tool_use/tool_result) that produced this turn.
--- Empty array for user messages; populated for assistant turns so the UI can render
--- collapsible thinking/tool bubbles in history alongside the consolidated `content`.
-CREATE TABLE IF NOT EXISTS conversation_messages (
-  id TEXT PRIMARY KEY,
-  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-  role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
-  content TEXT NOT NULL,
-  parts TEXT NOT NULL DEFAULT '[]',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_conversation_messages_conv ON conversation_messages(conversation_id, created_at);
-
 -- Task Templates (reusable prompt configurations per team)
 CREATE TABLE IF NOT EXISTS task_templates (
   id TEXT PRIMARY KEY,

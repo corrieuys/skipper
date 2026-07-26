@@ -5,9 +5,8 @@ import { isExperimental } from "./feature-flags";
 import { getSkipperConfig } from "../agents/skipper";
 
 /**
- * Machine-scoped provider + model overrides for the three first-class agents the
- * operator cares about: the root Skipper orchestrator, the Skipper chat agent,
- * and the Greg heckler bot.
+ * Machine-scoped provider + model overrides for the first-class agents the
+ * operator cares about: the root Skipper orchestrator and the Greg heckler bot.
  *
  * These live in `app_settings` (the on-disk `skipper-runtime.db`), NOT in the
  * SHARED config tables (`skipper_config` / `agents`) which are seeded from — and
@@ -15,14 +14,12 @@ import { getSkipperConfig } from "../agents/skipper";
  * keeps the choice per-machine and out of version control.
  *
  * Semantics: an empty override means "use the shipped default source" (Skipper's
- * `skipper_config`, chat's `chat-skipper` agent row, Greg's built-in Haiku). A
- * set override wins at spawn time. "Provider" is the app's agent-type concept.
+ * `skipper_config`, Greg's built-in Haiku). A set override wins at spawn time.
+ * "Provider" is the app's agent-type concept.
  */
 
 export const SETTING_SKIPPER_AGENT_TYPE = "skipper_agent_type";
 export const SETTING_SKIPPER_MODEL = "skipper_model";
-export const SETTING_CHAT_AGENT_TYPE = "chat_agent_type";
-export const SETTING_CHAT_MODEL = "chat_model";
 export const SETTING_GREG_AGENT_TYPE = "greg_agent_type";
 export const SETTING_GREG_MODEL = "greg_model";
 export const SETTING_DICTATION_AGENT_TYPE = "dictation_agent_type";
@@ -47,8 +44,7 @@ export interface AgentTypeOption {
 }
 
 // The providers offered anywhere a model provider is selectable. An allowlist so
-// it's one place to widen; internal aliases ("conversation-skipper") and the empty
-// "custom" placeholder stay hidden.
+// it's one place to widen; the empty "custom" placeholder stays hidden.
 export const PROVIDER_ALLOWLIST = ["claude-code"] as const;
 
 // Providers still proving themselves; selectable only when the experimental
@@ -71,16 +67,6 @@ export function listModelOptions(): AgentTypeOption[] {
     }));
 }
 
-/** Look up the chat agent row (same query conversations/manager.ts uses). */
-function chatAgentDefault(db: Database): ModelChoice {
-  const row = db
-    .prepare(
-      "SELECT type, model FROM agents WHERE name LIKE '%chat%skipper%' OR name LIKE '%skipper%chat%' ORDER BY created_at ASC LIMIT 1",
-    )
-    .get() as { type: string; model: string } | null;
-  return { agent_type: row?.type ?? "claude-code", model: row?.model ?? "default" };
-}
-
 function skipperDefault(db: Database): ModelChoice {
   const cfg = getSkipperConfig(db);
   return { agent_type: cfg.agent_type, model: cfg.model };
@@ -94,12 +80,6 @@ function skipperDefault(db: Database): ModelChoice {
 export function getSkipperModelOverride(db: Database): Partial<ModelChoice> {
   const agent_type = getStringSetting(db, SETTING_SKIPPER_AGENT_TYPE, "");
   const model = getStringSetting(db, SETTING_SKIPPER_MODEL, "");
-  return { agent_type: agent_type || undefined, model: model || undefined };
-}
-
-export function getChatModelOverride(db: Database): Partial<ModelChoice> {
-  const agent_type = getStringSetting(db, SETTING_CHAT_AGENT_TYPE, "");
-  const model = getStringSetting(db, SETTING_CHAT_MODEL, "");
   return { agent_type: agent_type || undefined, model: model || undefined };
 }
 
@@ -122,23 +102,16 @@ export function getDictationModelChoice(db: Database): ModelChoice {
 /** Effective (override-or-default) choices for all subsystems, for the config UI. */
 export function getModelSettingsView(db: Database): {
   skipper: ModelChoice;
-  chat: ModelChoice;
   greg: ModelChoice;
   dictation: ModelChoice;
   options: AgentTypeOption[];
 } {
   const skOverride = getSkipperModelOverride(db);
   const skDefault = skipperDefault(db);
-  const chOverride = getChatModelOverride(db);
-  const chDefault = chatAgentDefault(db);
   return {
     skipper: {
       agent_type: skOverride.agent_type ?? skDefault.agent_type,
       model: skOverride.model ?? skDefault.model,
-    },
-    chat: {
-      agent_type: chOverride.agent_type ?? chDefault.agent_type,
-      model: chOverride.model ?? chDefault.model,
     },
     greg: getGregModelChoice(db),
     dictation: getDictationModelChoice(db),
@@ -148,7 +121,6 @@ export function getModelSettingsView(db: Database): {
 
 const VALID_KEYS = {
   skipper: [SETTING_SKIPPER_AGENT_TYPE, SETTING_SKIPPER_MODEL],
-  chat: [SETTING_CHAT_AGENT_TYPE, SETTING_CHAT_MODEL],
   greg: [SETTING_GREG_AGENT_TYPE, SETTING_GREG_MODEL],
   dictation: [SETTING_DICTATION_AGENT_TYPE, SETTING_DICTATION_MODEL],
 } as const;
@@ -159,7 +131,7 @@ const VALID_KEYS = {
  */
 export function saveModelSetting(
   db: Database,
-  target: "skipper" | "chat" | "greg" | "dictation",
+  target: "skipper" | "greg" | "dictation",
   agentType: string,
   model: string,
 ): string | null {

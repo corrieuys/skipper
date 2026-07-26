@@ -139,56 +139,6 @@ export interface RealtimeTimelineUpdatedEvent {
   entryType: string;
 }
 
-export interface ConversationMessageEvent {
-  conversationId: string;
-  messageId: string;
-  role: string;
-  content: string;
-  parts?: MessagePart[];
-}
-
-export type MessagePartKind = "text" | "thinking" | "tool_use" | "tool_result";
-
-export interface MessagePart {
-  kind: MessagePartKind;
-  content: string;
-  name?: string;
-  input?: unknown;
-  toolUseId?: string;
-}
-
-export interface ConversationStreamChunkEvent {
-  conversationId: string;
-  turnId: string;
-  blockIndex: number;
-  part: MessagePart;
-}
-
-export interface ConversationTurnStartedEvent {
-  conversationId: string;
-  turnId: string;
-}
-
-export interface ConversationCreatedEvent {
-  conversationId: string;
-}
-
-export interface ConversationArchivedEvent {
-  conversationId: string;
-}
-
-export interface ConversationBusyChangedEvent {
-  conversationId: string;
-  busy: boolean;
-  /** Model that powers the chat agent, used as the indicator label. */
-  model?: string;
-}
-
-export interface ConversationPermissionModeChangedEvent {
-  conversationId: string;
-  mode: "default" | "plan" | "bypassPermissions";
-}
-
 export interface ConsensusPhaseAdvanceEvent {
   taskId: string;
   entrypointAgentId: string;
@@ -223,13 +173,6 @@ export interface EventMap {
   "realtime:trigger_fired": [RealtimeTriggerFiredEvent];
   "realtime:session_state": [RealtimeSessionStateEvent];
   "realtime:timeline_updated": [RealtimeTimelineUpdatedEvent];
-  "conversation:message": [ConversationMessageEvent];
-  "conversation:stream_chunk": [ConversationStreamChunkEvent];
-  "conversation:turn_started": [ConversationTurnStartedEvent];
-  "conversation:created": [ConversationCreatedEvent];
-  "conversation:archived": [ConversationArchivedEvent];
-  "conversation:busy_changed": [ConversationBusyChangedEvent];
-  "conversation:permission_mode_changed": [ConversationPermissionModeChangedEvent];
   "consensus:phase_advance": [ConsensusPhaseAdvanceEvent];
   "task:needs_review_changed": [TaskNeedsReviewChangedEvent];
 }

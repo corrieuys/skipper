@@ -368,6 +368,108 @@ describe("Health monitor — orphaned task detection", () => {
     ).all(rtTaskId);
     expect(events.length).toBe(0);
   });
+
+  it("does not re-emit orphaned_task for a task parked on needs_review", () => {
+    const agentId = createAgent("worker");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createRunningTask(teamId);
+    db.prepare("UPDATE tasks SET needs_review = 1 WHERE id = ?").run(taskId);
+
+    daemon.getHealthMonitor().checkOrphanedTasks();
+
+    const events = db.prepare(
+      "SELECT * FROM events WHERE task_id = ? AND type LIKE 'remediation:%'",
+    ).all(taskId);
+    expect(events.length).toBe(0);
+  });
+
+  it("does not re-emit orphaned_task for a task parked on an open escalation", () => {
+    const agentId = createAgent("worker");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createRunningTask(teamId);
+    db.prepare(
+      `INSERT INTO escalations (id, agent_id, task_id, type, question, status)
+       VALUES (?, ?, ?, 'agent_request', 'need input', 'open')`,
+    ).run(crypto.randomUUID(), agentId, taskId);
+
+    daemon.getHealthMonitor().checkOrphanedTasks();
+
+    const events = db.prepare(
+      "SELECT * FROM events WHERE task_id = ? AND type LIKE 'remediation:%'",
+    ).all(taskId);
+    expect(events.length).toBe(0);
+  });
+});
+
+describe("Health monitor — pid-null ghost reaping", () => {
+  // A row left at status='running' with process_pid=NULL past the spawn grace
+  // window is a ghost: the process exited before its status was written, and the
+  // old pid-gated query skipped it, so the UI showed it running forever.
+
+  function ghostInstance(
+    taskId: string,
+    template: string,
+    opts: { parent?: string | null; status?: string; ageMinutes?: number } = {},
+  ): string {
+    const id = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, status, process_pid, attempt, updated_at)
+       VALUES (?, ?, ?, ?, ?, NULL, 1, datetime('now', ?))`,
+    ).run(id, taskId, template, opts.parent ?? null, opts.status ?? "running", `-${opts.ageMinutes ?? 5} minutes`);
+    return id;
+  }
+
+  it("reaps a stale pid-null running instance to failed", () => {
+    const agentId = createAgent("worker");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createRunningTask(teamId);
+    const instanceId = ghostInstance(taskId, agentId, { ageMinutes: 5 });
+
+    daemon.getHealthMonitor().checkInstanceProcessHealth();
+
+    const inst = db.prepare("SELECT status FROM agent_instances WHERE id = ?").get(instanceId) as { status: string };
+    expect(inst.status).toBe("failed");
+
+    const events = db.prepare(
+      "SELECT * FROM events WHERE task_id = ? AND type = 'remediation:instance_ghost_reaped'",
+    ).all(taskId);
+    expect(events.length).toBe(1);
+  });
+
+  it("leaves a fresh pid-null instance alone (spawn grace window)", () => {
+    const agentId = createAgent("worker");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createRunningTask(teamId);
+    const instanceId = ghostInstance(taskId, agentId, { ageMinutes: 0 });
+
+    daemon.getHealthMonitor().checkInstanceProcessHealth();
+
+    const inst = db.prepare("SELECT status FROM agent_instances WHERE id = ?").get(instanceId) as { status: string };
+    expect(inst.status).toBe("running");
+  });
+
+  it("fails the owning task when a ROOT ghost is reaped", () => {
+    const teamId = createTeamWithEntrypoint("skipper");
+    const taskId = createRunningTask(teamId);
+    ghostInstance(taskId, "skipper", { ageMinutes: 5 });
+
+    daemon.getHealthMonitor().checkInstanceProcessHealth();
+
+    expect(scheduler.getTask(taskId)!.status).toBe("failed");
+  });
+
+  it("does NOT fail the task when only a delegated-child ghost is reaped", () => {
+    const teamId = createTeamWithEntrypoint("skipper");
+    const taskId = createRunningTask(teamId);
+    const root = ghostInstance(taskId, "skipper", { ageMinutes: 0 }); // root still in grace
+    const child = ghostInstance(taskId, "skipper", { parent: root, ageMinutes: 5 });
+
+    daemon.getHealthMonitor().checkInstanceProcessHealth();
+
+    const childInst = db.prepare("SELECT status FROM agent_instances WHERE id = ?").get(child) as { status: string };
+    expect(childInst.status).toBe("failed");
+    expect(scheduler.getTask(taskId)!.status).toBe("running");
+  });
 });
 
 describe("Health monitor — exit code cluster detection", () => {

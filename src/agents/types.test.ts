@@ -115,14 +115,12 @@ describe("getAgentTypeDefinition", () => {
 describe("listAgentTypes", () => {
   it("returns all seeded agent types", () => {
     const types = listAgentTypes(db);
-    expect(types).toHaveLength(5);
+    expect(types).toHaveLength(4);
     const names = types.map((t) => t.name);
     expect(names).toContain("claude-code");
     expect(names).toContain("codex");
     expect(names).toContain("opencode");
     expect(names).toContain("grok");
-    // conversation-skipper type still seeded but agents now use claude-code
-    expect(names).toContain("conversation-skipper");
   });
 
   it("returns types sorted by name", () => {

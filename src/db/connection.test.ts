@@ -98,27 +98,11 @@ describe("Seed data", () => {
     );
   });
 
-  it("seeds conversation-skipper agent type", () => {
-    const row = db.prepare("SELECT * FROM agent_types WHERE name = ?").get("conversation-skipper") as Record<string, unknown>;
-    expect(row).toBeTruthy();
-    expect(row.command).toBe("claude");
-    expect(row.supports_resume).toBe(1);
-    expect(row.resume_flag).toBe("--resume");
-  });
-
-  it("seeds chat-skipper agent with claude-code type", () => {
-    const row = db.prepare("SELECT * FROM agents WHERE id = ?").get("chat-skipper") as Record<string, unknown>;
-    expect(row).toBeTruthy();
-    expect(row.type).toBe("claude-code");
-    expect(row.name).toBe("Chat Skipper");
-    expect(row.model).toBe("claude-opus-4-6");
-  });
-
   it("is idempotent (running seed twice does not duplicate)", () => {
     initializeDatabase(db);
     const typeCount = db.prepare("SELECT COUNT(*) as cnt FROM agent_types").get() as { cnt: number };
-    expect(typeCount.cnt).toBe(5);
-    const agentCount = db.prepare("SELECT COUNT(*) as cnt FROM agents WHERE id = 'chat-skipper'").get() as { cnt: number };
+    expect(typeCount.cnt).toBe(4);
+    const agentCount = db.prepare("SELECT COUNT(*) as cnt FROM agents WHERE id = 'skipper'").get() as { cnt: number };
     expect(agentCount.cnt).toBe(1);
   });
 });

@@ -13,7 +13,6 @@ Markdown prompt templates loaded at runtime by `src/agents/prompt-builder.ts`.
 | `phase-complete-task.md` | Final task-completion behaviour |
 | `phase-regression.md` | Regression behaviour |
 | `skipper.md` | Skipper system prompt |
-| `conversational-skipper.md` | Skipper system prompt for chat (conversations module) |
 | `notary.md` | Realtime task notary system prompt |
 | `greg.md` | Greg/Grug heckler persona |
 | `artifact-html.md` | Artifact rendering guidance |

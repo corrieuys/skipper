@@ -226,7 +226,6 @@
     const sections = [];
     // Major page sections grug can navigate between
     const sectionSelectors = [
-      { sel: ".mc-chat-panel", type: "chat-panel" },
       { sel: "#mc-main", type: "main-content" },
       { sel: ".mc-sidebar", type: "sidebar" },
       { sel: "#sk-agent-tree", type: "agent-tree" },

@@ -8,7 +8,6 @@ export interface NavbarData {
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
-  showChatToggle?: boolean;
   skipperConnectEnabled?: boolean;
 }
 
@@ -23,7 +22,6 @@ export function navbar(data: NavbarData): string {
     { href: "/config", label: "Config", match: "/config" },
     { href: "/global-store", label: "Global Store", match: "/global-store" },
     { href: "/logs", label: "Logs", match: "/logs" },
-    { href: "/help", label: "Help", match: "/help" },
   ];
 
   const links = navItems.map((item) => {
@@ -51,7 +49,6 @@ export function navbar(data: NavbarData): string {
       ${isExperimental() && data.skipperConnectEnabled !== undefined ? `<span class="sk-connect mc-mobile-hide" title="Skipper Connect" style="opacity:${data.skipperConnectEnabled ? "1" : "0.5"}"><span class="sk-connect__status" data-status="disabled" hx-get="/api/settings/skipper-connect/status" hx-trigger="load, every 5s" hx-swap="outerHTML"></span><span class="sk-connect__icon" id="skipper-connect-toggle" role="button"
         hx-post="/api/settings/skipper-connect" hx-vals='${JSON.stringify({ enabled: data.skipperConnectEnabled ? "false" : "true" })}'
         hx-swap="none" hx-on::after-request="window.location.reload()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg></span></span>` : ""}
-      ${data.showChatToggle ? `<button class="mc-chat-toggle" data-sk-chat-toggle title="Toggle Chat Panel">Chat</button>` : ""}
       <div class="sk-dropdown" data-sk-dropdown>
         <button class="sk-btn sk-btn--sm" aria-label="Navigation">Menu</button>
         <div class="sk-dropdown__menu">${links}</div>

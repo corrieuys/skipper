@@ -17,7 +17,6 @@ export const navItems: { href: string; label: string }[] = [
   { href: "/config", label: "Configuration" },
   { href: "/templates", label: "Templates" },
   { href: "/logs", label: "Logs" },
-  { href: "/help", label: "Help" },
 ];
 
 export interface DaemonStatus {

@@ -9,7 +9,6 @@ import { isTeamVisible, isExperimental } from "../config/feature-flags";
 import { listPreferences, setPreference } from "../notifications/store";
 import { NOTIFICATION_EVENTS, type NotificationEventKey } from "../notifications/types";
 import { listKeys } from "./api-keys";
-import { assetTextSync } from "../assets";
 import {
   fetchTasksWithTeams,
   fetchTaskById,
@@ -41,9 +40,6 @@ import { metricsFragment } from "../html/metricsFragment";
 import { escalationCardPanel, taskEscalationsSection, type EscalationCardData } from "../html/panels/escalation-card.panel";
 import { logsPage } from "../html/pages/logs.page";
 import { dashboardNotesFragment } from "../html/dashboardNotesFragment";
-import { dashboardChatCardFragment } from "../html/dashboardChatCardFragment";
-import { conversationListFragment } from "../html/conversationListFragment";
-import { chatFullscreenView } from "../html/chatFullscreenView";
 import { dashboardRealtimeTimelineFragment } from "../html/dashboardRealtimeTimelineFragment";
 import { dashboardPhaseIndicatorFragment } from "../html/dashboardPhaseIndicatorFragment";
 import { dashboardActiveAgentsCountFragment } from "../html/dashboardActiveAgentsCountFragment";
@@ -51,13 +47,13 @@ import { dashboardRunningInstancesFragment } from "../html/dashboardRunningInsta
 import { selectDashboardFocusTasks } from "../html/selectDashboardFocusTasks";
 import { diagnosticCard } from "../html/diagnosticCard";
 import { dashboardActiveTaskFragment } from "../html/dashboardActiveTaskFragment";
-import { helpPage } from "../html/pages/help.page";
 import { asteroidsPage } from "../html/pages/asteroids.page";
 import { dashboardSteerListFragment, agentInstancesModalFragment, oneshotResumeCardMarkup, type SteeringOption } from "../html/dashboardLatestSteerFragment";
 import {
   getNumberSetting, setNumberSetting, SETTING_LOG_RETENTION_HOURS,
   SETTING_TASK_RETENTION_DAYS, SETTING_RECURRING_TASK_RETENTION_DAYS,
   getStringSetting, setStringSetting, getSetting,
+  getBoolSetting, SETTING_PARALLEL_TASKS,
   SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_URL,
 } from "../config/app-settings";
 import { APP_VERSION, SERVER_ID } from "../version";
@@ -426,12 +422,6 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     }));
   });
 
-  addRoute("GET", "/help", () => {
-    const status = daemon.getStatus();
-    const escalationCount = getOpenEscalationCount(db);
-    return html(helpPage({ daemonState: status.state, daemonUptime: status.uptime, escalationCount }));
-  });
-
   addRoute("GET", "/games/asteroids", () => {
     const status = daemon.getStatus();
     const escalationCount = getOpenEscalationCount(db);
@@ -758,92 +748,6 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     ).all(params.id) as EscalationCardData[];
 
     return html(taskEscalationsSection(escalations));
-  });
-
-  // ── Chat / Conversation fragment routes ──────────────────────────────────
-
-  function loadConversationalSkipperPrompt(): string {
-    try {
-      return assetTextSync("prompts/conversational-skipper.md").trim();
-    } catch {
-      return "You are a conversational Skipper assistant for the Skipper multi-agent orchestration system. Help the user manage tasks and agents.";
-    }
-  }
-
-  // GET /fragments/dashboard/chat — dashboard chat card (most recently updated active conv)
-  const getChatAgentModel = (conv: { template_agent_id: string | null } | null): string | undefined => {
-    if (!conv?.template_agent_id) return undefined;
-    const agent = db.prepare("SELECT model FROM agents WHERE id = ?").get(conv.template_agent_id) as { model: string } | null;
-    return agent?.model;
-  };
-
-  addRoute("GET", "/fragments/dashboard/chat", () => {
-    const cm = daemon.getConversationManager();
-    const conversations = cm.getConversations("active");
-    const active = conversations[0] ?? null;
-    const messages = active ? cm.getMessages(active.id) : [];
-    return html(dashboardChatCardFragment(active, messages, conversations, getChatAgentModel(active)));
-  });
-
-  // POST /fragments/conversations — create new conversation, return updated chat card
-  addRoute("POST", "/fragments/conversations", async () => {
-    const cm = daemon.getConversationManager();
-    const systemPrompt = loadConversationalSkipperPrompt();
-    let conversation;
-    try {
-      conversation = await cm.createConversation(systemPrompt);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Failed to create conversation";
-      return html(`<div class="chat-main"><div class="cmd-panel-header"><span class="cmd-panel-title">Chat</span></div><div class="chat-empty-state"><p class="muted" style="color:var(--error);">${escapeHtml(message)}</p><button class="btn-sm" hx-get="/fragments/dashboard/chat" hx-target="#dashboard-chat-panel" hx-swap="innerHTML">Retry</button></div></div>`);
-    }
-    const conversations = cm.getConversations("active");
-    const messages = cm.getMessages(conversation.id);
-    return html(dashboardChatCardFragment(conversation, messages, conversations, getChatAgentModel(conversation)));
-  });
-
-  // GET /fragments/chat/:id — chat card for a specific conversation
-  addRoute("GET", "/fragments/chat/:id", (_req, params) => {
-    const cm = daemon.getConversationManager();
-    const conversations = cm.getConversations("active");
-    const conversation = cm.getConversation(params.id) ?? null;
-    const messages = conversation ? cm.getMessages(params.id) : [];
-    return html(dashboardChatCardFragment(conversation, messages, conversations, getChatAgentModel(conversation)));
-  });
-
-  // GET /fragments/chat/:id/messages — messages list only (for polling or manual refresh)
-  addRoute("GET", "/fragments/chat/:id/messages", (_req, params) => {
-    const cm = daemon.getConversationManager();
-    const messages = cm.getMessages(params.id);
-    const messagesHtml = messages
-      .map((msg) => {
-        const roleClass =
-          msg.role === "user"
-            ? "chat-message-user"
-            : msg.role === "assistant"
-              ? "chat-message-assistant"
-              : "chat-message-system";
-        const content = escapeHtml(msg.content).replace(/\n/g, "<br>");
-        return `<div class="chat-message ${roleClass}" data-message-id="${escapeHtml(msg.id)}"><div class="chat-message-role">${escapeHtml(msg.role)}</div><div class="chat-message-content">${content}</div></div>`;
-      })
-      .join("");
-    return html(`<div id="chat-messages-${escapeHtml(params.id)}">${messagesHtml}</div>`);
-  });
-
-  // GET /fragments/conversations-list — sidebar conversation list
-  addRoute("GET", "/fragments/conversations-list", (req) => {
-    const url = new URL(req.url);
-    const activeId = url.searchParams.get("active") ?? undefined;
-    const cm = daemon.getConversationManager();
-    const conversations = cm.getConversations();
-    return html(conversationListFragment(conversations, activeId));
-  });
-
-  // GET /fragments/chat/fullscreen/:id — fullscreen chat view (loads content + adds CSS class)
-  addRoute("GET", "/fragments/chat/fullscreen/:id", (_req, params) => {
-    const cm = daemon.getConversationManager();
-    const conversations = cm.getConversations();
-    const messages = cm.getMessages(params.id);
-    return html(chatFullscreenView(conversations, params.id, messages));
   });
 
   addRoute("GET", "/api/tasks/:id/diagnostic", (_req, params) => {
@@ -1319,6 +1223,7 @@ function registerV2PageRoutes(): void {
       logRetentionHours: getNumberSetting(db, SETTING_LOG_RETENTION_HOURS, 24),
       taskRetentionDays: getNumberSetting(db, SETTING_TASK_RETENTION_DAYS, 0),
       recurringTaskRetentionDays: getNumberSetting(db, SETTING_RECURRING_TASK_RETENTION_DAYS, 0),
+      parallelExecution: getBoolSetting(db, SETTING_PARALLEL_TASKS, true),
       daemonState: pausedRow?.value === "true" ? "paused" : "running",
       daemonUptime: process.uptime(),
       escalationCount,
@@ -1349,7 +1254,7 @@ function registerV2PageRoutes(): void {
       const body = await req.json() as { target?: string; agent_type?: string; model?: string };
       target = body.target ?? ""; agentType = body.agent_type ?? ""; model = body.model ?? "";
     }
-    const validTargets = ["skipper", "chat", "greg"];
+    const validTargets = ["skipper", "greg"];
     // Dictation is experimental-only; its config row is hidden without the flag,
     // so reject writes too.
     const { isExperimental } = require("../config/feature-flags");

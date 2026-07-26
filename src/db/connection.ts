@@ -45,8 +45,6 @@ const RUNTIME_TABLES = [
   "realtime_timeline",
   "realtime_pipeline_state",
   "agent_note_receipts",
-  "conversations",
-  "conversation_messages",
   "task_templates",
   "task_template_phases",
   "notification_preferences",

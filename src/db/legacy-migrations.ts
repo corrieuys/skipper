@@ -12,11 +12,6 @@ export function tableExists(database: Database, tableName: string): boolean {
 }
 
 export function migrateLegacySchema(database: Database): void {
-  // Migrate chat agent from conversation-skipper type to claude-code
-  try {
-    database.prepare("UPDATE agents SET type = 'claude-code' WHERE type = 'conversation-skipper'").run();
-  } catch { /* table may not exist yet */ }
-
   ensureColumn(database, "terminal_outputs", "session_id", "TEXT");
   ensureColumn(database, "task_checkpoints", "session_id", "TEXT");
   ensureColumn(database, "agent_types", "resume_args", "TEXT");
@@ -47,9 +42,6 @@ export function migrateLegacySchema(database: Database): void {
   ensureColumn(database, "task_artifacts", "deleted_at", "TEXT");
   ensureColumn(database, "tasks", "working_directory", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(database, "agent_states", "last_signal_at", "TEXT");
-  ensureColumn(database, "conversation_messages", "parts", "TEXT NOT NULL DEFAULT '[]'");
-  ensureColumn(database, "conversations", "system_prompt", "TEXT NOT NULL DEFAULT ''");
-  ensureColumn(database, "conversations", "permission_mode", "TEXT NOT NULL DEFAULT 'bypassPermissions'");
   ensureColumn(database, "task_templates", "hooks", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(database, "task_template_phases", "override_prompt", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(database, "task_template_phases", "review_override", "TEXT DEFAULT NULL");
