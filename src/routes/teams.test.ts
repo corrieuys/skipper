@@ -36,6 +36,19 @@ async function call(method: string, pathname: string, body?: unknown): Promise<R
   return await match.handler(req, match.params);
 }
 
+/** POST an application/x-www-form-urlencoded body, like the team edit form does. */
+async function callForm(method: string, pathname: string, fields: Record<string, string>): Promise<Response> {
+  const match = findHandler(method, pathname.split("?")[0]);
+  if (!match) throw new Error(`no route for ${method} ${pathname}`);
+  const body = new URLSearchParams(fields).toString();
+  const req = new Request(`http://localhost${pathname}`, {
+    method,
+    body,
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  });
+  return await match.handler(req, match.params);
+}
+
 const sampleTeam = (id: string) => ({
   id,
   name: `Team ${id}`,
@@ -156,5 +169,64 @@ describe("local-team routes", () => {
   it("get unknown id returns 404", async () => {
     const res = await call("GET", "/api/teams/missing");
     expect(res.status).toBe(404);
+  });
+
+  describe("Slack config preservation on update", () => {
+    const slackTeam = (id: string) => ({
+      ...sampleTeam(id),
+      config: { slackEnabled: true, slashCommand: "/software-team" },
+    });
+
+    it("create stores slackEnabled + slashCommand from a nested config", async () => {
+      const res = await call("POST", "/api/teams", slackTeam("s1"));
+      const created = await res.json();
+      expect(created.config.slackEnabled).toBe(true);
+      expect(created.config.slashCommand).toBe("/software-team");
+    });
+
+    it("JSON update WITHOUT a config block preserves the stored Slack settings", async () => {
+      await call("POST", "/api/teams", slackTeam("s2"));
+      // A partial update (e.g. renaming) that carries no config / slack fields
+      // must not wipe the stored settings — this was the reported bug.
+      const res = await call("PUT", "/api/teams/s2", { ...sampleTeam("s2"), name: "Renamed", config: undefined });
+      expect(res.status).toBe(200);
+      const team = listLocalTeams(db).find(t => t.id === "s2")!;
+      expect(team.name).toBe("Renamed");
+      expect(team.config.slackEnabled).toBe(true);
+      expect(team.config.slashCommand).toBe("/software-team");
+    });
+
+    it("form update WITHOUT the Slack section preserves the stored Slack settings", async () => {
+      await call("POST", "/api/teams", slackTeam("s3"));
+      // Simulates a save from a build where the Slack fields are hidden: no
+      // slack_section marker, no slack_enabled/slash_command fields.
+      const res = await callForm("POST", "/api/teams/s3/update", {
+        name: "Renamed Form",
+        phases: JSON.stringify([{ name: "build", prompt: "do it", review: true }]),
+        agents: JSON.stringify(slackTeam("s3").agents),
+      });
+      expect(res.status).toBe(200);
+      const team = listLocalTeams(db).find(t => t.id === "s3")!;
+      expect(team.name).toBe("Renamed Form");
+      expect(team.config.slackEnabled).toBe(true);
+      expect(team.config.slashCommand).toBe("/software-team");
+    });
+
+    it("form update WITH the Slack section applies the submitted values", async () => {
+      await call("POST", "/api/teams", slackTeam("s4"));
+      // Section rendered (marker present), checkbox unchecked, command cleared →
+      // the user is explicitly disabling Slack, which must take effect.
+      const res = await callForm("POST", "/api/teams/s4/update", {
+        name: "Team s4",
+        slack_section: "1",
+        slash_command: "",
+        phases: JSON.stringify([{ name: "build", prompt: "do it", review: true }]),
+        agents: JSON.stringify(slackTeam("s4").agents),
+      });
+      expect(res.status).toBe(200);
+      const team = listLocalTeams(db).find(t => t.id === "s4")!;
+      expect(team.config.slackEnabled).toBe(false);
+      expect(team.config.slashCommand).toBeUndefined();
+    });
   });
 });

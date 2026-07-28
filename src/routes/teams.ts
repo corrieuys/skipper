@@ -97,14 +97,21 @@ function coerceAgent(raw: unknown, usedIds: Set<string>): LocalTeamAgent | null 
  * form posts `slack_enabled` (checkbox) + `slash_command`; import bodies carry a
  * nested `config` object. Form fields take precedence when present.
  */
-function coerceTeamConfig(body: Record<string, unknown>): LocalTeamConfig {
-  let slackEnabled = false;
-  let slashCommand: string | undefined;
+function coerceTeamConfig(body: Record<string, unknown>, existing?: LocalTeamConfig): LocalTeamConfig {
+  // Start from the stored config so fields the body does not mention are
+  // preserved. Only override slackEnabled/slashCommand when the body actually
+  // carries a signal for them (nested `config` on import/JSON, or the flat form
+  // fields — which readBody only sets when the Slack section was rendered).
+  let slackEnabled = existing?.slackEnabled ?? false;
+  let slashCommand: string | undefined = existing?.slashCommand;
+
   if (body.config && typeof body.config === "object") {
     const c = body.config as Record<string, unknown>;
-    slackEnabled = c.slackEnabled === true;
-    if (typeof c.slashCommand === "string" && c.slashCommand.trim()) {
-      slashCommand = normalizeSlashCommand(c.slashCommand);
+    if ("slackEnabled" in c) slackEnabled = c.slackEnabled === true;
+    if ("slashCommand" in c) {
+      slashCommand = typeof c.slashCommand === "string" && c.slashCommand.trim()
+        ? normalizeSlashCommand(c.slashCommand)
+        : undefined;
     }
   }
   if ("slack_enabled" in body) {
@@ -118,7 +125,7 @@ function coerceTeamConfig(body: Record<string, unknown>): LocalTeamConfig {
 }
 
 /** Build a LocalTeamInput from a raw JSON object (used by create/update/import). */
-function toInput(body: Record<string, unknown>, opts: { withId?: boolean } = {}): LocalTeamInput {
+function toInput(body: Record<string, unknown>, opts: { withId?: boolean; existingConfig?: LocalTeamConfig } = {}): LocalTeamInput {
   const usedIds = new Set<string>();
   const rawAgents = Array.isArray(body.agents) ? body.agents : [];
   const agents = rawAgents
@@ -135,7 +142,7 @@ function toInput(body: Record<string, unknown>, opts: { withId?: boolean } = {})
     hooks: Array.isArray(body.hooks) ? body.hooks : [],
     phases,
     agents,
-    config: coerceTeamConfig(body),
+    config: coerceTeamConfig(body, opts.existingConfig),
   };
   if (opts.withId && typeof body.id === "string" && body.id.trim()) {
     input.id = body.id.trim();
@@ -166,9 +173,15 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
     const body: Record<string, unknown> = {};
     body.name = (formData.get("name") as string | null) ?? undefined;
     body.skipper_prompt = (formData.get("skipper_prompt") as string | null) ?? undefined;
-    // Unchecked checkboxes are absent from the form; presence ⇒ enabled.
-    body.slack_enabled = formData.get("slack_enabled") != null;
-    body.slash_command = (formData.get("slash_command") as string | null) ?? undefined;
+    // Only carry the Slack fields when the form actually rendered them (marked by
+    // the hidden `slack_section` field). Otherwise leave the keys absent so the
+    // update path preserves the stored config instead of wiping it — a save from
+    // a build where these fields are hidden must not clear slackEnabled/slashCommand.
+    // An unchecked checkbox is absent from the form; presence ⇒ enabled.
+    if (formData.get("slack_section") != null) {
+      body.slack_enabled = formData.get("slack_enabled") != null;
+      body.slash_command = (formData.get("slash_command") as string | null) ?? "";
+    }
     const id = formData.get("id") as string | null;
     if (id) body.id = id;
     // phases / agents / hooks may arrive as JSON-encoded strings from the form.
@@ -267,8 +280,9 @@ export function registerTeamRoutes(database?: Database): void {
         (typeof obj.name === "string" && obj.name) ||
         "(unnamed)";
       try {
-        const input = toInput(obj, { withId: true });
-        if (input.id && getLocalTeam(db, input.id)) {
+        const existing = typeof obj.id === "string" && obj.id.trim() ? getLocalTeam(db, obj.id.trim()) : null;
+        const input = toInput(obj, { withId: true, existingConfig: existing?.config });
+        if (input.id && existing) {
           updateLocalTeam(db, input.id, input);
           updated++;
         } else {
@@ -315,13 +329,14 @@ export function registerTeamRoutes(database?: Database): void {
   const updateHandler = async (req: Request, params: Record<string, string>) => {
     const isHtmx = !!req.headers.get("HX-Request");
     const id = params.id!;
-    if (!getLocalTeam(db, id)) {
+    const existing = getLocalTeam(db, id);
+    if (!existing) {
       return Response.json({ error: "Team not found" }, { status: 404 });
     }
     let input: LocalTeamInput;
     try {
       const body = await readBody(req);
-      input = toInput(body);
+      input = toInput(body, { existingConfig: existing.config });
     } catch (e) {
       return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 400 });
     }

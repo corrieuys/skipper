@@ -717,7 +717,7 @@ export function renderAgentList(agents: AgentTreeNode[]): string {
  */
 export function parseTerminalActivity(
   lines: Array<{ stream: string; data: string; agent_name?: string; process_pid?: number | null; created_at?: string }>,
-  perKindLimit = 40,
+  perKindLimit = 120,
 ): string {
   if (lines.length === 0) return `<div class="mc-activity__empty">No activity yet</div>`;
 

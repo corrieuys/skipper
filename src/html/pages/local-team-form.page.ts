@@ -70,6 +70,11 @@ export function localTeamFormPage(vm: LocalTeamFormViewModel): string {
                 placeholder="Extra context for Skipper, the implicit team lead (optional)...">${escapeHtml(vm.team?.skipper_prompt ?? "")}</textarea>
             </div>
 ${isExperimental() ? `
+            <!-- Marks that the Slack fields were rendered in this form. Without it,
+                 a save from a build where these fields are hidden (non-experimental)
+                 is indistinguishable from a user clearing them, and the server would
+                 wipe the stored slackEnabled/slashCommand. -->
+            <input type="hidden" name="slack_section" value="1">
             <div class="sk-form-group">
               <label class="sk-checkbox">
                 <input type="checkbox" name="slack_enabled"${vm.team?.config?.slackEnabled ? " checked" : ""}>

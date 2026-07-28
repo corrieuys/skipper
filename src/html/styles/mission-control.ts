@@ -679,11 +679,11 @@ export function missionControlStyles(): string {
     }
     .mc-activity__item {
       display: flex;
-      align-items: baseline;
+      align-items: flex-start;
       gap: var(--sk-space-2);
-      padding: 3px var(--sk-space-3);
+      padding: 4px var(--sk-space-3);
       font-size: var(--sk-text-xs);
-      line-height: 1.5;
+      line-height: 1.45;
       transition: background 0.1s;
       cursor: pointer;
     }
@@ -879,11 +879,19 @@ export function missionControlStyles(): string {
     }
     .mc-activity__text {
       color: var(--sk-text-muted);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
       flex: 1;
       min-width: 0;
+      /* Wrap to the column width (responsive) but cap at 3 lines with an
+         ellipsis, so a long message shows more context without ballooning the
+         row. -webkit-box + line-clamp is the cross-browser clamp idiom. */
+      font-size: var(--sk-text-sm);
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+      line-clamp: 3;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .mc-activity__empty {
       padding: var(--sk-space-8);

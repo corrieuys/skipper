@@ -914,11 +914,12 @@ function registerV2PageRoutes(): void {
        JOIN agent_instances ai ON ai.id = t.agent_id
        LEFT JOIN agents a ON a.id = ai.template_agent_id
        WHERE ai.task_id = ?
-       ORDER BY t.id DESC LIMIT 800`
+       ORDER BY t.id DESC LIMIT 2400`
     ).all(params.id) as Array<{ stream: string; data: string; agent_name: string; created_at: string }>;
-    // Wide pull (800 raw rows): parseTerminalActivity keeps a per-kind budget,
-    // so the window must be deep enough to hold ~40 messages even when tool
-    // rows dominate the stream. A narrow window would starve the Messages filter.
+    // Wide pull (2400 raw rows): parseTerminalActivity keeps a per-kind budget
+    // (perKindLimit, currently 120), so the window must be deep enough to hold
+    // that many messages even when tool rows dominate the stream. A narrow
+    // window would starve the Messages filter.
 
     if (rows.length === 0) {
       return html(`<div class="mc-activity__empty">No activity yet</div>`);
