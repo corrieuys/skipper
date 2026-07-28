@@ -39,8 +39,8 @@ export const BUILTIN_REALTIME_TEAMS: TeamDefinition[] = [
     entrypoint_agent_id: "skipper",
     phases: [],
     members: [
-      { agent_id: LIBRARIAN_AGENT_ID, role: "librarian", level: 1, parent_agent_id: null },
-      { agent_id: "skipper", role: "lead", level: 0, parent_agent_id: null },
+      { agent_id: LIBRARIAN_AGENT_ID, role: "librarian", level: 1 },
+      { agent_id: "skipper", role: "lead", level: 0 },
     ],
   },
 ];

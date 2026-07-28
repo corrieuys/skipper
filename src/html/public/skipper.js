@@ -626,6 +626,11 @@
   });
 
   // ── Event Delegation ──
+  // Where the current press started. Read by the modal backdrop-close check below
+  // so a drag that ends on the backdrop but began inside the modal doesn't close it.
+  Skipper._pressTarget = null;
+  document.addEventListener("pointerdown", function (e) { Skipper._pressTarget = e.target; }, true);
+
   document.addEventListener("click", function (e) {
     // Update snackbar dismiss: remove the toast, remember it, tell the server so
     // it doesn't come back (available → record version; applied → clear notice).
@@ -664,9 +669,13 @@
       return;
     }
 
-    // Modal backdrop close
+    // Modal backdrop close. The press must have STARTED on the backdrop too:
+    // a drag that begins inside the modal and ends over the backdrop (resizing
+    // a textarea by its grip, or selecting text past the edge) fires its click
+    // on the common ancestor of the two — the backdrop itself — which would
+    // otherwise close the modal out from under the drag.
     var backdrop = e.target.closest("[data-sk-modal-backdrop]");
-    if (backdrop && e.target === backdrop) {
+    if (backdrop && e.target === backdrop && Skipper._pressTarget === backdrop) {
       Skipper.modal.close(backdrop.id);
       return;
     }
@@ -1200,7 +1209,6 @@
         agent_id: el.querySelector('[data-member-field="agent_id"]').value,
         role: el.querySelector('[data-member-field="role"]').value || null,
         level: parseInt(el.querySelector('[data-member-field="level"]').value, 10) || 0,
-        parent_agent_id: null,
       });
     });
     fetch("/api/config/teams/" + teamId, {

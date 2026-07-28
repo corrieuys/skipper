@@ -13,6 +13,7 @@ import { dashboardStyles } from "./dashboard";
 import { utilityStyles } from "./utilities";
 import { animationStyles } from "./animations";
 import { missionControlStyles } from "./mission-control";
+import { teamMapStyles } from "./team-map";
 import { toastStyles } from "./toast";
 
 /** New design system styles (sk- prefixed). Used by v2 pages. */
@@ -29,6 +30,7 @@ export function skStyles(): string {
     utilityStyles(),
     animationStyles(),
     missionControlStyles(),
+    teamMapStyles(),
     toastStyles(),
   ].join("\n");
 }

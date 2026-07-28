@@ -7,7 +7,7 @@ HTTP handlers. Registered in `index.ts` against `server.ts` router. Each gets `M
 | `tasks.ts` | Task CRUD + lifecycle (approve/unapprove/cancel/retry/resume/iterate). Detail/fragments. Health diag. Stale runtime cleanup |
 | `teams.ts` | Team CRUD (teams embed their own agents + phases) under `/api/teams`, plus `/api/teams/export` + `/api/teams/import` |
 | `daemon.ts` | Pause/resume/status + dashboard refresh fragment |
-| `pages.ts` | Server-rendered HTML pages + polling fragments. Dashboard, tasks, escalations, logs, events, config. Teams are managed on `/config`; team forms at `/config/teams/new` and `/config/teams/:id/edit` |
+| `pages.ts` | Server-rendered HTML pages + polling fragments. Dashboard, tasks, escalations, logs, events, config. Teams are managed on `/config`; team forms at `/config/teams/new` and `/config/teams/:id/edit`. Under `--experimental` the standalone team pages take over `/teams`, `/teams/new`, `/teams/:id` (index grid + interactive team map); without the flag those paths redirect back to Config |
 | `realtime.ts` | Realtime task pages + API — create/start/stop/resume/close, text/audio input, timeline/notes/agents/pipeline, per-task agent assign |
 | `realtime-ws.ts` | WebSocket endpoint for realtime task event stream |
 | `skipper.ts` | Skipper config `GET/PUT` w/ agent-type+model validate. Optional HTML fragment render |

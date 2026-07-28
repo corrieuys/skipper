@@ -85,7 +85,6 @@ function coerceAgent(raw: unknown, usedIds: Set<string>): LocalTeamAgent | null 
   };
   if (typeof a.instruction === "string") agent.instruction = a.instruction;
   if (typeof a.role === "string") agent.role = a.role;
-  if (typeof a.parent_agent_id === "string") agent.parent_agent_id = a.parent_agent_id;
   if (Array.isArray(a.capabilities)) {
     agent.capabilities = (a.capabilities as unknown[]).filter((c): c is string => typeof c === "string");
   }

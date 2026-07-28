@@ -23,7 +23,6 @@ export interface TeamMember {
   agent_id: string;
   role: string | null;
   level: number;
-  parent_agent_id: string | null;
 }
 
 export interface TeamConsensusConfig {
@@ -473,7 +472,6 @@ export function readConfigSnapshot(): ConfigSnapshot {
         agent_id: m.agent_id,
         role: m.role,
         level: m.level,
-        parent_agent_id: m.parent_agent_id,
         created_at: ts,
       })),
     ),
@@ -540,13 +538,12 @@ export function loadConfigSnapshotIntoDb(database: SqlDatabase, schema = "shared
 
   const insertTeamAgent = database.prepare(
     `INSERT OR IGNORE INTO ${q("team_agents")}
-     (id, team_id, agent_id, role, level, parent_agent_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))`,
+     (id, team_id, agent_id, role, level, created_at)
+     VALUES (?, ?, ?, ?, ?, COALESCE(?, datetime('now')))`,
   );
   for (const row of snapshot.team_agents) {
     insertTeamAgent.run(
-      row.id, row.team_id, row.agent_id, row.role, row.level,
-      row.parent_agent_id, row.created_at,
+      row.id, row.team_id, row.agent_id, row.role, row.level, row.created_at,
     );
   }
 

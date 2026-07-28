@@ -28,8 +28,7 @@ import { normalizeSlashCommand } from "../slack/slash-command";
 //     exists from JSON config.
 //   - Every inline agent gets a NAMESPACED id of `<teamId>:<authorAgentId>`
 //     when written into the shared layer, so shared.agents PRIMARY KEY can
-//     never collide across teams. parent_agent_id that points at another inline
-//     agent is namespaced too; a parent of "skipper" stays "skipper".
+//     never collide across teams.
 // ---------------------------------------------------------------------------
 
 export interface LocalTeamAgent {
@@ -39,7 +38,6 @@ export interface LocalTeamAgent {
   model: string;
   instruction?: string;
   role?: string | null;
-  parent_agent_id?: string | null;
   capabilities?: string[];
 }
 
@@ -84,13 +82,6 @@ export function namespacedAgentId(teamId: string, authorId: string): string {
   return `${teamId}:${authorId}`;
 }
 
-/** Namespace a parent ref; a parent of "skipper" stays literally "skipper". */
-function namespacedParentId(teamId: string, parent: string | null | undefined): string | null {
-  if (parent == null) return null;
-  if (parent === SKIPPER_AGENT_ID) return SKIPPER_AGENT_ID;
-  return namespacedAgentId(teamId, parent);
-}
-
 // ---------------------------------------------------------------------------
 // Row <-> object mapping
 // ---------------------------------------------------------------------------
@@ -125,6 +116,19 @@ function parseTeamConfig(raw: string | null | undefined): LocalTeamConfig {
   }
 }
 
+/**
+ * Drop fields that were removed from the schema but may still sit in the stored
+ * JSON of a team saved by an older build. Without this a legacy `parent_agent_id`
+ * would keep surfacing through the API and exports until that team is re-saved.
+ */
+function parseAgents(raw: string): LocalTeamAgent[] {
+  return parseJsonArray(raw).map((a) => {
+    if (!a || typeof a !== "object") return a as LocalTeamAgent;
+    const { parent_agent_id: _dropped, ...rest } = a as Record<string, unknown>;
+    return rest as unknown as LocalTeamAgent;
+  });
+}
+
 function rowToLocalTeam(row: LocalTeamRow): LocalTeam {
   return {
     id: row.id,
@@ -132,7 +136,7 @@ function rowToLocalTeam(row: LocalTeamRow): LocalTeam {
     skipper_prompt: row.skipper_prompt ?? "",
     hooks: parseJsonArray(row.hooks ?? "[]"),
     phases: parseJsonArray(row.phases ?? "[]") as TeamPhase[],
-    agents: parseJsonArray(row.agents ?? "[]") as LocalTeamAgent[],
+    agents: parseAgents(row.agents ?? "[]"),
     config: parseTeamConfig(row.team_config),
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -158,12 +162,11 @@ function toSharedAgent(teamId: string, a: LocalTeamAgent): AgentDefinition {
 /** Build the shared-layer TeamDefinition (skipper as level-0 lead + members). */
 function toSharedTeam(team: LocalTeam): TeamDefinition {
   const members: TeamMember[] = [
-    { agent_id: SKIPPER_AGENT_ID, role: "lead", level: 0, parent_agent_id: null },
+    { agent_id: SKIPPER_AGENT_ID, role: "lead", level: 0 },
     ...team.agents.map((a) => ({
       agent_id: namespacedAgentId(team.id, a.id),
       role: a.role ?? null,
       level: 1,
-      parent_agent_id: namespacedParentId(team.id, a.parent_agent_id ?? SKIPPER_AGENT_ID),
     })),
   ];
   return {
@@ -264,11 +267,11 @@ function upsertTeamIntoSharedTables(db: Database, team: LocalTeam): void {
   // Members
   const insMember = db.prepare(
     `INSERT OR REPLACE INTO ${schema}.team_agents
-       (id, team_id, agent_id, role, level, parent_agent_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (id, team_id, agent_id, role, level, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
   );
   for (const m of sharedTeam.members) {
-    insMember.run(`${team.id}:${m.agent_id}`, team.id, m.agent_id, m.role, m.level, m.parent_agent_id, ts);
+    insMember.run(`${team.id}:${m.agent_id}`, team.id, m.agent_id, m.role, m.level, ts);
   }
 }
 

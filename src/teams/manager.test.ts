@@ -131,43 +131,6 @@ describe("addAgent", () => {
       teamManager.addAgent(team.id, { agent_id: agent.id }),
     ).toThrow();
   });
-
-  it("validates parent agent membership", () => {
-    const agent = agentManager.createAgent({
-      name: "Child",
-      type: "claude-code",
-    });
-    const parent = agentManager.createAgent({
-      name: "Parent",
-      type: "claude-code",
-    });
-    const team = teamManager.createTeam({ name: "Team" });
-    // Parent not added to team yet
-    expect(() =>
-      teamManager.addAgent(team.id, {
-        agent_id: agent.id,
-        parent_agent_id: parent.id,
-      }),
-    ).toThrow("Parent agent must be a member of the same team");
-  });
-
-  it("allows parent agent when parent is a team member", () => {
-    const parent = agentManager.createAgent({
-      name: "Parent",
-      type: "claude-code",
-    });
-    const child = agentManager.createAgent({
-      name: "Child",
-      type: "claude-code",
-    });
-    const team = teamManager.createTeam({ name: "Team" });
-    teamManager.addAgent(team.id, { agent_id: parent.id, role: "lead" });
-    const membership = teamManager.addAgent(team.id, {
-      agent_id: child.id,
-      parent_agent_id: parent.id,
-    });
-    expect(membership.parent_agent_id).toBe(parent.id);
-  });
 });
 
 describe("setEntrypoint", () => {

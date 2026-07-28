@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS local_teams (
   hooks TEXT NOT NULL DEFAULT '[]',       -- JSON array
   phases TEXT NOT NULL DEFAULT '[]',      -- JSON array of {name,prompt,review?,consensus?}
   agents TEXT NOT NULL DEFAULT '[]',      -- JSON array of inline agents
-                                          -- {id,name,type,model,instruction,role,parent_agent_id,capabilities}
+                                          -- {id,name,type,model,instruction,role,capabilities}
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

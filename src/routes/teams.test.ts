@@ -57,7 +57,7 @@ const sampleTeam = (id: string) => ({
   hooks: [],
   phases: [{ name: "build", prompt: "do it", review: true }],
   agents: [
-    { id: "dev", name: "Dev", type: "claude-code", model: "default", instruction: "code", role: "worker", level: 1, parent_agent_id: "skipper" },
+    { id: "dev", name: "Dev", type: "claude-code", model: "default", instruction: "code", role: "worker", level: 1 },
   ],
 });
 

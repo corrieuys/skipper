@@ -139,6 +139,7 @@ function teamsPanel(teams: LocalTeam[]): string {
           <span class="sk-panel__title">Teams</span>
           <span class="sk-panel__count">${teams.length}</span>
           <div style="margin-left:auto;display:flex;gap:var(--sk-space-2);">
+            ${isExperimental() ? `<a href="/teams" class="sk-btn sk-btn--sm">Open team maps</a>` : ""}
             <a href="/api/teams/export" class="sk-btn sk-btn--sm">Export All</a>
             <a href="/config/teams/new" class="sk-btn sk-btn--sm sk-btn--primary">New Team</a>
           </div>

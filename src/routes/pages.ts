@@ -314,18 +314,54 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return html(terminalOutputFragment(rows));
   });
 
-  // Teams list / detail → DB-backed teams page (legacy team management removed)
-  addRoute("GET", "/teams", () => {
-    return new Response(null, { status: 302, headers: { Location: "/config" } });
-  });
+  // Teams. Behind --experimental these are the standalone team pages: an index
+  // grid at /teams and an interactive team map (phase flow + crew tree) at
+  // /teams/:id. Without the flag they stay redirects to the Config page, which
+  // still owns team management until the new pages take over.
+  {
+    const { teamsPage } = require("../html/pages/teams.page");
+    const { teamMapPage } = require("../html/pages/team-map.page");
+    const { listLocalTeams, getLocalTeam } = require("../teams/local-teams");
+    const { listAgentTypes } = require("../config/store");
+    const { isAllowedProvider } = require("../config/model-settings");
 
-  addRoute("GET", "/teams/new", () => {
-    return new Response(null, { status: 302, headers: { Location: "/config/teams/new" } });
-  });
+    const teamPageMeta = () => {
+      const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
+      return {
+        escalationCount: getOpenEscalationCount(db),
+        daemonState: pausedRow?.value === "true" ? "paused" : "running",
+        daemonUptime: process.uptime(),
+      };
+    };
 
-  addRoute("GET", "/teams/:id", () => {
-    return new Response(null, { status: 302, headers: { Location: "/config" } });
-  });
+    const teamAgentTypeChoices = () =>
+      (listAgentTypes() as Array<{ name: string; available_models: string[] }>)
+        .filter((t) => isAllowedProvider(t.name))
+        .map((t) => ({ name: t.name, models: Array.isArray(t.available_models) ? t.available_models : [] }));
+
+    addRoute("GET", "/teams", () => {
+      if (!isExperimental()) {
+        return new Response(null, { status: 302, headers: { Location: "/config" } });
+      }
+      return html(teamsPage({ teams: listLocalTeams(db), ...teamPageMeta() }));
+    });
+
+    addRoute("GET", "/teams/new", () => {
+      if (!isExperimental()) {
+        return new Response(null, { status: 302, headers: { Location: "/config/teams/new" } });
+      }
+      return html(teamMapPage({ team: null, agentTypes: teamAgentTypeChoices(), ...teamPageMeta() }));
+    });
+
+    addRoute("GET", "/teams/:id", (_req, params) => {
+      if (!isExperimental()) {
+        return new Response(null, { status: 302, headers: { Location: "/config" } });
+      }
+      const team = getLocalTeam(db, params.id!);
+      if (!team) return new Response(null, { status: 302, headers: { Location: "/teams" } });
+      return html(teamMapPage({ team, agentTypes: teamAgentTypeChoices(), ...teamPageMeta() }));
+    });
+  }
 
 
   // Escalation resolve/dismiss. Each action is registered twice: /api routes

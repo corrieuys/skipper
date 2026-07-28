@@ -54,7 +54,6 @@ CREATE TABLE IF NOT EXISTS team_agents (
   agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   role TEXT,
   level INTEGER NOT NULL DEFAULT 0,
-  parent_agent_id TEXT REFERENCES agents(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(team_id, agent_id)
 );

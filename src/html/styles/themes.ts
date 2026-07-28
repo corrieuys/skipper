@@ -1267,6 +1267,27 @@ export function glassOverridesCss(): string {
       -webkit-backdrop-filter: blur(12px);
       border: 1px solid rgba(160, 175, 200, 0.1);
     }
+
+    /* Team map — the tm- styles are already written against the theme tokens, so
+       the only thing missing under glass is the frosted blur that .mc-stat-card
+       and friends get. Colours stay token-driven; do not restate them here. */
+    ${G} .tm-phase,
+    ${G} .tm-agent,
+    ${G} .tm-lead,
+    ${G} .tm-card,
+    ${G} .tm-add {
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    ${G} .tm-gate,
+    ${G} .tm-conn__insert,
+    ${G} .tm-tools__btn {
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+    ${G} .tm-chip,
+    ${G} .tm-phase__idx,
+    ${G} .tm-mini__node { border-radius: var(--sk-radius-md); }
   `;
 }
 

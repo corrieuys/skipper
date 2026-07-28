@@ -27,8 +27,8 @@ const baseInput = (): LocalTeamInput => ({
   skipper_prompt: "lead the team",
   phases: [{ name: "build", prompt: "do the work" }],
   agents: [
-    { id: "dev", name: "Dev", type: pickAgentType(), model: "default", instruction: "write code", role: "worker", level: 1, parent_agent_id: "skipper" },
-    { id: "qa", name: "QA", type: pickAgentType(), model: "sonnet", instruction: "test code", role: "worker", level: 2, parent_agent_id: "dev" },
+    { id: "dev", name: "Dev", type: pickAgentType(), model: "default", instruction: "write code", role: "worker", level: 1 },
+    { id: "qa", name: "QA", type: pickAgentType(), model: "sonnet", instruction: "test code", role: "worker", level: 2 },
   ],
 });
 
@@ -78,12 +78,13 @@ describe("local teams persistence + flatten", () => {
     expect(qa!.instruction).toBe("test code");
     expect(qa!.model).toBe("sonnet");
 
-    // parent ref namespacing: dev -> skipper stays skipper; qa -> dev namespaced
+    // Membership is flat: every inline agent joins at level 1 under no parent.
     const team = getTeam("alpha")!;
     const devMember = team.members.find((m) => m.agent_id === devId)!;
     const qaMember = team.members.find((m) => m.agent_id === qaId)!;
-    expect(devMember.parent_agent_id).toBe("skipper");
-    expect(qaMember.parent_agent_id).toBe(devId);
+    expect(devMember.level).toBe(1);
+    expect(qaMember.level).toBe(1);
+    expect(Object.keys(devMember)).not.toContain("parent_agent_id");
   });
 
   it("flatten reaches the config tables (delegation legality query returns a row)", () => {
@@ -118,7 +119,7 @@ describe("local teams persistence + flatten", () => {
     const updated: LocalTeamInput = {
       ...baseInput(),
       agents: [
-        { id: "dev", name: "Dev", type: pickAgentType(), model: "opus", instruction: "write better code", role: "worker", level: 1, parent_agent_id: "skipper" },
+        { id: "dev", name: "Dev", type: pickAgentType(), model: "opus", instruction: "write better code", role: "worker", level: 1 },
       ],
     };
     updateLocalTeam(db, "alpha", updated);

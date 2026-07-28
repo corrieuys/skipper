@@ -257,6 +257,7 @@ describe("Legacy schema migration", () => {
       const cols = legacyDb.prepare("PRAGMA table_info(team_agents)").all() as { name: string }[];
       expect(cols.some((col) => col.name === "skills")).toBe(false);
       expect(cols.some((col) => col.name === "max_complexity")).toBe(false);
+      expect(cols.some((col) => col.name === "parent_agent_id")).toBe(false);
 
       const row = legacyDb
         .prepare("SELECT role, level FROM team_agents WHERE id = 'ta1'")

@@ -31,7 +31,6 @@ export interface TeamAgent {
   agent_id: string;
   role: string | null;
   level: number;
-  parent_agent_id: string | null;
   created_at: string;
 }
 
@@ -51,7 +50,6 @@ interface TeamAgentRow {
   agent_id: string;
   role: string | null;
   level: number;
-  parent_agent_id: string | null;
   created_at: string;
 }
 
@@ -74,7 +72,6 @@ function rowToTeamAgent(row: TeamAgentRow): TeamAgent {
     agent_id: row.agent_id,
     role: row.role,
     level: row.level,
-    parent_agent_id: row.parent_agent_id,
     created_at: row.created_at,
   };
 }
@@ -95,7 +92,6 @@ export interface AddTeamAgentInput {
   agent_id: string;
   role?: string;
   level?: number;
-  parent_agent_id?: string;
 }
 
 export interface UpdateTeamAgentInput {
@@ -216,23 +212,12 @@ export class TeamManager {
       .get(input.agent_id);
     if (!agent) throw new Error(`Agent not found: ${input.agent_id}`);
 
-    if (input.parent_agent_id) {
-      const parentMembership = this.db
-        .prepare(
-          "SELECT id FROM team_agents WHERE team_id = ? AND agent_id = ?",
-        )
-        .get(teamId, input.parent_agent_id);
-      if (!parentMembership) {
-        throw new Error("Parent agent must be a member of the same team");
-      }
-    }
-
     const id = crypto.randomUUID();
 
     this.db
       .prepare(
-        `INSERT INTO team_agents (id, team_id, agent_id, role, level, parent_agent_id)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO team_agents (id, team_id, agent_id, role, level)
+         VALUES (?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -240,7 +225,6 @@ export class TeamManager {
         input.agent_id,
         input.role ?? null,
         input.level ?? 0,
-        input.parent_agent_id ?? null,
       );
 
     return this.getTeamAgent(id)!;

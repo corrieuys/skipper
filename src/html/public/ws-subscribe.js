@@ -3,7 +3,6 @@
  * Handles topic-based subscriptions, heartbeat monitoring, and auto-reconnect.
  */
 (function () {
-  var reconnectDelay = 1000;
   var maxReconnectDelay = 30000;
   var heartbeatTimeout = 60000;
   var lastPingAt = Date.now();
@@ -11,6 +10,62 @@
   var ws = null;
   var currentTopics = [];
   var hasConnected = false;
+
+  // ── Reconnect supervision ────────────────────────────────────────────────
+  // The socket itself is owned by htmx-ext-ws, which retries on its own — but
+  // only for close codes 1006/1011/1012/1013. A CLEAN close (what a graceful
+  // `skipper stop`/restart produces) schedules nothing, so the banner used to
+  // sit there forever. We therefore:
+  //   1. replace htmx's default `full-jitter` easing (random, up to 64s) with a
+  //      deterministic backoff, so the countdown we show is the real one, and
+  //   2. schedule the retry ourselves whenever htmx declined to.
+  var retryAt = 0;          // epoch ms of the next attempt; 0 = none pending
+  var ownAttempt = 0;       // backoff step for retries WE schedule
+  var ownRetryTimer = null;
+  var countdownTimer = null;
+  var lastWrapper = null;   // htmx socket wrapper; .reconnect() re-inits it
+
+  function backoffDelay(attempt) {
+    return Math.min(1000 * Math.pow(2, Math.min(attempt, 5)), maxReconnectDelay);
+  }
+
+  if (window.htmx && window.htmx.config) {
+    window.htmx.config.wsReconnectDelay = function (retryCount) {
+      var delay = backoffDelay(retryCount);
+      // Called synchronously from htmx's onclose, immediately before it arms its
+      // timer and before it fires htmx:wsClose — so the handler below can read
+      // this to tell "htmx has a retry pending" from "htmx gave up".
+      retryAt = Date.now() + delay;
+      return delay;
+    };
+  }
+
+  function clearRetryTimers() {
+    if (ownRetryTimer) { clearTimeout(ownRetryTimer); ownRetryTimer = null; }
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+  }
+
+  function scheduleOwnRetry() {
+    if (ownRetryTimer) clearTimeout(ownRetryTimer);
+    var delay = backoffDelay(ownAttempt);
+    ownAttempt++;
+    retryAt = Date.now() + delay;
+    ownRetryTimer = setTimeout(function () { reconnectNow(true); }, delay);
+  }
+
+  function reconnectNow(fromTimer) {
+    if (ownRetryTimer) { clearTimeout(ownRetryTimer); ownRetryTimer = null; }
+    retryAt = 0;
+    updateBannerText();
+    if (lastWrapper && typeof lastWrapper.reconnect === "function") {
+      // Note: if htmx also has a retry armed it will still fire later and re-init
+      // the socket, costing a brief blip. htmx exposes no way to cancel it.
+      try { lastWrapper.reconnect(); return; } catch (e) { /* fall through */ }
+    }
+    // No wrapper to drive (htmx never got one open) — a reload is the only way
+    // back. Only do that on an explicit click, never from the timer.
+    if (!fromTimer) location.reload();
+  }
 
   // On a RECONNECT (not the first connect), the daemon may have been restarted
   // (a plain `skipper restart` or a self-update). Compare the running server's
@@ -76,16 +131,40 @@
     }
   }
 
+  function updateBannerText() {
+    var label = document.getElementById("ws-reconnect-label");
+    if (!label) return;
+    var remaining = retryAt ? Math.max(0, Math.ceil((retryAt - Date.now()) / 1000)) : 0;
+    label.textContent = remaining > 0
+      ? "Connection lost. Retrying in " + remaining + "s"
+      : "Connection lost. Reconnecting...";
+  }
+
   function showReconnectBanner(show) {
     var banner = document.getElementById("ws-reconnect-banner");
     if (show && !banner) {
       banner = document.createElement("div");
       banner.id = "ws-reconnect-banner";
-      banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:var(--error,#ff6b6b);color:#fff;text-align:center;padding:6px;font-size:13px;font-family:sans-serif;";
-      banner.textContent = "Connection lost. Reconnecting...";
+      banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:var(--error,#ff6b6b);color:#fff;text-align:center;padding:6px;font-size:13px;font-family:sans-serif;display:flex;align-items:center;justify-content:center;gap:10px;";
+
+      var label = document.createElement("span");
+      label.id = "ws-reconnect-label";
+      banner.appendChild(label);
+
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.id = "ws-reconnect-now";
+      btn.textContent = "Reconnect now";
+      btn.style.cssText = "background:rgba(0,0,0,0.25);color:#fff;border:1px solid rgba(255,255,255,0.5);border-radius:4px;padding:2px 8px;font-size:12px;font-family:inherit;cursor:pointer;";
+      btn.addEventListener("click", function () { reconnectNow(false); });
+      banner.appendChild(btn);
+
       document.body.appendChild(banner);
+      updateBannerText();
+      if (!countdownTimer) countdownTimer = setInterval(updateBannerText, 1000);
     } else if (!show && banner) {
       banner.remove();
+      if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
     }
   }
 
@@ -113,7 +192,10 @@
   document.addEventListener("htmx:wsOpen", function (evt) {
     if (!evt.detail) return;
     ws = evt.detail.socketWrapper || null;
-    reconnectDelay = 1000;
+    if (ws) lastWrapper = ws;
+    clearRetryTimers();
+    retryAt = 0;
+    ownAttempt = 0;
     showReconnectBanner(false);
     startHeartbeatMonitor();
 
@@ -134,10 +216,22 @@
     }
   });
 
-  document.addEventListener("htmx:wsClose", function () {
-    showReconnectBanner(true);
+  document.addEventListener("htmx:wsClose", function (evt) {
     ws = null;
-    // htmx-ext-ws handles reconnect automatically, but we track state
+    if (evt && evt.detail && evt.detail.socketWrapper) lastWrapper = evt.detail.socketWrapper;
+    // A future retryAt means our easing function ran a moment ago, i.e. htmx has
+    // armed its own timer. Otherwise it declined to retry (clean close) and the
+    // reconnect is ours to drive.
+    if (retryAt <= Date.now()) scheduleOwnRetry();
+    showReconnectBanner(true);
+    updateBannerText();
+  });
+
+  // Fired on every socket init, including htmx's own retries — the attempt is
+  // in flight now, so drop the countdown.
+  document.addEventListener("htmx:wsConnecting", function () {
+    retryAt = 0;
+    updateBannerText();
   });
 
   // Handle incoming messages for heartbeat

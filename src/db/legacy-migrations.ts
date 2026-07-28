@@ -256,7 +256,6 @@ function migrateTeamAgentsDropSkills(database: Database): void {
         agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
         role TEXT,
         level INTEGER NOT NULL DEFAULT 0,
-        parent_agent_id TEXT REFERENCES agents(id),
         max_complexity INTEGER DEFAULT 10,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE(team_id, agent_id)`
@@ -265,13 +264,12 @@ function migrateTeamAgentsDropSkills(database: Database): void {
         agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
         role TEXT,
         level INTEGER NOT NULL DEFAULT 0,
-        parent_agent_id TEXT REFERENCES agents(id),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE(team_id, agent_id)`;
     database.exec(`CREATE TABLE IF NOT EXISTS team_agents_new (${newTableCols});`);
     const insertCols = carryMaxComplexity
-      ? "id, team_id, agent_id, role, level, parent_agent_id, max_complexity, created_at"
-      : "id, team_id, agent_id, role, level, parent_agent_id, created_at";
+      ? "id, team_id, agent_id, role, level, max_complexity, created_at"
+      : "id, team_id, agent_id, role, level, created_at";
     database.exec(`
       INSERT INTO team_agents_new (${insertCols})
       SELECT ${insertCols}
@@ -297,14 +295,13 @@ function migrateTeamAgentsDropMaxComplexity(database: Database): void {
         agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
         role TEXT,
         level INTEGER NOT NULL DEFAULT 0,
-        parent_agent_id TEXT REFERENCES agents(id),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE(team_id, agent_id)
       );
     `);
     database.exec(`
-      INSERT INTO team_agents_new (id, team_id, agent_id, role, level, parent_agent_id, created_at)
-      SELECT id, team_id, agent_id, role, level, parent_agent_id, created_at
+      INSERT INTO team_agents_new (id, team_id, agent_id, role, level, created_at)
+      SELECT id, team_id, agent_id, role, level, created_at
       FROM team_agents;
     `);
     database.exec("DROP TABLE team_agents;");
