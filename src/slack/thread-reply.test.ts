@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { clearAgentTypeCache } from "../agents/types";
 import { TaskScheduler } from "../tasks/scheduler";
-import { findRunningTaskByThread } from "./slash-command";
+import { findRunningTaskByThread, mentionsSkipper, SLACK_NOTE_PREFIX } from "./slash-command";
 
 let db: Database;
 let scheduler: TaskScheduler;
@@ -77,5 +77,35 @@ describe("TaskScheduler.addExternalNote", () => {
 
   it("returns null for an unknown task", () => {
     expect(scheduler.addExternalNote("nope", "hi")).toBeNull();
+  });
+});
+
+describe("mentionsSkipper", () => {
+  it("matches the word regardless of case or position", () => {
+    expect(mentionsSkipper("Skipper, use the staging DB")).toBe(true);
+    expect(mentionsSkipper("hey skipper can you retry")).toBe(true);
+    expect(mentionsSkipper("SKIPPER should know about this")).toBe(true);
+    expect(mentionsSkipper("ask Skipper about it")).toBe(true);
+  });
+
+  it("does not match ambient chatter that never names Skipper", () => {
+    expect(mentionsSkipper("lunch?")).toBe(false);
+    expect(mentionsSkipper("I think the migration is wrong")).toBe(false);
+    expect(mentionsSkipper("")).toBe(false);
+    expect(mentionsSkipper(null)).toBe(false);
+    expect(mentionsSkipper(undefined)).toBe(false);
+  });
+
+  it("is a substring test, so it also admits talking ABOUT Skipper", () => {
+    // Deliberate: the prompt (not this gate) decides relevance. Documented so a
+    // future tightening here is a conscious choice rather than a bug fix.
+    expect(mentionsSkipper("skippers are boats")).toBe(true);
+  });
+});
+
+describe("SLACK_NOTE_PREFIX", () => {
+  it("is the marker the prompt keys off to flag Slack-sourced notes", () => {
+    const note = `${SLACK_NOTE_PREFIX} Slack reply from <@U1>: skipper use staging`;
+    expect(note.startsWith(SLACK_NOTE_PREFIX)).toBe(true);
   });
 });

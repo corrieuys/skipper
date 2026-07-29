@@ -105,3 +105,24 @@ export function normalizeSlashCommand(raw: string | null | undefined): string {
   if (!s) return "";
   return "/" + s.replace(/^\/+/, "");
 }
+
+/**
+ * The word an inbound Slack thread reply must contain before it is captured as a
+ * task note. A task's thread is a normal conversation — most of what gets typed
+ * in it is people talking to each other, not to Skipper — so without a gate every
+ * aside would land in the agent's prompt as an OPERATOR INSTRUCTION.
+ *
+ * Deliberately a loose substring test, matched case-insensitively: it is the
+ * cheap first pass. Mentioning the word is not the same as addressing Skipper,
+ * so notes captured this way are prefixed (`SLACK_NOTE_PREFIX`) and the prompt
+ * tells the agent to treat them with suspicion and ignore irrelevant ones.
+ */
+export const SKIPPER_MENTION = "skipper";
+
+/** Prefix stamped on notes captured from a Slack thread. */
+export const SLACK_NOTE_PREFIX = "[Slack]";
+
+/** Whether an inbound Slack message mentions Skipper (case-insensitive). */
+export function mentionsSkipper(text: string | null | undefined): boolean {
+  return (text ?? "").toLowerCase().includes(SKIPPER_MENTION);
+}

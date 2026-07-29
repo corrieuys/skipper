@@ -10,7 +10,7 @@ import { handleSlashCommand, type SlackSlashCommandPayload } from "./commands";
 import { handleInteraction, type InteractionPayload } from "./interactions";
 import { SlackClient } from "./client";
 import { slackLog } from "./log";
-import { findRunningTaskByThread, findCompletedTaskByThread } from "./slash-command";
+import { findRunningTaskByThread, findCompletedTaskByThread, mentionsSkipper, SLACK_NOTE_PREFIX } from "./slash-command";
 import { isExperimental } from "../config/feature-flags";
 
 const SLACK_API_BASE = "https://slack.com/api";
@@ -254,6 +254,13 @@ export class SlackSocketManager {
       return;
     }
     if (!isExperimental()) { slackLog("in.thread_reply.skip", { reason: "not_experimental" }); return; }
+    // A task thread is a normal conversation; most replies in it are people
+    // talking to each other. Only capture messages that mention Skipper, so
+    // ambient chatter never lands in the agent's prompt as an instruction.
+    if (!mentionsSkipper(text)) {
+      slackLog("in.thread_reply.skip", { reason: "no_skipper_mention", channel, threadTs });
+      return;
+    }
     try {
       const taskId = findRunningTaskByThread(this.db, channel, threadTs);
       if (!taskId) {
@@ -269,8 +276,11 @@ export class SlackSocketManager {
         slackLog("in.thread_reply.no_task", { channel, threadTs });
         return;
       }
+      // Prefixed so the prompt can single these out: they are operator-sourced but
+      // arrive from a conversation, not from someone deliberately instructing the
+      // run — see appendNotesSections in agents/prompt-builder.ts.
       const attribution = event.user ? `Slack reply from <@${event.user}>` : "Slack reply";
-      const noteId = this.taskScheduler.addExternalNote(taskId, `${attribution}: ${text}`, "user");
+      const noteId = this.taskScheduler.addExternalNote(taskId, `${SLACK_NOTE_PREFIX} ${attribution}: ${text}`, "user");
       slackLog("in.thread_reply.noted", { taskId, channel, threadTs, noteId: noteId ?? "none" });
       if (noteId) {
         // Confirm back in-thread. The ack is a bot message (carries bot_id) so the

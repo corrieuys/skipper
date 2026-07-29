@@ -317,7 +317,7 @@ export function registerTeamRoutes(database?: Database): void {
     if (conflict) return conflict;
     try {
       const team = createLocalTeam(db, input);
-      if (isHtmx) return hxRedirect("/config");
+      if (isHtmx) return hxRedirect("/teams");
       return Response.json(team, { status: 201 });
     } catch (e) {
       return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 400 });
@@ -343,7 +343,7 @@ export function registerTeamRoutes(database?: Database): void {
     if (conflict) return conflict;
     try {
       const team = updateLocalTeam(db, id, input);
-      if (isHtmx) return hxRedirect("/config");
+      if (isHtmx) return hxRedirect("/teams");
       return Response.json(team);
     } catch (e) {
       return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 400 });
@@ -363,8 +363,8 @@ export function registerTeamRoutes(database?: Database): void {
   addRoute("POST", "/api/teams/:id/delete", (req, params) => {
     deleteLocalTeam(db, params.id!);
     if (req.headers.get("HX-Request")) {
-      return hxRedirect("/config");
+      return hxRedirect("/teams");
     }
-    return new Response("", { status: 302, headers: { Location: "/config" } });
+    return new Response("", { status: 302, headers: { Location: "/teams" } });
   });
 }

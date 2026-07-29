@@ -314,10 +314,9 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return html(terminalOutputFragment(rows));
   });
 
-  // Teams. Behind --experimental these are the standalone team pages: an index
-  // grid at /teams and an interactive team map (phase flow + crew tree) at
-  // /teams/:id. Without the flag they stay redirects to the Config page, which
-  // still owns team management until the new pages take over.
+  // Teams — the primary team interface: an index grid at /teams and an
+  // interactive team map (phase flow + crew line) at /teams/:id. Config no
+  // longer carries a team panel.
   {
     const { teamsPage } = require("../html/pages/teams.page");
     const { teamMapPage } = require("../html/pages/team-map.page");
@@ -340,23 +339,14 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
         .map((t) => ({ name: t.name, models: Array.isArray(t.available_models) ? t.available_models : [] }));
 
     addRoute("GET", "/teams", () => {
-      if (!isExperimental()) {
-        return new Response(null, { status: 302, headers: { Location: "/config" } });
-      }
       return html(teamsPage({ teams: listLocalTeams(db), ...teamPageMeta() }));
     });
 
     addRoute("GET", "/teams/new", () => {
-      if (!isExperimental()) {
-        return new Response(null, { status: 302, headers: { Location: "/config/teams/new" } });
-      }
       return html(teamMapPage({ team: null, agentTypes: teamAgentTypeChoices(), ...teamPageMeta() }));
     });
 
     addRoute("GET", "/teams/:id", (_req, params) => {
-      if (!isExperimental()) {
-        return new Response(null, { status: 302, headers: { Location: "/config" } });
-      }
       const team = getLocalTeam(db, params.id!);
       if (!team) return new Response(null, { status: 302, headers: { Location: "/teams" } });
       return html(teamMapPage({ team, agentTypes: teamAgentTypeChoices(), ...teamPageMeta() }));
@@ -1248,14 +1238,12 @@ function registerV2PageRoutes(): void {
 
   // Configuration Overview
   addRoute("GET", "/config", () => {
-    const { listLocalTeams } = require("../teams/local-teams");
     const escalationCount = getOpenEscalationCount(db);
     const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
     const { getModelSettingsView } = require("../config/model-settings");
     const { isExperimental } = require("../config/feature-flags");
     const { getSlackConfigView } = require("../config/slack-settings");
     return html(configPage({
-      teams: listLocalTeams(db),
       notificationPreferences: listPreferences(db),
       logRetentionHours: getNumberSetting(db, SETTING_LOG_RETENTION_HOURS, 24),
       taskRetentionDays: getNumberSetting(db, SETTING_TASK_RETENTION_DAYS, 0),
@@ -1543,46 +1531,20 @@ function registerV2PageRoutes(): void {
     });
   }
 
-  // ── Team config forms (managed on the Config page) ──────────────────────
-  {
-    const { localTeamFormPage } = require("../html/pages/local-team-form.page");
-    const { getLocalTeam } = require("../teams/local-teams");
-    const { listAgentTypes } = require("../config/store");
+  // ── Retired team editor ─────────────────────────────────────────────────
+  // The config-page team form is gone; /teams is the team interface now. These
+  // paths stay as redirects so old bookmarks and links still land somewhere.
+  addRoute("GET", "/local-teams", () => {
+    return new Response(null, { status: 302, headers: { Location: "/teams" } });
+  });
 
-    const daemonMeta = () => {
-      const escalationCount = getOpenEscalationCount(db);
-      const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
-      return {
-        escalationCount,
-        daemonState: pausedRow?.value === "true" ? "paused" : "running",
-        daemonUptime: process.uptime(),
-      };
-    };
+  addRoute("GET", "/config/teams/new", () => {
+    return new Response(null, { status: 302, headers: { Location: "/teams/new" } });
+  });
 
-    const { isAllowedProvider } = require("../config/model-settings");
-    const agentTypeChoices = () =>
-      (listAgentTypes() as Array<{ name: string; available_models: string[] }>)
-        .filter((t) => isAllowedProvider(t.name))
-        .map((t) => ({
-          name: t.name,
-          models: Array.isArray(t.available_models) ? t.available_models : [],
-        }));
-
-    // Redirect the old list path to the Config page where teams now live.
-    addRoute("GET", "/local-teams", () => {
-      return new Response(null, { status: 302, headers: { Location: "/config" } });
-    });
-
-    addRoute("GET", "/config/teams/new", () => {
-      return html(localTeamFormPage({ team: null, agentTypes: agentTypeChoices(), ...daemonMeta() }));
-    });
-
-    addRoute("GET", "/config/teams/:id/edit", (_req, params) => {
-      const team = getLocalTeam(db, params.id!);
-      if (!team) return new Response("Team not found", { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
-      return html(localTeamFormPage({ team, agentTypes: agentTypeChoices(), ...daemonMeta() }));
-    });
-  }
+  addRoute("GET", "/config/teams/:id/edit", (_req, params) => {
+    return new Response(null, { status: 302, headers: { Location: `/teams/${encodeURIComponent(params.id!)}` } });
+  });
 
   // ── Task-form fragments ──────────────────────────────────────────────────
 

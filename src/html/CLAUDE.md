@@ -27,12 +27,12 @@ Lots of legacy flat `*Fragment.ts` files at this level — pre-reorg into `fragm
 | `forensics*.ts` | Forensics tab on task detail (timeline, instance tree, delegations, escalations, token usage, terminal tails) |
 | `dashboard*Fragment.ts` | Dashboard polling fragments |
 
-## Teams pages (experimental)
+## Teams pages
 
 `pages/teams.page.ts` (index grid) + `pages/team-map.page.ts` (map editor), styled
 by `styles/team-map.ts` (`tm-` prefix). Registered on `/teams`, `/teams/new` and
-`/teams/:id` only under `isExperimental()`; without the flag those paths keep
-redirecting to Config, which still owns team management. The map renders the
+`/teams/:id` — the primary team interface; Config no longer carries a team panel
+and the old `local-team-form.page.ts` is gone. The map renders the
 whole team client-side from one `TEAM` object — phase flow (nodes joined by
 connectors, review gate = diamond) above a flat crew line (Skipper plus the
 team's agents as peer cards; there is no reporting hierarchy). Every edit

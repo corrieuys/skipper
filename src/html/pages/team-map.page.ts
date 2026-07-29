@@ -1,8 +1,14 @@
 import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
+import { isExperimental } from "../../config/feature-flags";
 import type { LocalTeam } from "../../teams/local-teams";
-import type { AgentTypeChoice } from "./local-team-form.page";
+
+/** One selectable provider plus the models it advertises. */
+export interface AgentTypeChoice {
+  name: string;
+  models: string[];
+}
 
 export interface TeamMapViewModel {
   /** null when creating a brand-new team (the map starts from a scaffold). */
@@ -110,6 +116,11 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       })};
       var AGENT_TYPES = ${jsonScript(vm.agentTypes)};
       var IS_NEW = ${isNew ? "true" : "false"};
+      // Consensus and the per-team Slack opt-in are experimental everywhere else
+      // in the UI (task form, config page), so they stay gated here too. When a
+      // section is not rendered its apply path must LEAVE the stored value alone
+      // rather than read a missing field as "cleared".
+      var EXPERIMENTAL = ${isExperimental() ? "true" : "false"};
 
       var flowEl = document.getElementById('tm-flow');
       var crewEl = document.getElementById('tm-crew');
@@ -425,16 +436,17 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         if (e.key === 'Escape' && modal.classList.contains('sk-modal--open')) closeModal();
       });
 
-      function doneFooter(){
+      function doneFooter(label){
         return '<span class="tm-modal__footer-spacer"></span>' +
                '<button type="button" class="sk-btn sk-btn--sm" data-m="cancel">Cancel</button>' +
-               '<button type="button" class="sk-btn sk-btn--sm sk-btn--primary" data-m="apply">Apply</button>';
+               '<button type="button" class="sk-btn sk-btn--sm sk-btn--primary" data-m="apply">' + (label || 'Apply') + '</button>';
       }
-      function wireFooter(apply){
+      function wireFooter(apply, after){
         modalFooter.querySelector('[data-m="cancel"]').addEventListener('click', closeModal);
         modalFooter.querySelector('[data-m="apply"]').addEventListener('click', function(){
           if (apply() === false) return;
           markDirty(); render(); closeModal();
+          if (after) after();
         });
       }
 
@@ -465,6 +477,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
             '<textarea class="sk-textarea tm-field__prompt" data-f="prompt" placeholder="What this phase should accomplish, and what &quot;done&quot; looks like...">' + esc(p.prompt) + '</textarea>' +
             '<p class="tm-field__hint">Given to Skipper when the task enters this phase. Task-level overrides can replace it per task.</p>' +
           '</div>' +
+          (EXPERIMENTAL ?
           '<div class="tm-sub">' +
             '<div class="tm-sub__head">' +
               '<label class="sk-checkbox"><input type="checkbox" data-f="consensus_on"' + (c ? ' checked' : '') + '>' +
@@ -492,19 +505,23 @@ export function teamMapPage(vm: TeamMapViewModel): string {
                   '<span class="sk-checkbox__label">Each agent in its own git worktree</span></label></div>' +
               '</div>' +
             '</div>' +
-          '</div>';
+          '</div>' : '');
 
         openModal('Phase <span class="tm-phase__idx">' + String(i + 1).padStart(2, '0') + '</span>', body, doneFooter(), function(){
-          var fields = modalBody.querySelector('[data-consensus-fields]');
-          modalBody.querySelector('[data-f="consensus_on"]').addEventListener('change', function(){
-            fields.hidden = !this.checked;
-          });
+          if (EXPERIMENTAL) {
+            var fields = modalBody.querySelector('[data-consensus-fields]');
+            modalBody.querySelector('[data-f="consensus_on"]').addEventListener('change', function(){
+              fields.hidden = !this.checked;
+            });
+          }
           wireFooter(function(){
             var name = modalBody.querySelector('[data-f="name"]').value.trim();
             if (!name) { flashError('A phase needs a name.'); return false; }
             p.name = name;
             p.prompt = modalBody.querySelector('[data-f="prompt"]').value;
             p.review = modalBody.querySelector('[data-f="review"]').checked;
+            // Not rendered → the phase keeps whatever consensus config it had.
+            if (!EXPERIMENTAL) return;
             if (modalBody.querySelector('[data-f="consensus_on"]').checked) {
               var count = parseInt(modalBody.querySelector('[data-f="agent_count"]').value, 10);
               if (!(count >= 2 && count <= 10)) { flashError('Consensus agent count must be between 2 and 10.'); return false; }
@@ -595,6 +612,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         var body =
           '<div class="tm-field"><label class="sk-label">Team name</label>' +
             '<input class="sk-input" data-f="name" type="text" value="' + esc(TEAM.name) + '" placeholder="e.g. Feature Strike Team"></div>' +
+          (EXPERIMENTAL ?
           '<div class="tm-sub">' +
             '<div class="tm-sub__head"><strong class="sk-text-sm">Slack</strong></div>' +
             '<div class="tm-field">' +
@@ -606,18 +624,21 @@ export function teamMapPage(vm: TeamMapViewModel): string {
             '<div class="tm-field"><label class="sk-label">Slash command</label>' +
               '<input class="sk-input" data-f="slash_command" type="text" value="' + esc(cfg.slashCommand || '') + '" placeholder="/software-team">' +
               '<p class="tm-field__hint">Running it in Slack creates and auto-approves a task on this team.</p></div>' +
-          '</div>';
+          '</div>' : '');
 
-        openModal('Team settings', body, doneFooter(), function(){
+        var isCreate = !TEAM.id;
+        openModal(isCreate ? 'New team' : 'Team settings', body, doneFooter(isCreate ? 'Create team' : null), function(){
           wireFooter(function(){
             var name = modalBody.querySelector('[data-f="name"]').value.trim();
             if (!name) { flashError('A team needs a name.'); return false; }
             TEAM.name = name;
             TEAM.config = TEAM.config || {};
+            // Not rendered → leave the stored Slack settings untouched.
+            if (!EXPERIMENTAL) return;
             TEAM.config.slackEnabled = modalBody.querySelector('[data-f="slack_enabled"]').checked;
             var cmd = modalBody.querySelector('[data-f="slash_command"]').value.trim();
             if (cmd) TEAM.config.slashCommand = cmd; else delete TEAM.config.slashCommand;
-          });
+          }, isCreate ? saveTeam : null);
         });
       }
 
@@ -630,7 +651,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       }
 
       var saveBtn = document.getElementById('tm-save');
-      saveBtn.addEventListener('click', async function(){
+      async function saveTeam(){
         if (!TEAM.name || !TEAM.name.trim()) { openSettingsModal(); flashError('Name the team before saving.'); return; }
         if (TEAM.phases.length === 0) { flashError('A team needs at least one phase.'); return; }
         var label = saveBtn.textContent;
@@ -664,7 +685,8 @@ export function teamMapPage(vm: TeamMapViewModel): string {
           saveBtn.disabled = false;
           if (saveBtn.textContent === 'Saving...') saveBtn.textContent = label;
         }
-      });
+      }
+      saveBtn.addEventListener('click', function(){ saveTeam(); });
 
       var deleteBtn = document.getElementById('tm-delete');
       if (deleteBtn) {
@@ -676,7 +698,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         });
       }
 
-      document.getElementById('tm-settings').addEventListener('click', openSettingsModal);
+      document.getElementById('tm-settings').addEventListener('click', function(){ openSettingsModal(); });
 
       window.addEventListener('beforeunload', function(e){
         if (!dirty) return;

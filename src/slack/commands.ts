@@ -38,10 +38,13 @@ const MAX_TITLE = 80;
 // dominate the message. Only shown when a prompt was actually supplied.
 const MAX_PROMPT_ECHO = 280;
 
-// Appended to the anchor message so the operator knows the thread is live: any
-// reply here is captured as a note on the task (see socket.ts:handleThreadReply).
-// Only shows when we actually posted an anchor (a thread exists to reply in).
-const THREAD_NOTE_HINT = "\n\n_Reply in this thread to add an agent note to the task._";
+// Appended to the anchor message so the operator knows the thread is live: a
+// reply here is captured as a note on the task, but only when it contains the
+// word "Skipper" (see socket.ts:handleThreadReply). Quoted, and phrased as "the
+// word", because "mention" means an @-mention in Slack — and an @-mention is NOT
+// what the gate looks for. Only shows when we actually posted an anchor (a
+// thread exists to reply in).
+const THREAD_NOTE_HINT = '\n\n_Reply in this thread to add an agent note to the task. Only replies containing the word "Skipper" are added._';
 
 /**
  * Map an inbound Slack slash command to a Skipper action and return the ephemeral

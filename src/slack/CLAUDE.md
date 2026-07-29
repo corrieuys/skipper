@@ -22,7 +22,7 @@ Everything here is **experimental** (`isExperimental()`), consistent with the
 | `blocks.ts` | Block Kit builders (escalation + review + **completion** messages, action modal, notices) + the `encodeActionValue`/`decodeActionValue` codec (`<kind>:<action>:<id>`, kinds `esc`/`rev`/`task`) shared by push + interactions. The escalation **question** is agent-authored HTML, run through `htmlToMrkdwn` before it hits a `mrkdwn` field, and the section text is capped at Slack's 3000-char limit |
 | `html-to-mrkdwn.ts` | `htmlToMrkdwn(html)` — translate an agent HTML fragment to Slack mrkdwn at the boundary (tags → mrkdwn, `<a>` → `<url\|label>`, entities decoded, `& < >` re-escaped, unknown tags stripped). Agents stay oblivious to Slack; plain text passes through as plain escaping |
 | `bindings.ts` | `findSlashCommandConflict` — a command binds to one target only; used by the team + scheduled-task save routes to reject duplicate bindings |
-| `slash-command.ts` | `normalizeSlashCommand` (trim/lowercase/single-leading-slash), the `SlackOrigin` type (`{ channel, thread_ts?, user_id? }`), `readTaskSlackOrigin(db, taskId)` (shared reader of `task_config.slack_origin`, used by prompt injection + push thread-routing), and `findRunningTaskByThread` / `findCompletedTaskByThread` (`db, channel, thread_ts`) (match an inbound thread reply to its live task → note, or its completed task → ignored, since the Iterate instruction lives on the completion notice) |
+| `slash-command.ts` | `normalizeSlashCommand` (trim/lowercase/single-leading-slash), `mentionsSkipper` + `SLACK_NOTE_PREFIX` (the inbound thread-reply note gate), the `SlackOrigin` type (`{ channel, thread_ts?, user_id? }`), `readTaskSlackOrigin(db, taskId)` (shared reader of `task_config.slack_origin`, used by prompt injection + push thread-routing), and `findRunningTaskByThread` / `findCompletedTaskByThread` (`db, channel, thread_ts`) (match an inbound thread reply to its live task → note, or its completed task → ignored, since the Iterate instruction lives on the completion notice) |
 | `log.ts` | `slackLog(action, details)` — consistent `[slack] <action> k=v …` activity logging across the whole integration (never logs tokens). Excludes WS keep-alive / pass-through ACK noise |
 
 ## Outbound: posting as the app
@@ -95,11 +95,24 @@ handler edits the notice to an error line.
 ## Inbound thread replies → task notes
 
 The socket also handles **`events_api`** envelopes (Events API over Socket Mode).
-A plain human reply inside a task's origin thread becomes a **note** on that task
+A human reply inside a task's origin thread becomes a **note** on that task
 (`socket.ts:handleThreadReply` → `findRunningTaskByThread` → `TaskScheduler.addExternalNote`,
 source `user`). Filtered hard: only `type:message` events with a `thread_ts`, **no**
 `bot_id` (so Skipper's own anchors / escalations / `slack_send_message` agent replies
-are excluded — no feedback loop) and **no** `subtype` (edits/deletes/joins skipped).
+are excluded — no feedback loop), **no** `subtype` (edits/deletes/joins skipped), and
+the text must **contain the word "skipper"** (`mentionsSkipper`, case-insensitive
+substring — `slash-command.ts`; the literal word, *not* an @-mention). A task thread is a normal conversation, so without that gate every
+aside between colleagues would land in the agent's prompt as an OPERATOR INSTRUCTION;
+a reply that doesn't mention Skipper is dropped with `in.thread_reply.skip
+reason=no_skipper_mention` and gets no ack.
+
+Because the gate is a loose substring it also admits people talking *about* Skipper.
+Captured notes are therefore prefixed `[Slack]` (`SLACK_NOTE_PREFIX`), and
+`prompt-builder.ts:appendNotesSections` appends a caution to the OPERATOR INSTRUCTIONS
+section whenever one is present: treat them with suspicion, judge each on relevance and
+ignore what isn't meant for the run — but a message addressing Skipper directly is
+always relevant. Deciding relevance is the model's job; the gate only keeps the volume
+down.
 Matched only against a **running** task whose `slack_origin` channel + `thread_ts`
 line up. The note surfaces to the agent on its next prompt build (not injected into a
 live turn). A reply that matches instead a **completed** task in the same thread is
@@ -108,7 +121,9 @@ never auto-iterate a finished task, and the "click Iterate to run another pass"
 instruction lives in the completion notice itself. On success the socket posts a short in-thread **ack** (":memo: Added to
 this task's notes.") — itself a bot message, so the events frame for it is filtered
 out (no capture loop). The "Started …" **anchor** posted at task create also tells the
-operator up front that replies here become notes (`THREAD_NOTE_HINT` in `commands.ts`).
+operator up front that replies here become notes, and that only replies containing
+the word "Skipper" are added (`THREAD_NOTE_HINT` in `commands.ts`, which quotes the
+word precisely because "mention" reads as @-mention in Slack).
 Requires the app to subscribe to the `message.channels` / `message.groups` bot events
 (see setup).
 

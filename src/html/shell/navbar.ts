@@ -19,9 +19,7 @@ export function navbar(data: NavbarData): string {
   const navItems = [
     { href: "/", label: "Dashboard", match: "/" },
     { href: "/tasks", label: "Tasks", match: "/tasks" },
-    // Teams get their own page only behind --experimental; until then they are
-    // managed on Config.
-    ...(isExperimental() ? [{ href: "/teams", label: "Teams", match: "/teams" }] : []),
+    { href: "/teams", label: "Teams", match: "/teams" },
     { href: "/config", label: "Config", match: "/config" },
     { href: "/global-store", label: "Global Store", match: "/global-store" },
     { href: "/logs", label: "Logs", match: "/logs" },

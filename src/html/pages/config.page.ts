@@ -5,12 +5,10 @@ import { themePickerFragment } from "../styles/themes";
 import { NOTIFICATION_EVENTS } from "../../notifications/types";
 import { isExperimental } from "../../config/feature-flags";
 import type { NotificationPreference } from "../../notifications/store";
-import type { LocalTeam } from "../../teams/local-teams";
 import type { ModelChoice, AgentTypeOption } from "../../config/model-settings";
 import type { SlackConfigView } from "../../config/slack-settings";
 
 export interface ConfigPageViewModel {
-  teams: LocalTeam[];
   notificationPreferences: NotificationPreference[];
   logRetentionHours: number;
   taskRetentionDays: number;
@@ -114,89 +112,6 @@ function modelSettingsPanel(ms: ConfigPageViewModel["modelSettings"]): string {
   </div>`;
 }
 
-function teamsPanel(teams: LocalTeam[]): string {
-  const rows = teams.length === 0
-    ? `<tr><td colspan="3" class="sk-muted" style="text-align:center;padding:1.5rem;">No teams yet. <a href="/config/teams/new">Create one.</a></td></tr>`
-    : teams.map((t) => `
-      <tr>
-        <td>${escapeHtml(t.name)}</td>
-        <td class="sk-text-xs">${t.phases.length} phase${t.phases.length === 1 ? "" : "s"}, ${t.agents.length} agent${t.agents.length === 1 ? "" : "s"}</td>
-        <td style="white-space:nowrap;text-align:right;">
-          <a href="/config/teams/${escapeHtml(t.id)}/edit" class="sk-btn sk-btn--sm">Edit</a>
-          <a href="/api/teams/export?id=${encodeURIComponent(t.id)}" class="sk-btn sk-btn--sm">Export</a>
-          <button class="sk-btn sk-btn--sm sk-btn--danger"
-            hx-post="/api/teams/${escapeHtml(t.id)}/delete"
-            hx-confirm="Delete team '${escapeHtml(t.name)}'?"
-            hx-target="closest tr"
-            hx-swap="outerHTML">Delete</button>
-        </td>
-      </tr>`).join("");
-
-  return `
-      <!-- Teams Section -->
-      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
-        <div class="sk-panel__header">
-          <span class="sk-panel__title">Teams</span>
-          <span class="sk-panel__count">${teams.length}</span>
-          <div style="margin-left:auto;display:flex;gap:var(--sk-space-2);">
-            ${isExperimental() ? `<a href="/teams" class="sk-btn sk-btn--sm">Open team maps</a>` : ""}
-            <a href="/api/teams/export" class="sk-btn sk-btn--sm">Export All</a>
-            <a href="/config/teams/new" class="sk-btn sk-btn--sm sk-btn--primary">New Team</a>
-          </div>
-        </div>
-        <div class="sk-panel__body--flush">
-          <table class="sk-table">
-            <thead><tr><th>Name</th><th>Contents</th><th></th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-        <div class="sk-panel__body">
-          <details>
-            <summary class="sk-text-sm" style="cursor:pointer;font-weight:600;">Import Teams</summary>
-            <div style="margin-top:var(--sk-space-3);">
-              <p class="sk-muted sk-text-xs" style="margin:0 0 var(--sk-space-2);">Paste an export (an array of teams, or <code>{"teams":[...]}</code>), or choose a file. Existing ids are updated; new ids are created.</p>
-              <textarea id="team-import-json" class="sk-textarea" rows="5" placeholder='{"teams":[ ... ]}'></textarea>
-              <div style="display:flex;gap:var(--sk-space-3);align-items:center;margin-top:var(--sk-space-2);">
-                <input type="file" id="team-import-file" accept="application/json,.json" class="sk-input" style="max-width:280px;">
-                <button type="button" class="sk-btn sk-btn--sm sk-btn--primary" id="team-import-btn">Import</button>
-              </div>
-              <div id="team-import-result" class="sk-text-xs" style="margin-top:var(--sk-space-2);"></div>
-            </div>
-          </details>
-        </div>
-      </div>
-      <script>
-      (function(){
-        var fileInput = document.getElementById('team-import-file');
-        var textArea = document.getElementById('team-import-json');
-        var btn = document.getElementById('team-import-btn');
-        var result = document.getElementById('team-import-result');
-        if (fileInput) fileInput.addEventListener('change', function(){
-          var f = fileInput.files && fileInput.files[0];
-          if (!f) return;
-          var reader = new FileReader();
-          reader.onload = function(){ textArea.value = String(reader.result || ''); };
-          reader.readAsText(f);
-        });
-        if (btn) btn.addEventListener('click', async function(){
-          result.textContent = 'Importing...';
-          var raw = textArea.value.trim();
-          if (!raw) { result.textContent = 'Nothing to import.'; return; }
-          var parsed;
-          try { parsed = JSON.parse(raw); } catch (e) { result.textContent = 'Invalid JSON: ' + e.message; return; }
-          try {
-            var res = await fetch('/api/teams/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) });
-            var data = await res.json();
-            if (!res.ok) { result.textContent = 'Import failed: ' + (data.error || res.status); return; }
-            var msg = 'Imported ' + (data.imported || 0) + ', updated ' + (data.updated || 0) + '.';
-            if (data.errors && data.errors.length) msg += ' Errors: ' + data.errors.map(function(e){ return e.team + ': ' + e.error; }).join('; ');
-            result.textContent = msg;
-            setTimeout(function(){ window.location.reload(); }, 1200);
-          } catch (e) { result.textContent = 'Import failed: ' + e.message; }
-        });
-      })();
-      </script>`;
-}
 
 function notificationRows(prefs: NotificationPreference[]): string {
   return prefs.map((pref) => {
@@ -261,7 +176,6 @@ export function configPage(vm: ConfigPageViewModel): string {
         </div>
       </div>
 
-      ${teamsPanel(vm.teams)}
 
       <!-- Task Execution Section -->
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">

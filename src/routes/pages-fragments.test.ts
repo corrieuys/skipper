@@ -164,10 +164,22 @@ describe("fragment polling routes", () => {
   // /fragments/teams/:id/members) were removed — config now edits agents/teams
   // inline. Their tests were removed with them.
 
-  it("GET /teams/new redirects to the config team-create page (v1 page removed)", async () => {
-    const res = await fetch(`${baseUrl}/teams/new`, { redirect: "manual" });
-    expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/config/teams/new");
+  it("GET /teams/new renders the team map's create view", async () => {
+    const res = await fetch(`${baseUrl}/teams/new`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('id="tm-flow"');
+    expect(body).toContain('id="tm-crew"');
+  });
+
+  it("the retired config team-form paths redirect to /teams", async () => {
+    const newForm = await fetch(`${baseUrl}/config/teams/new`, { redirect: "manual" });
+    expect(newForm.status).toBe(302);
+    expect(newForm.headers.get("location")).toBe("/teams/new");
+
+    const editForm = await fetch(`${baseUrl}/config/teams/abc/edit`, { redirect: "manual" });
+    expect(editForm.status).toBe(302);
+    expect(editForm.headers.get("location")).toBe("/teams/abc");
   });
 
   it("fragment routes return content without polling attributes", async () => {
