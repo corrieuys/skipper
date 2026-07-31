@@ -23,11 +23,30 @@ let calls: {
 };
 let deps: InteractionDeps;
 
+// State the buttons point at. Buttons outlive their records — a task swept by
+// retention, an escalation answered in the web UI — so each test sets the world
+// its click lands in. Defaults are the happy path: everything still actionable.
+let taskStatus: string | null;
+let escalationStatus: string;
+let escalationGone: boolean;
+
+/** A task row in the state a review button expects: running, review open. */
+function seedReviewTask(id: string, opts: { needsReview?: boolean; status?: string } = {}): void {
+  db.prepare("INSERT INTO tasks (id, title, status, needs_review) VALUES (?, 'Add webhook', ?, ?)").run(
+    id,
+    opts.status ?? "running",
+    opts.needsReview === false ? 0 : 1,
+  );
+}
+
 beforeEach(() => {
   db = new Database(":memory:");
   initializeDatabase(db);
   saveSlackConfig(db, { botToken: "", defaultChannel: "", allowedUsers: [USER] });
   calls = { resolve: [], dismiss: [], approve: [], reject: [], iterate: [], openView: [], update: [] };
+  taskStatus = "completed";
+  escalationStatus = "open";
+  escalationGone = false;
 
   const escalationManager = {
     resolveEscalation: async (id: string, resp: string) => {
@@ -38,7 +57,7 @@ beforeEach(() => {
       return {} as unknown;
     },
     // Re-derived when editing the message so the original question stays visible.
-    getEscalation: (id: string) => ({ id, task_id: "t-esc", question: "Which database should I use?" }),
+    getEscalation: (id: string) => (escalationGone ? null : { id, task_id: "t-esc", question: "Which database should I use?", status: escalationStatus }),
   } as unknown as EscalationManager;
 
   const phaseManager = {
@@ -64,6 +83,7 @@ beforeEach(() => {
       calls.iterate.push({ id, input });
       return {} as unknown;
     },
+    getTask: (id: string) => (taskStatus ? { id, status: taskStatus } : null),
   } as unknown as TaskScheduler;
 
   deps = { db, client, escalationManager, phaseManager, taskScheduler };
@@ -119,6 +139,7 @@ describe("block_actions", () => {
   });
 
   it("reject opens a modal for the task id", async () => {
+    seedReviewTask("t1");
     const res = handleInteraction(deps, blockAction("rev:reject:t1"));
     await res.run?.();
     const meta = JSON.parse(calls.openView[0]!.view.private_metadata as string);
@@ -139,6 +160,82 @@ describe("block_actions", () => {
     const res = handleInteraction(deps, blockAction("esc:dismiss:e1", { user: "U-stranger" }));
     await res.run?.();
     expect(calls.dismiss).toEqual([]);
+    expect(calls.openView).toEqual([]);
+  });
+});
+
+// Buttons sit in Slack scrollback long after the records behind them go away.
+// Catching that at click time is the whole point: the alternative is the operator
+// typing a full response into a modal and losing it to a throw on submit.
+describe("block_actions — stale items", () => {
+  it("iterate on a deleted task explains itself instead of opening a modal", async () => {
+    taskStatus = null; // swept by task retention
+    const res = handleInteraction(deps, blockAction("task:iterate:t9"));
+    await res.run?.();
+    expect(calls.openView).toEqual([]);
+    // The dead button is replaced so the next reader doesn't hit the same wall.
+    expect(calls.update).toHaveLength(1);
+    expect(calls.update[0]?.text).toContain("no longer exists");
+  });
+
+  it("iterate on a task that is running again says so", async () => {
+    taskStatus = "running";
+    await handleInteraction(deps, blockAction("task:iterate:t9")).run?.();
+    expect(calls.openView).toEqual([]);
+    expect(calls.update[0]?.text).toContain("running");
+  });
+
+  it("respond on an already-handled escalation does not open a modal", async () => {
+    escalationStatus = "resolved";
+    await handleInteraction(deps, blockAction("esc:respond:e1")).run?.();
+    expect(calls.openView).toEqual([]);
+    expect(calls.update[0]?.text).toContain("already been handled");
+  });
+
+  it("respond on a vanished escalation does not open a modal", async () => {
+    escalationGone = true;
+    await handleInteraction(deps, blockAction("esc:respond:e1")).run?.();
+    expect(calls.openView).toEqual([]);
+    expect(calls.update[0]?.text).toContain("no longer exists");
+  });
+
+  // approveReview/rejectReview return silently when the review is closed, which
+  // used to leave the message claiming the approval worked.
+  it("approve on a closed review does not open a modal", async () => {
+    seedReviewTask("t1", { needsReview: false });
+    await handleInteraction(deps, blockAction("rev:approve:t1")).run?.();
+    expect(calls.openView).toEqual([]);
+    expect(calls.update[0]?.text).toContain("no longer open");
+  });
+
+  // Dismiss acts immediately rather than via a modal, so without the precheck the
+  // manager's own throw ("Escalation not found: e1") is what lands in the channel.
+  it("dismiss on a vanished escalation explains itself instead of raising", async () => {
+    escalationGone = true;
+    await handleInteraction(deps, blockAction("esc:dismiss:e1")).run?.();
+    expect(calls.dismiss).toEqual([]);
+    expect(calls.update[0]?.text).toContain("no longer exists");
+    expect(calls.update[0]?.text).not.toContain("Could not dismiss");
+  });
+
+  it("dismiss on an already-handled escalation says so", async () => {
+    escalationStatus = "resolved";
+    await handleInteraction(deps, blockAction("esc:dismiss:e1")).run?.();
+    expect(calls.dismiss).toEqual([]);
+    expect(calls.update[0]?.text).toContain("already been handled");
+  });
+
+  // Retiring a button shouldn't wipe what the thread was about — an escalation
+  // answered in the web UI still has its question, so it stays on screen.
+  it("keeps the recoverable context when it retires a dead button", async () => {
+    escalationStatus = "resolved";
+    await handleInteraction(deps, blockAction("esc:respond:e1")).run?.();
+    expect(updateBlockText(calls.update[0]?.blocks)).toContain("Which database should I use?");
+  });
+
+  it("dismiss on an open escalation still acts immediately without a modal", async () => {
+    await handleInteraction(deps, blockAction("esc:dismiss:e1")).run?.();
+    expect(calls.dismiss).toEqual(["e1"]);
     expect(calls.openView).toEqual([]);
   });
 });

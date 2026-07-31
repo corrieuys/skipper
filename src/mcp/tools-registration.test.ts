@@ -150,6 +150,17 @@ describe("registerDaemonTools — Slack tools (experimental + configured + team 
     registerDaemonTools(server as any, makeDeps(), () => identity);
     for (const tool of SLACK_TOOLS) expect(registeredNames).not.toContain(tool);
   });
+
+  // Only Skipper talks via Slack: the task's thread is one conversation with the
+  // operator, and several delegated voices posting into it would read as noise.
+  // Children reach the operator by escalating, which the push forwards.
+  it("omits Slack tools from a delegated session even when fully configured", () => {
+    setStringSetting(db, SETTING_SLACK_BOT_TOKEN, "xoxb-abc");
+    const identity = setupTeamTask(true);
+    const { server, registeredNames } = makeFakeMcpServer();
+    registerDaemonTools(server as any, makeDeps(), () => identity, { isDelegated: true });
+    for (const tool of SLACK_TOOLS) expect(registeredNames).not.toContain(tool);
+  });
 });
 
 const EXTERNAL_TOOLS = [

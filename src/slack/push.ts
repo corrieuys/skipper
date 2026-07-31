@@ -6,13 +6,10 @@ import type { EscalationCreatedEvent, TaskNeedsReviewChangedEvent, TaskStateChan
 import {
   isExperimental,
 } from "../config/feature-flags";
-import {
-  isSlackConfigured,
-  getSlackDefaultChannel,
-} from "../config/slack-settings";
+import { isSlackConfigured } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
 import { SlackClient } from "./client";
-import { escalationMessageBlocks, reviewMessageBlocks, completionMessageBlocks } from "./blocks";
+import { escalationMessageBlocks, reviewMessageBlocks, completionMessageBlocks, ESCALATION_TEXT_LIMIT } from "./blocks";
 import { readTaskSlackOrigin } from "./slash-command";
 import { htmlToMrkdwn } from "./html-to-mrkdwn";
 import { slackLog } from "./log";
@@ -65,10 +62,12 @@ export class SlackPushManager {
    * negative path logs the exact gate that blocked — this used to be five silent
    * `return null`s, which is why a misconfigured push looks like "nothing happened".
    *
-   * Routing: when the task carries a Slack origin (it was started from a slash
-   * command), post into that thread so the whole task stays scoped to the
-   * originating conversation — same channel + `thread_ts` the agent replies into.
-   * Otherwise fall back to the default channel. `kind` is only for the log line.
+   * Routing is origin-only: a task pushes to Slack when it *has* a Slack
+   * conversation — started from a slash command, or its agent posted/DM'd via the
+   * Slack tools (see `stampTaskSlackOrigin`). There is deliberately no
+   * default-channel fallback: a task that never touched Slack has no thread to be
+   * answered in, so dumping its escalation in a shared channel just detaches the
+   * question from its context. `kind` is only for the log line.
    */
   private targetChannel(
     taskId: string,
@@ -97,20 +96,27 @@ export class SlackPushManager {
       slackLog("push.skip", { kind, taskId, teamId: task.team_id, reason: "team_slack_disabled" });
       return null;
     }
-    // Prefer the originating thread; fall back to the default channel.
     const origin = readTaskSlackOrigin(this.db, taskId);
-    const channel = origin?.channel || getSlackDefaultChannel(this.db);
-    if (!channel) {
-      slackLog("push.skip", { kind, taskId, reason: "no_target_channel" });
+    if (!origin) {
+      slackLog("push.skip", { kind, taskId, reason: "no_slack_origin" });
       return null;
     }
-    return { channel, threadTs: origin?.thread_ts, task };
+    return { channel: origin.channel, threadTs: origin.thread_ts, task };
   }
 
   private onEscalationCreated(e: EscalationCreatedEvent): void {
     slackLog("push.event", { kind: "escalation", taskId: e.taskId, escalationId: e.escalationId });
     const target = this.targetChannel(e.taskId, "escalation");
     if (!target) return;
+    // `escalationMessageBlocks` clips at Slack's section cap. Say so in the log —
+    // otherwise "the operator answered half my question" has no visible cause.
+    // The heading prefix (`:warning: *Escalation* — `) sits between the two, so
+    // count it; this is an estimate either way, since the question is HTML that
+    // changes length on its way to mrkdwn.
+    const ESCALATION_HEADING_CHARS = 26;
+    if (e.question.length + target.task.title.length + ESCALATION_HEADING_CHARS > ESCALATION_TEXT_LIMIT) {
+      slackLog("push.truncated", { kind: "escalation", taskId: e.taskId, escalationId: e.escalationId, chars: e.question.length });
+    }
     const blocks = escalationMessageBlocks(e.escalationId, target.task.title, e.question);
     // The notification/fallback text is agent HTML too — flatten it so it doesn't
     // show tag soup in notifications / no-blocks clients.
@@ -129,12 +135,14 @@ export class SlackPushManager {
   }
 
   /**
-   * Daemon default: when a task that was started from a Slack thread finishes
-   * (completed or failed), post a system notice back into that thread so the
-   * conversation is closed off where it began. Independent of the push toggle —
-   * this is a direct courtesy reply to a user-initiated slash command, not the
-   * chatty escalation/review stream — but still gated by experimental + bot token
-   * + the team's Slack opt-in. Only fires when the origin has a real thread.
+   * Daemon default: when a task with a Slack thread finishes (completed or
+   * failed), post a system notice back into that thread so the conversation is
+   * closed off where it happened. Gated by experimental + bot token + the team's
+   * Slack opt-in, and only fires when the origin has a real thread.
+   *
+   * This covers agent-captured origins too, so a recurring run that reports into
+   * Slack now signs off with a notice carrying an Iterate button — the run stays
+   * actionable from the thread it was read in, without a trip to the web UI.
    */
   private onTaskStateChanged(e: TaskStateChangedEvent): void {
     if (e.newStatus !== "completed" && e.newStatus !== "failed") return;

@@ -84,6 +84,29 @@ function handleBlockAction(deps: InteractionDeps, payload: BlockActionsPayload):
     return { run: () => postEphemeral(payload.response_url, "You are not authorized to act on Skipper items.") };
   }
 
+  const meta: ModalMeta = { kind: decoded.kind, action: decoded.action, id: decoded.id, channel, messageTs };
+
+  // Is the item still actionable? Checked ahead of every button, for two reasons.
+  // For the modal actions the alternative is the operator typing a full response
+  // into a modal for a task swept by retention, only to have the submission throw
+  // and take their text with it. For Dismiss, which acts immediately, the manager
+  // throws on a missing or already-resolved escalation and the raw
+  // "Escalation not found: <uuid>" would land in the channel.
+  const stale = staleReason(deps, decoded.kind, decoded.id);
+  if (stale) {
+    slackLog("interaction.stale", { kind: decoded.kind, action: decoded.action, id: decoded.id, userId });
+    return {
+      run: async () => {
+        await postEphemeral(payload.response_url, stale);
+        // Drop the dead button so the next person doesn't hit the same wall, but
+        // keep whatever context is still recoverable: an escalation answered in
+        // the web UI still has its question, and losing it from scrollback would
+        // erase what the thread was about.
+        await editMessage(deps.client, channel, messageTs, `:information_source: ${stale}`, keepContextBlocks(deps, meta));
+      },
+    };
+  }
+
   // Dismiss needs no message, so it runs straight away and edits the message.
   if (decoded.kind === "esc" && decoded.action === "dismiss") {
     return {
@@ -91,7 +114,7 @@ function handleBlockAction(deps: InteractionDeps, payload: BlockActionsPayload):
         try {
           deps.escalationManager.dismissEscalation(decoded.id);
           slackLog("interaction.dismissed", { id: decoded.id, userId });
-          const context = keepContextBlocks(deps, { kind: "esc", action: "dismiss", id: decoded.id, channel, messageTs });
+          const context = keepContextBlocks(deps, meta);
           await editMessage(deps.client, channel, messageTs, `:heavy_multiplication_x: *Escalation dismissed* by <@${userId}>`, context);
         } catch (err) {
           logError(deps.db, "slack_interaction_dismiss", { id: decoded.id }, err);
@@ -101,9 +124,8 @@ function handleBlockAction(deps: InteractionDeps, payload: BlockActionsPayload):
     };
   }
 
-  // Everything else collects a message in a modal. Thread the origin message
-  // coordinates through so the submission can edit it.
-  const meta: ModalMeta = { kind: decoded.kind, action: decoded.action, id: decoded.id, channel, messageTs };
+  // Everything else collects a message in a modal. `meta` threads the origin
+  // message coordinates through so the submission can edit it.
   const spec = modalSpecFor(decoded.kind, decoded.action);
   if (!spec || !payload.trigger_id) return {};
   const view = actionModal({ meta, ...spec });
@@ -146,7 +168,9 @@ function handleViewSubmission(deps: InteractionDeps, payload: ViewSubmissionPayl
         await editMessage(deps.client, meta.channel, meta.messageTs, notice, keepContextBlocks(deps, meta));
       } catch (err) {
         logError(deps.db, "slack_interaction_submit", { kind: meta.kind, action: meta.action, id: meta.id }, err);
-        await editMessage(deps.client, meta.channel, meta.messageTs, `:warning: Action failed: ${errMsg(err)}`);
+        // Keep the context here too — a failure is exactly when the reader needs
+        // to still see what the message was about.
+        await editMessage(deps.client, meta.channel, meta.messageTs, `:warning: Action failed: ${errMsg(err)}`, keepContextBlocks(deps, meta));
       }
     },
   };
@@ -174,6 +198,48 @@ async function performAction(deps: InteractionDeps, meta: ModalMeta, message: st
     return `:repeat: *Iteration started* by <@${userId}>\n> ${quote(message)}`;
   }
   return ":grey_question: Unknown action.";
+}
+
+/**
+ * Why this item can no longer be actioned, or null when it still can. Buttons
+ * live forever in Slack scrollback while the records behind them do not: a task
+ * gets swept by retention, an escalation is answered in the web UI, a review is
+ * approved elsewhere. Answering at click time is the only option — we never store
+ * the posted message's `ts`, and for a deleted task the row we would have stored
+ * it on is gone too, so the button cannot be cleaned up proactively.
+ *
+ * Best-effort: an unexpected lookup failure returns null and lets the normal
+ * modal path (and its error handling) take over.
+ */
+function staleReason(deps: InteractionDeps, kind: string, id: string): string | null {
+  try {
+    if (kind === "task") {
+      const task = deps.taskScheduler.getTask(id);
+      if (!task) return "That task no longer exists — it was cleaned up by task retention, so there is nothing to iterate. Start a fresh run instead.";
+      if (task.status !== "completed") return `That task is *${task.status}* right now, so it can't be iterated. Iterating is only possible once a run has completed.`;
+      return null;
+    }
+    if (kind === "esc") {
+      const esc = deps.escalationManager.getEscalation(id);
+      if (!esc) return "That escalation no longer exists — its task was cleaned up by task retention.";
+      if (esc.status !== "open") return "That escalation has already been handled.";
+      return null;
+    }
+    if (kind === "rev") {
+      // `id` is the task id for reviews (see push.ts:reviewMessageBlocks).
+      const row = deps.db
+        .prepare("SELECT status, needs_review FROM tasks WHERE id = ?")
+        .get(id) as { status?: string; needs_review?: number } | null;
+      if (!row) return "That task no longer exists — it was cleaned up by task retention.";
+      // Mirrors the guard in PhaseManager.approveReview/rejectReview, which
+      // otherwise returns silently and leaves the message claiming it worked.
+      if (row.status !== "running" || !row.needs_review) return "That phase review is no longer open — it was already approved or rejected.";
+      return null;
+    }
+  } catch {
+    /* fall through — let the normal path handle it */
+  }
+  return null;
 }
 
 function modalSpecFor(

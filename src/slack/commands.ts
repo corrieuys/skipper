@@ -135,7 +135,11 @@ async function captureOrigin(
 ): Promise<{ origin: SlackOrigin | null; anchored: boolean }> {
   const channel = payload.channel_id?.trim();
   if (!channel) return { origin: null, anchored: false };
-  const base: SlackOrigin = { channel, ...(payload.user_id ? { user_id: payload.user_id } : {}) };
+  const base: SlackOrigin = {
+    channel,
+    ...(payload.user_id ? { user_id: payload.user_id } : {}),
+    source: "slash_command",
+  };
   if (!client || !isSlackConfigured(db)) return { origin: base, anchored: false };
   try {
     const { ts } = await client.postMessage(channel, anchorText);

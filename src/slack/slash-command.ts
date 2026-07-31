@@ -1,15 +1,28 @@
 import type { Database } from "bun:sqlite";
 
 /**
- * Where a slash-command-triggered run came from in Slack, stashed on the run's
- * `task_config.slack_origin` so the agent can reply to it. `thread_ts` is the
- * anchor message Skipper posts on trigger (absent if that post failed or Slack
- * is unconfigured, in which case the agent replies to the channel directly).
+ * How a task acquired its Slack origin. `slash_command` — a human typed a bound
+ * command, so Skipper posted an anchor and owns the thread from the start.
+ * `agent_message` — nobody triggered this from Slack, but the run's agent posted
+ * (or DM'd) via the Slack MCP tools, and that message became the task's thread.
+ */
+export type SlackOriginSource = "slash_command" | "agent_message";
+
+/**
+ * Where a task's Slack conversation lives, stashed on `task_config.slack_origin`
+ * so everything the task emits (agent replies, escalations, reviews, the
+ * completion notice) lands in one thread.
+ *
+ * For a slash command, `thread_ts` is the anchor message Skipper posts on trigger
+ * (absent if that post failed or Slack is unconfigured, in which case the agent
+ * replies to the channel directly). For an agent message it is that message's own
+ * `ts` — or the thread it replied into.
  */
 export interface SlackOrigin {
   channel: string;
   thread_ts?: string;
   user_id?: string;
+  source?: SlackOriginSource;
 }
 
 /**
@@ -18,6 +31,9 @@ export interface SlackOrigin {
  * their own experimental/team gates. Delegation is intra-task (agents share one
  * `tasks` row), so an escalation from a delegated child still resolves to the
  * root run's origin via its task id.
+ *
+ * `source` defaults to `slash_command`: rows stamped before origins carried a
+ * source could only have come from a slash command.
  */
 export function readTaskSlackOrigin(db: Database, taskId: string): SlackOrigin | null {
   try {
@@ -28,11 +44,48 @@ export function readTaskSlackOrigin(db: Database, taskId: string): SlackOrigin |
     const config = JSON.parse(row.task_config) as Record<string, unknown>;
     const o = config.slack_origin as Partial<SlackOrigin> | undefined;
     if (o && typeof o.channel === "string" && o.channel) {
-      return { channel: o.channel, thread_ts: o.thread_ts, user_id: o.user_id };
+      return {
+        channel: o.channel,
+        thread_ts: o.thread_ts,
+        user_id: o.user_id,
+        source: o.source === "agent_message" ? "agent_message" : "slash_command",
+      };
     }
     return null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Stamp a Slack origin onto a task, **first write wins**. Returns true when this
+ * call is the one that set it.
+ *
+ * A task has exactly one origin thread, and the first Slack surface it touches
+ * owns it. The guard is part of the UPDATE rather than a read-then-write so
+ * concurrent writers (a root and its delegated children can all post at once)
+ * can't race, and so an agent posting to a second channel later in the run can
+ * never move routing out from under an in-flight escalation. It also means a real
+ * slash-command origin is never clobbered by a subsequent agent post.
+ *
+ * Best-effort by design: a task whose `task_config` isn't valid JSON throws
+ * inside `json_extract` and is left alone rather than overwritten.
+ */
+export function stampTaskSlackOrigin(db: Database, taskId: string, origin: SlackOrigin): boolean {
+  if (!taskId || !origin.channel) return false;
+  try {
+    const res = db
+      .prepare(
+        `UPDATE tasks
+            SET task_config = json_set(coalesce(task_config, '{}'), '$.slack_origin', json(?)),
+                updated_at = datetime('now')
+          WHERE id = ?
+            AND json_extract(task_config, '$.slack_origin.channel') IS NULL`,
+      )
+      .run(JSON.stringify(origin), taskId);
+    return res.changes > 0;
+  } catch {
+    return false;
   }
 }
 

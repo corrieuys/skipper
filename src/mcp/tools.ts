@@ -16,6 +16,8 @@ import { isExperimental } from "../config/feature-flags";
 import { isSlackConfigured, getSlackDefaultChannel } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
 import { SlackClient } from "../slack/client";
+import { ESCALATION_TEXT_LIMIT, SLACK_ESCALATION_SOFT_LIMIT } from "../slack/blocks";
+import { stampTaskSlackOrigin, readTaskSlackOrigin } from "../slack/slash-command";
 import { registerTaskTools } from "./task-tools";
 
 export interface DaemonDeps {
@@ -44,6 +46,32 @@ export interface RegisterDaemonToolsOptions {
 
 function errorResult(err: unknown) {
   return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };
+}
+
+/**
+ * Slack renders an escalation as one section block, hard-truncated at
+ * `ESCALATION_TEXT_LIMIT`. Agents put the actual ask at the end, so an overlong
+ * question loses exactly the part the operator needs to answer.
+ *
+ * Warn rather than reject: an escalating agent is already stuck, and refusing its
+ * question to enforce formatting would be a worse failure than a clipped Slack
+ * copy, since the full text is always readable in the web UI. This is also the
+ * only surface that reaches a root whose prompt was built before the task
+ * acquired its Slack origin, because prompts are never rebuilt mid-turn.
+ */
+function slackLengthWarning(db: Database, taskId: string, text: string): { slack_warning?: string } {
+  if (text.length <= SLACK_ESCALATION_SOFT_LIMIT) return {};
+  try {
+    if (!isExperimental() || !isSlackConfigured(db)) return {};
+    const teamId = (db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(taskId) as { team_id: string | null } | null)?.team_id;
+    if (!teamId || !isSlackEnabledForTeam(db, teamId)) return {};
+    if (!readTaskSlackOrigin(db, taskId)) return {};
+    return {
+      slack_warning: `This task reports to Slack, where this was posted as a single message and truncated at ${ESCALATION_TEXT_LIMIT} characters, so the end of your text was cut off for the operator. Keep escalation questions under ~${SLACK_ESCALATION_SOFT_LIMIT} characters: ask up front and put supporting detail in an artifact you reference.`,
+    };
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -281,12 +309,36 @@ export function registerDaemonTools(
   // Visibility is decided at session creation: registered only when the app is
   // experimental, a bot token is configured globally, and THIS task's team has
   // the Slack checkbox ticked. A team without it never sees these tools.
+  //
+  // Root-only, like the phase-lifecycle tools: **only Skipper talks via Slack.**
+  // A task's thread is one conversation with the operator, and Skipper owns it —
+  // delegated children reporting into it directly would interleave several voices
+  // in a thread the operator reads as one. Children still reach Slack the way they
+  // reach the operator everywhere else: they escalate, and the push posts it.
   const slackIdentity = getInternalIdentity();
   const slackTeamId = slackIdentity?.taskId
     ? (db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(slackIdentity.taskId) as { team_id: string | null } | null)?.team_id ?? null
     : null;
-  if (isExperimental() && isSlackConfigured(db) && slackTeamId && isSlackEnabledForTeam(db, slackTeamId)) {
+  if (!options?.isDelegated && isExperimental() && isSlackConfigured(db) && slackTeamId && isSlackEnabledForTeam(db, slackTeamId)) {
     const slack = new SlackClient(db);
+
+    // Result of a send, plus — when this send is what gave the task its Slack
+    // origin — the anchor and what it now means. The agent's prompt was built
+    // before it posted, so the SLACK ORIGIN block can't tell it any of this until
+    // the next prompt build (phase change, delegation, respawn). The tool result
+    // lands in its context immediately, which is the only place that helps the
+    // agent currently holding the turn.
+    const sendResult = (channel: string, ts: string, threadTs: string | undefined, captured: boolean) => ({
+      status: "sent",
+      channel,
+      ts,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+      ...(captured
+        ? {
+            note: `This thread is now this task's Slack home. Escalations, phase reviews and the completion notice will post here automatically, so do not re-announce them. Pass this thread_ts on later sends to stay in the thread. From now on keep escalation questions and review notes under ~${SLACK_ESCALATION_SOFT_LIMIT} characters: each posts as a single Slack message and anything longer is truncated, cutting off the end. Ask up front and put supporting detail in an artifact you reference.`,
+          }
+        : {}),
+    });
 
     // Accept a window bound as ISO 8601 or Unix epoch seconds; return a Slack ts.
     const toSlackTs = (v?: string): string | undefined => {
@@ -313,7 +365,17 @@ export function registerDaemonTools(
         if (!target) return { content: [{ type: "text" as const, text: "Error: no channel given and no default channel configured" }] };
         try {
           const r = await slack.postMessage(target, text, { thread_ts });
-          return { content: [{ type: "text" as const, text: JSON.stringify({ status: "sent", channel: r.channel, ts: r.ts }) }] };
+          // A task that was not started from Slack still gets a Slack home the
+          // moment its agent posts: this message's thread becomes the origin, so
+          // escalations, reviews and the completion notice land here instead of
+          // nowhere. First write wins — a slash-command origin is never replaced.
+          const threadTs = thread_ts?.trim() || r.ts;
+          const captured = stampTaskSlackOrigin(db, identity.taskId, {
+            channel: r.channel,
+            ...(threadTs ? { thread_ts: threadTs } : {}),
+            source: "agent_message",
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(sendResult(r.channel, r.ts, threadTs, captured)) }] };
         } catch (err) {
           return errorResult(err);
         }
@@ -334,7 +396,16 @@ export function registerDaemonTools(
           const userId = user.includes("@") ? await slack.lookupUserByEmail(user.trim()) : user.trim();
           const dm = await slack.openDm(userId);
           const r = await slack.postMessage(dm, text);
-          return { content: [{ type: "text" as const, text: JSON.stringify({ status: "sent", channel: dm, ts: r.ts }) }] };
+          // A DM is a conversation like any other — if this is the first Slack
+          // surface the task touches, it becomes the origin and the task's
+          // escalations/reviews follow the person the agent chose to talk to.
+          const captured = stampTaskSlackOrigin(db, identity.taskId, {
+            channel: dm,
+            ...(r.ts ? { thread_ts: r.ts } : {}),
+            user_id: userId,
+            source: "agent_message",
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(sendResult(dm, r.ts, r.ts, captured)) }] };
         } catch (err) {
           return errorResult(err);
         }
@@ -576,7 +647,18 @@ export function registerDaemonTools(
 
       signalBridge.registerMcpAction(identity.runtimeId, "escalate", question.slice(0, 200));
 
-      return { content: [{ type: "text" as const, text: JSON.stringify({ escalation_id: escalation.id, status: escalation.status }) }] };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              escalation_id: escalation.id,
+              status: escalation.status,
+              ...slackLengthWarning(db, identity.taskId, question),
+            }),
+          },
+        ],
+      };
     },
   );
 

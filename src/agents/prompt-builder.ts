@@ -10,6 +10,7 @@ import { isExperimental } from "../config/feature-flags";
 import { isSlackConfigured } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
 import { SLACK_NOTE_PREFIX, type SlackOrigin } from "../slack/slash-command";
+import { SLACK_ESCALATION_SOFT_LIMIT } from "../slack/blocks";
 
 function loadPrompt(filename: string): string {
   return assetTextSync(`prompts/${filename}`).trimEnd();
@@ -195,18 +196,41 @@ export class PromptBuilder {
       parts.push(globalStoreInstructions);
       parts.push("--- END GLOBAL STORE INSTRUCTIONS ---");
     }
-    // Slack origin (task_config.slack_origin) — set when this run was triggered
-    // by a Slack slash command. Tells the agent where to reply via the
-    // slack_send_message MCP tool (only injected when those tools are available).
+    // Slack origin (task_config.slack_origin) — the task's Slack conversation,
+    // either because a slash command started it or because a previous agent on
+    // this task posted via the Slack tools. Re-anchors whoever reads this prompt
+    // (a delegated child, the next phase, a respawn after a crash) onto the same
+    // thread; the agent that posted in the first place learned it from the tool
+    // result. Only injected when the Slack tools are actually available.
     const slackOrigin = this.getSlackOrigin(options.task.id);
     if (slackOrigin) {
       const thread = slackOrigin.thread_ts ? ` (thread ${slackOrigin.thread_ts})` : "";
+      const target = `channel "${slackOrigin.channel}"${slackOrigin.thread_ts ? ` and thread_ts "${slackOrigin.thread_ts}"` : ""}`;
       parts.push("--- SLACK ORIGIN ---");
+      if (slackOrigin.source === "agent_message") {
+        // Deliberately NOT an instruction to post. Nobody asked this task to talk
+        // to Slack — an earlier agent on it happened to, which is what gave the
+        // task a thread. A later agent needs to know the thread exists (so it does
+        // not open a second one, and so it sizes its escalations for Slack), not to
+        // be pushed into using it.
+        parts.push(`This task has an existing Slack thread in channel ${slackOrigin.channel}${thread}.`);
+        parts.push(`If posting to Slack is part of your instructions, use ${target} rather than opening a new thread or another channel.`);
+      } else {
+        parts.push(
+          `This task was started from Slack${slackOrigin.user_id ? ` by <@${slackOrigin.user_id}>` : ""} in channel ${slackOrigin.channel}${thread}.`,
+        );
+        parts.push(`If posting to Slack is part of your instructions, call the slack_send_message tool with ${target}.`);
+      }
       parts.push(
-        `This task was started from Slack${slackOrigin.user_id ? ` by <@${slackOrigin.user_id}>` : ""} in channel ${slackOrigin.channel}${thread}.`,
+        "Escalations, phase reviews and the task-completion notice are posted to this thread for you — raise them normally and do not announce them yourself.",
       );
+      // Slack caps a section's text at 3000 chars; the escalation block spends part
+      // of that on the task title and is hard-truncated at 2900 (blocks.ts). A long
+      // question loses its tail — usually the actual question, since agents put the
+      // ask last — and the operator answers a fragment. Only stated when a thread
+      // exists, because only then does the limit apply.
       parts.push(
-        `If you need to reply or report back, call the slack_send_message tool with channel "${slackOrigin.channel}"${slackOrigin.thread_ts ? ` and thread_ts "${slackOrigin.thread_ts}"` : ""}.`,
+        `Because this task's escalations reach Slack, keep escalation questions under ~${SLACK_ESCALATION_SOFT_LIMIT} characters.`,
       );
       parts.push("--- END SLACK ORIGIN ---");
     }
@@ -574,7 +598,12 @@ export class PromptBuilder {
       const config = parseJsonOr<Record<string, unknown>>(row.task_config, {});
       const o = config.slack_origin as Partial<SlackOrigin> | undefined;
       if (o && typeof o.channel === "string" && o.channel) {
-        return { channel: o.channel, thread_ts: o.thread_ts, user_id: o.user_id };
+        return {
+          channel: o.channel,
+          thread_ts: o.thread_ts,
+          user_id: o.user_id,
+          source: o.source === "agent_message" ? "agent_message" : "slash_command",
+        };
       }
       return null;
     } catch {

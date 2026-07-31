@@ -882,6 +882,36 @@ describe("slack origin injection", () => {
     expect(prompt).toContain('thread_ts "9.9"');
   });
 
+  // An agent-captured origin makes a later agent AWARE of the thread — so it does
+  // not open a second one, and so it sizes its escalations for Slack. It is not an
+  // instruction to post: nobody asked this task to talk to Slack.
+  it("makes an agent_message origin known without telling the agent to post", () => {
+    saveSlackConfig(db, { botToken: "xoxb-x", defaultChannel: "" });
+    seedTaskWithOrigin({ channel: "C-report", thread_ts: "8.8", source: "agent_message" }, true);
+    const prompt = build();
+    expect(prompt).toContain("--- SLACK ORIGIN ---");
+    expect(prompt).toContain("has an existing Slack thread");
+    expect(prompt).toContain('thread_ts "8.8"');
+    // Conditional ("if you do post"), never an instruction to report there.
+    expect(prompt).not.toContain("Keep reporting there");
+    // Not the slash-command phrasing — nobody started this from Slack.
+    expect(prompt).not.toContain("was started from Slack");
+  });
+
+  it("tells every origin that escalations and reviews are posted for it", () => {
+    saveSlackConfig(db, { botToken: "xoxb-x", defaultChannel: "" });
+    seedTaskWithOrigin({ channel: "C1", thread_ts: "9.9" }, true);
+    expect(build()).toContain("do not announce them yourself");
+  });
+
+  // Slack clips an escalation at 2900 chars, and agents put the ask last — so an
+  // overlong question loses exactly the part the operator needs.
+  it("warns about Slack message length only when an origin is present", () => {
+    saveSlackConfig(db, { botToken: "xoxb-x", defaultChannel: "" });
+    seedTaskWithOrigin({ channel: "C1", thread_ts: "9.9" }, true);
+    expect(build()).toContain("under ~2500 characters");
+  });
+
   it("omits SLACK ORIGIN when the team has Slack disabled", () => {
     saveSlackConfig(db, { botToken: "xoxb-x", defaultChannel: "" });
     seedTaskWithOrigin({ channel: "C1" }, false);

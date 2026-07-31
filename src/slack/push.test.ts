@@ -11,6 +11,9 @@ let origFetch: typeof fetch;
 let origArgv: string[];
 let posts: Array<{ url: string; body: Record<string, unknown> }>;
 
+/** A task's Slack conversation — the precondition for any push. */
+const ORIGIN = { channel: "C-origin", thread_ts: "1700.500", user_id: "U9" };
+
 function seedTeam(slackEnabled: boolean, taskConfig?: Record<string, unknown>): void {
   db.prepare(
     "INSERT INTO local_teams (id, name, skipper_prompt, hooks, phases, agents, team_config) VALUES ('team-1','T','','[]','[]','[]',?)",
@@ -62,13 +65,13 @@ function fireEscalation(): void {
 }
 
 describe("SlackPushManager gating", () => {
-  it("posts an escalation to the default channel when the team has Slack enabled", async () => {
-    seedTeam(true);
+  it("posts an escalation into the task's origin thread with action buttons", async () => {
+    seedTeam(true, { slack_origin: ORIGIN });
     fireEscalation();
     await flush();
     expect(posts).toHaveLength(1);
     expect(posts[0]!.url).toContain("chat.postMessage");
-    expect(posts[0]!.body.channel).toBe("C1");
+    expect(posts[0]!.body.channel).toBe("C-origin");
     const blocks = posts[0]!.body.blocks as Array<{ type: string; elements?: Array<{ value: string }> }>;
     const values = blocks.find((b) => b.type === "actions")?.elements?.map((e) => e.value) ?? [];
     expect(values).toContain("esc:respond:e1");
@@ -83,24 +86,33 @@ describe("SlackPushManager gating", () => {
     expect(posts[0]!.body.thread_ts).toBe("1700.500");
   });
 
-  it("falls back to the default channel (no thread) when there is no origin", async () => {
-    seedTeam(true);
+  it("posts into a thread the agent itself opened (agent_message origin)", async () => {
+    seedTeam(true, { slack_origin: { channel: "C-report", thread_ts: "1800.900", source: "agent_message" } });
     fireEscalation();
     await flush();
     expect(posts).toHaveLength(1);
-    expect(posts[0]!.body.channel).toBe("C1");
-    expect(posts[0]!.body.thread_ts).toBeUndefined();
+    expect(posts[0]!.body.channel).toBe("C-report");
+    expect(posts[0]!.body.thread_ts).toBe("1800.900");
+  });
+
+  // No default-channel fallback: a task that never touched Slack has no thread to
+  // be answered in, so its escalation would land context-free in a shared channel.
+  it("does not post when the task has no Slack origin, even with a default channel set", async () => {
+    seedTeam(true);
+    fireEscalation();
+    await flush();
+    expect(posts).toHaveLength(0);
   });
 
   it("does not post when the task's team has Slack disabled", async () => {
-    seedTeam(false);
+    seedTeam(false, { slack_origin: ORIGIN });
     fireEscalation();
     await flush();
     expect(posts).toHaveLength(0);
   });
 
   it("does not post when there is no bot token configured", async () => {
-    seedTeam(true);
+    seedTeam(true, { slack_origin: ORIGIN });
     saveSlackConfig(db, { botToken: "", defaultChannel: "" });
     // Clear the token set in beforeEach so isSlackConfigured is false.
     db.prepare("DELETE FROM app_settings WHERE key = 'slack_bot_token'").run();
@@ -110,7 +122,7 @@ describe("SlackPushManager gating", () => {
   });
 
   it("posts a phase-review message only when a review opens", async () => {
-    seedTeam(true);
+    seedTeam(true, { slack_origin: ORIGIN });
     eventBus.emit("task:needs_review_changed", { taskId: "task-1", needsReview: false });
     await flush();
     expect(posts).toHaveLength(0);
@@ -159,7 +171,7 @@ describe("SlackPushManager gating", () => {
   });
 
   it("stops posting after stop()", async () => {
-    seedTeam(true);
+    seedTeam(true, { slack_origin: ORIGIN });
     mgr.stop();
     fireEscalation();
     await flush();

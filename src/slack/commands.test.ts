@@ -200,7 +200,7 @@ describe("handleSlashCommand — Slack origin capture", () => {
     );
     const row = db.prepare("SELECT task_config FROM tasks").get() as { task_config: string };
     const origin = JSON.parse(row.task_config).slack_origin;
-    expect(origin).toEqual({ channel: "C42", user_id: USER, thread_ts: "1700.5" });
+    expect(origin).toEqual({ channel: "C42", user_id: USER, thread_ts: "1700.5", source: "slash_command" });
   });
 
   it("falls back to a channel-only origin when Slack is unconfigured (no anchor)", async () => {
@@ -214,7 +214,7 @@ describe("handleSlashCommand — Slack origin capture", () => {
     );
     const row = db.prepare("SELECT task_config FROM tasks").get() as { task_config: string };
     const origin = JSON.parse(row.task_config).slack_origin;
-    expect(origin).toEqual({ channel: "C42", user_id: USER });
+    expect(origin).toEqual({ channel: "C42", user_id: USER, source: "slash_command" });
   });
 
   it("stamps slack_origin on a scheduled run", async () => {

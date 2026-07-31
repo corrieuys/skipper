@@ -52,16 +52,31 @@ function button(text: string, actionId: string, value: string, style?: "primary"
   return b;
 }
 
+/**
+ * Hard cap on the escalation section's text. A Block Kit section caps at 3000
+ * chars; this leaves headroom for the title + heading prefix. Exported because
+ * the push logs when it is about to bite (`push.ts`) — one limit, one constant.
+ */
+export const ESCALATION_TEXT_LIMIT = 2900;
+
+/**
+ * The figure agents are told to write to, comfortably inside
+ * `ESCALATION_TEXT_LIMIT` once the title and heading prefix are spent. Three
+ * surfaces quote it (the SLACK ORIGIN prompt block, the `slack_send_*` capture
+ * note, the `escalate` warning) and they drifted apart once already, so they all
+ * read it from here.
+ */
+export const SLACK_ESCALATION_SOFT_LIMIT = 2500;
+
 /** Message posted when an escalation opens: question + Respond / Dismiss. */
 export function escalationMessageBlocks(escalationId: string, taskTitle: string, question: string): unknown[] {
   // The question is agent-authored HTML; translate it to Slack mrkdwn. The title
-  // is plain, so simple escaping is enough. A section's text field caps at 3000
-  // chars — keep headroom for the title + heading prefix.
+  // is plain, so simple escaping is enough.
   const body = `:warning: *Escalation* — ${escapeMrkdwn(taskTitle)}\n${htmlToMrkdwn(question)}`;
   return [
     {
       type: "section",
-      text: { type: "mrkdwn", text: truncate(body, 2900) },
+      text: { type: "mrkdwn", text: truncate(body, ESCALATION_TEXT_LIMIT) },
     },
     {
       type: "actions",
@@ -103,7 +118,11 @@ export function completionMessageBlocks(taskId: string, taskTitle: string): unkn
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `:white_check_mark: Task *${escapeMrkdwn(taskTitle)}* finished running.\nTo run another pass, click *Iterate* below and enter your instructions.`,
+        // The "will not restart" line is load-bearing: a reply in this thread that
+        // mentions Skipper is captured as a note on a RUNNING task, but silently
+        // ignored once the task has completed — so without it the operator types a
+        // follow-up here and waits for a run that never starts.
+        text: `:white_check_mark: Task *${escapeMrkdwn(taskTitle)}* finished running.\nTo run another pass, click *Iterate* below and enter your instructions — replying in this thread will not restart it.`,
       },
     },
     {
