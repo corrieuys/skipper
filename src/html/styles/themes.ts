@@ -1268,9 +1268,29 @@ export function glassOverridesCss(): string {
       border: 1px solid rgba(160, 175, 200, 0.1);
     }
 
+    /* Team pages carry little else but cards on open space, so a bright patch
+       of wallpaper reads straight through them. A fixed scrim behind the shell
+       dims the photo for these pages only — heaviest at the top where the
+       content sits, thinning downwards so the wallpaper still shows. */
+    ${G} .tm-shell::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background: linear-gradient(180deg,
+        rgba(8, 10, 16, 0.85) 0%,
+        rgba(8, 10, 16, 0.62) 45%,
+        rgba(8, 10, 16, 0.38) 100%);
+    }
+
     /* Team map — the tm- styles are already written against the theme tokens, so
        the only thing missing under glass is the frosted blur that .mc-stat-card
        and friends get. Colours stay token-driven; do not restate them here. */
+    ${G} .tm-board {
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
     ${G} .tm-phase,
     ${G} .tm-agent,
     ${G} .tm-lead,

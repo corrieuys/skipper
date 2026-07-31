@@ -334,9 +334,9 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     };
 
     const teamAgentTypeChoices = () =>
-      (listAgentTypes() as Array<{ name: string; available_models: string[] }>)
+      (listAgentTypes() as Array<{ name: string }>)
         .filter((t) => isAllowedProvider(t.name))
-        .map((t) => ({ name: t.name, models: Array.isArray(t.available_models) ? t.available_models : [] }));
+        .map((t) => ({ name: t.name }));
 
     addRoute("GET", "/teams", () => {
       return html(teamsPage({ teams: listLocalTeams(db), ...teamPageMeta() }));

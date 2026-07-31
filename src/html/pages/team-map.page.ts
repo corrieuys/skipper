@@ -4,10 +4,13 @@ import { escapeHtml } from "../atoms/escape-html";
 import { isExperimental } from "../../config/feature-flags";
 import type { LocalTeam } from "../../teams/local-teams";
 
-/** One selectable provider plus the models it advertises. */
+/**
+ * One selectable provider. The model is free text rather than a pick list — a
+ * provider ships new model names faster than the agent-type config is updated —
+ * so the models it advertises are not carried into the page.
+ */
 export interface AgentTypeChoice {
   name: string;
-  models: string[];
 }
 
 export interface TeamMapViewModel {
@@ -76,7 +79,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
           <span class="tm-band__label">Phase flow</span>
           <span class="tm-band__hint">Click a phase to edit its prompt. Click a diamond to toggle the review gate that pauses the task for a human.</span>
         </div>
-        <div class="tm-flow-wrap" id="tm-flow-wrap">
+        <div class="tm-flow-wrap tm-board" id="tm-flow-wrap">
           <div class="tm-flow" id="tm-flow"></div>
           <button type="button" class="tm-flow-nav tm-flow-nav--left" id="tm-flow-left" aria-label="Scroll phases left" title="Earlier phases">&#8249;</button>
           <button type="button" class="tm-flow-nav tm-flow-nav--right" id="tm-flow-right" aria-label="Scroll phases right" title="Later phases">&#8250;</button>
@@ -88,7 +91,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
           <span class="tm-band__label">Crew</span>
           <span class="tm-band__hint">Skipper is the implicit lead and cannot be removed.</span>
         </div>
-        <div class="tm-tree" id="tm-crew"></div>
+        <div class="tm-tree tm-board" id="tm-crew"></div>
       </div>
     </div>
 
@@ -546,11 +549,6 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         var typeOpts = AGENT_TYPES.map(function(t){
           return '<option value="' + esc(t.name) + '"' + (t.name === a.type ? ' selected' : '') + '>' + esc(t.name) + '</option>';
         }).join('');
-        var datalists = AGENT_TYPES.map(function(t){
-          return '<datalist id="tm-models-' + esc(t.name) + '">' +
-            (t.models || []).map(function(m){ return '<option value="' + esc(m) + '"></option>'; }).join('') +
-          '</datalist>';
-        }).join('');
 
         var body =
           '<div class="tm-field__row">' +
@@ -564,18 +562,16 @@ export function teamMapPage(vm: TeamMapViewModel): string {
               '<select class="sk-select" data-f="type">' + typeOpts + '</select></div>' +
             '<div class="tm-field"><label class="sk-label">Model</label>' +
               '<input class="sk-input" data-f="model" type="text" value="' + esc(a.model || 'default') + '" placeholder="default" ' +
-                'list="tm-models-' + esc(a.type) + '" autocomplete="off"></div>' +
+                'autocomplete="off" spellcheck="false">' +
+              '<p class="tm-field__hint">Any model name the provider accepts, e.g. ' +
+                '<code>claude-opus-5</code>, <code>claude-sonnet-4-6</code>.</p></div>' +
           '</div>' +
           '<div class="tm-field"><label class="sk-label">Instruction</label>' +
-            '<textarea class="sk-textarea tm-field__prompt" data-f="instruction" placeholder="System instruction for this agent...">' + esc(a.instruction || '') + '</textarea></div>' +
-          datalists;
+            '<textarea class="sk-textarea tm-field__prompt" data-f="instruction" placeholder="System instruction for this agent...">' + esc(a.instruction || '') + '</textarea></div>';
 
         openModal('Agent', body, doneFooter(), function(){
           var typeSel = modalBody.querySelector('[data-f="type"]');
           var modelInput = modalBody.querySelector('[data-f="model"]');
-          typeSel.addEventListener('change', function(){
-            modelInput.setAttribute('list', 'tm-models-' + typeSel.value);
-          });
           wireFooter(function(){
             var name = modalBody.querySelector('[data-f="name"]').value.trim();
             if (!name) { flashError('An agent needs a name.'); return false; }

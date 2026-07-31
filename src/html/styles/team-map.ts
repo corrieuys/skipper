@@ -86,6 +86,15 @@ export function teamMapStyles(): string {
       font-size: var(--sk-text-xs);
       color: var(--sk-text-muted);
     }
+    /* Each band's diagram sits on a board rather than straight on the page. On
+       a wallpaper theme the cards are translucent, so without a surface under
+       them a bright patch of photo reads through the card and the text goes
+       with it. The board is the same panel surface the dashboard panels use. */
+    .tm-board {
+      background: var(--sk-panel-bg);
+      border: 1px solid var(--sk-border);
+      border-radius: var(--sk-panel-radius);
+    }
 
     /* ── Phase flow track ────────────────────────────────────────────── */
     /* The track scrolls sideways and routinely runs past the viewport. The
@@ -108,8 +117,16 @@ export function teamMapStyles(): string {
       transition: opacity 0.2s;
       z-index: 1;
     }
-    .tm-flow-wrap::before { left: 0; background: linear-gradient(90deg, rgba(0, 0, 0, 0.6), transparent); }
-    .tm-flow-wrap::after { right: 0; background: linear-gradient(270deg, rgba(0, 0, 0, 0.6), transparent); }
+    .tm-flow-wrap::before {
+      left: 0;
+      background: linear-gradient(90deg, rgba(0, 0, 0, 0.6), transparent);
+      border-radius: var(--sk-panel-radius) 0 0 var(--sk-panel-radius);
+    }
+    .tm-flow-wrap::after {
+      right: 0;
+      background: linear-gradient(270deg, rgba(0, 0, 0, 0.6), transparent);
+      border-radius: 0 var(--sk-panel-radius) var(--sk-panel-radius) 0;
+    }
     .tm-flow-wrap.is-overflow-left::before { opacity: 1; }
     .tm-flow-wrap.is-overflow-right::after { opacity: 1; }
 
@@ -145,7 +162,7 @@ export function teamMapStyles(): string {
       align-items: stretch;
       gap: 0;
       overflow-x: auto;
-      padding: var(--sk-space-4) var(--sk-space-2) var(--sk-space-6);
+      padding: var(--sk-space-4) var(--sk-space-4) var(--sk-space-6);
       scrollbar-width: thin;
     }
     .tm-cap {
@@ -432,7 +449,7 @@ export function teamMapStyles(): string {
       flex-wrap: wrap;
       align-items: stretch;
       gap: 1.25rem;
-      padding: var(--sk-space-4) var(--sk-space-2) var(--sk-space-2);
+      padding: var(--sk-space-4);
     }
 
     /* ── Lead (Skipper) node ─────────────────────────────────────────── */
@@ -579,6 +596,12 @@ export function teamMapStyles(): string {
       font-size: var(--sk-text-xs);
       color: var(--sk-text-subtle);
       margin: var(--sk-space-1) 0 0;
+    }
+    /* Model names read as one token; let the line break around them, not
+       through them. */
+    .tm-field__hint code {
+      font-family: var(--sk-font-mono);
+      white-space: nowrap;
     }
     .tm-field__prompt { min-height: 11rem; font-family: var(--sk-font-mono); font-size: var(--sk-text-sm); line-height: 1.55; }
     .tm-sub {
