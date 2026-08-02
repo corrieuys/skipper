@@ -44,6 +44,8 @@ import { taskEscalationsSection, type EscalationCardData } from "../html/panels/
 import { dashboardSteerListFragment, steerCardInfoMarkup, type SteeringOption } from "../html/dashboardLatestSteerFragment";
 import { buildTeamAgentTiles } from "../data/queries";
 import { dashboardNotesFragment } from "../html/dashboardNotesFragment";
+import { taskMessagesFragment } from "../html/fragments/task-message.fragment";
+import { MessageManager } from "../messages/manager";
 import type { TaskNoteData } from "../html/components";
 import { renderPhaseStripFragment, parseTerminalActivity, parseRealtimeActivity } from "../html/pages/command-center.page";
 import type { RealtimeActivityRow } from "../html/pages/command-center.page";
@@ -114,10 +116,13 @@ export class UIWebSocketManager {
   private lastSteeringFragment = "";
   private lastV2SteerRuntimeIds = new Map<string, string>();
 
+  private readonly messageManager: MessageManager;
+
   constructor(
     private readonly db: Database,
     private readonly daemon: Pick<ManagerDaemon, "listRuntimeSteeringOptions">,
   ) {
+    this.messageManager = new MessageManager(db);
     this.registerEventHandlers();
     this.startHeartbeat();
   }
@@ -389,6 +394,11 @@ export class UIWebSocketManager {
     eventBus.on("task:note_added", (event) => {
       this.pushRtNotes(event.taskId);
       this.pushV2Notes(event.taskId);
+    });
+
+    // --- Operator message posted (experimental) ---
+    eventBus.on("task:message_posted", (event) => {
+      this.pushV2Messages(event.taskId);
     });
 
     // --- Artifact created ---
@@ -891,6 +901,14 @@ export class UIWebSocketManager {
        LIMIT 30`,
     ).all(taskId) as TaskNoteData[];
     this.broadcastRaw(`<div hx-swap-oob="innerHTML:#mc-notes-${esc(taskId)}">${dashboardNotesFragment(notes, taskId)}</div>`, [`dashboard`, `task:${taskId}`]);
+  }
+
+  private pushV2Messages(taskId: string): void {
+    const messages = this.messageManager.listMessages(taskId);
+    this.broadcastRaw(
+      `<div hx-swap-oob="innerHTML:#mc-messages-${esc(taskId)}">${taskMessagesFragment(messages)}</div>`,
+      [`dashboard`, `task:${taskId}`],
+    );
   }
 
   private pushV2Artifacts(taskId: string): void {

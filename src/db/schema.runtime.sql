@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS delegations (
   prompt TEXT NOT NULL,
   result TEXT,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+  -- Per-delegation working directory override. NULL = inherit the task's.
+  working_directory TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   completed_at TEXT
 );
@@ -169,6 +171,19 @@ CREATE TABLE IF NOT EXISTS task_notes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_notes_task ON task_notes(task_id, created_at);
+
+-- Operator messages — plain-language progress updates written for the human, not
+-- for other agents. Never injected back into an agent prompt (see src/messages).
+CREATE TABLE IF NOT EXISTS task_messages (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,
+  agent_instance_id TEXT,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_messages_task ON task_messages(task_id, created_at);
 
 -- Escalation records
 CREATE TABLE IF NOT EXISTS escalations (

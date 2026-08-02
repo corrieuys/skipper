@@ -178,3 +178,71 @@ describe("SlackPushManager gating", () => {
     expect(posts).toHaveLength(0);
   });
 });
+
+describe("operator messages", () => {
+  function fireMessage(content = "Fixed the signup form. Testing it now."): void {
+    eventBus.emit("task:message_posted", {
+      messageId: "m1",
+      taskId: "task-1",
+      agentId: "agent-1",
+      content,
+    });
+  }
+
+  function seedAgent(name: string): void {
+    db.prepare("INSERT INTO agents (id, name, type) VALUES ('agent-1', ?, 'claude-code')").run(name);
+  }
+
+  it("posts into the origin thread, attributed to the agent, with no buttons", async () => {
+    seedTeam(true, { slack_origin: ORIGIN });
+    seedAgent("Skipper");
+    fireMessage();
+    await flush();
+
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.body.channel).toBe("C-origin");
+    expect(posts[0]!.body.thread_ts).toBe("1700.500");
+    const blocks = posts[0]!.body.blocks as Array<{ type: string; text?: { text: string } }>;
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.type).toBe("section");
+    expect(blocks[0]!.text!.text).toBe(":speech_balloon: *Skipper*: Fixed the signup form. Testing it now.");
+    // Nothing to act on — an operator message is not a question.
+    expect(blocks.some((b) => b.type === "actions")).toBe(false);
+    // Fallback text carries the task title for notifications / no-blocks clients.
+    expect(posts[0]!.body.text).toContain("Add webhook");
+  });
+
+  it("falls back to the agent id when no agent row matches", async () => {
+    seedTeam(true, { slack_origin: ORIGIN });
+    fireMessage();
+    await flush();
+
+    const blocks = posts[0]!.body.blocks as Array<{ text?: { text: string } }>;
+    expect(blocks[0]!.text!.text).toContain("*agent-1*");
+  });
+
+  it("does not post when the task has no Slack origin", async () => {
+    seedTeam(true);
+    seedAgent("Skipper");
+    fireMessage();
+    await flush();
+    expect(posts).toHaveLength(0);
+  });
+
+  it("does not post when the task's team has Slack disabled", async () => {
+    seedTeam(false, { slack_origin: ORIGIN });
+    seedAgent("Skipper");
+    fireMessage();
+    await flush();
+    expect(posts).toHaveLength(0);
+  });
+
+  it("stops posting after stop()", async () => {
+    seedTeam(true, { slack_origin: ORIGIN });
+    seedAgent("Skipper");
+    mgr.stop();
+    fireMessage();
+    await flush();
+    expect(posts).toHaveLength(0);
+  });
+});

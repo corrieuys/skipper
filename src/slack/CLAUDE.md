@@ -17,7 +17,7 @@ Everything here is **experimental** (`isExperimental()`), consistent with the
 | `client.ts` | `SlackClient` — thin Web API wrapper (`chat.postMessage` w/ Block Kit, `chat.update`, `views.open`, `users.lookupByEmail`, `conversations.open`, `conversations.history`, `auth.test`). Bot token read lazily from `app_settings` per call (config changes need no restart) |
 | `socket.ts` | `SlackSocketManager` — inbound **Socket Mode** WS. `apps.connections.open` (app-level token) → WS → ACK `slash_commands` + `interactive` + `events_api` envelopes within 3s, then do the (slower) work out-of-band. `events_api` message events in a task's origin thread become notes (see below). Mirrors `connect/client.ts` connect/reconnect/backoff. Singletons `initSlackSocket`/`getSlackSocket`; started/stopped in `index.ts` (gated `isExperimental() && isSocketModeConfigured && isSlackSocketEnabled`) and restarted by `/api/config/slack` |
 | `commands.ts` | `handleSlashCommand` (async) — authorize against the allowlist, then: scheduled-task binding → `runTaskNow` (arg text = run input); team binding → `createTask` + `approveTask` (arg text = description, cwd = daemon's); else unbound. Also captures the **Slack origin** (see below). Returns the reply text; never throws into the socket loop |
-| `push.ts` | `SlackPushManager` — outbound subscriber. Posts new escalations + phase reviews (with buttons) to the default channel. Stateless; gating re-checked live per event so the push toggle needs no restart. Singletons `initSlackPush`/`getSlackPush`; `start()` on boot (when experimental), `stop()` on shutdown |
+| `push.ts` | `SlackPushManager` — outbound subscriber. Posts new escalations + phase reviews (with buttons), task-completion notices, and operator messages (`task:message_posted`, no buttons) into the task's origin thread. Stateless; gating re-checked live per event so the push toggle needs no restart. Singletons `initSlackPush`/`getSlackPush`; `start()` on boot (when experimental), `stop()` on shutdown |
 | `interactions.ts` | `handleInteraction` — routes `block_actions` (button) + `view_submission` (modal). Dismiss acts immediately; Respond/Approve/Reject/**Iterate** open a modal (`private_metadata` carries kind/action/id + origin channel+ts). On submit: authorize, then `resolveEscalation` / `approveReview` / `rejectReview` / **`iterateTask`**, then edit the origin message in place |
 | `blocks.ts` | Block Kit builders (escalation + review + **completion** messages, action modal, notices) + the `encodeActionValue`/`decodeActionValue` codec (`<kind>:<action>:<id>`, kinds `esc`/`rev`/`task`) shared by push + interactions. The escalation **question** is agent-authored HTML, run through `htmlToMrkdwn` before it hits a `mrkdwn` field, and the section text is capped at Slack's 3000-char limit |
 | `html-to-mrkdwn.ts` | `htmlToMrkdwn(html)` — translate an agent HTML fragment to Slack mrkdwn at the boundary (tags → mrkdwn, `<a>` → `<url\|label>`, entities decoded, `& < >` re-escaped, unknown tags stripped). Agents stay oblivious to Slack; plain text passes through as plain escaping |
@@ -48,8 +48,9 @@ With a bot token set, new **escalations** and **phase reviews** post with action
 buttons, gated per-team by `slackEnabled` on the task's team. There is **no global
 push toggle** — the per-team opt-in is the switch (the old `slack_push_enabled`
 setting was removed as redundant now that pushes are thread-scoped).
-`SlackPushManager` subscribes to `escalation:created` and
-`task:needs_review_changed` (posts only when a review opens). Acting on the buttons
+`SlackPushManager` subscribes to `escalation:created`,
+`task:needs_review_changed` (posts only when a review opens),
+`task:message_posted` and `task:state_changed`. Acting on the buttons
 needs Slack **Interactivity** enabled in the app (Socket Mode delivers the events;
 no request URL). Only allowlisted users (`slack_allowed_users`) can act.
 
@@ -99,6 +100,17 @@ which acts immediately, it is what keeps `EscalationManager`'s raw throw
 ("Escalation not found: `<uuid>`") out of the channel. It also covers `rev`
 approve/reject, which `PhaseManager` otherwise accepts silently, leaving the
 message claiming success.
+
+## Operator messages
+
+Agent-written progress updates (`post_message`, see [../messages/CLAUDE.md](../messages/CLAUDE.md))
+post into the task's thread as `:speech_balloon: *<agent>*: <text>`
+(`operatorMessageBlocks`), through the same `targetChannel` gates as an escalation —
+so a task with a Slack conversation shows what happened *between* the questions and
+the sign-off, not just the endpoints. No buttons: there is nothing to act on. Not
+capped; the writing rules in `prompts/commands-messages.md` are what keep the volume
+sane. No feedback loop — the push posts as the bot, and `handleThreadReply` drops
+anything with a `bot_id`.
 
 ## Task-completion notice (daemon default)
 

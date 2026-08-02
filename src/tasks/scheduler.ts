@@ -279,6 +279,7 @@ export class TaskScheduler {
       this.db.prepare("DELETE FROM delegations WHERE task_id = ?").run(id);
       this.db.prepare("DELETE FROM escalations WHERE task_id = ?").run(id);
       this.db.prepare("DELETE FROM events WHERE task_id = ?").run(id);
+      this.db.prepare("DELETE FROM task_messages WHERE task_id = ?").run(id);
 
       // Clear any stale pointer from agents table.
       this.db.prepare("UPDATE agents SET current_task_id = NULL WHERE current_task_id = ?").run(id);

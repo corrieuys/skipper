@@ -216,14 +216,17 @@
   // ── Tabs ──
   // ── Panel dock ──────────────────────────────────────────────────────────
   // The running-task view is a "dock" of toggleable, resizable, reorderable
-  // columns (Timeline, Details, Escalations[input], Notes, Artifacts). 1-3 show
-  // side by side (manual toggles blocked at 3). All 5 panels stay mounted in the
-  // DOM (so their hx-get / WS-OOB targets stay stable); toggling flips display +
-  // re-inserts the resize dividers between visible columns. State (open set,
-  // order, widths) persists globally in Skipper.prefs.dockState.
+  // columns (Timeline, Details, Escalations[input], Notes, Artifacts, and
+  // Messages under --experimental). Any number can be open at once — they all
+  // share the row and get narrower as more are added, which is the user's call to
+  // manage, not something to block. One must stay open. All panels stay mounted
+  // in the DOM (so their hx-get / WS-OOB targets stay stable); toggling flips
+  // display + re-inserts the resize dividers between visible columns. State (open
+  // set, order, widths) persists globally in Skipper.prefs.dockState.
   Skipper.dock = {
-    PANELS: ["timeline", "details", "input", "notes", "artifacts"],
-    MAX: 3,
+    // "messages" only renders under --experimental; listing it here is harmless
+    // when absent, since render() drops any name with no column in the DOM.
+    PANELS: ["timeline", "details", "input", "notes", "artifacts", "messages"],
     _state: null,           // { open: [names, in display order], widths: {name: ratio} }
     _containerEl: null,     // the #mc-outputs element we last initialized against
     _inputCount: undefined,
@@ -267,7 +270,6 @@
         var fb = ["timeline", "notes"].filter(function (n) { return existing[n]; });
         st.open = fb.length ? fb.slice(0, 1) : Object.keys(existing).slice(0, 1);
       }
-      if (st.open.length > Skipper.dock.MAX) st.open = st.open.slice(0, Skipper.dock.MAX);
 
       c.querySelectorAll(".mc-outputs__divider").forEach(function (d) { d.remove(); });
 
@@ -308,25 +310,18 @@
         st.open.splice(idx, 1);
         st.widths = {};                        // closing resets the rest to even
       } else {
-        if (st.open.length >= Skipper.dock.MAX) { Skipper.dock._flashFull(name); return; }
         st.open.push(name);
       }
       Skipper.dock.render();
       Skipper.dock._lazyLoad(name);
     },
 
-    // Ensure a panel is visible. opts.force evicts the oldest non-`name` panel
-    // when full (used to guarantee escalations surface past the manual cap).
-    open: function (name, opts) {
+    // Ensure a panel is visible. Nothing is evicted — every panel the user has
+    // open stays open; a new one just joins them and the row divides further.
+    open: function (name) {
       if (!Skipper.dock._state) Skipper.dock.init();
       var st = Skipper.dock._state; if (!st) return;
       if (st.open.indexOf(name) >= 0) { Skipper.dock._lazyLoad(name); return; }
-      if (st.open.length >= Skipper.dock.MAX) {
-        if (!(opts && opts.force)) return;
-        var vi = -1;
-        for (var i = 0; i < st.open.length; i++) { if (st.open[i] !== name) { vi = i; break; } }
-        if (vi >= 0) st.open.splice(vi, 1);
-      }
       st.open.push(name);
       Skipper.dock.render();
       Skipper.dock._lazyLoad(name);
@@ -363,13 +358,6 @@
       if (lazy && window.htmx) { lazy.setAttribute("data-dock-loaded", ""); window.htmx.trigger(lazy, "dockopen"); }
     },
 
-    _flashFull: function (name) {
-      var b = document.querySelector('.mc-tab[data-mc-tab="' + name + '"]');
-      if (!b) return;
-      b.classList.add("mc-tab--blocked");
-      setTimeout(function () { b.classList.remove("mc-tab--blocked"); }, 450);
-    },
-
     // Initialize once per #mc-outputs element (i.e. per task-view swap). No-op on
     // partial fragment swaps that leave the dock element in place.
     init: function () {
@@ -383,8 +371,8 @@
     },
 
     // Badge/attention on the Escalations toggle; auto-open it when a new item is
-    // raised (forced past the cap since escalations take priority). Recomputed on
-    // every swap; opts.reset (full task re-render) re-baselines without opening.
+    // raised, since an escalation is blocking the task. Recomputed on every swap;
+    // opts.reset (full task re-render) re-baselines without opening.
     refreshAttention: function (opts) {
       var col = document.querySelector('.mc-outputs__col[data-dock-panel="input"]');
       var btn = document.querySelector('.mc-tab[data-mc-tab="input"]');
@@ -403,7 +391,7 @@
       Skipper.dock._inputCount = count;
       if (opts && opts.reset) return;
       if (typeof prev !== "number") return;
-      if (prev === 0 && count > 0) Skipper.dock.open("input", { force: true });
+      if (prev === 0 && count > 0) Skipper.dock.open("input");
     },
   };
 

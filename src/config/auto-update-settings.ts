@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { getBoolSetting, setBoolSetting, getStringSetting, setStringSetting } from "./app-settings";
-import { APP_VERSION, compareSemver } from "../version";
+import { APP_VERSION, compareSemver, classifyBump } from "../version";
+import { isCompiledBinary } from "../assets";
 
 // Machine-scoped auto-update state, persisted in runtime `app_settings`
 // (skipper-runtime.db), NOT the committed config tables. See src/config/CLAUDE.md.
@@ -27,9 +28,21 @@ export function setAutoUpdateEnabled(db: Database, value: boolean): void {
   setBoolSetting(db, SETTING_AUTO_UPDATE_ENABLED, value);
 }
 
+/**
+ * How the available release will reach this machine.
+ * - `staged`: already downloaded by an auto `skipper update`, waiting only for the
+ *   system to go idle so the daemon can restart onto it.
+ * - `pending`: auto-update will pick it up on its own (enabled, self-updatable
+ *   binary, patch bump) but has not downloaded it yet.
+ * - `manual`: nothing automatic will happen — the user has to run the CLI.
+ */
+export type UpdateDelivery = "staged" | "pending" | "manual";
+
 export interface UpdateNoticeView {
   /** A newer release the user hasn't dismissed, or null. */
   availableVersion: string | null;
+  /** How `availableVersion` will be applied — drives the toast wording. */
+  delivery: UpdateDelivery;
   /** A pending "app was updated to X" notice, or null. */
   appUpdatedTo: string | null;
 }
@@ -52,8 +65,20 @@ export function getUpdateNoticeView(db: Database): UpdateNoticeView {
 
   return {
     availableVersion: showAvailable ? available : null,
+    delivery: showAvailable ? updateDelivery(db, available) : "manual",
     appUpdatedTo: applied || null,
   };
+}
+
+/**
+ * Mirror of the gates in `updater/auto-updater.ts:checkForUpdates` — the toast has
+ * to promise exactly what the updater will actually do, so the conditions are the
+ * same ones: opted in, a self-updatable binary, and a patch bump.
+ */
+function updateDelivery(db: Database, available: string): UpdateDelivery {
+  if (getStringSetting(db, SETTING_UPDATE_DOWNLOADED_VERSION, "") === available) return "staged";
+  if (!isAutoUpdateEnabled(db) || !isCompiledBinary()) return "manual";
+  return classifyBump(APP_VERSION, available) === "patch" ? "pending" : "manual";
 }
 
 /** Mark the "update available" notice for `version` as dismissed. */

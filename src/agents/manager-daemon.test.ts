@@ -9,7 +9,9 @@ import { clearAgentTypeCache } from "./types";
 import { setBoolSetting, SETTING_PARALLEL_TASKS } from "../config/app-settings";
 import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
-import { unlinkSync } from "fs";
+import { unlinkSync, mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 const TEST_DB = "test-manager-daemon.db";
 
@@ -1464,6 +1466,109 @@ describe("handleDelegation", () => {
     expect(d3).not.toBeNull();
     const d4 = await daemon.handleDelegation(a4, a5, "Level 4");
     expect(d4).not.toBeNull();
+  });
+});
+
+describe("delegation working directory", () => {
+  // A real directory other than the task's, so the override is distinguishable
+  // from both the task path and the orchestrator cwd.
+  let overrideDir: string;
+
+  beforeEach(() => {
+    overrideDir = mkdtempSync(join(tmpdir(), "skipper-deleg-wd-"));
+  });
+
+  afterEach(() => rmSync(overrideDir, { recursive: true, force: true }));
+
+  function setupTaskWithWorkingDir(dir: string): { childId: string; taskId: string } {
+    const workerId = createAgent("Worker", "test-echo", "Lead");
+    const childId = createAgent("Child", "test-echo", "Worker");
+    const teamId = createTeamWithEntrypoint(workerId);
+    addAgentToTeam(teamId, childId);
+    const taskId = createApprovedTask(teamId);
+    db.prepare("UPDATE tasks SET working_directory = ? WHERE id = ?").run(dir, taskId);
+    return { childId, taskId };
+  }
+
+  // Capture the prompt the child is spawned with, plus the cwd it is spawned in.
+  // test-echo supports stdin, so its prompt arrives via sendInput rather than as an
+  // inline spawn arg — collect both so the assertions hold for either provider.
+  function captureChildSpawn(): { prompts: string[]; workingDirs: string[] } {
+    const agentManager = daemon.getAgentManager();
+    const prompts: string[] = [];
+    const workingDirs: string[] = [];
+    const origSpawn = agentManager.spawnAgentInstance.bind(agentManager);
+    spyOn(agentManager, "spawnAgentInstance").mockImplementation(
+      (templateId: string, instanceId: string, options: any) => {
+        if (options?.initialPrompt) prompts.push(options.initialPrompt);
+        workingDirs.push(options?.workingDir);
+        return origSpawn(templateId, instanceId, options);
+      },
+    );
+    const origSendInput = agentManager.sendInput.bind(agentManager);
+    spyOn(agentManager, "sendInput").mockImplementation(
+      (id: string, input: string, close?: boolean) => {
+        prompts.push(input);
+        origSendInput(id, input, close);
+      },
+    );
+    return { prompts, workingDirs };
+  }
+
+  it("inherits the task's directory and the orchestrator cwd when no override is given", async () => {
+    const { childId } = setupTaskWithWorkingDir("/tmp/task-dir");
+    await daemon.processTaskQueue();
+    const spawn = captureChildSpawn();
+
+    const delegation = await daemon.handleDelegation("skipper", childId, "Review the code");
+
+    expect(delegation).not.toBeNull();
+    expect(spawn.prompts.join("\n")).toContain("WORKING DIRECTORY: /tmp/task-dir");
+    expect(spawn.workingDirs).toContain(process.cwd());
+
+    const row = db
+      .prepare("SELECT working_directory FROM delegations WHERE id = ?")
+      .get(delegation!.id) as { working_directory: string | null };
+    expect(row.working_directory).toBeNull();
+  });
+
+  it("uses the override for the child's prompt AND its spawn cwd", async () => {
+    const { childId, taskId } = setupTaskWithWorkingDir("/tmp/task-dir");
+    await daemon.processTaskQueue();
+    const spawn = captureChildSpawn();
+
+    const delegation = await daemon.handleDelegation("skipper", childId, "Review the other repo", undefined, overrideDir);
+
+    expect(delegation).not.toBeNull();
+    expect(spawn.prompts.join("\n")).toContain(`WORKING DIRECTORY: ${overrideDir}`);
+    expect(spawn.prompts.join("\n")).not.toContain("WORKING DIRECTORY: /tmp/task-dir");
+    expect(spawn.workingDirs).toContain(overrideDir);
+
+    // Persisted, so a retry can replay it; the task row is untouched.
+    const row = db
+      .prepare("SELECT working_directory FROM delegations WHERE id = ?")
+      .get(delegation!.id) as { working_directory: string | null };
+    expect(row.working_directory).toBe(overrideDir);
+    const task = db.prepare("SELECT working_directory FROM tasks WHERE id = ?").get(taskId) as { working_directory: string };
+    expect(task.working_directory).toBe("/tmp/task-dir");
+  });
+
+  it("replays the override when a stale delegation is retried", async () => {
+    const { childId } = setupTaskWithWorkingDir("/tmp/task-dir");
+    await daemon.processTaskQueue();
+
+    const delegation = await daemon.handleDelegation("skipper", childId, "Long job", undefined, overrideDir);
+    expect(delegation).not.toBeNull();
+
+    // Age the child instance past the delegation timeout so the stale sweep retries it.
+    db.prepare("UPDATE agent_instances SET created_at = datetime('now', '-3 hours') WHERE id = ?")
+      .run(delegation!.child_instance_id!);
+
+    const spawn = captureChildSpawn();
+    daemon.checkStaleDelegations();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(spawn.workingDirs).toContain(overrideDir);
   });
 });
 

@@ -22,6 +22,7 @@ const PHASE_COMPLETE_PHASE = loadPrompt("phase-complete-phase.md");
 const PHASE_COMPLETE_TASK = loadPrompt("phase-complete-task.md");
 const COMMANDS_DELEGATION = loadPrompt("commands-delegation.md");
 const COMMANDS_ALWAYS = loadPrompt("commands-always.md");
+const COMMANDS_MESSAGES = loadPrompt("commands-messages.md");
 const MCP_TOOLS_SKIPPER = loadPrompt("mcp-tools-skipper.md");
 const MCP_TOOLS_DELEGATE = loadPrompt("mcp-tools-delegate.md");
 const MCP_TOOLS_PREFERENCE = [
@@ -44,11 +45,20 @@ export interface TaskInfo {
   workingDirectory?: string;
 }
 
-export interface PhaseInfo {
+/**
+ * Where a task sits in its phase pipeline, WITHOUT the phase instructions. This is
+ * all a delegated child is told: the phase prompt is Skipper's alone, so the type
+ * that reaches a child prompt has no field to leak it from.
+ */
+export interface PhaseLabel {
   name: string;
-  prompt: string;
   index: number;
   total: number;
+}
+
+/** A phase label plus the instructions — only ever built for a root Skipper spawn. */
+export interface PhaseInfo extends PhaseLabel {
+  prompt: string;
 }
 
 export interface AgentInfo {
@@ -108,7 +118,8 @@ export interface DelegationPromptOptions {
   childAgent: AgentInfo;
   task: TaskInfo;
   delegationPrompt: string;
-  phase?: PhaseInfo;
+  /** Label only — a child never receives the phase instructions. */
+  phase?: PhaseLabel;
   consensusShortId?: string;
   consensusWorktree?: boolean;
   // Override for the agent-note injection cap (default DEFAULT_AGENT_NOTE_LIMIT).
@@ -400,6 +411,10 @@ export class PromptBuilder {
     }
 
     parts.push(COMMANDS_ALWAYS);
+    // Operator messages ride the same experimental flag as the post_message tool
+    // itself — describing a tool the session does not register would just make
+    // the agent try a call that fails.
+    if (isExperimental()) parts.push(COMMANDS_MESSAGES);
     parts.push(MCP_TOOLS_PREFERENCE);
 
     // Tool allowlist — root Skipper gets the full lifecycle toolkit; everyone
@@ -447,13 +462,13 @@ export class PromptBuilder {
     }
     parts.push("");
 
-    // Phase context — the team's current phase instructions apply to delegated
-    // children too, so they know which step of the pipeline they're operating in.
+    // Phase context — name and position only. The phase instructions belong to
+    // Skipper: it decides what a child needs and says so in the delegation text,
+    // so a child never sees the team's phase prompt.
     if (options.phase) {
       parts.push(
         `CURRENT PHASE (${options.phase.index + 1}/${options.phase.total}): ${options.phase.name}`,
       );
-      parts.push(options.phase.prompt);
       parts.push("");
     }
 
@@ -520,6 +535,7 @@ export class PromptBuilder {
     // definition NOT the team entrypoint. Children must return work by exiting;
     // the orchestrator routes their result back to the parent automatically.
     parts.push(COMMANDS_ALWAYS);
+    if (isExperimental()) parts.push(COMMANDS_MESSAGES);
     parts.push(MCP_TOOLS_PREFERENCE);
     parts.push("");
     parts.push(MCP_TOOLS_DELEGATE);

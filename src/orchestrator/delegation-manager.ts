@@ -1,7 +1,9 @@
 import type { Database } from "bun:sqlite";
+import { statSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { parseJsonOr } from "../db/json";
 import type { AgentManager } from "../agents/manager";
-import type { PromptBuilder, AgentInfo, PhaseInfo } from "../agents/prompt-builder";
+import type { PromptBuilder, AgentInfo, PhaseLabel } from "../agents/prompt-builder";
 import type { TaskScheduler } from "../tasks/scheduler";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
 import { getEntrypointAgentId } from "../agents/skipper";
@@ -40,6 +42,35 @@ export function truncateResult(text: string, limit: number = MAX_DELEGATION_RESU
   return `${head}${marker}${tail}`;
 }
 
+/**
+ * Validate a per-delegation working directory before anything is written or
+ * spawned. The value becomes the child process's cwd, so a wrong one is not a
+ * cosmetic prompt error — it either crashes the spawn or silently runs the child
+ * in the daemon's own directory. Rejecting here means the `delegate` call fails
+ * with something Skipper can act on, and no child is created.
+ *
+ * Relative paths are rejected rather than resolved: they would resolve against the
+ * daemon's cwd, not the caller's mental model, which is exactly the confusion this
+ * parameter exists to remove.
+ */
+export function validateWorkingDirectory(raw: string): string {
+  const path = (raw ?? "").trim();
+  if (!path) throw new Error("working_directory is empty");
+  if (!isAbsolute(path)) {
+    throw new Error(`working_directory must be an absolute path, got "${path}"`);
+  }
+  let stats;
+  try {
+    stats = statSync(path);
+  } catch {
+    throw new Error(`working_directory does not exist: ${path}`);
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`working_directory is not a directory: ${path}`);
+  }
+  return path;
+}
+
 const DELEGATION_RESULT_START = /\[DELEGATION_RESULT from:[^\]]+\]\n/;
 const DELEGATION_RESULT_END = "\n[END_DELEGATION_RESULT]";
 const DELEGATION_BATCH_RESULT_START = /\[DELEGATION_BATCH_RESULT id:[^\]]+\]\n/;
@@ -56,6 +87,8 @@ export interface Delegation {
   prompt: string;
   result: string | null;
   status: "pending" | "running" | "completed" | "failed";
+  /** Per-delegation working directory override; null = inherit the task's. */
+  working_directory?: string | null;
   created_at: string;
   completed_at: string | null;
 }
@@ -67,6 +100,10 @@ interface DelegationBatchItem {
   // Override for the child's agent-note injection cap (default 20). Threaded from
   // the delegate MCP tool's `note_limit` down to buildDelegationPromptTracked.
   noteLimit?: number;
+  // Per-child working directory (delegate's `working_directory`). Names the path in
+  // the child's prompt header AND is the cwd its process starts in. Undefined =
+  // inherit the task's path (and the orchestrator cwd, like every other agent).
+  workingDirectory?: string;
 }
 
 /** Validated parent/task context every delegation-batch step operates on. */
@@ -115,8 +152,11 @@ export class DelegationManager {
     childAgentId: string,
     delegationPrompt: string,
     noteLimit?: number,
+    workingDirectory?: string,
   ): Promise<Delegation | null> {
-    const delegation = await this.handleDelegationBatch(parentRuntimeId, [{ to: childAgentId, work: delegationPrompt, noteLimit }]);
+    const delegation = await this.handleDelegationBatch(parentRuntimeId, [
+      { to: childAgentId, work: delegationPrompt, noteLimit, workingDirectory },
+    ]);
     return delegation.length > 0 ? delegation[0] : null;
   }
 
@@ -127,6 +167,7 @@ export class DelegationManager {
         work: item.work?.trim(),
         label: item.label?.trim(),
         noteLimit: item.noteLimit,
+        workingDirectory: item.workingDirectory?.trim() || undefined,
       }))
       .filter((item) => item.to && item.work) as DelegationBatchItem[];
 
@@ -235,8 +276,8 @@ export class DelegationManager {
       this.db
         .prepare(
           `INSERT INTO delegations (
-             id, parent_agent_id, child_agent_id, parent_instance_id, child_instance_id, delegation_group_id, task_id, prompt, status
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+             id, parent_agent_id, child_agent_id, parent_instance_id, child_instance_id, delegation_group_id, task_id, prompt, working_directory, status
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
         )
         .run(
           delegationId,
@@ -247,6 +288,7 @@ export class DelegationManager {
           groupId,
           ctx.taskId,
           item.work,
+          item.workingDirectory ?? null,
         );
 
       const spawned = await this.spawnChildInstance({
@@ -261,6 +303,7 @@ export class DelegationManager {
         noteLimit: item.noteLimit,
         attempt: 1,
         workingDir: undefined, // Agents spawn in orchestrator cwd; task.working_directory is for worktrees
+        workingDirectoryOverride: item.workingDirectory,
       });
 
       if (spawned) {
@@ -392,11 +435,18 @@ export class DelegationManager {
       )
       .run(groupId, parentTask.task_id, parentInstanceId);
 
+    // A resume continues the prior child's own conversation, so it inherits that
+    // child's working directory. Resuming it somewhere else would contradict the
+    // history it still remembers. There is no way to override it on resume.
+    const priorWorkingDirectory = (this.db
+      .prepare("SELECT working_directory FROM delegations WHERE child_instance_id = ? ORDER BY created_at DESC LIMIT 1")
+      .get(priorChildInstanceId) as { working_directory: string | null } | null)?.working_directory ?? null;
+
     this.db
       .prepare(
         `INSERT INTO delegations (
-           id, parent_agent_id, child_agent_id, parent_instance_id, child_instance_id, delegation_group_id, task_id, prompt, status
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+           id, parent_agent_id, child_agent_id, parent_instance_id, child_instance_id, delegation_group_id, task_id, prompt, working_directory, status
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       )
       .run(
         delegationId,
@@ -407,6 +457,7 @@ export class DelegationManager {
         groupId,
         parentTask.task_id,
         delegationPrompt,
+        priorWorkingDirectory,
       );
 
     const spawned = await this.spawnChildInstance({
@@ -419,6 +470,7 @@ export class DelegationManager {
       work: delegationPrompt,
       attempt: 1,
       workingDir: undefined,
+      workingDirectoryOverride: priorWorkingDirectory ?? undefined,
       resumeSessionId: priorChild.session_id,
     });
 
@@ -685,12 +737,13 @@ export class DelegationManager {
   }
 
   /**
-   * Resolve the task's current phase into PhaseInfo so delegated children
-   * receive the same phase instructions skipper does. Returns undefined if
-   * the task has no team, the team has no phases, or the current_phase is
-   * out of range — caller treats undefined as "no phase context to pass".
+   * Resolve the task's current phase into a PhaseLabel — name and position only,
+   * so a child knows which step of the pipeline it is working in without seeing
+   * the phase instructions, which stay with Skipper. Returns undefined if the
+   * task has no team, the team has no phases, or the current_phase is out of
+   * range — caller treats undefined as "no phase context to pass".
    */
-  private getCurrentPhaseInfo(taskId: string): PhaseInfo | undefined {
+  private getCurrentPhaseLabel(taskId: string): PhaseLabel | undefined {
     const task = this.taskScheduler.getTask(taskId);
     if (!task || !task.team_id) return undefined;
     const teamRow = this.db
@@ -705,7 +758,6 @@ export class DelegationManager {
     const resolved = resolvePhaseConfig(rawPhase, task.task_config as Record<string, unknown>);
     return {
       name: resolved.name,
-      prompt: resolved.prompt,
       index: idx,
       total: phases.length,
     };
@@ -722,7 +774,14 @@ export class DelegationManager {
     label?: string;
     noteLimit?: number;
     attempt: number;
+    /** OS spawn cwd fallback. Every caller passes undefined → orchestrator cwd. */
     workingDir?: string;
+    /**
+     * Per-delegation working directory (delegate's `working_directory`). Unlike
+     * `workingDir` this drives BOTH the prompt's WORKING DIRECTORY line and the
+     * child's spawn cwd, so the child actually starts where it was told to work.
+     */
+    workingDirectoryOverride?: string;
     resumeSessionId?: string;
   }): Promise<boolean> {
     const childAgent = this.agentManager.getAgent(input.childTemplateId);
@@ -751,10 +810,13 @@ export class DelegationManager {
         id: input.taskId,
         title: this.taskScheduler.getTask(input.taskId)?.title ?? "Delegated Task",
         description: this.taskScheduler.getTask(input.taskId)?.description ?? undefined,
-        workingDirectory: this.taskScheduler.getTask(input.taskId)?.working_directory,
+        // The per-delegation override wins over the task's path: Skipper set it
+        // because this child belongs somewhere else.
+        workingDirectory: input.workingDirectoryOverride
+          ?? this.taskScheduler.getTask(input.taskId)?.working_directory,
       },
       delegationPrompt: input.work,
-      phase: this.getCurrentPhaseInfo(input.taskId),
+      phase: this.getCurrentPhaseLabel(input.taskId),
       consensusShortId,
       consensusWorktree: !!consensusWorktreePath,
       noteLimit: input.noteLimit,
@@ -763,7 +825,10 @@ export class DelegationManager {
 
     try {
       await this.agentManager.spawnAgentInstance(input.childTemplateId, input.childInstanceId, {
-        workingDir: consensusWorktreePath || input.workingDir || process.cwd(),
+        // Worktree first: a consensus child working an isolated checkout must stay
+        // in it. Otherwise the delegation override, then the orchestrator cwd —
+        // where every agent runs unless told otherwise.
+        workingDir: consensusWorktreePath || input.workingDirectoryOverride || input.workingDir || process.cwd(),
         taskId: input.taskId,
         parentInstanceId: input.parentRuntimeId,
         rootInstanceId: input.rootInstanceId,
@@ -1081,6 +1146,32 @@ export class DelegationManager {
     }
   }
 
+  /**
+   * Work text for retrying a CONSENSUS instance. Those rows are not real
+   * delegations — the child is another instance of Skipper working the phase — and
+   * their `delegations.prompt` holds a display label, not the instructions. So the
+   * retry re-resolves the task's current phase prompt. Returns null for an ordinary
+   * delegation, where the stored prompt IS the work.
+   */
+  private consensusRetryWork(childInstanceId: string, taskId: string): string | null {
+    const isConsensus = this.db
+      .prepare("SELECT 1 FROM consensus_worktrees WHERE agent_instance_id = ? LIMIT 1")
+      .get(childInstanceId);
+    if (!isConsensus) return null;
+
+    const task = this.taskScheduler.getTask(taskId);
+    if (!task?.team_id) return null;
+    const teamRow = this.db
+      .prepare("SELECT phases FROM teams WHERE id = ?")
+      .get(task.team_id) as { phases: string } | null;
+    const phases = parseJsonOr<Array<{ name: string; prompt: string }> | undefined>(teamRow?.phases ?? "", undefined);
+    if (!phases || !Array.isArray(phases) || phases.length === 0) return null;
+    const idx = Math.min(Math.max(0, task.current_phase ?? 0), phases.length - 1);
+    const rawPhase = phases[idx];
+    if (!rawPhase) return null;
+    return resolvePhaseConfig(rawPhase, task.task_config as Record<string, unknown>).prompt;
+  }
+
   private tryRetryDelegation(delegation: Delegation): boolean | "pending" {
     const childInstanceId = delegation.child_instance_id;
     if (!childInstanceId) return false;
@@ -1124,7 +1215,9 @@ export class DelegationManager {
     const childAgent = this.agentManager.getAgent(row.template_agent_id);
     const childTypeDef = childAgent ? getAgentTypeDefinition(childAgent.type, this.db) : null;
     const canResume = !!row.session_id && !!childTypeDef?.supports_resume;
-    const work = canResume ? RETRY_NUDGE_PROMPT : delegation.prompt;
+    const work = canResume
+      ? RETRY_NUDGE_PROMPT
+      : this.consensusRetryWork(childInstanceId, row.task_id) ?? delegation.prompt;
 
     this.spawnChildInstance({
       taskId: row.task_id,
@@ -1136,6 +1229,9 @@ export class DelegationManager {
       work,
       attempt: nextAttempt,
       workingDir: undefined, // Agents spawn in orchestrator cwd
+      // Replay the original override — it is on the delegation row precisely so a
+      // retry lands in the same directory as the attempt it replaces.
+      workingDirectoryOverride: delegation.working_directory ?? undefined,
       resumeSessionId: canResume ? row.session_id! : undefined,
     }).catch((err) => {
       logError(this.db, "delegation_retry_spawn", { delegationId: delegation.id, nextInstanceId }, err);

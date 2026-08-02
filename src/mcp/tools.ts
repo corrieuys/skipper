@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AgentManager } from "../agents/manager";
 import type { DelegationManager } from "../orchestrator/delegation-manager";
+import { validateWorkingDirectory } from "../orchestrator/delegation-manager";
 import type { PhaseManager } from "../orchestrator/phase-manager";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { EscalationManager } from "../escalations/manager";
@@ -19,6 +20,7 @@ import { SlackClient } from "../slack/client";
 import { ESCALATION_TEXT_LIMIT, SLACK_ESCALATION_SOFT_LIMIT } from "../slack/blocks";
 import { stampTaskSlackOrigin, readTaskSlackOrigin } from "../slack/slash-command";
 import { registerTaskTools } from "./task-tools";
+import { MessageManager, MESSAGE_MAX_LENGTH } from "../messages/manager";
 
 export interface DaemonDeps {
   db: Database;
@@ -88,6 +90,9 @@ export function registerDaemonTools(
   options?: RegisterDaemonToolsOptions,
 ): void {
   const { db, delegationManager, phaseManager, taskScheduler, escalationManager, artifactManager, consensusManager, globalStoreManager } = deps;
+  // Stateless over the db handle, so it is built here rather than threaded
+  // through DaemonDeps and every construction site.
+  const messageManager = new MessageManager(db);
 
   function getInternalIdentity(): InternalAgentIdentity | null {
     const id = getIdentity();
@@ -162,6 +167,41 @@ export function registerDaemonTools(
       return { content: [{ type: "text" as const, text: JSON.stringify(notes) }] };
     },
   );
+
+  // ── Operator messages (experimental) ─────────────────────
+  // Registered for every agent, root and delegated alike: any of them can notice
+  // something the human should hear about. Nothing reads these back into a
+  // prompt, so there is no matching list/get tool.
+  if (isExperimental()) {
+    server.tool(
+      "post_message",
+      "Tell the human operator something noteworthy about this task, in plain language",
+      {
+        content: z
+          .string()
+          .describe(
+            `What the operator should know, in one or two plain sentences (max ${MESSAGE_MAX_LENGTH} chars). No jargon, file paths, stack traces or tool output.`,
+          ),
+      },
+      async ({ content }) => {
+        const identity = getInternalIdentity();
+        if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
+        if (!identity.taskId) return { content: [{ type: "text" as const, text: "Error: no active task" }] };
+
+        try {
+          const result = messageManager.postMessage({
+            taskId: identity.taskId,
+            agentId: identity.templateAgentId,
+            agentInstanceId: identity.runtimeId,
+            content,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        } catch (err) {
+          return errorResult(err);
+        }
+      },
+    );
+  }
 
   // ── Artifacts ────────────────────────────────────────────
   server.tool(
@@ -448,13 +488,19 @@ export function registerDaemonTools(
       to: z.string().describe("Agent ID to delegate to"),
       prompt: z.string().describe("Description of work to delegate"),
       note_limit: z.number().int().positive().optional().describe("Max agent-authored task notes to inject into the child's context (default 20; operator notes are always included). Raise it when the child needs deeper history."),
+      working_directory: z.string().optional().describe("Absolute path this child should work in — it becomes the child's stated working directory AND the directory its process starts in. Must already exist. Omit to inherit the task's working directory; set it only when this child belongs somewhere else (a sibling repo, a second checkout)."),
     },
-    async ({ to, prompt, note_limit }) => {
+    async ({ to, prompt, note_limit, working_directory }) => {
       const identity = getInternalIdentity();
       if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
 
       try {
-        const delegation = await delegationManager.handleDelegation(identity.runtimeId, to, prompt, note_limit);
+        // Validate before the manager touches the DB: a bad path would otherwise
+        // become a child spawned into the wrong place, or a spawn crash.
+        const childWorkingDir = working_directory === undefined
+          ? undefined
+          : validateWorkingDirectory(working_directory);
+        const delegation = await delegationManager.handleDelegation(identity.runtimeId, to, prompt, note_limit, childWorkingDir);
         if (!delegation) {
           return { content: [{ type: "text" as const, text: JSON.stringify({ error: "delegation_failed", message: "Could not create delegation" }) }] };
         }
@@ -557,6 +603,7 @@ export function registerDaemonTools(
         work: z.string().describe("Work description"),
         label: z.string().optional().describe("Optional label"),
         note_limit: z.number().int().positive().optional().describe("Max agent-authored task notes to inject into this child (default 20; operator notes always included)"),
+        working_directory: z.string().optional().describe("Absolute path this child should work in — its stated working directory AND its process cwd. Must already exist. Omit to inherit the task's."),
       })).describe("Array of delegation items"),
     },
     async ({ items }) => {
@@ -564,9 +611,21 @@ export function registerDaemonTools(
       if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
 
       try {
+        // Validate the whole batch first. Validating inside the loop would leave
+        // earlier children already spawned when a later path turns out to be bad.
+        const normalizedItems = items.map((i) => ({
+          to: i.to,
+          work: i.work,
+          label: i.label,
+          noteLimit: i.note_limit,
+          workingDirectory: i.working_directory === undefined
+            ? undefined
+            : validateWorkingDirectory(i.working_directory),
+        }));
+
         const delegations = await delegationManager.handleDelegationBatch(
           identity.runtimeId,
-          items.map((i) => ({ to: i.to, work: i.work, label: i.label, noteLimit: i.note_limit })),
+          normalizedItems,
         );
 
         signalBridge.registerMcpAction(identity.runtimeId, "delegate_batch", `${items.length} items`);

@@ -390,8 +390,6 @@ export function missionControlStyles(): string {
        would still reserve width (min-width + margin) and pad the button — hide it
        explicitly. */
     .mc-tab__badge[hidden] { display: none; }
-    @keyframes mc-tab-blocked { 0%,100% { transform: none; } 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
-    .mc-tab--blocked { animation: mc-tab-blocked 0.35s; border-color: var(--sk-danger, #e5484d); }
     /* Hide the "nothing needs input" hint once an escalation card
        (id^="escalation-") lands in the Escalations panel. */
     .mc-outputs__col[data-dock-panel="input"]:has([id^="escalation-"]) .mc-userinput__empty { display: none; }
@@ -1315,7 +1313,10 @@ export function missionControlStyles(): string {
     }
     .mc-outputs__col {
       flex: 1 1 0;
-      min-width: 120px;
+      /* Low floor on purpose: with every panel open the row divides six ways, and
+         a narrow column is better than one clipped off the end of the dock
+         (.mc-outputs is overflow:hidden). Content inside scrolls or truncates. */
+      min-width: 64px;
       display: flex;
       flex-direction: column;
       overflow: hidden;

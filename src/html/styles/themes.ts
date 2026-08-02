@@ -1255,6 +1255,24 @@ export function glassOverridesCss(): string {
       background: rgba(16, 20, 30, 0.55);
     }
 
+    /* Artifact viewer — the inset window sits directly on top of the artifact
+       list it was opened from, and the full-page modal on top of the task page.
+       Both take a translucent surface token by default, which under glass lets
+       the list rows read straight through the artifact text. These two are the
+       one place the glass look has to be dropped: solid, no blur. */
+    ${G} .artifact-inset {
+      background: #10141e;
+    }
+    ${G} .artifact-inset__bar {
+      background: #161c26;
+    }
+    ${G} .artifact-modal-dialog {
+      background: #10141e;
+    }
+    ${G} .artifact-modal-head {
+      background: #161c26;
+    }
+
     /* Escalation bar */
     ${G} .sk-escalation-bar {
       border-radius: var(--sk-radius-lg);

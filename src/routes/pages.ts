@@ -40,6 +40,8 @@ import { metricsFragment } from "../html/metricsFragment";
 import { escalationCardPanel, taskEscalationsSection, type EscalationCardData } from "../html/panels/escalation-card.panel";
 import { logsPage } from "../html/pages/logs.page";
 import { dashboardNotesFragment } from "../html/dashboardNotesFragment";
+import { taskMessagesFragment } from "../html/fragments/task-message.fragment";
+import { MessageManager } from "../messages/manager";
 import { dashboardRealtimeTimelineFragment } from "../html/dashboardRealtimeTimelineFragment";
 import { dashboardPhaseIndicatorFragment } from "../html/dashboardPhaseIndicatorFragment";
 import { dashboardActiveAgentsCountFragment } from "../html/dashboardActiveAgentsCountFragment";
@@ -201,6 +203,14 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
        LIMIT 30`,
     ).all(params.id) as TaskNoteData[];
     return html(dashboardNotesFragment(notes, params.id));
+  });
+
+  // Operator messages column (experimental) — 404s with the feature off, so the
+  // panel never renders a body the daemon will not serve.
+  const messageManager = new MessageManager(db);
+  addRoute("GET", "/fragments/tasks/:id/messages", (_req, params) => {
+    if (!isExperimental()) return new Response("Not found", { status: 404 });
+    return html(taskMessagesFragment(messageManager.listMessages(params.id)));
   });
 
   // Artifact list fragment — shows only the latest version of each artifact name

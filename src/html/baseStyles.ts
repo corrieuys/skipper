@@ -541,6 +541,32 @@ export function baseStyles(): string {
       color: var(--on-surface);
       font-size: 0.83rem;
     }
+    /* Operator messages. Quieter than a note card: these are read in sequence
+       like a feed, so they get a left rule and breathing room rather than a box,
+       and the body stays at reading size instead of note shorthand size. */
+    .sk-message-list { display: flex; flex-direction: column; }
+    .sk-message {
+      padding: 0.6rem 0.8rem;
+      border-left: 2px solid var(--sk-accent-secondary-dim, var(--outline-variant));
+      border-bottom: 1px solid var(--sk-border);
+    }
+    .sk-message:last-child { border-bottom: none; }
+    .sk-message__head {
+      display: flex; align-items: center; gap: 0.45rem; margin-bottom: 0.3rem;
+    }
+    .sk-message__agent {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--sk-accent-secondary, var(--secondary));
+    }
+    .sk-message__time { font-size: 0.68rem; color: var(--muted); }
+    .sk-message__body {
+      font-size: 0.85rem;
+      line-height: 1.55;
+      color: var(--on-surface);
+    }
     .btn-disabled, button:disabled {
       opacity: 0.4;
       cursor: not-allowed;

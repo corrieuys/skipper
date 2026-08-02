@@ -522,6 +522,20 @@ describe("buildDelegationPrompt", () => {
     expect(prompt).not.toContain("If the caveman skill is available to you, you MUST assume and use it for regular conversational or status messages.");
   });
 
+  it("gives a child the phase label but never the phase instructions", () => {
+    const childId = createAgent("Worker", "claude-code");
+
+    const prompt = builder.buildDelegationPrompt({
+      childAgent: { id: childId, name: "Worker", type: "claude-code" },
+      task: { id: "task-1", title: "Simple Task" },
+      delegationPrompt: "Do this work",
+      phase: { name: "Implementation", index: 1, total: 3 },
+    });
+
+    expect(prompt).toContain("CURRENT PHASE (2/3): Implementation");
+    expect(prompt).toContain("Do this work");
+  });
+
   it("omits role when child has no instruction", () => {
     const childId = createAgent("Worker", "claude-code");
 

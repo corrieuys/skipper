@@ -124,6 +124,7 @@ repo's GitHub Releases.
 | task CRUD + lifecycle | [src/tasks/CLAUDE.md](src/tasks/CLAUDE.md) |
 | teams + phases + membership | [src/teams/CLAUDE.md](src/teams/CLAUDE.md) |
 | escalations | [src/escalations/CLAUDE.md](src/escalations/CLAUDE.md) |
+| operator messages (agent → human progress updates, experimental) | [src/messages/CLAUDE.md](src/messages/CLAUDE.md) |
 | realtime audio/transcribe | [src/realtime/CLAUDE.md](src/realtime/CLAUDE.md) |
 | whisper.cpp local server | [src/whisper/CLAUDE.md](src/whisper/CLAUDE.md) |
 | MCP server (typed tools alt to stdout signals) | [src/mcp/CLAUDE.md](src/mcp/CLAUDE.md) |

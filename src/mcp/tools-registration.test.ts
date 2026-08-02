@@ -163,6 +163,39 @@ describe("registerDaemonTools — Slack tools (experimental + configured + team 
   });
 });
 
+describe("registerDaemonTools — post_message (experimental)", () => {
+  beforeEach(() => {
+    db = new Database(TEST_DB);
+    db.exec("PRAGMA foreign_keys = ON");
+    initializeDatabase(db);
+  });
+
+  afterEach(() => {
+    const i = process.argv.indexOf("--experimental");
+    if (i !== -1) process.argv.splice(i, 1);
+    db.close();
+    try { require("fs").unlinkSync(TEST_DB); } catch {}
+  });
+
+  it("is omitted without the experimental flag", () => {
+    const { server, registeredNames } = makeFakeMcpServer();
+    registerDaemonTools(server as any, makeDeps(), () => null);
+    expect(registeredNames).not.toContain("post_message");
+  });
+
+  it("is registered for root AND delegated sessions under --experimental", () => {
+    process.argv.push("--experimental");
+
+    const root = makeFakeMcpServer();
+    registerDaemonTools(root.server as any, makeDeps(), () => null);
+    expect(root.registeredNames).toContain("post_message");
+
+    const child = makeFakeMcpServer();
+    registerDaemonTools(child.server as any, makeDeps(), () => null, { isDelegated: true });
+    expect(child.registeredNames).toContain("post_message");
+  });
+});
+
 const EXTERNAL_TOOLS = [
   "create_task", "get_task", "list_tasks", "list_active_tasks", "update_task",
   "approve_task", "pause_task", "resume_task", "cancel_task", "complete_task", "list_teams",

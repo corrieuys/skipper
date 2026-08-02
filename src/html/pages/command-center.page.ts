@@ -270,12 +270,13 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
 /** Real-time task view — shows timeline, session controls, and audio pipeline */
 /**
  * The panel dock: a toggle bar (Timeline · Details · Escalations · Notes ·
- * Artifacts) over a row of resizable, reorderable columns. `Skipper.dock`
- * (skipper.js) shows 1-3 of them side by side, persists the layout, and inserts
- * the resize dividers. All five panels stay mounted so their hx-get / WS-OOB
- * targets (mc-notes-<id>, mc-artifacts-<id>, mc-task-escalations-<id>, feed ids)
- * stay stable; the JS just flips `display`. Shared by the standard and realtime
- * task renderers below.
+ * Artifacts · Messages) over a row of resizable, reorderable columns.
+ * `Skipper.dock` (skipper.js) shows any number of them side by side (one must
+ * stay open), persists the layout, and inserts the resize dividers. Every panel
+ * stays mounted so its hx-get / WS-OOB targets (mc-notes-<id>,
+ * mc-artifacts-<id>, mc-messages-<id>, mc-task-escalations-<id>, feed ids) stay
+ * stable; the JS just flips `display`. Shared by the standard and realtime task
+ * renderers below.
  */
 function renderTaskDock(taskId: string, opts: {
   variant: "standard" | "realtime";
@@ -311,6 +312,11 @@ function renderTaskDock(taskId: string, opts: {
   const detailsBody = `<div data-dock-lazy hx-get="/workspace/task/${eid}/details" hx-trigger="dockopen" hx-swap="innerHTML"><span class="sk-muted" style="padding:var(--sk-space-4);">Loading...</span></div>`;
   const escalationsBody = `<div id="mc-task-escalations-${eid}" hx-get="/fragments/tasks/${eid}/escalations" hx-trigger="load" hx-swap="innerHTML"></div>${opts.escalationsExtra ?? ""}`;
   const notesBody = `<div id="mc-notes-${eid}" style="padding:var(--sk-space-2);" hx-get="/fragments/tasks/${eid}/notes" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading notes...</span></div>`;
+  // Operator messages (experimental): agent-written updates for the human. Kept
+  // out of the dock entirely when the flag is off so the tab bar does not offer a
+  // panel whose fragment route 404s.
+  const showMessages = isExperimental();
+  const messagesBody = `<div id="mc-messages-${eid}" hx-get="/fragments/tasks/${eid}/messages" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted" style="padding:var(--sk-space-3);display:block;">Loading messages...</span></div>`;
   const artifactsBody = `<div id="mc-artifacts-${eid}" style="padding:var(--sk-space-2);" hx-get="/fragments/tasks/${eid}/artifacts" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading artifacts...</span></div>
         <div id="sk-artifact-detail-window" class="artifact-inset" hidden>
           <div class="artifact-inset__bar">
@@ -327,6 +333,7 @@ function renderTaskDock(taskId: string, opts: {
       <button type="button" class="mc-tab" data-mc-tab="input" onclick="Skipper.dock.toggle('input')">Escalations<span data-mc-tab-badge class="mc-tab__badge" hidden></span></button>
       <button type="button" class="mc-tab" data-mc-tab="notes" onclick="Skipper.dock.toggle('notes')">Notes</button>
       <button type="button" class="mc-tab" data-mc-tab="artifacts" onclick="Skipper.dock.toggle('artifacts')">Artifacts</button>
+      ${showMessages ? `<button type="button" class="mc-tab" data-mc-tab="messages" onclick="Skipper.dock.toggle('messages')">Messages</button>` : ""}
     </div>
     <div class="mc-outputs" id="mc-outputs" data-dock-default="${escapeHtml(opts.defaultOpen ?? "timeline,notes")}">
       ${col("timeline", tl.title, timelineControls, timelineBody, false)}
@@ -334,6 +341,7 @@ function renderTaskDock(taskId: string, opts: {
       ${col("input", "Escalations", "", escalationsBody, false)}
       ${col("notes", "Notes", "", notesBody, true)}
       ${col("artifacts", "Artifacts", "", artifactsBody, true)}
+      ${showMessages ? col("messages", "Messages", "", messagesBody, true) : ""}
     </div>`;
 }
 

@@ -2,14 +2,25 @@ import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
 import { logError } from "../logging";
 import { eventBus } from "../events/bus";
-import type { EscalationCreatedEvent, TaskNeedsReviewChangedEvent, TaskStateChangedEvent } from "../events/bus";
+import type {
+  EscalationCreatedEvent,
+  TaskMessagePostedEvent,
+  TaskNeedsReviewChangedEvent,
+  TaskStateChangedEvent,
+} from "../events/bus";
 import {
   isExperimental,
 } from "../config/feature-flags";
 import { isSlackConfigured } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
 import { SlackClient } from "./client";
-import { escalationMessageBlocks, reviewMessageBlocks, completionMessageBlocks, ESCALATION_TEXT_LIMIT } from "./blocks";
+import {
+  escalationMessageBlocks,
+  reviewMessageBlocks,
+  completionMessageBlocks,
+  operatorMessageBlocks,
+  ESCALATION_TEXT_LIMIT,
+} from "./blocks";
 import { readTaskSlackOrigin } from "./slash-command";
 import { htmlToMrkdwn } from "./html-to-mrkdwn";
 import { slackLog } from "./log";
@@ -43,13 +54,16 @@ export class SlackPushManager {
     const onEscalation = (e: EscalationCreatedEvent) => this.onEscalationCreated(e);
     const onReview = (e: TaskNeedsReviewChangedEvent) => this.onNeedsReviewChanged(e);
     const onState = (e: TaskStateChangedEvent) => this.onTaskStateChanged(e);
+    const onMessage = (e: TaskMessagePostedEvent) => this.onMessagePosted(e);
     eventBus.on("escalation:created", onEscalation);
     eventBus.on("task:needs_review_changed", onReview);
     eventBus.on("task:state_changed", onState);
+    eventBus.on("task:message_posted", onMessage);
     this.cleanup.push(() => eventBus.off("escalation:created", onEscalation));
     this.cleanup.push(() => eventBus.off("task:needs_review_changed", onReview));
     this.cleanup.push(() => eventBus.off("task:state_changed", onState));
-    slackLog("push.subscribed", { events: "escalation:created,task:needs_review_changed,task:state_changed" });
+    this.cleanup.push(() => eventBus.off("task:message_posted", onMessage));
+    slackLog("push.subscribed", { events: "escalation:created,task:needs_review_changed,task:state_changed,task:message_posted" });
   }
 
   stop(): void {
@@ -132,6 +146,29 @@ export class SlackPushManager {
     const phaseLabel = e.phaseName ?? (typeof e.phaseIndex === "number" ? `phase ${e.phaseIndex + 1}` : "current phase");
     const blocks = reviewMessageBlocks(e.taskId, target.task.title, phaseLabel);
     void this.post(target.channel, `Phase review required on "${target.task.title}" (${phaseLabel})`, blocks, "review", target.threadTs);
+  }
+
+  /**
+   * An agent posted an operator message (src/messages). Same routing and gates as
+   * an escalation — a task that has a Slack conversation gets its progress updates
+   * there too, so an operator following the run from Slack sees what happened
+   * between the questions and the sign-off, not just the endpoints.
+   */
+  private onMessagePosted(e: TaskMessagePostedEvent): void {
+    slackLog("push.event", { kind: "message", taskId: e.taskId, messageId: e.messageId });
+    const target = this.targetChannel(e.taskId, "message");
+    if (!target) return;
+    const agentName = this.agentDisplayName(e.agentId);
+    const blocks = operatorMessageBlocks(agentName, e.content);
+    void this.post(target.channel, `${agentName} on "${target.task.title}": ${e.content}`, blocks, "message", target.threadTs);
+  }
+
+  /** Posting agent's display name, falling back to its id — as the web column does. */
+  private agentDisplayName(agentId: string): string {
+    const row = this.db
+      .prepare("SELECT name FROM agents WHERE id = ?")
+      .get(agentId) as { name: string } | null;
+    return row?.name || agentId;
   }
 
   /**

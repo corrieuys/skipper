@@ -37,6 +37,14 @@ export interface TaskNoteAddedEvent {
   content: string;
 }
 
+/** An agent posted an operator-facing message (see src/messages). */
+export interface TaskMessagePostedEvent {
+  messageId: string;
+  taskId: string;
+  agentId: string;
+  content: string;
+}
+
 export interface TaskStateChangedEvent {
   taskId: string;
   previousStatus: string;
@@ -163,6 +171,7 @@ export interface EventMap {
   "escalation:created": [EscalationCreatedEvent];
   "escalation:resolved": [EscalationResolvedEvent];
   "task:note_added": [TaskNoteAddedEvent];
+  "task:message_posted": [TaskMessagePostedEvent];
   "task:state_changed": [TaskStateChangedEvent];
   "task:created": [TaskCreatedEvent];
   "task:phase_changed": [TaskPhaseChangedEvent];

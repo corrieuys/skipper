@@ -553,8 +553,16 @@ export class ManagerDaemon {
     parentAgentId: string,
     childAgentId: string,
     delegationPrompt: string,
+    noteLimit?: number,
+    workingDirectory?: string,
   ): Promise<Delegation | null> {
-    return this.delegationManager.handleDelegation(parentAgentId, childAgentId, delegationPrompt);
+    return this.delegationManager.handleDelegation(
+      parentAgentId,
+      childAgentId,
+      delegationPrompt,
+      noteLimit,
+      workingDirectory,
+    );
   }
 
   handleDelegateComplete(childAgentId: string, result: string): void {

@@ -18,8 +18,8 @@ Task lifecycle (root-only — these will fail for delegated agents):
 - `mcp__skipper-daemon__complete_task({ summary })` — marks the entire task complete. Only call this in the FINAL phase, after every earlier phase has been completed and you are certain there is no further work.
 
 Delegation:
-- `mcp__skipper-daemon__delegate({ to, prompt })` — spawn a FRESH sub-agent for the next unit of work. Use for the FIRST turn with each role.
-- `mcp__skipper-daemon__delegate_batch({ items })` — spawn multiple sub-agents in parallel under one barrier.
+- `mcp__skipper-daemon__delegate({ to, prompt, working_directory? })` — spawn a FRESH sub-agent for the next unit of work. Use for the FIRST turn with each role. `working_directory` is an optional absolute path (must exist) for a child that belongs somewhere other than the task's directory; it sets both the path the child is told and the directory its process starts in. Omit it to inherit the task's.
+- `mcp__skipper-daemon__delegate_batch({ items })` — spawn multiple sub-agents in parallel under one barrier. Each item takes the same optional `working_directory`, so children in a multi-repo task can each start in their own repo.
 - `mcp__skipper-daemon__delegate_resume({ child_instance_id, prompt })` — resume a PRIOR sub-agent with a new instruction, keeping its full prior conversation context. Strongly preferred for the second+ turn with the same role on the same task (e.g. asking developer to fix a Tester finding, or asking the analyst to refine the plan). The child resumes its own claude/codex session — no re-priming needed.
 - `mcp__skipper-daemon__list_delegations({ template_agent_id?, limit? })` — list prior delegations on this task. Each row includes `child_instance_id` and a `resumable` flag. Use this to find the right id to pass to `delegate_resume`.
 

@@ -135,6 +135,26 @@ export function completionMessageBlocks(taskId: string, taskTitle: string): unkn
 }
 
 /**
+ * An operator message (src/messages) posted into the task's thread. No buttons —
+ * there is nothing to act on; it is an agent telling the human what is happening.
+ * The emoji is what separates it at a glance from an escalation, which looks
+ * similar but is waiting on an answer.
+ *
+ * The content is plain text by construction (`MessageManager.normalizeContent`
+ * collapses it to one line and caps its length), so it only needs mrkdwn escaping —
+ * `htmlToMrkdwn` is for the agent-authored HTML in escalations, not for this.
+ */
+export function operatorMessageBlocks(agentName: string, content: string): unknown[] {
+  const body = `:speech_balloon: *${escapeMrkdwn(agentName)}*: ${escapeMrkdwn(content)}`;
+  return [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: truncate(body, ESCALATION_TEXT_LIMIT) },
+    },
+  ];
+}
+
+/**
  * A single-section replacement for a message once it has been actioned. `text` is
  * ALREADY composed mrkdwn (bold, `<@user>` mentions, `> quotes`) — escaping it here
  * would turn `<@U…>` into literal text instead of a rendered mention, so it passes

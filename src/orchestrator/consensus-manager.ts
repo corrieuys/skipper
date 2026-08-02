@@ -147,13 +147,18 @@ export class ConsensusManager {
           )
           .run(instanceId, task.id, entrypointAgentId, null, entrypointAgentId);
 
-        // Create delegation record
+        // Create delegation record. The stored prompt is a LABEL, not the phase
+        // instructions: this column is rendered in the UI (forensics delegation
+        // rows, prior-delegations menu), and the phase prompt is not for those
+        // surfaces. A retry re-resolves the real phase prompt from the task — see
+        // DelegationManager.consensusRetryWork.
+        const consensusLabel = `Consensus phase ${phaseIndex + 1}/${totalPhases}: ${phase.name} (agent ${i + 1}/${agentCount})`;
         this.db
           .prepare(
             `INSERT INTO delegations (id, parent_agent_id, child_agent_id, parent_instance_id, child_instance_id, delegation_group_id, task_id, prompt, status)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
           )
-          .run(delegationId, entrypointAgentId, entrypointAgentId, entrypointAgentId, instanceId, groupId, task.id, phase.prompt);
+          .run(delegationId, entrypointAgentId, entrypointAgentId, entrypointAgentId, instanceId, groupId, task.id, consensusLabel);
 
         // Build prompt with consensus context
         const shortId = instanceId.slice(0, 8);

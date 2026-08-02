@@ -6,6 +6,7 @@ Markdown prompt templates loaded at runtime by `src/agents/prompt-builder.ts`.
 |---|---|
 | `commands-always.md` | Core signal contract. Included in every agent prompt |
 | `commands-delegation.md` | Delegation-specific signals (for delegated children) |
+| `commands-messages.md` | When/how to post an operator message (`post_message`). Appended to every agent prompt under `--experimental` only, matching the tool's own gate |
 | `mcp-tools-skipper.md` | MCP tool catalogue (Skipper view) |
 | `mcp-tools-delegate.md` | MCP tool catalogue (delegate view, reduced) |
 | `execution-context.md` | Shared execution context template |

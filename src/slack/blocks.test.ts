@@ -5,6 +5,7 @@ import {
   escalationMessageBlocks,
   reviewMessageBlocks,
   completionMessageBlocks,
+  operatorMessageBlocks,
   actionModal,
   readModalMessage,
   MODAL_INPUT_BLOCK,
@@ -61,6 +62,22 @@ describe("message blocks", () => {
     expect(section.text.text).toContain("finished running");
     expect(section.text.text).toContain("Iterate");
     expect(section.text.text).toContain("will not restart");
+  });
+
+  it("operator message is a single section, attributed, with no buttons", () => {
+    const blocks = operatorMessageBlocks("Skipper", "Deploy finished. Watching for errors.") as Array<Record<string, unknown>>;
+    expect(blocks).toHaveLength(1);
+    const section = blocks[0] as { type: string; text: { text: string } };
+    expect(section.type).toBe("section");
+    expect(section.text.text).toBe(":speech_balloon: *Skipper*: Deploy finished. Watching for errors.");
+  });
+
+  it("operator message escapes mrkdwn specials in both the name and the body", () => {
+    const blocks = operatorMessageBlocks("A & B", "Rejected <script> & 5 > 3") as Array<Record<string, unknown>>;
+    const section = blocks[0] as { text: { text: string } };
+    expect(section.text.text).toContain("*A &amp; B*");
+    expect(section.text.text).toContain("&lt;script&gt;");
+    expect(section.text.text).toContain("5 &gt; 3");
   });
 });
 
