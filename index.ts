@@ -9,6 +9,9 @@ import { registerDataRoutes } from "./src/routes/data/index";
 import { registerScheduledTaskRoutes } from "./src/routes/scheduled-tasks";
 import { registerApiKeyRoutes } from "./src/routes/api-keys";
 import { registerDictationRoutes } from "./src/routes/dictation";
+import { registerCustomAgentRoutes } from "./src/routes/custom-agents";
+import { registerCustomToolRoutes } from "./src/routes/custom-tools";
+import { registerCustomAgentTypes } from "./src/custom-agents/store";
 import { ManagerDaemon } from "./src/agents/manager-daemon";
 import { initializeDatabase, closeDb, getDb } from "./src/db/connection";
 import { tryUpgradeRealtimeWs, realtimeWsHandlers } from "./src/routes/realtime-ws";
@@ -33,6 +36,11 @@ if (experimental) {
 }
 
 initializeDatabase();
+
+// Custom agents are stored in the runtime DB but have to be visible as agent
+// types before anything resolves a team's providers. The rows are written into
+// the in-memory config DB only, so nothing here reaches config/agent_types.json.
+registerCustomAgentTypes(getDb());
 
 const daemon = new ManagerDaemon();
 const uiPush = new UIWebSocketManager(getDb(), daemon);
@@ -67,6 +75,10 @@ registerScheduledTaskRoutes(daemon);
 registerApiKeyRoutes();
 // Dictation (experimental): transcribe + LLM cleanup for task-description fields.
 registerDictationRoutes();
+// Custom agents (experimental): CRUD for in-process agent definitions.
+registerCustomAgentRoutes();
+// Custom tools (experimental): operator-defined tools executed by the daemon.
+registerCustomToolRoutes();
 
 // MCP protocol routes (Streamable HTTP transport)
 const mcpHandler = (req: Request) => mcpServer.handleRequest(req);

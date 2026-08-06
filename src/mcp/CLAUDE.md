@@ -25,6 +25,20 @@ Global-store tools (`set_global_value`, `get_global_value`, `query_global_store`
 Slack tools (`slack_send_message`, `slack_send_dm`, `slack_read_channel`) post/read as the Skipper Slack app via the bot token. **Root-only**, like the phase-lifecycle tools — only Skipper talks via Slack, so a task's thread stays one voice; delegated children reach the operator by escalating, which the push forwards into the same thread. Registered on a session only when not delegated + `isExperimental()` + `isSlackConfigured(db)` + the task's team has `slackEnabled` (see [../slack/CLAUDE.md](../slack/CLAUDE.md)). The two **send** tools also `stampTaskSlackOrigin` — a task with no Slack origin yet adopts the thread the agent just posted into, so its escalations/reviews/completion notice follow (first write wins; a slash-command origin is never replaced). When a send is the one that captured the origin, its result carries `thread_ts` + a `note` explaining what the thread now means — the live agent's only way to learn this, since prompts aren't rebuilt mid-turn. A run with an origin gets a `SLACK ORIGIN` block on later prompt builds. `escalate` returns a `slack_warning` when the question exceeds `SLACK_ESCALATION_SOFT_LIMIT` **and** the task has a Slack origin — Slack clips the escalation block at `ESCALATION_TEXT_LIMIT` and agents put the ask last, so the operator would answer a fragment. Both constants come from `slack/blocks.ts`; nothing here restates them as a literal. It warns rather than rejects (an escalating agent is already stuck, and the full text is readable in the web UI) and is the only surface that reaches an agent whose prompt predates the origin.
 - **External** (API key): task management + discovery only — `create_task`, `get_task`, `list_tasks`, `list_active_tasks`, `update_task` (draft-only edit), `approve_task`, `pause_task`, `resume_task` (paused→running), `cancel_task`, `complete_task`, `list_teams`, plus recurring tasks: `list_recurring_tasks`, `run_recurring_task` (one-off "Run Now" on an approved recurring task, optional `prompt` → the run's `run_input`; mirrors the Slack slash-command path — impl via `ScheduledTaskScheduler.runTaskNow`, the internal class name). All defined in `task-tools.ts`, tagged `audience: "external"`, so none are exposed to internal agents. The two task-list tools return **newest-first, paginated** results — `{ tasks, pagination: { page, page_size, total, total_pages, has_more } }`, `page` 1-based, `page_size` default 20 / max 100 — so a caller with hundreds of tasks pages through bounded chunks.
 
+Operator-defined tools (`src/custom-tools`) are registered on every internal
+session, resolved per instance from what the custom agent definition and the team
+agent each grant — so a CLI agent can be given one. They are registered last, so a
+name that slipped past the reserved-name guard cannot shadow a built-in.
+
+## In-process consumers
+
+Custom agents (`src/custom-agents/`) run inside the daemon but still reach these
+tools over `POST /mcp` on localhost, with the instance id as the bearer token,
+rather than calling `tools.ts` directly. That keeps one set of rules: the
+root/delegated split above still decides what a session sees, and `signal-bridge`
+dedup still applies. The agent's own config narrows that further — only the tool
+names its definition enables are put in front of the model.
+
 ## External access
 
 External agents authenticate with API keys (managed via `/api/api-keys`, or the API Keys panel on `/config` under `--experimental`). Configure in `.mcp.json`:

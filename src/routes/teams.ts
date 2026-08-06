@@ -88,6 +88,11 @@ function coerceAgent(raw: unknown, usedIds: Set<string>): LocalTeamAgent | null 
   if (Array.isArray(a.capabilities)) {
     agent.capabilities = (a.capabilities as unknown[]).filter((c): c is string => typeof c === "string");
   }
+  // Operator-defined tools granted to this agent on this team. This is the only
+  // route by which a CLI agent gets one — see src/custom-tools.
+  if (Array.isArray(a.customTools)) {
+    agent.customTools = (a.customTools as unknown[]).filter((c): c is string => typeof c === "string");
+  }
   return agent;
 }
 

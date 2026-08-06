@@ -4,14 +4,14 @@ Agent process runtime. Spawn external CLI, parse stdout, route signals.
 
 | file | use |
 |---|---|
-| `manager.ts` | `AgentManager` — spawn/kill, stdout/stderr readers, JSON stream events, `parseAgentOutput()` extracts signals, session/resume tracking, persists runtime output/state |
+| `manager.ts` | `AgentManager` — spawn/kill, stdout/stderr readers, JSON stream events, `parseAgentOutput()` extracts signals, session/resume tracking, persists runtime output/state. `ingestChunk()` is the one output path; `ingestSyntheticStdout`/`ingestSyntheticStderr` let an in-process agent reach it without a stream |
 | `manager-daemon.ts` | `ManagerDaemon` facade. Wires every orchestrator module. Subscribes to `agent:exit` / `agent:signal`. Single object passed to routes. |
 | `prompt-builder.ts` | Build initial/resume prompts. Inject phase + delegation context + command templates from `prompts/`. Also injects per-run `task_config` blocks: `run_input` (ADDITIONAL INSTRUCTIONS), `global_store_instructions`, and `slack_origin` (SLACK ORIGIN → reply via `slack_send_message`, only when the team's Slack tools are available) |
 | `state-tracker.ts` | Heartbeat + fingerprint for stuck detect / nudge / escalation |
 | `types.ts` | Agent-type lookup + cache. `clearAgentTypeCache()` for tests |
 | `oneshot.ts` | `runOneShotText()` — provider-generic one-shot text call built from `agent_types` arg templates. Used by Greg's brain + the dictation rewriter; no instance rows/MCP/signals |
 | `skipper.ts` | `SKIPPER_AGENT_ID` constant + skipper config read/update |
-| `mcp-spawn-helper.ts` | Build MCP server config injection at spawn time |
+| `mcp-spawn-helper.ts` | Build MCP server config injection at spawn time. Skipped for in-process agents |
 | `instance-status.ts` | Shared `agent_instances.status` writers: `updateInstanceStatus()`, `finalizeActiveInstancesForTask()` |
 | `signal-utils.ts` | `signalTextSnippet()` — dedup-fingerprint normalization shared with `mcp/signal-bridge.ts` |
 
@@ -24,10 +24,20 @@ Agent process runtime. Spawn external CLI, parse stdout, route signals.
 | `opencode` | `opencode run message --format json` | `--session <id>` (`-m` model) | no |
 | `grok` | `grok -p "..." --output-format streaming-json --always-approve` (`-m` model) | `--resume <sessionId>` | no |
 | `custom` | empty placeholder | — | — |
+| `custom:<id>` | none — runs in-process | own message history | no |
 
 Only `claude-code` is a first-class provider; `codex`, `opencode`, and `grok`
 are experimental (selectable only under `--experimental`, see
 `config/model-settings.ts`).
+
+`custom:<id>` rows are **not seeded** — one is registered per custom agent
+definition at boot and after every edit, into the in-memory config DB only
+(see [../custom-agents/CLAUDE.md](../custom-agents/CLAUDE.md)). `spawnRuntimeAgent`
+branches on `isCustomAgentType` before it would build an argv: no `Bun.spawn`, no
+MCP config files, and `RunningAgent.process` is an `InProcessHandle` with a null
+pid instead of a `Subprocess`. `RunningAgent.process`/`.stdin` are the narrow
+`AgentProcessHandle`/`AgentStdin` interfaces for exactly this reason; the pid-null
+case is guarded in `orchestrator/recovery-manager.ts` and `manager-daemon.ts`.
 
 Machine-scoped skipper provider+model overrides resolve once per root spawn
 (`AgentManager.getEffectiveRootTypeDef` / `getRootSpawnOverrides`) and persist

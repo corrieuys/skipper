@@ -13,6 +13,7 @@ import type { AgentIdentity, InternalAgentIdentity } from "./auth";
 import { eventBus } from "../events/bus";
 import { z } from "zod";
 import { signalBridge } from "./signal-bridge";
+import { registerCustomTools } from "../custom-tools/registration";
 import { isExperimental } from "../config/feature-flags";
 import { isSlackConfigured, getSlackDefaultChannel } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
@@ -44,6 +45,12 @@ export interface RegisterDaemonToolsOptions {
    * Defaults to false (root-grade — all tools registered).
    */
   isDelegated?: boolean;
+  /**
+   * Instance whose custom-tool grants this session should resolve. Normally
+   * taken from the identity; passed explicitly by tests that register without
+   * one.
+   */
+  runtimeId?: string | null;
 }
 
 function errorResult(err: unknown) {
@@ -856,6 +863,16 @@ export function registerDaemonTools(
   // so nothing registers here — but this is the seam that lets a tool be flipped to
   // "internal"/"both" and appear for daemon agents without touching this file.
   registerTaskTools(server, deps, getIdentity, "internal");
+
+  // Operator-defined tools (src/custom-tools), resolved per session from what the
+  // custom agent definition and the team agent each grant. Registered last so a
+  // name that somehow slipped past the reserved-name check cannot shadow a
+  // built-in that an agent depends on — the first registration of a name wins.
+  const identity = getIdentity();
+  registerCustomTools(server as unknown as Parameters<typeof registerCustomTools>[0], {
+    db,
+    runtimeId: identity?.type === "internal" ? identity.runtimeId : (options?.runtimeId ?? null),
+  });
 }
 
 /**

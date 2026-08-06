@@ -11,12 +11,26 @@ import type { LocalTeam } from "../../teams/local-teams";
  */
 export interface AgentTypeChoice {
   name: string;
+  /**
+   * What to show instead of `name`. Custom agents are keyed `custom:<uuid>`,
+   * which is unreadable in a dropdown; the definition's own name goes here.
+   * Absent for the CLI providers, whose name is already the label.
+   */
+  label?: string;
+}
+
+/** An operator-defined tool a team may grant to any of its agents. */
+export interface CustomToolChoice {
+  name: string;
+  description: string;
 }
 
 export interface TeamMapViewModel {
   /** null when creating a brand-new team (the map starts from a scaffold). */
   team: LocalTeam | null;
   agentTypes: AgentTypeChoice[];
+  /** Operator-defined tools selectable per agent. Empty when none are defined. */
+  customTools: CustomToolChoice[];
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
@@ -118,7 +132,18 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         config: team.config ?? {},
       })};
       var AGENT_TYPES = ${jsonScript(vm.agentTypes)};
+      var CUSTOM_TOOLS = ${jsonScript(vm.customTools)};
       var IS_NEW = ${isNew ? "true" : "false"};
+
+      // Custom agents are keyed custom:<uuid>. Show the definition's name
+      // wherever a provider is displayed; fall back to the raw type so an agent
+      // pointing at a deleted definition still reads as something.
+      function typeLabel(name){
+        for (var i = 0; i < AGENT_TYPES.length; i++) {
+          if (AGENT_TYPES[i].name === name) return AGENT_TYPES[i].label || AGENT_TYPES[i].name;
+        }
+        return name;
+      }
       // Consensus and the per-team Slack opt-in are experimental everywhere else
       // in the UI (task form, config page), so they stay gated here too. When a
       // section is not rendered its apply path must LEAVE the stored value alone
@@ -314,7 +339,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
             '</div>' +
             '<div class="tm-agent__name">' + esc(a.name || a.id) + '</div>' +
             '<div class="tm-agent__meta">' +
-              '<span>' + esc(a.type) + '</span><span>·</span><span>' + esc(a.model || 'default') + '</span>' +
+              '<span>' + esc(typeLabel(a.type)) + '</span><span>·</span><span>' + esc(a.model || 'default') + '</span>' +
               (a.role ? '<span>·</span><span>' + esc(a.role) + '</span>' : '') +
             '</div>' +
             (a.instruction ? '<div class="tm-agent__instr">' + esc(a.instruction) + '</div>' : '') +
@@ -375,7 +400,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       function addAgent(){
         var type = (AGENT_TYPES[0] && AGENT_TYPES[0].name) || 'claude-code';
         var id = uniqueAgentId('agent');
-        TEAM.agents.push({ id: id, name: 'New Agent', type: type, model: 'default', instruction: '' });
+        TEAM.agents.push({ id: id, name: 'New Agent', type: type, model: 'default', instruction: '', customTools: [] });
         markDirty(); render();
         openAgentModal(id);
       }
@@ -543,11 +568,31 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       }
 
       // ── Agent modal ───────────────────────────────────────────────────
+      // Operator-defined tools granted to this agent on this team. This is the
+      // only way a CLI agent (claude-code, codex) gets one — a custom agent can
+      // also carry its own list, and the session receives the union.
+      function customToolsField(a){
+        if (!CUSTOM_TOOLS.length) return '';
+        var granted = {};
+        (a.customTools || []).forEach(function(n){ granted[n] = true; });
+        var boxes = CUSTOM_TOOLS.map(function(t){
+          return '<label class="sk-checkbox" style="align-items:flex-start;">' +
+            '<input type="checkbox" data-ct value="' + esc(t.name) + '"' + (granted[t.name] ? ' checked' : '') + '>' +
+            '<span class="sk-checkbox__toggle"></span>' +
+            '<span class="sk-checkbox__label"><code>' + esc(t.name) + '</code>' +
+              (t.description ? '<span class="tm-field__hint" style="display:block;margin:0;">' + esc(t.description) + '</span>' : '') +
+            '</span></label>';
+        }).join('');
+        return '<div class="tm-field"><label class="sk-label">Custom tools</label>' +
+          '<p class="tm-field__hint">Tools defined on the Config page. Granted to this agent on this team.</p>' +
+          '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:var(--sk-space-2);">' + boxes + '</div></div>';
+      }
+
       function openAgentModal(agentId){
         var a = TEAM.agents.find(function(x){ return x.id === agentId; });
         if (!a) return;
         var typeOpts = AGENT_TYPES.map(function(t){
-          return '<option value="' + esc(t.name) + '"' + (t.name === a.type ? ' selected' : '') + '>' + esc(t.name) + '</option>';
+          return '<option value="' + esc(t.name) + '"' + (t.name === a.type ? ' selected' : '') + '>' + esc(t.label || t.name) + '</option>';
         }).join('');
 
         var body =
@@ -567,7 +612,8 @@ export function teamMapPage(vm: TeamMapViewModel): string {
                 '<code>claude-opus-5</code>, <code>claude-sonnet-4-6</code>.</p></div>' +
           '</div>' +
           '<div class="tm-field"><label class="sk-label">Instruction</label>' +
-            '<textarea class="sk-textarea tm-field__prompt" data-f="instruction" placeholder="System instruction for this agent...">' + esc(a.instruction || '') + '</textarea></div>';
+            '<textarea class="sk-textarea tm-field__prompt" data-f="instruction" placeholder="System instruction for this agent...">' + esc(a.instruction || '') + '</textarea></div>' +
+          customToolsField(a);
 
         openModal('Agent', body, doneFooter(), function(){
           var typeSel = modalBody.querySelector('[data-f="type"]');
@@ -581,6 +627,13 @@ export function teamMapPage(vm: TeamMapViewModel): string {
             a.instruction = modalBody.querySelector('[data-f="instruction"]').value;
             var role = modalBody.querySelector('[data-f="role"]').value.trim();
             if (role) a.role = role; else delete a.role;
+            // Only read the tool checkboxes when the section was rendered; with
+            // no tools defined it is absent and must leave the stored list alone.
+            if (CUSTOM_TOOLS.length > 0) {
+              a.customTools = Array.prototype.filter.call(
+                modalBody.querySelectorAll('[data-ct]'), function(b){ return b.checked; }
+              ).map(function(b){ return b.value; });
+            }
             // Fresh agents still carry the placeholder id — give them one derived
             // from the name. An id the author has already saved stays put.
             if (/^agent(-[0-9]+)?$/.test(a.id)) renameAgentId(a, uniqueAgentId(name, a.id));

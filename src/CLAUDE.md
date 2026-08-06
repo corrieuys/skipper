@@ -18,4 +18,8 @@ See [../CLAUDE.md](../CLAUDE.md) module map for full pointer table.
 
 Core flow: `routes/*` → `agents/manager-daemon.ts` (facade) → `orchestrator/*` modules → `agents/manager.ts` (process spawn + signal parse) → `events/bus.ts` → orchestrator handlers.
 
+One branch in that flow does not spawn anything: a **custom agent** runs inside
+this process (`custom-agents/runner.ts`) and reports through the same handle,
+events and signal paths as a CLI. See [custom-agents/CLAUDE.md](custom-agents/CLAUDE.md).
+
 DB access through `db/connection.ts:getDb()`. Split mode: runtime on disk, config in-memory ATTACH as `shared`.

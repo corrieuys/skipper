@@ -346,7 +346,10 @@ export class ManagerDaemon {
         disabledReason = row.status === "waiting_delegation"
           ? "Runtime is waiting on delegation and cannot be steered."
           : "Runtime is not currently running.";
-      } else if (!runningRuntime || !row.process_pid) {
+      } else if (!runningRuntime || (!row.process_pid && runningRuntime.process.pid !== null)) {
+        // A pid-less row is only dead if the runtime was supposed to have one.
+        // In-process agents (custom agents) never do — the in-memory runtime is
+        // their liveness signal.
         disabledReason = "Runtime is no longer live.";
       } else if (!sessionId) {
         disabledReason = "Runtime has no resumable session yet.";

@@ -1,5 +1,4 @@
 import type { Database } from "bun:sqlite";
-import type { Subprocess, FileSink } from "bun";
 import { getDb } from "../db/connection";
 import { agentSpawnPath } from "../paths";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition, providerSupportsUsageTracking, type AgentTypeDefinition } from "./types";
@@ -7,7 +6,9 @@ import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
 import { logError } from "../logging";
 import { signalTextSnippet } from "./signal-utils";
-import { buildMcpSpawnOverrides, injectDaemonMcpServer, cleanupMcpTempFiles, restoreMcpConfigFiles, type McpRestoreFile } from "./mcp-spawn-helper";
+import { buildMcpSpawnOverrides, injectDaemonMcpServer, cleanupMcpTempFiles, restoreMcpConfigFiles, type McpRestoreFile, type McpSpawnOverrides } from "./mcp-spawn-helper";
+import { getCustomAgentByType, isCustomAgentType } from "../custom-agents/store";
+import { InProcessHandle, NOOP_STDIN, runCustomAgent } from "../custom-agents/runner";
 import { signalBridge } from "../mcp/signal-bridge";
 import { getStringSetting } from "../config/app-settings";
 import { SETTING_SKIPPER_AGENT_TYPE, SETTING_SKIPPER_MODEL } from "../config/model-settings";
@@ -52,6 +53,28 @@ export interface AgentConfig {
   constraints?: Record<string, string>;
 }
 
+/**
+ * What the orchestrator needs from whatever is executing an agent.
+ *
+ * `Bun.Subprocess` satisfies this structurally, so a CLI agent needs no adapter.
+ * A custom agent runs inside this process and has no pid, so `pid` is nullable
+ * and every site that would signal it must check first — see
+ * `custom-agents/runner.ts:InProcessHandle` and the `in_process` marker written
+ * onto `agent_instances.state_metadata`.
+ */
+export interface AgentProcessHandle {
+  pid: number | null;
+  kill(signal?: number | NodeJS.Signals): void;
+  exited: Promise<number>;
+}
+
+/** The write side of an agent's stdin. `Bun.FileSink` satisfies it as-is. */
+export interface AgentStdin {
+  write(data: string): unknown;
+  flush(): unknown;
+  end(): unknown;
+}
+
 export interface RunningAgent {
   id: string;
   templateAgentId: string;
@@ -63,8 +86,8 @@ export interface RunningAgent {
   parentInstanceId: string | null;
   rootInstanceId: string | null;
   workingDir: string;
-  process: Subprocess<"pipe", "pipe", "pipe">;
-  stdin: FileSink;
+  process: AgentProcessHandle;
+  stdin: AgentStdin;
   stdoutBuffer: string;
   stderrBuffer: string;
   outputSequence: number;
@@ -525,6 +548,11 @@ export class AgentManager {
       throw new Error(`Unknown agent type: ${resolvedType}`);
     }
 
+    // Custom agents run inside this process rather than as a child. Everything
+    // below that is about launching a binary — argv, MCP config files, env — has
+    // no meaning for them, so the flag is read once here and gates each part.
+    const inProcess = isCustomAgentType(resolvedType);
+
     const usesInlinePrompt = agentTypeUsesInlinePrompt(typeDef, options.sessionId);
     const inlinePrompt = options.initialPrompt
       ? truncatePrompt(options.initialPrompt, runtimeId, this.db, "spawnRuntimeAgent")
@@ -588,17 +616,22 @@ export class AgentManager {
     // Inject MCP server overrides (disabled servers filtered out via temp config).
     // Keyed off resolvedType, not agent.type: a machine-scoped provider override
     // must get its own provider's MCP wiring, not the template row's.
-    let mcpOverrides = buildMcpSpawnOverrides(resolvedType);
-
-    // Inject skipper-daemon MCP server so agents can use structured tool calls
+    // Skipped entirely for in-process agents: these helpers write temp config
+    // files and patch the working directory for a CLI to read, and a custom agent
+    // connects to the daemon's /mcp endpoint directly instead.
     const daemonPort = Number(process.env.PORT) || 5005;
-    mcpOverrides = injectDaemonMcpServer(mcpOverrides, runtimeId, resolvedType, daemonPort, options.workingDir);
+    let mcpOverrides: McpSpawnOverrides = { extraArgs: [], extraEnv: {}, cleanupPaths: [] };
+    if (!inProcess) {
+      mcpOverrides = buildMcpSpawnOverrides(resolvedType);
+      // Inject skipper-daemon MCP server so agents can use structured tool calls
+      mcpOverrides = injectDaemonMcpServer(mcpOverrides, runtimeId, resolvedType, daemonPort, options.workingDir);
 
-    if (mcpOverrides.extraArgs.length > 0) {
-      args.push(...mcpOverrides.extraArgs);
-    }
-    if (Object.keys(mcpOverrides.extraEnv).length > 0) {
-      Object.assign(env, mcpOverrides.extraEnv);
+      if (mcpOverrides.extraArgs.length > 0) {
+        args.push(...mcpOverrides.extraArgs);
+      }
+      if (Object.keys(mcpOverrides.extraEnv).length > 0) {
+        Object.assign(env, mcpOverrides.extraEnv);
+      }
     }
 
     // Insert agent_instances row BEFORE spawn so the daemon /mcp endpoint can
@@ -691,20 +724,29 @@ export class AgentManager {
     // until orphan recovery exhausts and fails the entire task. Clean up the
     // row before rethrowing so callers (DelegationManager) can mark the
     // delegation failed with a real reason instead of a silent timeout.
-    let proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
+    let proc: Bun.Subprocess<"pipe", "pipe", "pipe"> | null = null;
+    let inProcessHandle: InProcessHandle | null = null;
     try {
-      proc = Bun.spawn({
-        cmd: [typeDef.command, ...args],
-        cwd: options.workingDir,
-        env,
-        stdout: "pipe",
-        stderr: "pipe",
-        stdin: "pipe",
-        // Detach so the child becomes a process-group leader (setsid → pid===pgid).
-        // Lets killAgentTree() signal the whole tree via the negative pgid, so a
-        // paused/cancelled task's agent AND every subprocess it spawned dies.
-        detached: true,
-      });
+      if (inProcess) {
+        // Nothing is launched here. The handle is created so the RunningAgent
+        // below is complete, and the run itself starts after the instance row is
+        // fully wired — the agent connects back to /mcp with its own runtime id
+        // and would 401 against a half-written row.
+        inProcessHandle = new InProcessHandle();
+      } else {
+        proc = Bun.spawn({
+          cmd: [typeDef.command, ...args],
+          cwd: options.workingDir,
+          env,
+          stdout: "pipe",
+          stderr: "pipe",
+          stdin: "pipe",
+          // Detach so the child becomes a process-group leader (setsid → pid===pgid).
+          // Lets killAgentTree() signal the whole tree via the negative pgid, so a
+          // paused/cancelled task's agent AND every subprocess it spawned dies.
+          detached: true,
+        });
+      }
     } catch (err) {
       // Only mark the row failed when one was actually inserted above.
       // Explicit-opt-out spawns (realtime) skip the INSERT.
@@ -734,6 +776,7 @@ export class AgentManager {
       logError(this.db, "agent.create_session", { agentId: templateAgentId, runtimeId, spawnSessionId }, err);
     }
 
+    const handle: AgentProcessHandle = proc ?? inProcessHandle!;
     const runningAgent: RunningAgent = {
       id: runtimeId,
       templateAgentId,
@@ -743,14 +786,17 @@ export class AgentManager {
       parentInstanceId: options.parentInstanceId ?? null,
       rootInstanceId: options.rootInstanceId ?? runtimeId,
       workingDir: options.workingDir,
-      process: proc,
-      stdin: proc.stdin,
+      process: handle,
+      stdin: proc ? proc.stdin : NOOP_STDIN,
       stdoutBuffer: "",
       stderrBuffer: "",
       outputSequence: 0,
       sessionId: options.sessionId ?? null,
       spawnSessionId,
-      drainedStreams: 0,
+      // An in-process agent has no streams to drain. Counting them as already
+      // drained keeps `waitForExit` / `waitForStreamsDrained` from stalling for
+      // their full timeout on every custom-agent teardown.
+      drainedStreams: inProcess ? 2 : 0,
       mcpCleanupPaths: mcpOverrides.cleanupPaths,
       mcpRestoreFiles: mcpOverrides.restoreFiles ?? [],
     };
@@ -770,7 +816,15 @@ export class AgentManager {
         .prepare(
           "UPDATE agent_instances SET process_pid = ?, updated_at = datetime('now') WHERE id = ?",
         )
-        .run(proc.pid, runtimeId);
+        .run(handle.pid, runtimeId);
+      // Mark in-process instances so health and UI code can tell "no pid because
+      // it runs inside the daemon" from "no pid because the spawn has not landed
+      // yet" — the latter is a ghost to be reaped, the former is a live agent.
+      if (inProcess) {
+        this.db
+          .prepare("UPDATE agent_instances SET state_metadata = json_set(state_metadata, '$.in_process', json('true')) WHERE id = ?")
+          .run(runtimeId);
+      }
       eventBus.emit("instance:state_changed", {
         instanceId: runtimeId,
         templateAgentId,
@@ -781,23 +835,76 @@ export class AgentManager {
       });
     }
 
-    // Wire output handlers
-    this.readStream(runningAgent, proc.stdout, "stdout");
-    this.readStream(runningAgent, proc.stderr, "stderr");
+    if (proc) {
+      // Wire output handlers
+      this.readStream(runningAgent, proc.stdout, "stdout");
+      this.readStream(runningAgent, proc.stderr, "stderr");
 
-    // Close stdin for agents that received their prompt inline and don't accept interactive stdin.
-    // Without this, CLIs like opencode hang waiting for stdin EOF before processing.
-    if (usesInlinePrompt && inlinePrompt !== null && !typeDef.supports_stdin) {
-      try { proc.stdin.end(); } catch { /* process may have already exited */ }
+      // Close stdin for agents that received their prompt inline and don't accept interactive stdin.
+      // Without this, CLIs like opencode hang waiting for stdin EOF before processing.
+      if (usesInlinePrompt && inlinePrompt !== null && !typeDef.supports_stdin) {
+        try { proc.stdin.end(); } catch { /* process may have already exited */ }
+      }
+    } else {
+      this.startInProcessRun(runningAgent, inProcessHandle!, resolvedType, inlinePrompt ?? "", daemonPort);
     }
 
     // Register exit handler
-    const processPid = proc.pid;
-    proc.exited.then((code) => {
+    const processPid = handle.pid;
+    handle.exited.then((code) => {
       this.handleProcessExit(runtimeId, processPid, code);
     });
 
     return runningAgent;
+  }
+
+  /**
+   * Kick off a custom agent's run and settle its handle when it ends.
+   *
+   * Fire-and-forget on purpose: `spawnRuntimeAgent` must return as soon as the
+   * agent is tracked, exactly as it does once `Bun.spawn` returns. The awaiting
+   * is done by the orchestrator through `agent:exit`, which `handleProcessExit`
+   * emits when the handle settles below.
+   */
+  private startInProcessRun(
+    runningAgent: RunningAgent,
+    handle: InProcessHandle,
+    resolvedType: string,
+    prompt: string,
+    daemonPort: number,
+  ): void {
+    const agentDef = getCustomAgentByType(this.db, resolvedType);
+    if (!agentDef) {
+      logError(
+        this.db,
+        "custom_agent.definition_missing",
+        { runtimeId: runningAgent.id, type: resolvedType },
+        new Error("custom agent type has no definition"),
+      );
+      handle.finish(1);
+      return;
+    }
+
+    void runCustomAgent({
+      db: this.db,
+      host: this,
+      agent: agentDef,
+      runtimeId: runningAgent.id,
+      workingDir: runningAgent.workingDir,
+      prompt,
+      sessionId: runningAgent.sessionId,
+      daemonPort,
+    }, handle)
+      .then((result) => {
+        // Session id is what keys the conversation history for the next resume.
+        // Set it before settling: handleProcessExit persists it on the way out.
+        runningAgent.sessionId = result.sessionId;
+        handle.finish(result.exitCode);
+      })
+      .catch((err) => {
+        logError(this.db, "custom_agent.run_unhandled", { runtimeId: runningAgent.id }, err);
+        handle.finish(1);
+      });
   }
 
   private async readStream(
@@ -812,55 +919,7 @@ export class AgentManager {
         if (done) break;
 
         const text = this.decoder.decode(value, { stream: true });
-
-        // Store in terminal_outputs
-        runningAgent.outputSequence++;
-        const seq = runningAgent.outputSequence;
-        try {
-          if (!this.closed) {
-            this.db
-              .prepare(
-                "INSERT INTO terminal_outputs (agent_id, session_id, stream, data, sequence) VALUES (?, ?, ?, ?, ?)",
-              )
-              .run(runningAgent.id, runningAgent.spawnSessionId, streamType, text, seq);
-          }
-        } catch (err) {
-          if (!this.closed) logError(this.db, "agent.store_output", { agentId: runningAgent.id, streamType, seq }, err);
-        }
-
-        // Emit event for real-time UI
-        eventBus.emit("agent:output", {
-          agentId: runningAgent.id,
-          stream: streamType,
-          data: text,
-          sequence: seq,
-        });
-
-        if (streamType === "stdout") {
-          runningAgent.stdoutBuffer += text;
-          if (runningAgent.stdoutBuffer.length > MAX_BUFFER_SIZE) {
-            logError(this.db, "agent.stdout_buffer_overflow", { agentId: runningAgent.id, bufferSize: runningAgent.stdoutBuffer.length }, new Error("stdout buffer exceeded max size, truncating"));
-            runningAgent.stdoutBuffer = runningAgent.stdoutBuffer.slice(-MAX_BUFFER_SIZE / 2);
-          }
-          const lines = this.processStdoutBuffer(runningAgent);
-          for (const line of lines) {
-            const signal = this.parseAgentOutput(runningAgent.id, line);
-            this.emitSignalIfNeeded(runningAgent.id, signal);
-
-            const queued = this.queuedSignals.get(runningAgent.id) ?? [];
-            for (const queuedSignal of queued) {
-              this.emitSignalIfNeeded(runningAgent.id, queuedSignal);
-            }
-            if (queued.length > 0) {
-              this.queuedSignals.delete(runningAgent.id);
-            }
-          }
-        } else {
-          runningAgent.stderrBuffer += text;
-          if (runningAgent.stderrBuffer.length > MAX_BUFFER_SIZE) {
-            runningAgent.stderrBuffer = runningAgent.stderrBuffer.slice(-MAX_BUFFER_SIZE / 2);
-          }
-        }
+        this.ingestChunk(runningAgent, text, streamType);
       }
     } catch (err) {
       // Stream closed or errored - expected on process exit
@@ -871,6 +930,91 @@ export class AgentManager {
         eventBus.emit("agent:streams_drained", { agentId: runningAgent.id });
       }
     }
+  }
+
+  /**
+   * One chunk of agent output: record it, push it to the UI, and — for stdout —
+   * run the signal scan over whatever complete lines it completed.
+   *
+   * Split out of `readStream` so an in-process agent (custom agents, which have
+   * no stdout to read) reaches exactly this path via `ingestSyntheticStdout`
+   * instead of a parallel implementation that would drift.
+   */
+  private ingestChunk(runningAgent: RunningAgent, text: string, streamType: "stdout" | "stderr"): void {
+    runningAgent.outputSequence++;
+    const seq = runningAgent.outputSequence;
+    try {
+      if (!this.closed) {
+        this.db
+          .prepare(
+            "INSERT INTO terminal_outputs (agent_id, session_id, stream, data, sequence) VALUES (?, ?, ?, ?, ?)",
+          )
+          .run(runningAgent.id, runningAgent.spawnSessionId, streamType, text, seq);
+      }
+    } catch (err) {
+      if (!this.closed) logError(this.db, "agent.store_output", { agentId: runningAgent.id, streamType, seq }, err);
+    }
+
+    // Emit event for real-time UI
+    eventBus.emit("agent:output", {
+      agentId: runningAgent.id,
+      stream: streamType,
+      data: text,
+      sequence: seq,
+    });
+
+    if (streamType === "stdout") {
+      runningAgent.stdoutBuffer += text;
+      if (runningAgent.stdoutBuffer.length > MAX_BUFFER_SIZE) {
+        logError(this.db, "agent.stdout_buffer_overflow", { agentId: runningAgent.id, bufferSize: runningAgent.stdoutBuffer.length }, new Error("stdout buffer exceeded max size, truncating"));
+        runningAgent.stdoutBuffer = runningAgent.stdoutBuffer.slice(-MAX_BUFFER_SIZE / 2);
+      }
+      const lines = this.processStdoutBuffer(runningAgent);
+      for (const line of lines) {
+        const signal = this.parseAgentOutput(runningAgent.id, line);
+        this.emitSignalIfNeeded(runningAgent.id, signal);
+
+        const queued = this.queuedSignals.get(runningAgent.id) ?? [];
+        for (const queuedSignal of queued) {
+          this.emitSignalIfNeeded(runningAgent.id, queuedSignal);
+        }
+        if (queued.length > 0) {
+          this.queuedSignals.delete(runningAgent.id);
+        }
+      }
+    } else {
+      runningAgent.stderrBuffer += text;
+      if (runningAgent.stderrBuffer.length > MAX_BUFFER_SIZE) {
+        runningAgent.stderrBuffer = runningAgent.stderrBuffer.slice(-MAX_BUFFER_SIZE / 2);
+      }
+    }
+  }
+
+  /**
+   * Feed text into an in-process agent's stdout path — recorded, pushed to the
+   * UI, and signal-scanned. This is how a custom agent's assistant prose gets
+   * `[MSG:…]` / `[DELEGATE_COMPLETE]` handled identically to a CLI's stdout.
+   *
+   * Use `appendSyntheticOutput` instead for anything that must NOT be scanned.
+   */
+  ingestSyntheticStdout(agentId: string, text: string): void {
+    const resolvedId = this.resolveRuntimeId(agentId);
+    const runningAgent = resolvedId ? this.agents.get(resolvedId) : undefined;
+    if (!runningAgent) return;
+    this.ingestChunk(runningAgent, text, "stdout");
+  }
+
+  /**
+   * Feed text into an in-process agent's stderr path. Not signal-scanned, but it
+   * does accumulate into `stderrBuffer`, which is what `agent:exit` carries as
+   * `stderrSnippet` — the only place a failed run's reason reaches the
+   * orchestrator and the UI.
+   */
+  ingestSyntheticStderr(agentId: string, text: string): void {
+    const resolvedId = this.resolveRuntimeId(agentId);
+    const runningAgent = resolvedId ? this.agents.get(resolvedId) : undefined;
+    if (!runningAgent) return;
+    this.ingestChunk(runningAgent, text, "stderr");
   }
 
   private emitSignalIfNeeded(agentId: string, signal: ParsedSignal): void {
@@ -1022,7 +1166,7 @@ export class AgentManager {
     return true;
   }
 
-  private handleProcessExit(agentId: string, processPid: number, code: number): void {
+  private handleProcessExit(agentId: string, processPid: number | null, code: number): void {
     if (this.closed) return;
 
     const runtime = this.agents.get(agentId);

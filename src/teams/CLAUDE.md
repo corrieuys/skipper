@@ -6,6 +6,11 @@
 
 Phases live on team. Each phase names agents + optional consensus config.
 
+Each member may also carry `customTools` — operator-defined tool names granted to
+that agent on that team (`src/custom-tools`). This is the only route by which a
+CLI agent gets one; a custom agent can additionally carry its own always-on list,
+and a session receives the union.
+
 Membership is flat. `team_agents` carries `role` + `level` only — there is no
 reporting hierarchy, and the delegate roster an agent is given
 (`agents/prompt-builder.ts:getTeamRoster`) lists every member of the task's team.

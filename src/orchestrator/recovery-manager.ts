@@ -59,6 +59,10 @@ export class RecoveryManager {
       }
 
       for (const [agentId, running] of this.agentManager.getRunningAgents()) {
+        // In-process agents (custom agents) have no pid — they live and die with
+        // this process, so being in the map IS the liveness proof. Probing would
+        // throw and evict a perfectly healthy runtime.
+        if (running.process.pid === null) continue;
         try {
           process.kill(running.process.pid, 0);
         } catch (err) {

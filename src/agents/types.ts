@@ -26,10 +26,28 @@ export function providerSupportsUsageTracking(agentType: string | null | undefin
   return !!agentType && USAGE_TRACKING_PROVIDERS.has(agentType);
 }
 
+/**
+ * Agent-type name prefix marking a custom agent — one Skipper executes inside its
+ * own process rather than spawning a CLI. Lives here, next to the type lookup,
+ * because `custom-agents/store.ts` needs the cache invalidator from this module
+ * and the dependency cannot run both ways.
+ */
+export const CUSTOM_TYPE_PREFIX = "custom:";
+
+export function isCustomAgentType(typeName: string | null | undefined): boolean {
+  return !!typeName && typeName.startsWith(CUSTOM_TYPE_PREFIX);
+}
+
 export function agentTypeUsesInlinePrompt(
-  typeDef: Pick<AgentTypeDefinition, "args" | "resume_args" | "supports_resume">,
+  typeDef: Pick<AgentTypeDefinition, "args" | "resume_args" | "supports_resume"> & { name?: string },
   sessionId?: string | null,
 ): boolean {
+  // Custom agents run inside the daemon and have no stdin at all — their prompt
+  // is handed to the runner at spawn. Saying so here is what keeps every spawn
+  // site (task-runner, delegation, phase, consensus, idle-poke) on the
+  // `initialPrompt` branch without any of them knowing custom agents exist.
+  if (isCustomAgentType(typeDef.name)) return true;
+
   const activeArgs = sessionId && typeDef.supports_resume && typeDef.resume_args
     ? typeDef.resume_args
     : typeDef.args;

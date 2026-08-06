@@ -12,6 +12,7 @@ import {
   removeTeam,
   getTeam,
 } from "../config/store";
+import { isCustomAgentType } from "../agents/types";
 import { registerVisibleLocalTeam, unregisterVisibleLocalTeam } from "../config/feature-flags";
 import { normalizeSlashCommand } from "../slack/slash-command";
 
@@ -39,6 +40,13 @@ export interface LocalTeamAgent {
   instruction?: string;
   role?: string | null;
   capabilities?: string[];
+  /**
+   * Operator-defined tool names granted to this agent on this team
+   * (`src/custom-tools`). Applies to CLI agents too — it is the only way one gets
+   * a custom tool. A custom agent additionally carries its own always-on list, and
+   * a session receives the union.
+   */
+  customTools?: string[];
 }
 
 /** Per-team settings blob (runtime `local_teams.team_config` JSON column). */
@@ -355,7 +363,14 @@ function validateInput(input: LocalTeamInput): void {
     if (a.id === SKIPPER_AGENT_ID) throw new Error('team: "skipper" is implicit and cannot be an inline agent');
     if (seen.has(a.id)) throw new Error(`team: duplicate inline agent id "${a.id}"`);
     seen.add(a.id);
-    if (!getAgentType(a.type)) throw new Error(`team: unknown agent type "${a.type}" for agent "${a.id}"`);
+    // `getAgentType` reads the JSON config snapshot, which is where the CLI
+    // providers live. Custom agents are registered into the in-memory
+    // `agent_types` TABLE only (they carry secrets and must never reach a
+    // committed snapshot), so they are absent from it — and a team containing
+    // one would be rejected on save. Accept them by their type prefix.
+    if (!isCustomAgentType(a.type) && !getAgentType(a.type)) {
+      throw new Error(`team: unknown agent type "${a.type}" for agent "${a.id}"`);
+    }
   }
 }
 

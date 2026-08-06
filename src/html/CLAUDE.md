@@ -27,6 +27,18 @@ Lots of legacy flat `*Fragment.ts` files at this level — pre-reorg into `fragm
 | `forensics*.ts` | Forensics tab on task detail (timeline, instance tree, delegations, escalations, token usage, terminal tails) |
 | `dashboard*Fragment.ts` | Dashboard polling fragments |
 
+## Custom agent pages
+
+`pages/custom-agents.page.ts` (index) + `pages/custom-agent-form.page.ts` (editor),
+on `/custom-agents` and `/custom-agents/:id`, experimental only. The index also
+carries the two panels that define what an agent can be granted — `mcpServersPanel`
+and `customToolsPanel` — so the supply and the ticking sit on one page rather than
+across Config. The editor works
+like the team map: one client-side `AGENT` object, every field a mutation, nothing
+persisted until Save POSTs the whole thing as JSON. Tool and skill checkboxes are
+rendered from `custom-agents/tools/registry.ts` and
+`custom-agents/mcp-catalogue.ts`, so adding a tool needs no page change.
+
 ## Teams pages
 
 `pages/teams.page.ts` (index grid) + `pages/team-map.page.ts` (map editor), styled

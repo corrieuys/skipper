@@ -35,9 +35,12 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.20",
     "@modelcontextprotocol/sdk": "1.29.0",
+    "ai": "^7.0.48",
     "gray-matter": "4.0.3",
-    "smol-toml": "1.6.1"
+    "smol-toml": "1.6.1",
+    "zod": "^4.4.3"
   },
   "overrides": {
     "qs": "6.15.2",

@@ -4,6 +4,7 @@
 
 WHEN TO POST (aim for a handful over a task, not a running commentary):
 - You start a substantial piece of work: "Started reworking the checkout flow. About 8 files to touch."
+- Milestones and progress through task phases.
 - You make a decision the operator would want to know about: "Went with the existing session store instead of adding Redis, since traffic is well under what it handles."
 - You find something unexpected: "The failing test was already broken before this change, so it is not caused by the new code."
 - You hit a slow stretch, so the silence is explained: "Running the full suite now. Takes about 10 minutes."

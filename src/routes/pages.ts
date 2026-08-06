@@ -333,6 +333,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     const { listLocalTeams, getLocalTeam } = require("../teams/local-teams");
     const { listAgentTypes } = require("../config/store");
     const { isAllowedProvider } = require("../config/model-settings");
+    const { listCustomAgents, customAgentTypeName } = require("../custom-agents/store");
 
     const teamPageMeta = () => {
       const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
@@ -343,24 +344,94 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
       };
     };
 
-    const teamAgentTypeChoices = () =>
-      (listAgentTypes() as Array<{ name: string }>)
+    // Providers a team agent may be set to: the allowlisted CLIs, plus every
+    // custom agent defined on this machine.
+    //
+    // The two come from different places and cannot be filtered as one list.
+    // `listAgentTypes()` here reads the JSON config snapshot, which is where the
+    // CLI providers live; custom agents live in the runtime DB and are only
+    // mirrored into the in-memory `agent_types` TABLE. Hence the concatenation.
+    //
+    // `isAllowedProvider` is deliberately not widened — it also gates the config
+    // page's Skipper/Greg/Dictation model pickers, and a custom agent is not a
+    // root Skipper.
+    const teamAgentTypeChoices = () => {
+      const cli = (listAgentTypes() as Array<{ name: string }>)
         .filter((t) => isAllowedProvider(t.name))
         .map((t) => ({ name: t.name }));
+      const custom = (listCustomAgents(db) as Array<{ id: string; name: string }>)
+        .map((a) => ({ name: customAgentTypeName(a.id), label: a.name }));
+      return [...cli, ...custom];
+    };
 
     addRoute("GET", "/teams", () => {
       return html(teamsPage({ teams: listLocalTeams(db), ...teamPageMeta() }));
     });
 
+    // Tools a team may grant to any of its agents. Empty (and the section is not
+    // rendered) when none are defined or the flag is off.
+    const teamCustomToolChoices = () => (isExperimental()
+      ? (require("../custom-tools/store").listCustomTools(db) as Array<{ name: string; description: string }>)
+        .map((t) => ({ name: t.name, description: t.description }))
+      : []);
+
     addRoute("GET", "/teams/new", () => {
-      return html(teamMapPage({ team: null, agentTypes: teamAgentTypeChoices(), ...teamPageMeta() }));
+      return html(teamMapPage({ team: null, agentTypes: teamAgentTypeChoices(), customTools: teamCustomToolChoices(), ...teamPageMeta() }));
     });
 
     addRoute("GET", "/teams/:id", (_req, params) => {
       const team = getLocalTeam(db, params.id!);
       if (!team) return new Response(null, { status: 302, headers: { Location: "/teams" } });
-      return html(teamMapPage({ team, agentTypes: teamAgentTypeChoices(), ...teamPageMeta() }));
+      return html(teamMapPage({ team, agentTypes: teamAgentTypeChoices(), customTools: teamCustomToolChoices(), ...teamPageMeta() }));
     });
+
+    // Custom agents — agents Skipper runs in-process. Experimental only, so the
+    // pages 404 rather than render an empty feature.
+    if (isExperimental()) {
+      const { customAgentsPage } = require("../html/pages/custom-agents.page");
+      const { customAgentFormPage } = require("../html/pages/custom-agent-form.page");
+      const { getCustomAgent } = require("../custom-agents/store");
+      const { listAvailableSkills } = require("../custom-agents/skills");
+      const { listMcpServers, listImportableServers } = require("../custom-agents/servers");
+      const { listCustomTools } = require("../custom-tools/store");
+
+      const skillChoices = () =>
+        listAvailableSkills().map((s: { name: string; description: string }) => ({
+          name: s.name,
+          description: s.description,
+        }));
+
+      addRoute("GET", "/custom-agents", () => {
+        // Servers render from the cached tool catalogue only — no server is
+        // contacted on a page load, so a dead stdio server cannot hang the page.
+        return html(customAgentsPage({
+          agents: listCustomAgents(db),
+          mcpServers: listMcpServers(db),
+          importableServers: listImportableServers(db),
+          customTools: listCustomTools(db),
+          ...teamPageMeta(),
+        }));
+      });
+
+      addRoute("GET", "/custom-agents/new", () => {
+        return html(customAgentFormPage({ agent: null, skills: skillChoices(), mcpServers: listMcpServers(db), customTools: listCustomTools(db), ...teamPageMeta() }));
+      });
+
+      addRoute("GET", "/custom-agents/:id", (_req, params) => {
+        const agent = getCustomAgent(db, params.id!);
+        if (!agent) return new Response(null, { status: 302, headers: { Location: "/custom-agents" } });
+        // The editor must never receive a stored secret. Blank fields plus the
+        // "leave blank to keep" contract in `updateCustomAgent` cover the round trip.
+        const safe = {
+          ...agent,
+          apiKey: agent.apiKey ? "__stored__" : "",
+          headers: Object.fromEntries(
+            Object.entries(agent.headers as Record<string, string>).map(([k, v]) => [k, v ? "__stored__" : ""]),
+          ),
+        };
+        return html(customAgentFormPage({ agent: safe, skills: skillChoices(), mcpServers: listMcpServers(db), customTools: listCustomTools(db), ...teamPageMeta() }));
+      });
+    }
   }
 
 
