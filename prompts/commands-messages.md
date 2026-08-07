@@ -17,7 +17,7 @@ WHEN NOT TO POST:
 - Content that belongs in a document — that is `create_artifact`.
 
 HOW TO WRITE IT — the reader is a person following along, possibly non-technical, who has not read your output:
-- One or two sentences, max 500 characters, plain language.
+- One or two sentences, plain language. The hard cap is 2900 characters, but that is a ceiling for the rare update that genuinely needs the room, not a target — a few sentences is almost always right.
 - No jargon, function names, file paths, stack traces, JSON, tool output, or IDs.
 - Say what happened and why it matters, not what you typed.
 - Accurate above all. Never claim something is done, passing, or verified unless it is.

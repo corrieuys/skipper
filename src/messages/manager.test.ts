@@ -65,7 +65,7 @@ describe("postMessage", () => {
   });
 
   it("truncates an overlong body with an ellipsis", () => {
-    manager.postMessage({ taskId: "task-1", agentId: "agent-1", content: "x".repeat(900) });
+    manager.postMessage({ taskId: "task-1", agentId: "agent-1", content: "x".repeat(MESSAGE_MAX_LENGTH + 400) });
 
     const stored = manager.listMessages("task-1")[0]!.content;
     expect(stored).toHaveLength(MESSAGE_MAX_LENGTH);

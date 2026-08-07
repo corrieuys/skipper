@@ -60,6 +60,15 @@ function button(text: string, actionId: string, value: string, style?: "primary"
 export const ESCALATION_TEXT_LIMIT = 2900;
 
 /**
+ * Cap for a section whose body is already length-limited upstream — today the
+ * operator message, capped at `MESSAGE_MAX_LENGTH` (2900). Sits just under Block
+ * Kit's hard 3000 so the `:speech_balloon: *<agent>*: ` prefix fits without
+ * eating the tail of a maximum-length message. Applied after mrkdwn escaping, so
+ * an `&`-heavy body can never push the payload past what Slack accepts.
+ */
+export const SECTION_TEXT_LIMIT = 2990;
+
+/**
  * The figure agents are told to write to, comfortably inside
  * `ESCALATION_TEXT_LIMIT` once the title and heading prefix are spent. Three
  * surfaces quote it (the SLACK ORIGIN prompt block, the `slack_send_*` capture
@@ -149,7 +158,7 @@ export function operatorMessageBlocks(agentName: string, content: string): unkno
   return [
     {
       type: "section",
-      text: { type: "mrkdwn", text: truncate(body, ESCALATION_TEXT_LIMIT) },
+      text: { type: "mrkdwn", text: truncate(body, SECTION_TEXT_LIMIT) },
     },
   ];
 }

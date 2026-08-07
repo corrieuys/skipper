@@ -12,6 +12,10 @@ import {
   MODAL_INPUT_ACTION,
   MODAL_CALLBACK_ID,
 } from "./blocks";
+import { MESSAGE_MAX_LENGTH } from "../messages/manager";
+
+/** Block Kit's own ceiling on a section's text — what Slack rejects past. */
+const SLACK_SECTION_HARD_LIMIT = 3000;
 
 describe("action value codec", () => {
   it("round-trips kind/action/id", () => {
@@ -70,6 +74,18 @@ describe("message blocks", () => {
     const section = blocks[0] as { type: string; text: { text: string } };
     expect(section.type).toBe("section");
     expect(section.text.text).toBe(":speech_balloon: *Skipper*: Deploy finished. Watching for errors.");
+  });
+
+  // The stored cap and the section cap are set against each other on purpose: a
+  // message that survived `normalizeContent` must reach Slack whole, prefix and
+  // all. If either constant moves without the other, this fails.
+  it("delivers a maximum-length message without clipping it", () => {
+    const body = "x".repeat(MESSAGE_MAX_LENGTH);
+    const blocks = operatorMessageBlocks("a-long-agent-instance-name:builder", body) as Array<Record<string, unknown>>;
+    const section = blocks[0] as { text: { text: string } };
+    expect(section.text.text.endsWith("…")).toBe(false);
+    expect(section.text.text).toContain(body);
+    expect(section.text.text.length).toBeLessThanOrEqual(SLACK_SECTION_HARD_LIMIT);
   });
 
   it("operator message escapes mrkdwn specials in both the name and the body", () => {

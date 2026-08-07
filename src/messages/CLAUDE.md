@@ -5,7 +5,7 @@ the human watching a task.
 
 | file | use |
 |---|---|
-| `manager.ts` | `MessageManager` — `postMessage`, `listMessages`, `countMessages`. Normalizes to one line, caps at `MESSAGE_MAX_LENGTH` (500), dedups an identical repost from the same agent within 5s, emits `task:message_posted` |
+| `manager.ts` | `MessageManager` — `postMessage`, `listMessages`, `countMessages`. Normalizes to one line, caps at `MESSAGE_MAX_LENGTH` (2900, sized to Slack's section limit), dedups an identical repost from the same agent within 5s, emits `task:message_posted` |
 
 Third register alongside notes and artifacts, split by **audience**:
 

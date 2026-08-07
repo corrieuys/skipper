@@ -2,8 +2,13 @@ import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
 import { eventBus } from "../events/bus";
 
-/** Hard cap on a message body. Long enough for two or three sentences. */
-export const MESSAGE_MAX_LENGTH = 500;
+/**
+ * Hard cap on a message body. Sized to Slack's Block Kit section limit (3000
+ * chars) so a message that fits here also arrives intact in the task's thread —
+ * the two caps are deliberately close, and `blocks.ts:SECTION_TEXT_LIMIT` leaves
+ * the headroom the `:speech_balloon: *<agent>*: ` prefix needs.
+ */
+export const MESSAGE_MAX_LENGTH = 2900;
 
 /** Window in which an identical message from the same agent is treated as a repeat. */
 const DEDUP_WINDOW_SECONDS = 5;
