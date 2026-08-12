@@ -14,17 +14,10 @@ import { ArtifactManager } from "../../orchestrator/artifact-manager";
 import { parseRequestBody } from "../utils";
 import { eventBus } from "../../events/bus";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
-
-function ok(data: unknown, status: number = 200): Response {
-  return Response.json({ ok: true, data }, { status });
-}
-
-function err(message: string, status: number = 400): Response {
-  return Response.json({ ok: false, error: message }, { status });
-}
+import { ok, err } from "./envelope";
 
 export function registerDataTaskRoutes(
-  _daemon?: Pick<ManagerDaemon, "getAgentManager" | "getRealtimeSessionManager" | "getPhaseManager">,
+  _daemon?: Pick<ManagerDaemon, "getAgentManager" | "getRealtimeSessionManager" | "getPhaseManager" | "pauseTaskAgents" | "resumeTaskAgents">,
 ): void {
   const scheduler = new TaskScheduler();
   const artifactManager = new ArtifactManager();
@@ -179,6 +172,36 @@ export function registerDataTaskRoutes(
     try {
       scheduler.approveTask(params.id);
       return ok({ id: params.id, status: "approved" });
+    } catch (e: unknown) {
+      return err(e instanceof Error ? e.message : "Internal error");
+    }
+  });
+
+  addDataRoute("POST", "/data/tasks/:id/pause", async (_req, params) => {
+    try {
+      const task = scheduler.getTask(params.id);
+      if (!task) return err("Task not found", 404);
+      if (task.task_type === "real_time") return err("Realtime tasks cannot be paused");
+      // Flip to 'paused' first so recovery/health/queue loops immediately stop
+      // treating it as a live running task, THEN stop the agents + their trees.
+      scheduler.pauseTask(params.id);
+      if (_daemon) await _daemon.pauseTaskAgents(params.id);
+      return ok({ id: params.id, status: "paused" });
+    } catch (e: unknown) {
+      return err(e instanceof Error ? e.message : "Internal error");
+    }
+  });
+
+  addDataRoute("POST", "/data/tasks/:id/resume-from-pause", async (_req, params) => {
+    try {
+      const task = scheduler.getTask(params.id);
+      if (!task) return err("Task not found", 404);
+      if (task.status !== "paused") return err(`Task is not paused (status: ${task.status})`);
+      // Respawn the agents first (reading snapshots from orchestration_state),
+      // THEN flip to 'running' so the task is only live once agents are back.
+      if (_daemon) await _daemon.resumeTaskAgents(params.id);
+      scheduler.resumeFromPause(params.id);
+      return ok({ id: params.id, status: "running" });
     } catch (e: unknown) {
       return err(e instanceof Error ? e.message : "Internal error");
     }

@@ -12,13 +12,7 @@
       ],
       "resume_args": null,
       "model_flag": "--model",
-      "available_models": [
-        "claude-opus-4-8",
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-sonnet-4-6",
-        "claude-haiku-4-5"
-      ],
+      "available_models": [],
       "env_vars": {},
       "supports_stdin": false,
       "supports_resume": true,
@@ -44,11 +38,7 @@
         "-"
       ],
       "model_flag": "-m",
-      "available_models": [
-        "gpt-5.3-codex",
-        "gpt-5.4",
-        "gpt-5.4-mini"
-      ],
+      "available_models": [],
       "env_vars": {},
       "supports_stdin": false,
       "supports_resume": true,
@@ -72,12 +62,7 @@
         "{{session_id}}"
       ],
       "model_flag": "-m",
-      "available_models": [
-        "opencode/big-pickle",
-        "opencode/gpt-5-nano",
-        "opencode/minimax-m2.5-free",
-        "opencode/nemotron-3-super-free"
-      ],
+      "available_models": [],
       "env_vars": {},
       "supports_stdin": false,
       "supports_resume": true,
@@ -90,17 +75,13 @@
         "-p",
         "{{prompt}}",
         "--output-format",
-        "streaming-json",
+        "streaming-messages-json",
         "--always-approve",
         "--no-auto-update"
       ],
       "resume_args": null,
       "model_flag": "-m",
-      "available_models": [
-        "grok-4.5",
-        "grok-composer-2.5-fast",
-        "grok-build"
-      ],
+      "available_models": [],
       "env_vars": {},
       "supports_stdin": false,
       "supports_resume": true,

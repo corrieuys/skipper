@@ -99,11 +99,40 @@ export function terminalJsonSummary(event: Record<string, unknown>): string {
         return "";
     }
 
-    // error
+    // Grok's older `--output-format streaming-json`: response text as
+    // {type:"text",data:"<chunk>"} chunks, reasoning as {type:"thought",data:"…"}.
+    // Skipper now asks grok for `streaming-messages-json`, which lands in the
+    // Claude-shaped branches above one WHOLE message at a time — these frames only
+    // reach here from an install whose `agent_types.json` predates that switch
+    // (config is seeded once and never overwritten). Kept so such an install shows
+    // output rather than a blank feed; note a chunk is a few tokens, so a sentence
+    // renders as several rows. Gated on a top-level string `data` so OpenCode's own
+    // {type:"text",part:{…}} frames fall through to their own handling.
+    if (typeof event.data === "string" && typeof event.type === "string") {
+        if (event.type === "text") return trunc(event.data);
+        // Marked like Claude's thinking blocks so stripThinking() drops it from
+        // the Messages filter but leaves it visible in the unfiltered feed.
+        if (event.type === "thought") return `<thinking> ${event.data.slice(0, 60)}…`;
+    }
+
+    // OpenCode (`--format json`): whole-message text as {type:"text",part:{text}}.
+    // Distinct from grok's {type:"text",data} above (part vs top-level data). The
+    // step_start / step_finish / tool wrapper frames carry no prose and fall
+    // through to "" so the feed drops them, which is what we want.
+    if (event.type === "text" && event.part && typeof event.part === "object") {
+        const partText = (event.part as Record<string, unknown>).text;
+        if (typeof partText === "string" && partText.trim()) return trunc(partText.trim());
+    }
+
+    // error. Claude nests it ({error:{message}}); grok puts a plain string at the
+    // top level, which the object branch above deliberately skips.
     const error = event.error;
     if (error && typeof error === "object") {
         const msg = (error as Record<string, unknown>).message;
         if (typeof msg === "string") return trunc(msg);
+    }
+    if (event.type === "error" && typeof event.message === "string") {
+        return trunc(event.message);
     }
 
     return "";

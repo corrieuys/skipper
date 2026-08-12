@@ -3,25 +3,11 @@ import { addDataRoute } from "./auth";
 import {
   fetchDashboardPhaseIndicatorTask,
   getPollIntervalSeconds,
-} from "../pages";
-
-const DASHBOARD_TIMELINE_LIMIT = 250;
-
-function fetchDashboardRunningInstances(db: Database) {
-  return db.prepare(
-    `SELECT ai.id, ai.template_agent_id, COALESCE(a.name, ai.template_agent_id) AS template_agent_name, ai.task_id, t.title AS task_title,
-            ai.status, ai.parent_instance_id, ai.root_instance_id, ai.created_at, ai.updated_at
-     FROM agent_instances ai
-     LEFT JOIN agents a ON a.id = ai.template_agent_id
-     LEFT JOIN tasks t ON t.id = ai.task_id
-     WHERE ai.status IN ('running', 'waiting_delegation')
-     ORDER BY ai.updated_at DESC`,
-  ).all();
-}
-
-function ok(data: unknown): Response {
-  return Response.json({ ok: true, data });
-}
+  fetchDashboardMetrics,
+  fetchDashboardRunningInstances,
+  fetchDashboardRealtimeTimeline,
+} from "../../data/queries";
+import { ok } from "./envelope";
 
 export function registerDataDashboardRoutes(db: Database, _daemon?: unknown): void {
 
@@ -50,66 +36,18 @@ export function registerDataDashboardRoutes(db: Database, _daemon?: unknown): vo
 
   // GET /data/dashboard/metrics
   addDataRoute("GET", "/data/dashboard/metrics", () => {
-    const mttrRow = db.prepare(
-      `SELECT AVG((julianday(completed_at) - julianday(started_at)) * 24 * 60) as mttr
-       FROM tasks
-       WHERE status = 'completed' AND started_at IS NOT NULL AND completed_at IS NOT NULL
-         AND completed_at > datetime('now', '-7 days')`,
-    ).get() as { mttr: number | null } | null;
-
-    const stuckRow = db.prepare(
-      `SELECT
-        COUNT(*) as total,
-        SUM(CASE WHEN unixepoch('now') - unixepoch(updated_at) > 600 THEN 1 ELSE 0 END) as stuck
-       FROM tasks WHERE status = 'running'`,
-    ).get() as { total: number; stuck: number };
-
-    const delegationRow = db.prepare(
-      `SELECT
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as succeeded
-       FROM delegations
-       WHERE created_at > datetime('now', '-7 days')`,
-    ).get() as { total: number; succeeded: number };
-
-    const remediationCount = (db.prepare(
-      "SELECT COUNT(*) as count FROM events WHERE type LIKE 'remediation:%' AND created_at > datetime('now', '-24 hours')",
-    ).get() as { count: number }).count;
-
-    return ok({
-      mttr_minutes: mttrRow?.mttr ?? null,
-      stuck_task_count: stuckRow.stuck ?? 0,
-      total_running_tasks: stuckRow.total ?? 0,
-      delegation_success_rate: delegationRow.total > 0 ? delegationRow.succeeded / delegationRow.total : null,
-      remediation_event_count: remediationCount,
-    });
+    return ok(fetchDashboardMetrics(db));
   });
 
   // GET /data/dashboard/realtime-timeline
   addDataRoute("GET", "/data/dashboard/realtime-timeline", () => {
-    const activeRealtimeTask = db.prepare(
-      `SELECT id, title
-       FROM tasks
-       WHERE task_type = 'real_time'
-         AND status IN ('running', 'approved')
-       ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at DESC
-       LIMIT 1`,
-    ).get() as { id: string; title: string } | null;
-
-    if (!activeRealtimeTask) return ok(null);
-
-    const entries = db.prepare(
-      `SELECT id, entry_type, content, created_at
-       FROM realtime_timeline
-       WHERE task_id = ?
-       ORDER BY created_at DESC
-       LIMIT ${DASHBOARD_TIMELINE_LIMIT}`,
-    ).all(activeRealtimeTask.id) as { id: string; entry_type: string; content: string; created_at: string }[];
-
+    const timeline = fetchDashboardRealtimeTimeline(db);
+    if (!timeline) return ok(null);
+    // Wire shape predates the shared fetcher — keep snake_case keys.
     return ok({
-      task_id: activeRealtimeTask.id,
-      task_title: activeRealtimeTask.title,
-      entries,
+      task_id: timeline.taskId,
+      task_title: timeline.taskTitle,
+      entries: timeline.entries,
     });
   });
 

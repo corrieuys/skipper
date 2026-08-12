@@ -35,6 +35,8 @@ beforeAll(() => {
     getPhaseManager: () => phaseManager,
     getRealtimeSessionManager: () => ({}),
     getAgentManager: () => ({ getRunningAgents: () => new Map() }),
+    pauseTaskAgents: async () => {},
+    resumeTaskAgents: async () => {},
   } as unknown as ManagerDaemon;
 
   registerDataRoutes(db, fakeDaemon);
@@ -156,6 +158,48 @@ describe("artifact create endpoint", () => {
       headers,
       body: JSON.stringify({ name: "x", kind: "nonsense", body: "y" }),
     });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("pause / resume-from-pause", () => {
+  it("pauses a running task and resumes it", async () => {
+    const db = getDb();
+    db.prepare(
+      "INSERT INTO tasks (id, title, status, started_at) VALUES ('task-pause', 'Pause me', 'running', datetime('now'))",
+    ).run();
+
+    const pauseRes = await fetch(`${baseUrl}/data/tasks/task-pause/pause`, { method: "POST", headers });
+    expect(pauseRes.status).toBe(200);
+    const paused = await pauseRes.json();
+    expect(paused.ok).toBe(true);
+    expect(paused.data.status).toBe("paused");
+    let row = db.prepare("SELECT status FROM tasks WHERE id = 'task-pause'").get() as { status: string };
+    expect(row.status).toBe("paused");
+
+    const resumeRes = await fetch(`${baseUrl}/data/tasks/task-pause/resume-from-pause`, { method: "POST", headers });
+    expect(resumeRes.status).toBe(200);
+    const resumed = await resumeRes.json();
+    expect(resumed.ok).toBe(true);
+    expect(resumed.data.status).toBe("running");
+    row = db.prepare("SELECT status FROM tasks WHERE id = 'task-pause'").get() as { status: string };
+    expect(row.status).toBe("running");
+  });
+
+  it("rejects pausing a non-running task", async () => {
+    const res = await fetch(`${baseUrl}/data/tasks/task-plain/pause`, { method: "POST", headers });
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.ok).toBe(false);
+  });
+
+  it("404s pausing an unknown task", async () => {
+    const res = await fetch(`${baseUrl}/data/tasks/nope/pause`, { method: "POST", headers });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects resume-from-pause on a task that is not paused", async () => {
+    const res = await fetch(`${baseUrl}/data/tasks/task-plain/resume-from-pause`, { method: "POST", headers });
     expect(res.status).toBe(400);
   });
 });

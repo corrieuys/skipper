@@ -1,14 +1,7 @@
 import { addDataRoute } from "./auth";
 import { GlobalStoreManager } from "../../global-store/manager";
 import { parseRequestBody } from "../utils";
-
-function ok(data: unknown, status: number = 200): Response {
-  return Response.json({ ok: true, data }, { status });
-}
-
-function err(message: string, status: number = 400): Response {
-  return Response.json({ ok: false, error: message }, { status });
-}
+import { ok, err } from "./envelope";
 
 export function registerDataGlobalStoreRoutes(): void {
   const store = new GlobalStoreManager();

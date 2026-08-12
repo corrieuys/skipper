@@ -46,7 +46,7 @@ CONTEXT ACROSS INVOCATIONS:
 
 IMPORTANT: NEVER call `complete_task`. This is a real-time task — it runs continuously until the user explicitly stops it. Calling `complete_task` would close the task prematurely.
 
-TOOL REFERENCE (MCP server `skipper-daemon`; Claude Code prefixes with `mcp__skipper-daemon__`, Codex may show bare names — call whichever your tool list shows):
+TOOL REFERENCE (MCP server `skipper-daemon`; Claude Code prefixes with `mcp__skipper-daemon__`, Codex may show bare names, grok reaches them via `search_tool`/`use_tool` as `skipper-daemon__<tool>` — call whichever your tool list shows):
 - `mcp__skipper-daemon__delegate({ target, work, label? })` — spawn a sub-agent for investigation/action
 - `mcp__skipper-daemon__delegate_batch({ items })` — parallel delegation to multiple agents in one barrier
 - `mcp__skipper-daemon__create_escalation({ question })` — flag for human attention

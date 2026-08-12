@@ -14,7 +14,7 @@ import { registerCustomToolRoutes } from "./src/routes/custom-tools";
 import { registerCustomAgentTypes } from "./src/custom-agents/store";
 import { ManagerDaemon } from "./src/agents/manager-daemon";
 import { initializeDatabase, closeDb, getDb } from "./src/db/connection";
-import { tryUpgradeRealtimeWs, realtimeWsHandlers } from "./src/routes/realtime-ws";
+import { tryUpgradeRealtimeWs, realtimeWsHandlers, setRecordingStoppedHandler } from "./src/routes/realtime-ws";
 import { UIWebSocketManager } from "./src/ws/ui-push";
 import { NotificationManager } from "./src/notifications/manager";
 import { WhisperManager } from "./src/whisper/manager";
@@ -107,6 +107,9 @@ addRoute("POST", "/api/whisper/stop", () => {
   whisperManager.stop(getDb());
   return Response.json({ running: false });
 });
+
+// Realtime WS "recording.stopped" → stop whisper directly (no HTTP self-call).
+setRecordingStoppedHandler(() => whisperManager.stop(getDb()));
 
 // Register WebSocket upgrade handlers (tried in order)
 setWebSocketUpgradeHandlers([

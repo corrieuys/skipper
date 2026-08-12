@@ -61,54 +61,28 @@ function modelSettingRow(
     <div class="sk-model-row__field">
       <label class="sk-model-row__label" for="model-model-${target}">Model</label>
       <input id="model-model-${target}" type="text" name="model" class="sk-input sk-input--sm" data-model-model
-             value="${escapeHtml(current.model)}" placeholder="default" autocomplete="off"
-             list="model-suggestions-${target}">
-      <datalist id="model-suggestions-${target}">${(options.find((o) => o.name === current.agent_type) ?? options[0])?.models
-      .map((m) => `<option value="${escapeHtml(m)}"></option>`).join("") ?? ""
-    }</datalist>
+             value="${escapeHtml(current.model)}" placeholder="default" autocomplete="off">
     </div>
     <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary sk-model-row__save">Save</button>
   </form>`;
 }
 
 function modelSettingsPanel(ms: ConfigPageViewModel["modelSettings"]): string {
-  // Options map drives the client-side provider → model filtering. Kept as data
-  // so a provider change repopulates the model dropdown without a round trip.
-  const optionsJson = JSON.stringify(
-    ms.options.reduce<Record<string, string[]>>((acc, o) => { acc[o.name] = o.models; return acc; }, {}),
-  );
+  // Model is free text — providers ship new model names faster than any list we
+  // could bake in, so there is no per-provider model picker, just a text field.
   return `<div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
     <div class="sk-panel__header">
       <span class="sk-panel__title">Default Agent Models</span>
     </div>
     <div class="sk-panel__body">
       <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
-        Provider + model for each core agent. Stored on this machine only (not committed).
+        Provider + model for each core agent. Model is any name the provider accepts.
+        Stored on this machine only (not committed).
       </p>
       ${modelSettingRow("skipper", "Skipper", "Root task orchestrator", ms.skipper, ms.options)}
       ${modelSettingRow("greg", "Greg", "Heckler bot", ms.greg, ms.options)}
       ${isExperimental() ? modelSettingRow("dictation", "Dictation Rewriter", "Cleans up dictated task descriptions", ms.dictation, ms.options) : ""}
     </div>
-    <script>
-      (function(){
-        var OPTS = ${optionsJson};
-        document.querySelectorAll('.sk-model-row').forEach(function(row){
-          var typeSel = row.querySelector('[data-model-type]');
-          var modelInput = row.querySelector('[data-model-model]');
-          if(!typeSel || !modelInput) return;
-          var listEl = modelInput.list;
-          typeSel.addEventListener('change', function(){
-            // Model is free text; refresh the datalist suggestions to the new
-            // provider's known models. Whatever is typed still saves.
-            if(!listEl) return;
-            var models = OPTS[typeSel.value] || [];
-            listEl.innerHTML = models.map(function(m){
-              return '<option value="'+m+'"></option>';
-            }).join('');
-          });
-        });
-      })();
-    </script>
   </div>`;
 }
 

@@ -235,23 +235,9 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       }
 
       if (shouldAutoApprove) {
+        // Real-time tasks auto-start + open their session via the daemon's
+        // task:state_changed handler (see manager-daemon.ts).
         created = scheduler.approveTask(created.id);
-      }
-
-      // Real-time tasks bypass the standard draft→approved→running pipeline.
-      // When auto-approved (or after explicit approval), start them immediately
-      // and initialise the realtime session.
-      if (created.task_type === "real_time") {
-        if (created.status === "approved") {
-          scheduler.startTask(created.id);
-        }
-        if (daemon && created.status === "running") {
-          try {
-            daemon.getRealtimeSessionManager().startSession(created.id);
-          } catch {
-            // Session start failure is non-fatal; task is still running
-          }
-        }
       }
 
       if (req.headers.get("HX-Request")) {
@@ -381,14 +367,8 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
 
       const shouldApprove = formData.get("approve") === "1";
       if (shouldApprove && task.status === "draft") {
+        // Real-time auto-start happens in the daemon's state-changed handler.
         scheduler.approveTask(params.id);
-        const updated = scheduler.getTask(params.id);
-        if (updated && updated.task_type === "real_time") {
-          scheduler.startTask(params.id);
-          if (daemon) {
-            try { daemon.getRealtimeSessionManager().startSession(params.id); } catch { /* non-fatal */ }
-          }
-        }
       }
 
       if (req.headers.get("HX-Request")) {
@@ -403,20 +383,8 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
 
   addRoute("POST", "/api/tasks/:id/approve", (_req, params) => {
     try {
-      const beforeTask = scheduler.getTask(params.id);
+      // Real-time auto-start happens in the daemon's state-changed handler.
       scheduler.approveTask(params.id);
-
-      // Real-time tasks auto-start when approved so the session is ready immediately
-      if (beforeTask && beforeTask.task_type === "real_time") {
-        scheduler.startTask(params.id);
-        if (daemon) {
-          try {
-            daemon.getRealtimeSessionManager().startSession(params.id);
-          } catch {
-            // Session start failure is non-fatal; task is still running
-          }
-        }
-      }
 
       if (_req.headers.get("HX-Request")) {
         return hxRedirect(`/?task=${params.id}`);

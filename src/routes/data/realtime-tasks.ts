@@ -1,16 +1,16 @@
 import { addDataRoute } from "./auth";
 import { getDb } from "../../db/connection";
+import {
+  fetchRealtimeTimeline,
+  fetchRealtimeNotes,
+  fetchRealtimeTaskAgents,
+  fetchRealtimePipelineStatus,
+  EMPTY_PIPELINE_COUNTS,
+} from "../../data/realtime";
 import { TaskScheduler } from "../../tasks/scheduler";
 import { getRealtimeTeamId } from "../../config/teams";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
-
-function ok(data: unknown, status: number = 200): Response {
-  return Response.json({ ok: true, data }, { status });
-}
-
-function err(message: string, status: number = 400): Response {
-  return Response.json({ ok: false, error: message }, { status });
-}
+import { ok, err } from "./envelope";
 
 function parseTaskConfig(taskConfigStr: string): Record<string, unknown> {
   try {
@@ -52,71 +52,24 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
 
   addDataRoute("GET", "/data/realtime-tasks/:id/timeline", (_req, params) => {
     const db = getDb();
-    const timeline = db
-      .prepare("SELECT * FROM realtime_timeline WHERE task_id = ? ORDER BY created_at DESC")
-      .all(params.id);
-    return ok(timeline);
+    return ok(fetchRealtimeTimeline(db, params.id));
   });
 
   addDataRoute("GET", "/data/realtime-tasks/:id/notes", (_req, params) => {
     const db = getDb();
-    const notes = db.prepare(
-      `SELECT n.id, n.agent_id, COALESCE(a.name, n.agent_id) AS agent_name, n.content, n.created_at
-       FROM task_notes n
-       LEFT JOIN agents a ON a.id = n.agent_id
-       WHERE n.task_id = ?
-       ORDER BY n.created_at DESC
-       LIMIT 50`,
-    ).all(params.id);
-    return ok(notes);
+    return ok(fetchRealtimeNotes(db, params.id));
   });
 
   addDataRoute("GET", "/data/realtime-tasks/:id/agents", (_req, params) => {
     const db = getDb();
-    const agents = db.prepare(
-      `SELECT ai.id, ai.template_agent_id, a.name AS agent_name, ai.status, ai.created_at
-       FROM agent_instances ai
-       JOIN agents a ON a.id = ai.template_agent_id
-       WHERE ai.task_id = ?
-         AND (ai.status IN ('running', 'pending')
-              OR (ai.status IN ('completed', 'failed')
-                  AND ai.created_at > datetime('now', '-1 hour')))
-       ORDER BY
-         CASE WHEN ai.status IN ('running', 'pending') THEN 0 ELSE 1 END,
-         ai.created_at DESC
-       LIMIT 20`,
-    ).all(params.id);
-    return ok(agents);
+    return ok(fetchRealtimeTaskAgents(db, params.id));
   });
 
   addDataRoute("GET", "/data/realtime-tasks/:id/pipeline-status", (_req, params) => {
     const db = getDb();
-    const pipelineStatus = db
-      .prepare("SELECT * FROM realtime_pipeline_state WHERE task_id = ?")
-      .get(params.id);
-
-    if (!pipelineStatus) {
-      return ok({
-        total_segments: 0,
-        pending_transcription: 0,
-        failed_transcription: 0,
-        pending_summarization: 0,
-        timeline_entry_count: 0,
-      });
-    }
-
-    const counts = db
-      .prepare(
-        `SELECT
-            (SELECT COUNT(*) FROM task_input_streams WHERE task_id = ?) AS total_segments,
-            (SELECT COUNT(*) FROM task_input_streams WHERE task_id = ? AND transcription_status = 'pending') AS pending_transcription,
-            (SELECT COUNT(*) FROM task_input_streams WHERE task_id = ? AND transcription_status = 'failed') AS failed_transcription,
-            (SELECT COUNT(*) FROM task_input_streams WHERE task_id = ? AND summary_batch_id IS NULL AND transcription_status != 'pending') AS pending_summarization,
-            (SELECT COUNT(*) FROM realtime_timeline WHERE task_id = ?) AS timeline_entry_count`,
-      )
-      .get(params.id, params.id, params.id, params.id, params.id);
-
-    return ok({ ...pipelineStatus as object, ...counts as object });
+    const pipelineStatus = fetchRealtimePipelineStatus(db, params.id);
+    if (!pipelineStatus) return ok(EMPTY_PIPELINE_COUNTS);
+    return ok(pipelineStatus);
   });
 
   // ---------------------------------------------------------------------------

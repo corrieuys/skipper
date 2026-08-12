@@ -18,13 +18,11 @@ import {
   fetchDashboardPhaseIndicatorTask,
   buildTeamAgentTiles,
   getOpenEscalationCount,
-} from "../data/queries";
-export {
-  fetchTasksWithTeams,
-  fetchTaskById,
-  fetchTaskDelegations,
-  fetchDashboardRealtimeTimeline,
-  fetchDashboardPhaseIndicatorTask,
+  getPollIntervalSeconds,
+  isDaemonPaused,
+  fetchDashboardRunningInstances,
+  fetchRecentActivity,
+  fetchDashboardMetrics,
 } from "../data/queries";
 import {
   taskListPollingFragment,
@@ -66,14 +64,11 @@ import {
 import { renderUpdateNotice } from "../html/fragments/update-toast";
 import { recentActivityFragment } from "../html/recentActivityFragment";
 import type {
-  DashboardData,
-  PollIntervalSeconds,
   TaskNoteData,
   AuditEventData,
   AuditEventFilters,
   LogEntryData,
   LogFilters,
-  RecentLogEntry,
 } from "../html/components";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 import { htmlResponse as html, parseRequestBody } from "./utils";
@@ -81,16 +76,6 @@ import { fetchLatestAssistantMessage } from "../ws/ui-push";
 
 const LOGS_PAGE_LIMIT = 1000;
 const DASHBOARD_ACTIVITY_LIMIT = 250;
-
-export function getPollIntervalSeconds(db: ReturnType<typeof getDb>): PollIntervalSeconds {
-  const row = db.prepare(
-    `SELECT
-      EXISTS(SELECT 1 FROM tasks WHERE status IN ('running', 'approved')) AS has_active_task,
-      EXISTS(SELECT 1 FROM agent_instances WHERE status IN ('running', 'waiting_delegation', 'pending')) AS has_busy_agent`,
-  ).get() as { has_active_task: number; has_busy_agent: number };
-
-  return (row.has_active_task === 1 || row.has_busy_agent === 1) ? 3 : 8;
-}
 
 function getAgentRuntimeIds(db: ReturnType<typeof getDb>, templateAgentId: string): string[] {
   const runtimeRows = db.prepare(
@@ -108,30 +93,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
 
   // Recent logs fragment (for SSE-triggered HTMX refresh fallback)
   addRoute("GET", "/api/logs/recent", () => {
-    const recentLogs = db.prepare(
-      `WITH ranked AS (
-         SELECT to2.id,
-                to2.agent_id,
-                COALESCE(a.name, ta.name, ai.template_agent_id, to2.agent_id) AS agent_name,
-                to2.stream,
-                to2.data,
-                to2.created_at,
-                ROW_NUMBER() OVER (
-                  PARTITION BY to2.agent_id, to2.stream, to2.data, to2.created_at
-                  ORDER BY to2.id DESC
-                ) AS rn
-         FROM terminal_outputs to2
-         LEFT JOIN agents a ON to2.agent_id = a.id
-         LEFT JOIN agent_instances ai ON to2.agent_id = ai.id
-         LEFT JOIN agents ta ON ta.id = ai.template_agent_id
-         WHERE NOT (json_valid(to2.data) = 1 AND json_extract(to2.data, '$.type') = 'result')
-       )
-       SELECT agent_id, agent_name, stream, data, created_at
-       FROM ranked
-       WHERE rn = 1
-       ORDER BY id DESC
-       LIMIT ${DASHBOARD_ACTIVITY_LIMIT}`,
-    ).all() as RecentLogEntry[];
+    const recentLogs = fetchRecentActivity(db, DASHBOARD_ACTIVITY_LIMIT);
     return html(recentActivityFragment(recentLogs));
   });
 
@@ -336,10 +298,9 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     const { listCustomAgents, customAgentTypeName } = require("../custom-agents/store");
 
     const teamPageMeta = () => {
-      const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
       return {
         escalationCount: getOpenEscalationCount(db),
-        daemonState: pausedRow?.value === "true" ? "paused" : "running",
+        daemonState: isDaemonPaused(db) ? "paused" : "running",
         daemonUptime: process.uptime(),
       };
     };
@@ -569,28 +530,12 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
   });
 
   addRoute("GET", "/fragments/dashboard/running-instances", () => {
-    const runningInstances = db.prepare(
-      `SELECT ai.id, ai.template_agent_id, COALESCE(a.name, ai.template_agent_id) AS template_agent_name, ai.task_id, t.title AS task_title,
-              ai.status, ai.parent_instance_id, ai.root_instance_id, ai.created_at, ai.updated_at
-       FROM agent_instances ai
-       LEFT JOIN agents a ON a.id = ai.template_agent_id
-       LEFT JOIN tasks t ON t.id = ai.task_id
-       WHERE ai.status IN ('running', 'waiting_delegation')
-       ORDER BY ai.updated_at DESC`,
-    ).all() as NonNullable<DashboardData["runningInstances"]>;
+    const runningInstances = fetchDashboardRunningInstances(db);
     return html(dashboardRunningInstancesFragment(runningInstances));
   });
 
   addRoute("GET", "/fragments/dashboard/running-instances-count", () => {
-    const runningInstances = db.prepare(
-      `SELECT ai.id, ai.template_agent_id, COALESCE(a.name, ai.template_agent_id) AS template_agent_name, ai.task_id, t.title AS task_title,
-              ai.status, ai.parent_instance_id, ai.root_instance_id, ai.created_at, ai.updated_at
-       FROM agent_instances ai
-       LEFT JOIN agents a ON a.id = ai.template_agent_id
-       LEFT JOIN tasks t ON t.id = ai.task_id
-       WHERE ai.status IN ('running', 'waiting_delegation')
-       ORDER BY ai.updated_at DESC`,
-    ).all() as NonNullable<DashboardData["runningInstances"]>;
+    const runningInstances = fetchDashboardRunningInstances(db);
     return html(dashboardActiveAgentsCountFragment(runningInstances.length));
   });
 
@@ -647,66 +592,18 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     if (!hasRunningTask) {
       return html(recentActivityFragment([]));
     }
-    const recentLogs = db.prepare(
-      `WITH ranked AS (
-         SELECT to2.id,
-                to2.agent_id,
-                COALESCE(a.name, ta.name, ai.template_agent_id, to2.agent_id) AS agent_name,
-                to2.stream,
-                to2.data,
-                to2.created_at,
-                ROW_NUMBER() OVER (
-                  PARTITION BY to2.agent_id, to2.stream, to2.data, to2.created_at
-                  ORDER BY to2.id DESC
-                ) AS rn
-         FROM terminal_outputs to2
-         LEFT JOIN agents a ON to2.agent_id = a.id
-         LEFT JOIN agent_instances ai ON to2.agent_id = ai.id
-         LEFT JOIN agents ta ON ta.id = ai.template_agent_id
-         WHERE NOT (json_valid(to2.data) = 1 AND json_extract(to2.data, '$.type') = 'result')
-       )
-       SELECT agent_id, agent_name, stream, data, created_at
-       FROM ranked
-       WHERE rn = 1
-       ORDER BY id DESC
-       LIMIT ${DASHBOARD_ACTIVITY_LIMIT}`,
-    ).all() as RecentLogEntry[];
+    const recentLogs = fetchRecentActivity(db, DASHBOARD_ACTIVITY_LIMIT);
     return html(recentActivityFragment(recentLogs));
   });
 
   addRoute("GET", "/fragments/metrics", () => {
-    const mttrRow = db.prepare(
-      `SELECT AVG((julianday(completed_at) - julianday(started_at)) * 24 * 60) as mttr
-       FROM tasks
-       WHERE status = 'completed' AND started_at IS NOT NULL AND completed_at IS NOT NULL
-         AND completed_at > datetime('now', '-7 days')`,
-    ).get() as { mttr: number | null } | null;
-
-    const stuckRow = db.prepare(
-      `SELECT
-        COUNT(*) as total,
-        SUM(CASE WHEN unixepoch('now') - unixepoch(updated_at) > 600 THEN 1 ELSE 0 END) as stuck
-       FROM tasks WHERE status = 'running'`,
-    ).get() as { total: number; stuck: number };
-
-    const delegationRow = db.prepare(
-      `SELECT
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as succeeded
-       FROM delegations
-       WHERE created_at > datetime('now', '-7 days')`,
-    ).get() as { total: number; succeeded: number };
-
-    const remediationCount = (db.prepare(
-      "SELECT COUNT(*) as count FROM events WHERE type LIKE 'remediation:%' AND created_at > datetime('now', '-24 hours')",
-    ).get() as { count: number }).count;
-
+    const m = fetchDashboardMetrics(db);
     return html(metricsFragment({
-      mttrMinutes: mttrRow?.mttr ?? null,
-      stuckTaskCount: stuckRow.stuck ?? 0,
-      totalRunningTasks: stuckRow.total ?? 0,
-      delegationSuccessRate: delegationRow.total > 0 ? delegationRow.succeeded / delegationRow.total : null,
-      remediationEventCount: remediationCount,
+      mttrMinutes: m.mttr_minutes,
+      stuckTaskCount: m.stuck_task_count,
+      totalRunningTasks: m.total_running_tasks,
+      delegationSuccessRate: m.delegation_success_rate,
+      remediationEventCount: m.remediation_event_count,
     }));
   });
 
@@ -933,7 +830,7 @@ function registerV2PageRoutes(): void {
     const { taskMainContent, renderDraftEdit, realtimeTaskContent } = require("../html/pages/command-center.page");
     if (task.status === "draft") return html(renderDraftEdit(task, vm.teams));
     if ((task as any).task_type === "real_time") {
-      const isSessionActive = vm.realtimeSessionActive?.get(task.id);
+      const isSessionActive = vm.realtimeSessionActive?.[task.id];
       return html(realtimeTaskContent(vm, task, isSessionActive));
     }
     return html(taskMainContent(vm, task));
@@ -944,7 +841,7 @@ function registerV2PageRoutes(): void {
     const vm = buildCommandCenterViewModel(db);
     const task = vm.allTasks.find((t: any) => t.id === params.id);
     if (!task) return html("");
-    const mission = vm.missionsByTask?.get(params.id);
+    const mission = params.id ? vm.missionsByTask?.[params.id] : undefined;
     const phases = mission?.phases ?? [];
     const isRunning = task.status === "running";
     const { renderPhaseStripFragment } = require("../html/pages/command-center.page");
@@ -971,19 +868,8 @@ function registerV2PageRoutes(): void {
 
     // Delegation pills: map each delegated instance to its delegation so the
     // polled tree keeps the clickable prompt pill in sync (matches command-center.vm).
-    const instanceIds = instances.map((i) => i.id);
-    const delegationsByChild = new Map<string, { id: string; status: string; promptPreview: string }>();
-    if (instanceIds.length > 0) {
-      const placeholders = instanceIds.map(() => "?").join(",");
-      const delegationRows = db.prepare(
-        `SELECT id, child_instance_id, status, prompt FROM delegations WHERE child_instance_id IN (${placeholders})`,
-      ).all(...instanceIds) as Array<{ id: string; child_instance_id: string | null; status: string; prompt: string }>;
-      for (const d of delegationRows) {
-        if (!d.child_instance_id) continue;
-        const preview = d.prompt.length > 60 ? d.prompt.slice(0, 60) + "…" : d.prompt;
-        delegationsByChild.set(d.child_instance_id, { id: d.id, status: d.status, promptPreview: preview });
-      }
-    }
+    const { fetchDelegationsByChildInstance } = require("../data/command-center");
+    const delegationsByChild = fetchDelegationsByChildInstance(db, instances.map((i) => i.id));
 
     const { buildAgentTree } = require("../html/view-models/command-center.vm");
     const tree = buildAgentTree(instances, delegationsByChild);
@@ -1246,10 +1132,9 @@ function registerV2PageRoutes(): void {
     const teams = (db.prepare("SELECT id, name FROM teams ORDER BY name").all() as Array<{ id: string; name: string }>)
       .filter(t => isTeamVisible(t.id));
     const escalationCount = getOpenEscalationCount(db);
-    const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
     return html(taskCreatePage({
       teams,
-      daemonState: pausedRow?.value === "true" ? "paused" : "running",
+      daemonState: isDaemonPaused(db) ? "paused" : "running",
       daemonUptime: process.uptime(),
       escalationCount,
     }));
@@ -1278,8 +1163,7 @@ function registerV2PageRoutes(): void {
        ORDER BY t.created_at DESC`
     ).all() as Array<{ id: string; title: string; status: string; current_phase: number; task_type: string; created_at: string; team_name: string | null; source_scheduled_title: string | null }>;
     const escalationCount = getOpenEscalationCount(db);
-    const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
-    return html(taskListPage({ tasks, scheduledRuns, escalationCount, daemonState: pausedRow?.value === "true" ? "paused" : "running", daemonUptime: process.uptime() }));
+    return html(taskListPage({ tasks, scheduledRuns, escalationCount, daemonState: isDaemonPaused(db) ? "paused" : "running", daemonUptime: process.uptime() }));
   });
 
   // Task Execution
@@ -1301,7 +1185,6 @@ function registerV2PageRoutes(): void {
     const task = db.prepare("SELECT title FROM tasks WHERE id = ?").get(inst.task_id) as { title: string } | null;
     const lineCount = (db.prepare("SELECT COUNT(*) as c FROM terminal_outputs WHERE agent_id = ?").get(inst.id) as { c: number }).c;
     const escalationCount = getOpenEscalationCount(db);
-    const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
 
     return html(agentTerminalPage({
       instanceId: inst.id,
@@ -1312,7 +1195,7 @@ function registerV2PageRoutes(): void {
       taskTitle: task?.title ?? "Unknown Task",
       lineCount,
       escalationCount,
-      daemonState: pausedRow?.value === "true" ? "paused" : "running",
+      daemonState: isDaemonPaused(db) ? "paused" : "running",
       daemonUptime: process.uptime(),
     }));
   });
@@ -1320,7 +1203,6 @@ function registerV2PageRoutes(): void {
   // Configuration Overview
   addRoute("GET", "/config", () => {
     const escalationCount = getOpenEscalationCount(db);
-    const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
     const { getModelSettingsView } = require("../config/model-settings");
     const { isExperimental } = require("../config/feature-flags");
     const { getSlackConfigView } = require("../config/slack-settings");
@@ -1330,7 +1212,7 @@ function registerV2PageRoutes(): void {
       taskRetentionDays: getNumberSetting(db, SETTING_TASK_RETENTION_DAYS, 0),
       recurringTaskRetentionDays: getNumberSetting(db, SETTING_RECURRING_TASK_RETENTION_DAYS, 0),
       parallelExecution: getBoolSetting(db, SETTING_PARALLEL_TASKS, true),
-      daemonState: pausedRow?.value === "true" ? "paused" : "running",
+      daemonState: isDaemonPaused(db) ? "paused" : "running",
       daemonUptime: process.uptime(),
       escalationCount,
       skipperConnectHasKey: !!getSetting(db, SETTING_SKIPPER_CONNECT_KEY),
@@ -1570,10 +1452,9 @@ function registerV2PageRoutes(): void {
 
     addRoute("GET", "/global-store", () => {
       const escalationCount = getOpenEscalationCount(db);
-      const pausedRow = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
       return html(globalStorePage({
         rows: globalStore.query({}),
-        daemonState: pausedRow?.value === "true" ? "paused" : "running",
+        daemonState: isDaemonPaused(db) ? "paused" : "running",
         daemonUptime: process.uptime(),
         escalationCount,
       }));

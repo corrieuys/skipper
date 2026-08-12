@@ -1,14 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { addDataRoute } from "./auth";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
-
-function ok(data: unknown): Response {
-  return Response.json({ ok: true, data });
-}
-
-function err(message: string, status: number = 400): Response {
-  return Response.json({ ok: false, error: message }, { status });
-}
+import { ok, err } from "./envelope";
 
 export function registerDataDaemonRoutes(_db: Database, daemon: ManagerDaemon): void {
   // GET /data/daemon/status

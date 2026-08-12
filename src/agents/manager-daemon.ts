@@ -818,6 +818,21 @@ export class ManagerDaemon {
       }
 
       if (event.newStatus === "approved") {
+        // Real-time tasks auto-start on approval so the session is ready
+        // immediately — centralised here so every approve surface (HTML,
+        // /data, MCP, connect, Slack) behaves identically.
+        if (event.previousStatus === "draft") {
+          try {
+            const task = this.taskScheduler.getTask(event.taskId);
+            if (task?.task_type === "real_time") {
+              this.taskScheduler.startTask(event.taskId);
+              this.realtimeSessionManager.startSession(event.taskId);
+            }
+          } catch (err) {
+            // Session start failure is non-fatal; the task is still approved/running.
+            logError(this.db, "realtime_auto_start", { taskId: event.taskId }, err);
+          }
+        }
         this.taskRunner.processTaskQueue().catch((err) => {
           logError(this.db, "reactive_task_dispatch", { taskId: event.taskId }, err);
         });

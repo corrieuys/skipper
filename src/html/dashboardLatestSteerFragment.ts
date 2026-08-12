@@ -15,15 +15,8 @@ export interface SteeringOption {
   latest_message?: string | null;
 }
 
-/** One orb in the dashboard team roster (mirrors zen mode's team orbs). */
-export interface AgentTile {
-  template_agent_id: string;
-  agent_name: string;
-  /** Has ≥1 running/waiting instance for the current context. */
-  is_active: boolean;
-  /** Number of active instances (drives the count badge). */
-  instance_count: number;
-}
+import type { AgentTile } from "../contracts/types";
+export type { AgentTile } from "../contracts/types";
 
 /**
  * Collapse live steer options into tiles grouped by agent type. Used for the

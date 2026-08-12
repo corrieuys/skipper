@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
 import { logError } from "../logging";
-import type { AgentTile } from "../html/dashboardLatestSteerFragment";
 import type {
+  AgentTile,
+  PollIntervalSeconds,
   TaskData,
   AgentData,
   AgentInstanceSummary,
@@ -11,6 +12,7 @@ import type {
   DelegationData,
   TaskNoteData,
   EscalationData,
+  RecentLogEntry,
   DashboardData,
   ForensicsData,
   ForensicsTimelineEntry,
@@ -20,7 +22,7 @@ import type {
   ForensicsEscalation,
   ForensicsTokenUsage,
   ForensicsTerminalTail,
-} from "../html/components";
+} from "../contracts/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -450,18 +452,41 @@ export function fetchEscalations(
   db: ReturnType<typeof getDb>,
   status?: string,
 ): EscalationData[] {
-  const where = status ? `WHERE e.status = '${status.replace(/'/g, "''")}'` : "";
-  return db.prepare(
-    `SELECT e.*, a.name AS agent_name
+  const sql = `SELECT e.*, a.name AS agent_name
      FROM escalations e
      LEFT JOIN agents a ON a.id = e.agent_id
-     ${where}
-     ORDER BY e.created_at DESC`,
-  ).all() as EscalationData[];
+     ${status ? "WHERE e.status = ?" : ""}
+     ORDER BY e.created_at DESC`;
+  const stmt = db.prepare(sql);
+  return (status ? stmt.all(status) : stmt.all()) as EscalationData[];
+}
+
+/**
+ * UI poll cadence: fast while anything is active, slow when idle. Lives here
+ * (not in routes) because both the HTML fragments and the JSON dashboard
+ * endpoint report it.
+ */
+export function getPollIntervalSeconds(db: ReturnType<typeof getDb>): PollIntervalSeconds {
+  const row = db.prepare(
+    `SELECT
+      EXISTS(SELECT 1 FROM tasks WHERE status IN ('running', 'approved')) AS has_active_task,
+      EXISTS(SELECT 1 FROM agent_instances WHERE status IN ('running', 'waiting_delegation', 'pending')) AS has_busy_agent`,
+  ).get() as { has_active_task: number; has_busy_agent: number };
+
+  return (row.has_active_task === 1 || row.has_busy_agent === 1) ? 3 : 8;
 }
 
 export function getOpenEscalationCount(db: ReturnType<typeof getDb>): number {
   return (db.prepare("SELECT COUNT(*) as c FROM escalations WHERE status = 'open'").get() as { c: number }).c;
+}
+
+// ---------------------------------------------------------------------------
+// Daemon
+// ---------------------------------------------------------------------------
+
+export function isDaemonPaused(db: ReturnType<typeof getDb>): boolean {
+  const row = db.prepare("SELECT value FROM daemon_state WHERE key = 'paused'").get() as { value: string } | null;
+  return row?.value === "true";
 }
 
 // ---------------------------------------------------------------------------
@@ -496,6 +521,100 @@ export function fetchDashboardRealtimeTimeline(
     taskTitle: activeRealtimeTask.title,
     entries,
   };
+}
+
+/**
+ * Deduped recent terminal activity for the dashboard activity feed. The window
+ * function collapses byte-identical lines that were recorded once under the
+ * runtime id and once under the template agent id.
+ */
+export function fetchRecentActivity(
+  db: ReturnType<typeof getDb>,
+  limit: number,
+): RecentLogEntry[] {
+  return db.prepare(
+    `WITH ranked AS (
+       SELECT to2.id,
+              to2.agent_id,
+              COALESCE(a.name, ta.name, ai.template_agent_id, to2.agent_id) AS agent_name,
+              to2.stream,
+              to2.data,
+              to2.created_at,
+              ROW_NUMBER() OVER (
+                PARTITION BY to2.agent_id, to2.stream, to2.data, to2.created_at
+                ORDER BY to2.id DESC
+              ) AS rn
+       FROM terminal_outputs to2
+       LEFT JOIN agents a ON to2.agent_id = a.id
+       LEFT JOIN agent_instances ai ON to2.agent_id = ai.id
+       LEFT JOIN agents ta ON ta.id = ai.template_agent_id
+       WHERE NOT (json_valid(to2.data) = 1 AND json_extract(to2.data, '$.type') = 'result')
+     )
+     SELECT agent_id, agent_name, stream, data, created_at
+     FROM ranked
+     WHERE rn = 1
+     ORDER BY id DESC
+     LIMIT ?`,
+  ).all(limit) as RecentLogEntry[];
+}
+
+export interface DashboardMetrics {
+  mttr_minutes: number | null;
+  stuck_task_count: number;
+  total_running_tasks: number;
+  delegation_success_rate: number | null;
+  remediation_event_count: number;
+}
+
+/** Ops metrics: 7-day MTTR, stuck running tasks, delegation success, 24h remediation events. */
+export function fetchDashboardMetrics(db: ReturnType<typeof getDb>): DashboardMetrics {
+  const mttrRow = db.prepare(
+    `SELECT AVG((julianday(completed_at) - julianday(started_at)) * 24 * 60) as mttr
+     FROM tasks
+     WHERE status = 'completed' AND started_at IS NOT NULL AND completed_at IS NOT NULL
+       AND completed_at > datetime('now', '-7 days')`,
+  ).get() as { mttr: number | null } | null;
+
+  const stuckRow = db.prepare(
+    `SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN unixepoch('now') - unixepoch(updated_at) > 600 THEN 1 ELSE 0 END) as stuck
+     FROM tasks WHERE status = 'running'`,
+  ).get() as { total: number; stuck: number };
+
+  const delegationRow = db.prepare(
+    `SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as succeeded
+     FROM delegations
+     WHERE created_at > datetime('now', '-7 days')`,
+  ).get() as { total: number; succeeded: number };
+
+  const remediationCount = (db.prepare(
+    "SELECT COUNT(*) as count FROM events WHERE type LIKE 'remediation:%' AND created_at > datetime('now', '-24 hours')",
+  ).get() as { count: number }).count;
+
+  return {
+    mttr_minutes: mttrRow?.mttr ?? null,
+    stuck_task_count: stuckRow.stuck ?? 0,
+    total_running_tasks: stuckRow.total ?? 0,
+    delegation_success_rate: delegationRow.total > 0 ? delegationRow.succeeded / delegationRow.total : null,
+    remediation_event_count: remediationCount,
+  };
+}
+
+export function fetchDashboardRunningInstances(
+  db: ReturnType<typeof getDb>,
+): NonNullable<DashboardData["runningInstances"]> {
+  return db.prepare(
+    `SELECT ai.id, ai.template_agent_id, COALESCE(a.name, ai.template_agent_id) AS template_agent_name, ai.task_id, t.title AS task_title,
+            ai.status, ai.parent_instance_id, ai.root_instance_id, ai.created_at, ai.updated_at
+     FROM agent_instances ai
+     LEFT JOIN agents a ON a.id = ai.template_agent_id
+     LEFT JOIN tasks t ON t.id = ai.task_id
+     WHERE ai.status IN ('running', 'waiting_delegation')
+     ORDER BY ai.updated_at DESC`,
+  ).all() as NonNullable<DashboardData["runningInstances"]>;
 }
 
 export function fetchDashboardPhaseIndicatorTask(

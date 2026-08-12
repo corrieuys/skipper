@@ -1,4 +1,5 @@
 import { type RecentLogEntry, parseJsonLine, escapeHtml } from "./components";
+import { renderInlineMarkdown } from "./atoms/render-inline-markdown";
 import { formatTimestamp } from "./formatTimestamp";
 import { terminalJsonSummary, stripThinking } from "./terminalJsonSummary";
 
@@ -49,6 +50,10 @@ export function recentActivityFragment(logs: RecentLogEntry[]): string {
             itemType === "agent_message" ||
             itemType === "text" ||
             typeof parsed.result === "string" ||
+            // Grok chunks: {type:"text"|"thought",data:"…"} — prose, not an event.
+            ((type === "text" || type === "thought") && typeof parsed.data === "string") ||
+            // OpenCode whole-message text: {type:"text",part:{text:"…"}} (part, not data).
+            (type === "text" && !!(parsed.part as Record<string, unknown> | undefined)?.text) ||
             (item &&
                 typeof item.text === "string" &&
                 itemType !== "command_execution")) {
@@ -73,7 +78,7 @@ export function recentActivityFragment(logs: RecentLogEntry[]): string {
             if (kind === "message" && !display) return "";
             return `<div class="cmd-feed-item cmd-feed-item-${kind}">
       <span class="cmd-feed-agent"><span class="cmd-feed-kind cmd-feed-kind-${kind}">${kindLabel}</span><a href="/agents/${escapeHtml(entry.agent_id)}" hx-get="/agents/${escapeHtml(entry.agent_id)}" hx-target="body" hx-push-url="true">${escapeHtml(entry.agent_name)}</a></span>
-      <span class="cmd-feed-data">${escapeHtml(display)}</span>
+      <span class="cmd-feed-data">${kind === "message" ? renderInlineMarkdown(display) : escapeHtml(display)}</span>
       <span class="cmd-feed-time">${formatTimestamp(entry.created_at)}</span>
     </div>`;
         })

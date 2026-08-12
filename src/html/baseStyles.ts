@@ -1358,6 +1358,10 @@ export function baseStyles(): string {
     .cmd-feed-agent a { color: inherit; }
     .cmd-feed-agent a:hover { color: var(--on-surface); }
     .cmd-feed-data { font-family: "JetBrains Mono", monospace; font-size: 0.72rem; color: var(--on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; line-height: 1.5; }
+    /* Inline markdown rendered from message text (renderInlineMarkdown). */
+    .cmd-feed-data strong { color: var(--on-surface); font-weight: 600; }
+    .cmd-feed-data em { font-style: italic; }
+    .cmd-feed-data code { padding: 0 3px; border-radius: 3px; background: var(--surface-container-high, rgba(255,255,255,0.06)); color: var(--accent-secondary, currentColor); }
     .cmd-feed-time { font-family: "JetBrains Mono", monospace; font-size: 0.65rem; color: var(--muted); white-space: nowrap; }
     .cmd-feed-kind { font-family: "JetBrains Mono", monospace; font-size: 0.625rem; letter-spacing: 0.04em; text-transform: uppercase; border: 1px solid rgba(173, 170, 170, 0.25); color: var(--muted); padding: 0.1rem 0.35rem; }
     .cmd-feed-kind-message { border-color: rgba(0, 251, 251, 0.3); color: var(--secondary); }

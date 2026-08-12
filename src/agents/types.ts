@@ -18,9 +18,17 @@ export interface AgentTypeDefinition {
 // assistant `usage` blocks and `task_progress` sub-agent frames look nothing like
 // codex's `turn.completed` or opencode's `step_finish`, and each provider surfaces
 // (or omits) different fields. Rather than half-support formats we can't verify,
-// usage tracking is allowlisted per provider. Only claude-code is supported for now;
-// add a provider here once its usage frames are parsed and tested.
-export const USAGE_TRACKING_PROVIDERS = new Set<string>(["claude-code"]);
+// usage tracking is allowlisted per provider. Add a provider here once its usage
+// frames are parsed and tested.
+//
+// grok qualifies because it runs with `--output-format streaming-messages-json`,
+// which reports usage in the Anthropic wire shape claude-code already parses:
+// per-assistant-message `input_tokens` / `output_tokens` /
+// `cache_read_input_tokens` / `cache_creation_input_tokens`, each covering only
+// that message. Verified against a real run — the assistant frames sum exactly to
+// the cumulative total on the terminal `result` frame, so accumulating them (and
+// ignoring `result.usage`) counts every token once.
+export const USAGE_TRACKING_PROVIDERS = new Set<string>(["claude-code", "grok"]);
 
 export function providerSupportsUsageTracking(agentType: string | null | undefined): boolean {
   return !!agentType && USAGE_TRACKING_PROVIDERS.has(agentType);

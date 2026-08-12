@@ -1,7 +1,9 @@
 import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
+import { renderInlineMarkdown } from "../atoms/render-inline-markdown";
 import { formatTimestamp } from "../atoms/format-timestamp";
+import { badgeFragment } from "../fragments/badge.fragment";
 import { terminalJsonSummary, stripThinking } from "../terminalJsonSummary";
 import { iteratePanel } from "../panels/iterate.panel";
 import { isExperimental } from "../../config/feature-flags";
@@ -138,56 +140,40 @@ function formatScheduleBadge(unit: string | null, amount: number | null, matrix:
   return `${amount}${unit[0]}`;
 }
 
-// Architecture map shown as the dashboard backdrop when no task is selected.
-// Hidden by default; the retro themes (win95, geocities) reveal + style it —
-// see .mc-welcome__ascii in mission-control.ts and the per-theme overrides in
-// themes.ts. Alignment assumes a monospace font, so the geocities override
-// must keep beating its global Comic Sans rule.
-const HOW_SKIPPER_WORKS_ASCII = `
-             ~ ~ ~   H O W   S K I P P E R   W O R K S   ~ ~ ~
+function renderWelcome(vm: CommandCenterViewModel): string {
+  // allTasks is ordered created_at DESC across every status, so the first three
+  // are the latest tasks regardless of state.
+  const latest = vm.allTasks.slice(0, 3);
 
-+-----------+                    +-------------------------------------+
-|  BROWSER  | --- http/htmx ---> |              BUN SERVER             |
-|    UI     | <---- ws push ---- |     routes . html . /ws . /mcp      |
-+-----------+                    +------------------+------------------+
-                                                    |
-+-----------+                    +------------------v------------------+
-| OPERATOR  | ----- approve ---> |            MANAGER DAEMON           |
-|   (you)   |                    |    tick loop . health . recovery    |
-+-----------+                    | draft > approved > running > done   |
-   ^    ^                        +------------------+------------------+
-   |    |                                           |
-   |    |                        +------------------v------------------+
-   |    |   phase reviews        |              PHASE LOOP             |
-   |    +------------------------|  phase idx 0..n  complete | regress |
-   |                             +------------------+------------------+
-   |                                                | spawns
-   |                             +------------------v------------------+
-   |        escalations          |           ROOT AGENT (cli)          |
-   +-----------------------------|  claude-code  codex  opencode  grok   |
-                                 +----+-------------+------------+-----+
-                                      |             |            |
-                            mcp tools |      stdout |   delegate |
-                                      v     markers v            v
-                                 +----------------------+  +------------+
-                                 |      EVENT BUS       |  | SUB-AGENTS |
-                                 |     agent:signal     |<-| workers    |
-                                 +---+--------------+---+  +------------+
-                                     |              |
-                   notes . artifacts |              | ws -> live ui
-                                     v              v
-                              +-----------+   +-----------+
-                              |~/.skipper |   | dashboard |
-                              | sqlite db |   |  updates  |
-                              +-----------+   +-----------+
+  const rows = latest.length > 0
+    ? latest.map(t => `
+        <a class="mc-landing__task" href="/?task=${escapeHtml(t.id)}"
+           hx-get="/workspace/task/${escapeHtml(t.id)}" hx-target="#mc-main" hx-swap="innerHTML" hx-push-url="/?task=${escapeHtml(t.id)}">
+          <span class="mc-sidebar__item-dot mc-sidebar__item-dot--${escapeHtml(t.status)}"></span>
+          <span class="mc-landing__task-title">${escapeHtml(t.title)}</span>
+          ${badgeFragment(t.status)}
+          <span class="mc-landing__task-time">${formatTimestamp(t.completed_at ?? t.created_at)}</span>
+        </a>`).join("")
+    : `<div class="mc-landing__empty">No tasks yet. Create your first one.</div>`;
 
-  * connect : outbound ws . remote control . public artifact links
-  * whisper : local transcription for realtime voice tasks
-  * greg    : resident heckler
-`;
+  return `<div class="mc-welcome">
+    <div class="mc-landing">
+      <div class="mc-landing__header">
+        <span class="mc-landing__kicker">Command Center</span>
+        <span class="mc-landing__title">What next?</span>
+        <span class="mc-landing__hint">Pick up a recent task, or start something new.</span>
+      </div>
 
-function renderWelcome(_vm: CommandCenterViewModel): string {
-  return `<div class="mc-welcome"><pre class="mc-welcome__ascii" aria-hidden="true">${escapeHtml(HOW_SKIPPER_WORKS_ASCII)}</pre></div>`;
+      <div class="mc-landing__section-label">Latest tasks</div>
+      <div class="mc-landing__tasks">${rows}</div>
+
+      <div class="mc-landing__actions">
+        <a href="/tasks/new" class="sk-btn sk-btn--primary sk-btn--sm">+ New Task</a>
+        <a href="/teams" class="sk-btn sk-btn--sm">Teams</a>
+        <a href="/config" class="sk-btn sk-btn--sm">Config</a>
+      </div>
+    </div>
+  </div>`;
 }
 
 function renderTaskView(vm: CommandCenterViewModel, task: TaskSummary): string {
@@ -198,7 +184,7 @@ function renderTaskView(vm: CommandCenterViewModel, task: TaskSummary): string {
   // Check if this is a real-time task — render different UI
   const taskRow = vm.allTasks.find(t => t.id === task.id);
   if (taskRow && (taskRow as any).task_type === "real_time") {
-    const isSessionActive = vm.realtimeSessionActive.get(task.id);
+    const isSessionActive = vm.realtimeSessionActive[task.id];
     return realtimeTaskContent(vm, task, isSessionActive);
   }
   return taskMainContent(vm, task);
@@ -354,7 +340,7 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
   // Reuse the shared task chrome: phase stepper inlined into the task bar, agent
   // orbs beside it, and the review/escalation prompts inside a User Input tab —
   // exactly like the standard task view.
-  const mission = vm.missionsByTask.get(task.id) ?? (vm.mission?.taskId === task.id ? vm.mission : null);
+  const mission = vm.missionsByTask[task.id] ?? (vm.mission?.taskId === task.id ? vm.mission : null);
   const needsReview = mission?.needsReview ?? false;
   const phaseStepper = mission && mission.phases.length > 0 ? renderPhaseStepper(mission.phases, task.id, isRunning) : "";
 
@@ -499,7 +485,7 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
 /** This is also served as a fragment at /workspace/task/:id for HTMX sidebar clicks */
 export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): string {
   // Use task-specific mission data, fall back to running mission
-  const mission = vm.missionsByTask.get(task.id) ?? (vm.mission?.taskId === task.id ? vm.mission : null);
+  const mission = vm.missionsByTask[task.id] ?? (vm.mission?.taskId === task.id ? vm.mission : null);
   const isRunning = task.status === "running";
   const needsReview = mission?.needsReview ?? false;
 
@@ -763,7 +749,12 @@ export function parseTerminalActivity(
         } else if (Array.isArray(content)) {
           const hasToolBlock = content.some((b: any) => b?.type === "tool_use" || b?.type === "tool_result");
           kind = hasToolBlock ? "tool" : "message";
-        } else if (type === "assistant" || type === "user" || type === "message" || typeof parsed.result === "string") {
+        } else if (type === "assistant" || type === "user" || type === "message" || typeof parsed.result === "string"
+          // Grok response/reasoning chunks: {type:"text"|"thought",data:"…"}. Prose,
+          // so they belong under the Messages filter rather than with system events.
+          || ((type === "text" || type === "thought") && typeof parsed.data === "string")
+          // OpenCode whole-message text: {type:"text",part:{text:"…"}} (part, not data).
+          || (type === "text" && !!(parsed.part as Record<string, unknown> | undefined)?.text)) {
           kind = "message";
         }
       } else {
@@ -799,7 +790,7 @@ export function parseTerminalActivity(
       <span class="mc-activity__kind mc-activity__kind--${kind}">${kindLabel}</span>
       ${agentLabel}
       ${pidLabel}
-      <span class="mc-activity__text">${escapeHtml(summary)}</span>
+      <span class="mc-activity__text">${kind === "message" ? renderInlineMarkdown(summary) : escapeHtml(summary)}</span>
     </div>`;
   }).filter(Boolean).join("");
 
@@ -843,7 +834,7 @@ export function parseRealtimeActivity(rows: RealtimeActivityRow[]): string {
           data-sk-activity-kind="timeline">
         <span class="mc-activity__kind mc-activity__kind--${kind}">${kindLabel}</span>${priorityTag}
         ${timeLabel}
-        <span class="mc-activity__text">${escapeHtml(preview)}</span>
+        <span class="mc-activity__text">${kind === "message" ? renderInlineMarkdown(preview) : escapeHtml(preview)}</span>
       </div>`;
     }
 
@@ -876,7 +867,12 @@ export function parseRealtimeActivity(rows: RealtimeActivityRow[]): string {
         } else if (Array.isArray(content)) {
           const hasToolBlock = content.some((b: any) => b?.type === "tool_use" || b?.type === "tool_result");
           kind = hasToolBlock ? "tool" : "message";
-        } else if (type === "assistant" || type === "user" || type === "message" || typeof parsed.result === "string") {
+        } else if (type === "assistant" || type === "user" || type === "message" || typeof parsed.result === "string"
+          // Grok response/reasoning chunks: {type:"text"|"thought",data:"…"}. Prose,
+          // so they belong under the Messages filter rather than with system events.
+          || ((type === "text" || type === "thought") && typeof parsed.data === "string")
+          // OpenCode whole-message text: {type:"text",part:{text:"…"}} (part, not data).
+          || (type === "text" && !!(parsed.part as Record<string, unknown> | undefined)?.text)) {
           kind = "message";
         }
       } else {
@@ -907,7 +903,7 @@ export function parseRealtimeActivity(rows: RealtimeActivityRow[]): string {
       <span class="mc-activity__kind mc-activity__kind--${kind}">${kindLabel}</span>
       ${agentLabel}
       ${pidLabel}
-      <span class="mc-activity__text">${escapeHtml(summary)}</span>
+      <span class="mc-activity__text">${kind === "message" ? renderInlineMarkdown(summary) : escapeHtml(summary)}</span>
     </div>`;
   }).filter(Boolean).join("");
 }

@@ -947,6 +947,31 @@ describe("handleJsonOutput", () => {
     expect(end.content).toBeUndefined();
   });
 
+  it("accumulates grok usage from assistant frames", () => {
+    // grok runs with --output-format streaming-messages-json, so its usage arrives
+    // in the Anthropic shape, per message. Two frames must land as their sum, which
+    // is what the terminal `result` frame reports cumulatively (and why that frame's
+    // own usage is deliberately not read — it would double-count).
+    const tmpl = manager.createAgent({ name: "Grok Coder", type: "grok" });
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('t-grok', 'T', 'running')").run();
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES (?, 't-grok', ?, 'running')")
+      .run("grok-inst-1", tmpl.id);
+
+    for (const usage of [
+      { input_tokens: 10737, output_tokens: 105, cache_read_input_tokens: 11264, cache_creation_input_tokens: 0 },
+      { input_tokens: 406, output_tokens: 181, cache_read_input_tokens: 21888, cache_creation_input_tokens: 0 },
+    ]) {
+      manager.handleJsonOutput("grok-inst-1", { type: "assistant", message: { usage, content: [] } } as unknown as JsonEvent, "{}");
+    }
+
+    const row = db
+      .prepare("SELECT input_tokens, output_tokens, cache_read_tokens FROM agent_instances WHERE id = ?")
+      .get("grok-inst-1") as { input_tokens: number; output_tokens: number; cache_read_tokens: number };
+    expect(row.input_tokens).toBe(11143);
+    expect(row.output_tokens).toBe(286);
+    expect(row.cache_read_tokens).toBe(33152);
+  });
+
   it("marks context compaction needed when turn input tokens are very large", () => {
     const agent = manager.createAgent({ name: "Big Context", type: "codex" });
     manager.handleJsonOutput(

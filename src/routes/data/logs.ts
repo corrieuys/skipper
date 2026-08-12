@@ -1,10 +1,7 @@
 import { addDataRoute } from "./auth";
 import { getDb } from "../../db/connection";
 import { parseJsonOr } from "../../db/json";
-
-function ok(data: unknown, status: number = 200): Response {
-  return Response.json({ ok: true, data }, { status });
-}
+import { ok } from "./envelope";
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;

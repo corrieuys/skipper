@@ -47,8 +47,8 @@ describe("provider allowlist", () => {
       const grok = listModelOptions().find((o) => o.name === "grok");
       expect(grok).toBeTruthy();
       expect(grok!.model_flag).toBe("-m");
-      expect(grok!.models).toContain("default");
-      expect(grok!.models).toContain("grok-4.5");
+      // Model is free text now — no baked-in per-provider list, just "default".
+      expect(grok!.models).toEqual(["default"]);
       const codex = listModelOptions().find((o) => o.name === "codex");
       expect(codex!.model_flag).toBe("-m");
     });

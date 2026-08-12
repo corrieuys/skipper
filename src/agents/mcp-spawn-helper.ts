@@ -183,14 +183,70 @@ export function injectDaemonMcpServer(
     // The bearer token is env-expanded by grok at load time, so the file
     // content is identical for concurrent agents sharing a working dir and no
     // secret lands in the repo.
-    overrides.extraEnv.SKIPPER_DAEMON_URL = daemonUrl;
+    //
+    // The URL carries a `?client=skipper-daemon` marker that the daemon ignores
+    // (server.ts routes on pathname, so it still hits the /mcp handler). Its only
+    // job is to make this URL a distinct STRING. Grok collapses two MCP servers
+    // that share an identical URL into one connection — and operators commonly
+    // already have a `skipper` server pointing at the same http://host:port/mcp
+    // (via ~/.claude.json / Cursor, which grok scans as compat sources). Without
+    // the marker, grok merges skipper-daemon into that operator server: the
+    // daemon shows `connected` but exposes ZERO tools to the model, while the
+    // operator `skipper__*` tools (which need a task_id) are all it can see.
+    // Verified against grok 1.0.0. Only grok dedupes by URL; claude-code/codex
+    // key off the server name, so they keep the plain daemonUrl.
+    const grokDaemonUrl = `${daemonUrl}?client=skipper-daemon`;
+    overrides.extraEnv.SKIPPER_DAEMON_URL = grokDaemonUrl;
     overrides.extraEnv.SKIPPER_AGENT_TOKEN = runtimeId;
     if (workingDir) {
       try {
-        injectGrokDaemonConfig(overrides, workingDir, daemonUrl);
+        injectGrokDaemonConfig(overrides, workingDir, grokDaemonUrl);
+        // Repo-local MCP servers are gated on folder trust: in an untrusted
+        // directory grok does not merely fail to connect, it never starts the
+        // server at all, so the block above is silently ignored and the agent
+        // runs with no skipper tools in its registry (verified against grok
+        // 1.0.0 — `grok mcp doctor` reports "folder untrusted"). `--trust`
+        // records the directory in ~/.grok/trusted_folders.toml, the same gate
+        // that governs that repo's project hooks and repo-local LSP servers in
+        // any later grok session there. Only added when the block was actually
+        // written, so a failed injection does not trust a folder for nothing.
+        overrides.extraArgs.push("--trust");
       } catch {
         // Best-effort: the agent still runs, just without daemon MCP tools
       }
+    }
+  } else if (agentType === "opencode") {
+    // opencode reads MCP servers from its config `mcp` map and MERGES configs
+    // (docs: global ~/.config/opencode < OPENCODE_CONFIG < project opencode.json,
+    // combined not replaced). Pointing OPENCODE_CONFIG at a temp file that carries
+    // ONLY the skipper-daemon server therefore ADDS the daemon while preserving the
+    // operator's own providers/models. Isolated per-agent (own temp file + own
+    // env), so unlike grok's shared `<cwd>/.grok/config.toml` there is no
+    // concurrent-agent race and nothing to restore beyond deleting the temp file.
+    // The bearer is `{env:...}`-substituted by opencode at load, so no token lands
+    // on disk. servers are keyed by NAME in opencode's config, so this never
+    // collides with an operator `skipper` server the way grok's URL-keyed merge can.
+    overrides.extraEnv.SKIPPER_AGENT_TOKEN = runtimeId;
+    try {
+      const tempPath = `/tmp/skipper-opencode-${crypto.randomUUID()}.json`;
+      const config = {
+        $schema: "https://opencode.ai/config.json",
+        mcp: {
+          "skipper-daemon": {
+            type: "remote",
+            url: daemonUrl,
+            enabled: true,
+            headers: { Authorization: "Bearer {env:SKIPPER_AGENT_TOKEN}" },
+          },
+        },
+      };
+      writeFileSync(tempPath, JSON.stringify(config, null, 2), "utf-8");
+      overrides.extraEnv.OPENCODE_CONFIG = tempPath;
+      overrides.cleanupPaths.push(tempPath);
+    } catch {
+      // Best-effort: a host without a writable temp target still spawns the agent,
+      // just without daemon MCP tools. Leave the generic env fallback in place.
+      overrides.extraEnv.SKIPPER_DAEMON_URL = daemonUrl;
     }
   } else {
     // For unknown agent types, provide env vars as generic fallback

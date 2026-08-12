@@ -4,6 +4,8 @@ import { initializeDatabase } from "../db/connection";
 import { TaskScheduler } from "../tasks/scheduler";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { GlobalStoreManager } from "../global-store/manager";
+import { ArtifactManager } from "../orchestrator/artifact-manager";
+import { eventBus } from "../events/bus";
 import { registerTaskTools, taskToolNamesFor, type ToolAudience } from "./task-tools";
 import type { DaemonDeps } from "./tools";
 import type { AgentIdentity } from "./auth";
@@ -33,7 +35,7 @@ function deps(): DaemonDeps {
     delegationManager: {} as DaemonDeps["delegationManager"],
     phaseManager: {} as DaemonDeps["phaseManager"],
     escalationManager: {} as DaemonDeps["escalationManager"],
-    artifactManager: {} as DaemonDeps["artifactManager"],
+    artifactManager: new ArtifactManager(db),
     consensusManager: {} as DaemonDeps["consensusManager"],
   };
 }
@@ -73,15 +75,26 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 describe("audience tagging", () => {
-  it("exposes the task tools to external and none to internal (today)", () => {
+  it("exposes the full task set to external, and only the recurring-task pair to internal root", () => {
     expect(taskToolNamesFor("external")).toContain("update_task");
     expect(taskToolNamesFor("external")).toContain("pause_task");
-    expect(taskToolNamesFor("internal")).toEqual([]);
+    // Root Skipper gets the two "both" + root-only recurring tools, nothing else.
+    expect(taskToolNamesFor("internal").sort()).toEqual(["list_recurring_tasks", "run_recurring_task"]);
   });
 
-  it("registers nothing on an internal session", () => {
+  it("omits the root-only recurring tools from a delegated internal session", () => {
+    expect(taskToolNamesFor("internal", true)).toEqual([]);
+  });
+
+  it("registers only the recurring-task pair on an internal root session", () => {
     const f = fakeServer();
     registerTaskTools(f.server as never, deps(), () => EXTERNAL_IDENTITY, "internal");
+    expect([...f.map.keys()].sort()).toEqual(["list_recurring_tasks", "run_recurring_task"]);
+  });
+
+  it("registers nothing on a delegated internal session", () => {
+    const f = fakeServer();
+    registerTaskTools(f.server as never, deps(), () => EXTERNAL_IDENTITY, "internal", true);
     expect([...f.map.keys()]).toEqual([]);
   });
 
@@ -225,11 +238,20 @@ describe("recurring tasks: list + run now", () => {
     return st.id;
   }
 
-  it("lists recurring tasks with status + cadence", async () => {
+  it("lists recurring tasks with status + cadence + active_runs", async () => {
     makeRecurring(true);
     const list = await call("list_recurring_tasks", {});
     expect(list).toHaveLength(1);
-    expect(list[0]).toMatchObject({ title: "Nightly report", status: "approved", schedule: "manual" });
+    expect(list[0]).toMatchObject({ title: "Nightly report", status: "approved", schedule: "manual", active_runs: 0 });
+  });
+
+  it("reports active_runs once a run is in flight (the duplicate-trigger guard)", async () => {
+    const id = makeRecurring(true);
+    // Idle: nothing running yet.
+    expect((await call("list_recurring_tasks", {}))[0].active_runs).toBe(0);
+    // After a run is triggered (created + approved), it counts as in flight.
+    await call("run_recurring_task", { recurring_task_id: id });
+    expect((await call("list_recurring_tasks", {}))[0].active_runs).toBe(1);
   });
 
   it("filters recurring tasks by status", async () => {
@@ -266,6 +288,124 @@ describe("recurring tasks: list + run now", () => {
 
   it("errors on an unknown recurring task id", async () => {
     expect(await call("run_recurring_task", { recurring_task_id: "nope" })).toContain("Recurring task not found");
+  });
+
+  // A source task that already has a Slack thread. The internal identity points at
+  // it, so the root Skipper on that task is the one calling run_recurring_task.
+  function makeSlackRootedTask(): { taskId: string; identity: AgentIdentity } {
+    const src = scheduler.createTask({
+      title: "Slack-rooted",
+      teamId: "team-1",
+      workingDirectory: "/repo",
+      taskConfig: { slack_origin: { channel: "C123", thread_ts: "1712.5", source: "slash_command" } },
+    } as any);
+    return { taskId: src.id, identity: { type: "internal", runtimeId: "rt-1", templateAgentId: "a", taskId: src.id } };
+  }
+
+  function newRunOrigin(runTaskId: string): any {
+    const row = db.prepare("SELECT task_config FROM tasks WHERE id = ?").get(runTaskId) as { task_config: string | null };
+    return JSON.parse(row.task_config ?? "{}").slack_origin ?? null;
+  }
+
+  it("carries the calling task's Slack thread over to the new run by default", async () => {
+    const id = makeRecurring(true);
+    const { identity } = makeSlackRootedTask();
+    const out = await call("run_recurring_task", { recurring_task_id: id }, identity);
+    expect(out.slack_thread_continued).toBe(true);
+    expect(newRunOrigin(out.run_task_id)).toMatchObject({ channel: "C123", thread_ts: "1712.5" });
+  });
+
+  it("does not carry the thread when continue_slack_thread=false", async () => {
+    const id = makeRecurring(true);
+    const { identity } = makeSlackRootedTask();
+    const out = await call("run_recurring_task", { recurring_task_id: id, continue_slack_thread: false }, identity);
+    expect(out.slack_thread_continued).toBe(false);
+    expect(newRunOrigin(out.run_task_id)).toBeNull();
+  });
+
+  it("carries nothing when the calling task has no Slack thread", async () => {
+    const id = makeRecurring(true);
+    const src = scheduler.createTask({ title: "Plain", teamId: "team-1", workingDirectory: "/repo" });
+    const identity: AgentIdentity = { type: "internal", runtimeId: "rt-2", templateAgentId: "a", taskId: src.id };
+    const out = await call("run_recurring_task", { recurring_task_id: id }, identity);
+    expect(out.slack_thread_continued).toBe(false);
+    expect(newRunOrigin(out.run_task_id)).toBeNull();
+  });
+
+  it("an external caller (no task context) never inherits a thread", async () => {
+    const id = makeRecurring(true);
+    // Even with a Slack-rooted task in the DB, an external identity has no taskId.
+    makeSlackRootedTask();
+    const out = await call("run_recurring_task", { recurring_task_id: id });
+    expect(out.slack_thread_continued).toBe(false);
+    expect(newRunOrigin(out.run_task_id)).toBeNull();
+  });
+});
+
+describe("create_note (operator note)", () => {
+  it("writes the same row the UI note form writes", async () => {
+    const t = await call("create_task", { title: "N", team_id: "team-1" });
+    const out = await call("create_note", { task_id: t.id, content: "  Check the staging config first  " });
+
+    const row = db.prepare("SELECT * FROM task_notes WHERE id = ?").get(out.id) as {
+      task_id: string; agent_id: string; content: string; source: string; deleted_at: string | null;
+    };
+    expect(row.task_id).toBe(t.id);
+    expect(row.content).toBe("Check the staging config first"); // trimmed
+    expect(row.source).toBe("user"); // operator-authored, not agent
+    expect(row.agent_id).toBe("a"); // team entrypoint agent, for attribution
+    expect(row.deleted_at).toBeNull();
+  });
+
+  it("emits task:note_added so the dashboard updates live", async () => {
+    const t = await call("create_task", { title: "N", team_id: "team-1" });
+    let seen: { taskId: string; content: string } | null = null;
+    const listener = (e: { taskId: string; content: string }) => { seen = e; };
+    eventBus.on("task:note_added", listener);
+    await call("create_note", { task_id: t.id, content: "Heads up" });
+    eventBus.off("task:note_added", listener);
+
+    expect(seen).not.toBeNull();
+    expect(seen!.taskId).toBe(t.id);
+    expect(seen!.content).toBe("Heads up");
+  });
+
+  it("rejects an unknown task and an empty body", async () => {
+    expect(await call("create_note", { task_id: "nope", content: "x" })).toContain("Task not found");
+    const t = await call("create_task", { title: "N", team_id: "team-1" });
+    expect(await call("create_note", { task_id: t.id, content: "   " })).toContain("content is required");
+    expect(db.prepare("SELECT COUNT(*) AS c FROM task_notes").get()).toMatchObject({ c: 0 });
+  });
+
+  it("explains itself when the task has no team to attribute the note to", async () => {
+    const t = await call("create_task", { title: "teamless" });
+    expect(await call("create_note", { task_id: t.id, content: "x" })).toContain("no team");
+  });
+});
+
+describe("create_artifact (operator artifact)", () => {
+  it("creates version 1 and versions a re-used name", async () => {
+    const t = await call("create_task", { title: "A", team_id: "team-1" });
+    const first = await call("create_artifact", { task_id: t.id, name: "spec", kind: "plan", body: "v1 body", description: "The spec" });
+    expect(first).toMatchObject({ name: "spec", version: 1, kind: "plan" });
+
+    const second = await call("create_artifact", { task_id: t.id, name: "spec", kind: "plan", body: "v2 body" });
+    expect(second.version).toBe(2);
+
+    // Both versions are retained; the agent-facing read resolves 'latest' to v2.
+    expect(new ArtifactManager(db).getArtifact(t.id, "spec", "latest")!.body).toBe("v2 body");
+    expect(new ArtifactManager(db).getArtifact(t.id, "spec", 1)!.body).toBe("v1 body");
+  });
+
+  it("marks the artifact as externally authored", async () => {
+    const t = await call("create_task", { title: "A", team_id: "team-1" });
+    const out = await call("create_artifact", { task_id: t.id, name: "notes", kind: "summary", body: "b" });
+    const row = db.prepare("SELECT created_by_agent_id FROM task_artifacts WHERE id = ?").get(out.id) as { created_by_agent_id: string };
+    expect(row.created_by_agent_id).toBe("api");
+  });
+
+  it("rejects an unknown task", async () => {
+    expect(await call("create_artifact", { task_id: "nope", name: "x", kind: "other", body: "b" })).toContain("Task not found");
   });
 });
 

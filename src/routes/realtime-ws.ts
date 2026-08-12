@@ -12,6 +12,16 @@ export type RealtimeWSData = WSData & { type: "realtime" };
 const wsCleanupHandlers = new WeakMap<ServerWebSocket<WSData>, () => void>();
 
 /**
+ * Called when the client reports recording stopped, after remaining segments
+ * are transcribed. index.ts wires this to WhisperManager.stop — injected so
+ * this module never has to loop back through its own HTTP surface.
+ */
+let onRecordingStopped: () => void = () => {};
+export function setRecordingStoppedHandler(fn: () => void): void {
+  onRecordingStopped = fn;
+}
+
+/**
  * Handle WebSocket upgrade for realtime input ingestion.
  * Supports both spec URL /ws/tasks/:id/realtime and legacy /api/tasks/:id/realtime/ws
  */
@@ -208,7 +218,7 @@ export const realtimeWsHandlers = {
           } catch (err) {
             logError(getDb(), "realtime_ws.recording_stopped_transcribe", { taskId }, err);
           }
-          fetch(`http://127.0.0.1:${process.env.PORT || 5005}/api/whisper/stop`, { method: "POST" }).catch(() => {});
+          try { onRecordingStopped(); } catch { /* whisper stop is best-effort */ }
           ws.send(JSON.stringify({ type: "ack", ref: "recording.stopped" }));
           return;
         }

@@ -77,6 +77,17 @@ describe("registerDaemonTools — role-based registration", () => {
     expect(registeredNames).toContain("create_artifact");
   });
 
+  it("root session registers the recurring-task tools; a delegated child does not", () => {
+    const RECURRING_TOOLS = ["list_recurring_tasks", "run_recurring_task"];
+    const root = makeFakeMcpServer();
+    registerDaemonTools(root.server as any, makeDeps(), () => null);
+    for (const tool of RECURRING_TOOLS) expect(root.registeredNames).toContain(tool);
+
+    const child = makeFakeMcpServer();
+    registerDaemonTools(child.server as any, makeDeps(), () => null, { isDelegated: true });
+    for (const tool of RECURRING_TOOLS) expect(child.registeredNames).not.toContain(tool);
+  });
+
   it("registers global-store tools for both root and delegated sessions (no experimental flag needed)", () => {
     const gsTools = ["set_global_value", "get_global_value", "query_global_store", "delete_global_value"];
     const root = makeFakeMcpServer();
@@ -200,6 +211,7 @@ const EXTERNAL_TOOLS = [
   "create_task", "get_task", "list_tasks", "list_active_tasks", "update_task",
   "approve_task", "pause_task", "resume_task", "cancel_task", "complete_task", "list_teams",
   "list_recurring_tasks", "run_recurring_task",
+  "create_note", "create_artifact",
 ];
 
 describe("registerExternalTools — external agent registration", () => {
@@ -229,9 +241,13 @@ describe("registerExternalTools — external agent registration", () => {
     registerExternalTools(server as any, makeDeps(), () => null);
 
     expect(registeredNames).not.toContain("delegate");
-    expect(registeredNames).not.toContain("create_note");
     expect(registeredNames).not.toContain("complete_phase");
     expect(registeredNames).not.toContain("escalate");
+    // `create_note` / `create_artifact` ARE registered here, but they are the
+    // external task_id-taking, operator-attributed specs from task-tools.ts —
+    // not the identity-scoped internal tools of the same name.
+    expect(registeredNames).not.toContain("list_notes");
+    expect(registeredNames).not.toContain("get_artifact");
   });
 });
 

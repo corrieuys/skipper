@@ -198,9 +198,16 @@ export function setWebSocketHandlers(handlers: Record<string, WSHandlerSet>): vo
   Object.assign(wsHandlerMap, handlers);
 }
 
-export function startServer(port: number = Number(process.env.PORT) || 5005): Server<WSData> {
+export function startServer(
+  port: number = Number(process.env.PORT) || 5005,
+  hostname: string = process.env.SKIPPER_HOST || "127.0.0.1",
+): Server<WSData> {
+  // Loopback by default: most of the HTTP surface (HTML pages, /api/*) has no
+  // auth, so exposing it beyond this machine must be an explicit choice
+  // (`--host 0.0.0.0` / SKIPPER_HOST).
   const server = Bun.serve<WSData>({
     port,
+    hostname,
     idleTimeout: 255, // max value — long-lived WS connections
     fetch(req, server) {
       if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {

@@ -4,14 +4,7 @@ import type { ScheduleUnit, ScheduleMatrix } from "../../tasks/scheduled-schedul
 import { parseScheduleFields } from "../scheduled-tasks";
 import { parseRequestBody } from "../utils";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
-
-function ok(data: unknown, status: number = 200): Response {
-  return Response.json({ ok: true, data }, { status });
-}
-
-function err(message: string, status: number = 400): Response {
-  return Response.json({ ok: false, error: message }, { status });
-}
+import { ok, err } from "./envelope";
 
 // Index signature satisfies parseRequestBody's Record<string, unknown> constraint.
 interface ScheduledTaskBody extends Record<string, unknown> {

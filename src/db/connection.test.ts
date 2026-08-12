@@ -94,7 +94,7 @@ describe("Seed data", () => {
     expect(row.model_flag).toBe("-m");
     expect(row.resume_args).toBeNull();
     expect(row.args).toBe(
-      JSON.stringify(["-p", "{{prompt}}", "--output-format", "streaming-json", "--always-approve", "--no-auto-update"]),
+      JSON.stringify(["-p", "{{prompt}}", "--output-format", "streaming-messages-json", "--always-approve", "--no-auto-update"]),
     );
   });
 

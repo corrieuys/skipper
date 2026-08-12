@@ -4,22 +4,8 @@ import { layout } from "./layout";
 import type { DaemonStatus } from "./components";
 import type { RealtimeConfig } from "../realtime/config";
 import { escapeHtml } from "./atoms/escape-html";
-
-export interface RunningAgentInstance {
-  id: string;
-  template_agent_id: string;
-  agent_name: string;
-  status: string;
-  created_at: string;
-}
-
-export interface TaskNote {
-  id: string;
-  agent_id: string;
-  agent_name: string | null;
-  content: string;
-  created_at: string;
-}
+import type { RunningAgentInstance, TaskNote, TimelineEntry, PipelineStatus } from "../contracts/types";
+export type { RunningAgentInstance, TaskNote, TimelineEntry, PipelineStatus } from "../contracts/types";
 
 export interface RealtimeTaskConfig {
   summarizer_agent_id?: string;
@@ -53,36 +39,6 @@ export interface TeamAssignedAgent {
   id: string;
   name: string;
   role: string | null;
-}
-
-export interface TimelineEntry {
-  id: string;
-  task_id: string;
-  entry_type: string;
-  content: string;
-  source_segment_ids: string;
-  fed_to_skipper: number;
-  priority?: string;
-  created_at: string;
-}
-
-export interface PipelineStatus {
-  task_id: string;
-  analyst_instance_id: string | null;
-  analyst_session_id: string | null;
-  analyst_status: string;
-  action_instance_id: string | null;
-  action_status: string;
-  last_summary_version: number;
-  last_analyst_fed_version: number;
-  queued_summary_versions: string;
-  cadence_timer_active: number;
-  updated_at: string;
-  total_segments?: number;
-  pending_transcription?: number;
-  failed_transcription?: number;
-  pending_summarization?: number;
-  timeline_entry_count?: number;
 }
 
 export function realtimeTasksPage(

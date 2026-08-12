@@ -202,6 +202,14 @@ everything a task emits to Slack lands. It is acquired **two** ways, tagged by
   UI-created** task that reports into Slack a home for its escalations, reviews and
   completion notice.
 
+**Carried across a `run_recurring_task` call.** When the root Skipper on a
+Slack-rooted task fires another recurring task via the MCP `run_recurring_task`
+tool (see [../mcp/CLAUDE.md](../mcp/CLAUDE.md)), that tool reads the caller's origin
+with `readTaskSlackOrigin` and passes it as `runTaskNow`'s `slackOrigin`, so the new
+run inherits the same thread and its Slack output continues there. The origin's
+`source` is preserved (it is copied, not re-tagged). Opt out per call with
+`continue_slack_thread: false`.
+
 **First write wins.** `stampTaskSlackOrigin` guards inside the `UPDATE`
 (`json_set` + `WHERE json_extract(...slack_origin.channel) IS NULL`) rather than
 read-then-write, so concurrent posters (a root and its delegated children) can't

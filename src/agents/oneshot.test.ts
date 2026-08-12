@@ -33,7 +33,7 @@ const OPENCODE_DEF = {
 
 const GROK_DEF = {
   command: "grok",
-  args: ["-p", "{{prompt}}", "--output-format", "streaming-json", "--always-approve", "--no-auto-update"],
+  args: ["-p", "{{prompt}}", "--output-format", "streaming-messages-json", "--always-approve", "--no-auto-update"],
   resume_args: null,
   model_flag: "-m",
   supports_resume: true,
@@ -98,7 +98,7 @@ describe("buildOneShotCommand", () => {
     expect(stdinPrompt).toBeNull();
     expect(cmd[0]).toBe("grok");
     expect(cmd).toContain("sys\n\ndo thing");
-    expect(cmd).toContain("streaming-json");
+    expect(cmd).toContain("streaming-messages-json");
     expect(cmd[cmd.indexOf("--resume") + 1]).toBe("grok-sess-1");
     expect(cmd[cmd.indexOf("-m") + 1]).toBe("grok-4.5");
     expect(cmd).not.toContain("{{prompt}}");

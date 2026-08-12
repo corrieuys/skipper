@@ -859,10 +859,11 @@ export function registerDaemonTools(
     },
   );
 
-  // Audience-tagged task-management tools. Currently every entry is external-only,
-  // so nothing registers here — but this is the seam that lets a tool be flipped to
-  // "internal"/"both" and appear for daemon agents without touching this file.
-  registerTaskTools(server, deps, getIdentity, "internal");
+  // Audience-tagged task-management tools. Most entries are external-only; the
+  // recurring-task pair (list_recurring_tasks / run_recurring_task) is "both" +
+  // root-only, so the root Skipper can fire off another recurring run. Delegated
+  // children are skipped via the isDelegated flag.
+  registerTaskTools(server, deps, getIdentity, "internal", !!options?.isDelegated);
 
   // Operator-defined tools (src/custom-tools), resolved per session from what the
   // custom agent definition and the team agent each grant. Registered last so a

@@ -3,14 +3,7 @@ import { addDataRoute } from "./auth";
 import { AgentManager } from "../../agents/manager";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
 import { parseRequestBody } from "../utils";
-
-function ok(data: unknown, status: number = 200): Response {
-  return Response.json({ ok: true, data }, { status });
-}
-
-function err(message: string, status: number = 400): Response {
-  return Response.json({ ok: false, error: message }, { status });
-}
+import { ok, err } from "./envelope";
 
 export function registerDataAgentRoutes(
   db: Database,

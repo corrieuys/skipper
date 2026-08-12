@@ -285,7 +285,7 @@ function usage(): void {
   console.log(`skipper ${VERSION}
 
 Usage:
-  skipper start [--port N] [--no-open] [--experimental]   Start in the background (opens the UI)
+  skipper start [--port N] [--host H] [--no-open] [--experimental]   Start in the background (opens the UI)
   skipper stop               Stop the background server
   skipper restart [--experimental]   Restart the background server
   skipper status             Show running state + health
@@ -307,6 +307,12 @@ async function main(): Promise<void> {
   const portFlag = process.argv.indexOf("--port");
   if (portFlag !== -1 && process.argv[portFlag + 1]) {
     process.env.PORT = process.argv[portFlag + 1];
+  }
+
+  // `--host H` sets the bind address (default 127.0.0.1 — loopback only).
+  const hostFlag = process.argv.indexOf("--host");
+  if (hostFlag !== -1 && process.argv[hostFlag + 1]) {
+    process.env.SKIPPER_HOST = process.argv[hostFlag + 1];
   }
 
   switch (cmd) {

@@ -179,25 +179,86 @@ export function missionControlStyles(): string {
       gap: var(--sk-space-6);
       margin-top: var(--sk-space-4);
     }
-    /* Architecture map backdrop — hidden by default, revealed by the retro
-       themes (win95, geocities) via their override CSS. Needs a monospace
-       font or the box-drawing alignment falls apart. */
-    .mc-welcome__ascii {
-      display: none;
-      margin: 0;
-      font-family: 'Courier New', ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 11px;
-      line-height: 1.3;
-      white-space: pre;
-      user-select: none;
-      pointer-events: none;
-      max-width: 100%;
+    /* ── Landing summary card (shown when no task is selected) ── */
+    .mc-landing {
+      width: 100%;
+      max-width: 480px;
+      display: flex;
+      flex-direction: column;
+      gap: var(--sk-space-3);
+      background: var(--sk-surface-1);
+      border: 1px solid var(--sk-border);
+      border-radius: var(--sk-radius-lg, 10px);
+      padding: var(--sk-space-6);
+    }
+    .mc-landing__header {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sk-space-1);
+    }
+    .mc-landing__kicker {
+      font-size: var(--sk-text-xs);
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      font-weight: 600;
+      color: var(--sk-accent-primary);
+    }
+    .mc-landing__title {
+      font-family: var(--sk-font-heading);
+      font-size: 2rem;
+      line-height: 1.1;
+      color: var(--sk-text-muted);
+    }
+    .mc-landing__hint {
+      font-size: var(--sk-text-sm);
+      color: var(--sk-text-subtle);
+    }
+    .mc-landing__section-label {
+      font-size: var(--sk-text-xs);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--sk-text-subtle);
+      margin-top: var(--sk-space-2);
+    }
+    .mc-landing__tasks {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .mc-landing__task {
+      display: flex;
+      align-items: center;
+      gap: var(--sk-space-2);
+      padding: var(--sk-space-2) var(--sk-space-2);
+      border-radius: var(--sk-radius, 6px);
+      text-decoration: none;
+      color: var(--sk-text);
+      cursor: pointer;
+    }
+    .mc-landing__task:hover { background: var(--sk-surface-2); }
+    .mc-landing__task-title {
+      flex: 1;
       overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: var(--sk-text-sm);
     }
-    @media (max-width: 900px) {
-      .mc-welcome__ascii { display: none !important; }
+    .mc-landing__task-time {
+      font-size: var(--sk-text-xs);
+      color: var(--sk-text-subtle);
+      flex-shrink: 0;
     }
-
+    .mc-landing__empty {
+      font-size: var(--sk-text-sm);
+      color: var(--sk-text-subtle);
+      padding: var(--sk-space-2);
+    }
+    .mc-landing__actions {
+      display: flex;
+      gap: var(--sk-space-2);
+      margin-top: var(--sk-space-3);
+      flex-wrap: wrap;
+    }
     /* ── Main: task execution view ── */
     .mc-task-header {
       display: flex;
@@ -890,6 +951,17 @@ export function missionControlStyles(): string {
       line-clamp: 3;
       white-space: normal;
       overflow-wrap: anywhere;
+    }
+    /* Inline markdown rendered from message text (renderInlineMarkdown). */
+    .mc-activity__text strong { color: var(--sk-text); font-weight: 600; }
+    .mc-activity__text em { font-style: italic; }
+    .mc-activity__text code {
+      font-family: var(--sk-font-mono);
+      font-size: 0.92em;
+      padding: 0 3px;
+      border-radius: 3px;
+      background: var(--sk-surface-2);
+      color: var(--sk-accent-secondary);
     }
     .mc-activity__empty {
       padding: var(--sk-space-8);

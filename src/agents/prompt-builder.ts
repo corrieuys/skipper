@@ -27,6 +27,11 @@ const MCP_TOOLS_SKIPPER = loadPrompt("mcp-tools-skipper.md");
 const MCP_TOOLS_DELEGATE = loadPrompt("mcp-tools-delegate.md");
 const MCP_TOOLS_PREFERENCE = [
   "Notes and artifacts are created via the `skipper-daemon` MCP server. The tools are exposed as `mcp__skipper-daemon__create_note`, `mcp__skipper-daemon__create_artifact`, `mcp__skipper-daemon__list_artifacts`, `mcp__skipper-daemon__list_notes`, and `mcp__skipper-daemon__get_artifact` (Claude Code prefixes them with `mcp__<server>__`; on Codex the bare tool name may appear — call whichever your tool list shows).",
+  // grok keeps MCP tools out of the registry entirely and reaches them through a
+  // search/invoke pair, so an agent that only looks for `mcp__skipper-daemon__*`
+  // concludes the server is missing. One did exactly that and invented an HTTP
+  // fallback, which bypasses the signal bridge and its dedup — hence the last line.
+  "On grok, MCP tools are NOT listed in your tool registry: use `search_tool` to find them and `use_tool` to call them, where the daemon's tools are named `skipper-daemon__create_note`, `skipper-daemon__create_artifact` and so on (no `mcp__` prefix). The absence of `mcp__skipper-daemon__*` from your tool list does not mean the server is missing. Never call the daemon over raw HTTP as a workaround — if the tools are genuinely unreachable, say so instead.",
 ].join("\n");
 const CAVEMAN_STYLE_GUIDANCE = [
   "COMMUNICATION STYLE:",

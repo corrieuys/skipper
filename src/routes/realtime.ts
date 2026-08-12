@@ -1,6 +1,14 @@
 import { addRoute } from "../server";
 import { TaskScheduler } from "../tasks/scheduler";
 import { getDb } from "../db/connection";
+import {
+  fetchRealtimeTimeline,
+  fetchRealtimeNotes,
+  fetchRealtimeTaskAgents,
+  fetchRealtimeRunningAgents,
+  fetchRealtimePipelineStatus,
+  EMPTY_PIPELINE_COUNTS,
+} from "../data/realtime";
 import { eventBus } from "../events/bus";
 import { getRealtimeTeamId } from "../config/teams";
 import { getRealtimeConfig, updateRealtimeConfig } from "../realtime/config";
@@ -16,10 +24,6 @@ import {
 } from "../html/realtime-components";
 import type {
   RealtimeTaskData,
-  TimelineEntry,
-  PipelineStatus,
-  RunningAgentInstance,
-  TaskNote,
   AvailableAgent,
   RealtimeTaskConfig,
   TeamAssignedAgent,
@@ -83,61 +87,16 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       });
     }
 
-    const timeline = db
-      .prepare(
-        "SELECT * FROM realtime_timeline WHERE task_id = ? ORDER BY created_at DESC",
-      )
-      .all(params.id) as TimelineEntry[];
-
-    const pipelineStatus = db
-      .prepare("SELECT * FROM realtime_pipeline_state WHERE task_id = ?")
-      .get(params.id) as PipelineStatus | null;
-
-    if (pipelineStatus) {
-      const counts = db
-        .prepare(
-          `SELECT
-            (SELECT COUNT(*) FROM task_input_streams WHERE task_id = ?) AS total_segments,
-            (SELECT COUNT(*) FROM task_input_streams WHERE task_id = ? AND transcription_status = 'pending') AS pending_transcription,
-            (SELECT COUNT(*) FROM task_input_streams WHERE task_id = ? AND transcription_status = 'failed') AS failed_transcription,
-            (SELECT COUNT(*) FROM task_input_streams WHERE task_id = ? AND summary_batch_id IS NULL AND transcription_status != 'pending') AS pending_summarization,
-            (SELECT COUNT(*) FROM realtime_timeline WHERE task_id = ?) AS timeline_entry_count`,
-        )
-        .get(params.id, params.id, params.id, params.id, params.id) as {
-          total_segments: number;
-          pending_transcription: number;
-          failed_transcription: number;
-          pending_summarization: number;
-          timeline_entry_count: number;
-        };
-      pipelineStatus.total_segments = counts.total_segments;
-      pipelineStatus.pending_transcription = counts.pending_transcription;
-      pipelineStatus.failed_transcription = counts.failed_transcription;
-      pipelineStatus.pending_summarization = counts.pending_summarization;
-      pipelineStatus.timeline_entry_count = counts.timeline_entry_count;
-    }
+    const timeline = fetchRealtimeTimeline(db, params.id);
+    const pipelineStatus = fetchRealtimePipelineStatus(db, params.id);
 
     const config = getRealtimeConfig(db);
     const isSessionActive = daemon
       ? daemon.getRealtimeSessionManager().isSessionActive(params.id)
       : (pipelineStatus?.cadence_timer_active === 1);
 
-    const runningAgents = db.prepare(
-      `SELECT ai.id, ai.template_agent_id, a.name AS agent_name, ai.status, ai.created_at
-       FROM agent_instances ai
-       JOIN agents a ON a.id = ai.template_agent_id
-       WHERE ai.task_id = ? AND ai.status IN ('running', 'pending')
-       ORDER BY ai.created_at DESC`,
-    ).all(params.id) as RunningAgentInstance[];
-
-    const notes = db.prepare(
-      `SELECT n.id, n.agent_id, COALESCE(a.name, n.agent_id) AS agent_name, n.content, n.created_at
-       FROM task_notes n
-       LEFT JOIN agents a ON a.id = n.agent_id
-       WHERE n.task_id = ?
-       ORDER BY n.created_at DESC
-       LIMIT 50`,
-    ).all(params.id) as TaskNote[];
+    const runningAgents = fetchRealtimeRunningAgents(db, params.id);
+    const notes = fetchRealtimeNotes(db, params.id);
 
     const availableAgents = fetchAvailableAgents();
     const teamAgents = task.team_id
@@ -558,11 +517,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
 
   addRoute("GET", "/api/realtime-tasks/:id/timeline", (_req, params) => {
     const db = getDb();
-    const timeline = db
-      .prepare(
-        "SELECT * FROM realtime_timeline WHERE task_id = ? ORDER BY created_at DESC",
-      )
-      .all(params.id) as TimelineEntry[];
+    const timeline = fetchRealtimeTimeline(db, params.id);
 
     // If HTMX request, return HTML fragment
     if (_req.headers.get("HX-Request")) {
@@ -573,14 +528,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
 
   addRoute("GET", "/api/realtime-tasks/:id/notes", (_req, params) => {
     const db = getDb();
-    const notes = db.prepare(
-      `SELECT n.id, n.agent_id, COALESCE(a.name, n.agent_id) AS agent_name, n.content, n.created_at
-       FROM task_notes n
-       LEFT JOIN agents a ON a.id = n.agent_id
-       WHERE n.task_id = ?
-       ORDER BY n.created_at DESC
-       LIMIT 50`,
-    ).all(params.id) as TaskNote[];
+    const notes = fetchRealtimeNotes(db, params.id);
 
     if (_req.headers.get("HX-Request")) {
       return html(notesFragment(notes));
@@ -591,19 +539,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
   // All agents (running + recently completed/failed) for the task
   addRoute("GET", "/api/realtime-tasks/:id/agents", (_req, params) => {
     const db = getDb();
-    const agents = db.prepare(
-      `SELECT ai.id, ai.template_agent_id, a.name AS agent_name, ai.status, ai.created_at
-       FROM agent_instances ai
-       JOIN agents a ON a.id = ai.template_agent_id
-       WHERE ai.task_id = ?
-         AND (ai.status IN ('running', 'pending')
-              OR (ai.status IN ('completed', 'failed')
-                  AND ai.created_at > datetime('now', '-1 hour')))
-       ORDER BY
-         CASE WHEN ai.status IN ('running', 'pending') THEN 0 ELSE 1 END,
-         ai.created_at DESC
-       LIMIT 20`,
-    ).all(params.id) as RunningAgentInstance[];
+    const agents = fetchRealtimeTaskAgents(db, params.id);
 
     if (_req.headers.get("HX-Request")) {
       return html(runningAgentsFragment(agents));
@@ -614,13 +550,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
   // Backward compat alias
   addRoute("GET", "/api/realtime-tasks/:id/running-agents", (_req, params) => {
     const db = getDb();
-    const agents = db.prepare(
-      `SELECT ai.id, ai.template_agent_id, a.name AS agent_name, ai.status, ai.created_at
-       FROM agent_instances ai
-       JOIN agents a ON a.id = ai.template_agent_id
-       WHERE ai.task_id = ? AND ai.status IN ('running', 'pending')
-       ORDER BY ai.created_at DESC`,
-    ).all(params.id) as RunningAgentInstance[];
+    const agents = fetchRealtimeRunningAgents(db, params.id);
 
     if (_req.headers.get("HX-Request")) {
       return html(runningAgentsFragment(agents));
@@ -630,41 +560,11 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
 
   addRoute("GET", "/api/realtime-tasks/:id/pipeline-status", (_req, params) => {
     const db = getDb();
-    const pipelineStatus = db
-      .prepare("SELECT * FROM realtime_pipeline_state WHERE task_id = ?")
-      .get(params.id) as PipelineStatus | null;
-
+    const pipelineStatus = fetchRealtimePipelineStatus(db, params.id);
     if (!pipelineStatus) {
-      return Response.json({
-        total_segments: 0,
-        pending_transcription: 0,
-        failed_transcription: 0,
-        pending_summarization: 0,
-        timeline_entry_count: 0,
-      });
+      return Response.json(EMPTY_PIPELINE_COUNTS);
     }
-
-    const counts = db
-      .prepare(
-        `SELECT
-            (SELECT COUNT(*) FROM task_input_streams WHERE task_id = ?) AS total_segments,
-            (SELECT COUNT(*) FROM task_input_streams WHERE task_id = ? AND transcription_status = 'pending') AS pending_transcription,
-            (SELECT COUNT(*) FROM task_input_streams WHERE task_id = ? AND transcription_status = 'failed') AS failed_transcription,
-            (SELECT COUNT(*) FROM task_input_streams WHERE task_id = ? AND summary_batch_id IS NULL AND transcription_status != 'pending') AS pending_summarization,
-            (SELECT COUNT(*) FROM realtime_timeline WHERE task_id = ?) AS timeline_entry_count`,
-      )
-      .get(params.id, params.id, params.id, params.id, params.id) as {
-        total_segments: number;
-        pending_transcription: number;
-        failed_transcription: number;
-        pending_summarization: number;
-        timeline_entry_count: number;
-      };
-
-    return Response.json({
-      ...pipelineStatus,
-      ...counts,
-    });
+    return Response.json(pipelineStatus);
   });
 
   addRoute("GET", "/api/realtime/config", () => {

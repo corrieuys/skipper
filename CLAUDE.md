@@ -102,6 +102,7 @@ repo's GitHub Releases.
 | var | default | use |
 |---|---|---|
 | `PORT` | 5005 | HTTP port |
+| `SKIPPER_HOST` | 127.0.0.1 | bind address (loopback only by default — most of the HTTP surface has no auth; `--host`/`SKIPPER_HOST` to expose deliberately) |
 | `SKIPPER_DATA_DIR` | `~/.skipper` | writable state (DB, greg.db, config copy, pid/log) |
 | `SKIPPER_RUNTIME_DB_PATH` | `<data dir>/skipper-runtime.db` | runtime DB file |
 | `SKIPPER_CONFIG_DIR` | `<data dir>/config` (binary) · `./config` (dev) | config snapshots |
@@ -134,7 +135,8 @@ repo's GitHub Releases.
 | user hooks (task/escalation events → shell) | [src/hooks/CLAUDE.md](src/hooks/CLAUDE.md) |
 | desktop notification sounds | [src/notifications/CLAUDE.md](src/notifications/CLAUDE.md) |
 | greg/grug heckler bot | [src/monkey/CLAUDE.md](src/monkey/CLAUDE.md) |
-| query helpers for HTML view-models | [src/data/CLAUDE.md](src/data/CLAUDE.md) |
+| shared wire DTO types (all output surfaces) | [src/contracts/CLAUDE.md](src/contracts/CLAUDE.md) |
+| shared read queries (HTML + JSON + WS) | [src/data/CLAUDE.md](src/data/CLAUDE.md) |
 | global cross-task shared key/value store | [src/global-store/CLAUDE.md](src/global-store/CLAUDE.md) |
 | skipper connect (outbound WS to integrator, remote control + public artifact links) | [src/connect/CLAUDE.md](src/connect/CLAUDE.md) |
 | external config file readers (MCP, skills) | [src/config-readers/CLAUDE.md](src/config-readers/CLAUDE.md) |
@@ -147,7 +149,7 @@ repo's GitHub Releases.
 Two paths feed `agent:signal` on the bus:
 
 **1. MCP tools** (primary). Agents call typed tools on the daemon MCP server at `/mcp` (Bearer = `runtimeId`). Definitions in `src/mcp/tools.ts`. Includes:
-`delegate`, `delegate_batch`, `complete_phase`, `regress_phase`, `complete_task`, `escalate`, `create_note`, `create_artifact`, `get_artifact`, `list_artifacts`, `set_global_value`, `get_global_value`, `query_global_store`, `delete_global_value`, plus `send_message`. Phase-lifecycle tools (`complete_phase`, `regress_phase`, `complete_task`) are root-Skipper only — delegated children get a refusal message. Global-store tools (`set_global_value`/`get_global_value`/`query_global_store`/`delete_global_value`) write a cross-task shared table — agents use them only when a task/phase/template explicitly instructs it. Slack tools (`slack_send_message`/`slack_send_dm`/`slack_read_channel`, experimental) post/read as the Skipper Slack app; registered on a session only when a bot token is configured AND the task's team has Slack enabled (see [src/slack/CLAUDE.md](src/slack/CLAUDE.md)).
+`delegate`, `delegate_batch`, `complete_phase`, `regress_phase`, `complete_task`, `escalate`, `create_note`, `create_artifact`, `get_artifact`, `list_artifacts`, `set_global_value`, `get_global_value`, `query_global_store`, `delete_global_value`, plus `send_message`, plus the recurring-task pair `list_recurring_tasks`/`run_recurring_task`. Phase-lifecycle tools (`complete_phase`, `regress_phase`, `complete_task`) and the recurring-task pair (`list_recurring_tasks`, `run_recurring_task` — kick off another approved recurring task's run, optional one-off `prompt`; carries the calling task's Slack thread to the new run by default so its Slack output continues there, opt out with `continue_slack_thread:false`) are root-Skipper only — delegated children get a refusal message (recurring pair simply isn't registered for them). Global-store tools (`set_global_value`/`get_global_value`/`query_global_store`/`delete_global_value`) write a cross-task shared table — agents use them only when a task/phase/template explicitly instructs it. Slack tools (`slack_send_message`/`slack_send_dm`/`slack_read_channel`, experimental) post/read as the Skipper Slack app; registered on a session only when a bot token is configured AND the task's team has Slack enabled (see [src/slack/CLAUDE.md](src/slack/CLAUDE.md)).
 
 **2. Stdout marker parse** (legacy, narrow). `src/agents/manager.ts:SIGNAL_PATTERNS` scans each line. Surviving markers:
 

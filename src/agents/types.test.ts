@@ -36,8 +36,8 @@ describe("getAgentTypeDefinition", () => {
     expect(def!.args).toContain("--output-format");
     expect(def!.args).toContain("stream-json");
     expect(def!.model_flag).toBe("--model");
-    expect(def!.available_models).toContain("claude-sonnet-4-6");
-    expect(def!.available_models).toContain("claude-opus-4-6");
+    // Models are free text now — no baked-in per-provider list.
+    expect(def!.available_models).toEqual([]);
     expect(def!.supports_stdin).toBe(false);
     expect(def!.supports_resume).toBe(true);
     expect(def!.resume_flag).toBe("--resume");
@@ -61,8 +61,7 @@ describe("getAgentTypeDefinition", () => {
     expect(def!.command).toBe("opencode");
     expect(def!.args).toEqual(["run", "{{prompt}}", "--format", "json"]);
     expect(def!.model_flag).toBe("-m");
-    expect(def!.available_models).toContain("opencode/big-pickle");
-    expect(def!.available_models).toContain("opencode/gpt-5-nano");
+    expect(def!.available_models).toEqual([]);
     expect(def!.supports_stdin).toBe(false);
     expect(def!.supports_resume).toBe(true);
     expect(def!.resume_flag).toBeNull();
@@ -74,9 +73,9 @@ describe("getAgentTypeDefinition", () => {
     expect(def).not.toBeNull();
     expect(def!.name).toBe("grok");
     expect(def!.command).toBe("grok");
-    expect(def!.args).toEqual(["-p", "{{prompt}}", "--output-format", "streaming-json", "--always-approve", "--no-auto-update"]);
+    expect(def!.args).toEqual(["-p", "{{prompt}}", "--output-format", "streaming-messages-json", "--always-approve", "--no-auto-update"]);
     expect(def!.model_flag).toBe("-m");
-    expect(def!.available_models).toContain("grok-4.5");
+    expect(def!.available_models).toEqual([]);
     expect(def!.supports_stdin).toBe(false);
     expect(def!.supports_resume).toBe(true);
     expect(def!.resume_flag).toBe("--resume");
