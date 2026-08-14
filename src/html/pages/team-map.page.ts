@@ -686,7 +686,11 @@ export function teamMapPage(vm: TeamMapViewModel): string {
             if (!EXPERIMENTAL) return;
             TEAM.config.slackEnabled = modalBody.querySelector('[data-f="slack_enabled"]').checked;
             var cmd = modalBody.querySelector('[data-f="slash_command"]').value.trim();
-            if (cmd) TEAM.config.slashCommand = cmd; else delete TEAM.config.slashCommand;
+            // Send an explicit '' when cleared rather than deleting the key: the
+            // save posts the whole config, and the server only clears slashCommand
+            // when the key is PRESENT (deleting it makes the server preserve the
+            // stored value, so an unset never took effect).
+            TEAM.config.slashCommand = cmd || '';
           }, isCreate ? saveTeam : null);
         });
       }

@@ -212,6 +212,21 @@ describe("local-team routes", () => {
       expect(team.config.slashCommand).toBe("/software-team");
     });
 
+    it("JSON update WITH a config block that clears slashCommand ('') unsets it", async () => {
+      await call("POST", "/api/teams", slackTeam("s5"));
+      // The team-map save posts the whole config; clearing the command sends
+      // slashCommand:'' (an explicit signal), which must unset it — not preserve
+      // the stored value. This was the reported "unset doesn't stick" bug.
+      const res = await call("PUT", "/api/teams/s5", {
+        ...sampleTeam("s5"),
+        config: { slackEnabled: true, slashCommand: "" },
+      });
+      expect(res.status).toBe(200);
+      const team = listLocalTeams(db).find(t => t.id === "s5")!;
+      expect(team.config.slackEnabled).toBe(true);
+      expect(team.config.slashCommand).toBeUndefined();
+    });
+
     it("form update WITH the Slack section applies the submitted values", async () => {
       await call("POST", "/api/teams", slackTeam("s4"));
       // Section rendered (marker present), checkbox unchecked, command cleared →
