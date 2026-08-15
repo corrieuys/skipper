@@ -1032,7 +1032,133 @@
 
     // Re-apply expand state to agent tree nodes after a tree swap
     if (Skipper.tree) Skipper.tree.restoreExpanded();
+
+    // v2 timeline: re-apply expanded groups, then stick the scroll to the bottom.
+    tcRestoreKeep(tgt);
+    tcStickTimeline(tgt);
   });
+
+  // ── v2 timeline scroll stick ──
+  // The unified timeline reads oldest-first, so the interesting edge is the
+  // bottom. Keep the view pinned there across swaps unless the user scrolled up
+  // (tracked on the container as data-tc-stick).
+  function tcStickTimeline(swapTarget) {
+    var container = null;
+    if (swapTarget && swapTarget.id && swapTarget.id.indexOf("mc-timeline-inner-") === 0) {
+      container = swapTarget.closest(".tc-timeline");
+    } else if (swapTarget && swapTarget.querySelector) {
+      container = swapTarget.querySelector(".tc-timeline");
+    }
+    if (!container) return;
+    if (container.getAttribute("data-tc-stick") !== "off") {
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+  document.addEventListener("scroll", function (e) {
+    var el = e.target;
+    if (!el || !el.classList || !el.classList.contains("tc-timeline")) return;
+    var nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    el.setAttribute("data-tc-stick", nearBottom ? "on" : "off");
+  }, true);
+  document.addEventListener("htmx:oobAfterSwap", function (evt) {
+    var tgt = evt.detail && evt.detail.target;
+    tcRestoreKeep(tgt);
+    tcStickTimeline(tgt);
+    tcRestoreTeamState(tgt);
+  });
+
+  // ── v2 timeline: keep expanded groups expanded across live re-renders ──
+  // WS pushes replace the whole timeline; any <details data-tc-keep> the user
+  // toggled gets its state re-applied by stable key (in-memory, per page).
+  var tcKeepOpen = {};
+  document.addEventListener("toggle", function (e) {
+    var d = e.target;
+    if (!d || !d.matches || !d.matches("details[data-tc-keep]")) return;
+    tcKeepOpen[d.getAttribute("data-tc-keep")] = d.open;
+  }, true);
+  function tcRestoreKeep(root) {
+    var scope = root && root.querySelectorAll ? root : document;
+    if (!scope.querySelectorAll) return;
+    scope.querySelectorAll("details[data-tc-keep]").forEach(function (d) {
+      var k = d.getAttribute("data-tc-keep");
+      if (Object.prototype.hasOwnProperty.call(tcKeepOpen, k)) d.open = !!tcKeepOpen[k];
+    });
+  }
+
+  // ── v2 sidebar team-group expansion persistence ──
+  // WS sidebar pushes re-render the list server-side without knowing which
+  // groups the user expanded; re-apply the saved state after each swap.
+  function tcTeamState() {
+    try { return JSON.parse(Skipper.prefs.get("tcTeamOpen", "{}")) || {}; }
+    catch (e) { return {}; }
+  }
+  document.addEventListener("toggle", function (e) {
+    var d = e.target;
+    if (!d || !d.matches || !d.matches("details[data-tc-team]")) return;
+    var st = tcTeamState();
+    st[d.getAttribute("data-tc-team")] = d.open;
+    Skipper.prefs.set("tcTeamOpen", JSON.stringify(st));
+  }, true);
+  function tcRestoreTeamState(root) {
+    var scope = root && root.querySelectorAll ? root : document;
+    var groups = scope.querySelectorAll ? scope.querySelectorAll("details[data-tc-team]") : [];
+    if (!groups.length) return;
+    var st = tcTeamState();
+    groups.forEach(function (d) {
+      var key = d.getAttribute("data-tc-team");
+      if (Object.prototype.hasOwnProperty.call(st, key)) d.open = !!st[key];
+    });
+  }
+  document.addEventListener("htmx:afterSwap", function (evt) {
+    tcRestoreTeamState(evt.detail && evt.detail.target);
+    tcRestoreRailWidth(evt.detail && evt.detail.target);
+  });
+  document.addEventListener("DOMContentLoaded", function () {
+    tcRestoreTeamState(document);
+    tcRestoreRailWidth(document);
+  });
+
+  // ── v2 timeline/rail draggable split ──
+  // Rail width stored as a percentage of .tc-work, re-applied after swaps.
+  function tcRestoreRailWidth(root) {
+    var scope = root && root.querySelector ? root : document;
+    var rail = scope.querySelector ? scope.querySelector(".tc-work > .tc-rail") : null;
+    if (!rail && root && root.classList && root.classList.contains("tc-rail")) rail = root;
+    if (!rail) return;
+    var pct = parseFloat(Skipper.prefs.get("tcRailWidthPct", ""));
+    if (!isNaN(pct) && pct >= 15 && pct <= 75) rail.style.width = pct + "%";
+  }
+  (function () {
+    var drag = null;
+    document.addEventListener("mousedown", function (e) {
+      var div = e.target.closest && e.target.closest("[data-tc-divider]");
+      if (!div) return;
+      var work = div.closest(".tc-work");
+      var rail = work && work.querySelector(".tc-rail");
+      if (!rail) return;
+      e.preventDefault();
+      drag = { work: work, rail: rail, div: div };
+      div.classList.add("tc-divider--drag");
+      document.body.classList.add("tc-resizing");
+    });
+    document.addEventListener("mousemove", function (e) {
+      if (!drag) return;
+      var rect = drag.work.getBoundingClientRect();
+      var pct = ((rect.right - e.clientX) / rect.width) * 100;
+      pct = Math.max(15, Math.min(75, pct));
+      drag.rail.style.width = pct + "%";
+    });
+    document.addEventListener("mouseup", function () {
+      if (!drag) return;
+      var rect = drag.work.getBoundingClientRect();
+      var railRect = drag.rail.getBoundingClientRect();
+      var pct = (railRect.width / rect.width) * 100;
+      Skipper.prefs.set("tcRailWidthPct", pct.toFixed(1));
+      drag.div.classList.remove("tc-divider--drag");
+      document.body.classList.remove("tc-resizing");
+      drag = null;
+    });
+  })();
 
   // After the update-notice poll swaps in, drop an "available" toast the user
   // already dismissed this session (guards the race where a poll lands before the

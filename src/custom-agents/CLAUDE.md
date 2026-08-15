@@ -122,6 +122,12 @@ degrades to local tools with a note, rather than failing the task at spawn.
 **Enabling is a filter on the tool map**, not `activeTools` — a disabled tool is
 never serialised into the request, so the model cannot see or name it.
 
+Daemon tools are exposed to the model as `mcp__skipper-daemon__<tool>`
+(`mcp-tools.ts:daemonToolName`), matching what a CLI agent sees and what the
+injected prompt templates say. The enabled list, the daemon wire name, and the
+signal bridge all stay on the bare name; only the model-facing key is prefixed
+(bare fallback if the prefixed name would pass the 64-char provider cap).
+
 ### Operator-defined tools
 
 A custom agent can also be granted tools from `src/custom-tools`, ticked on its

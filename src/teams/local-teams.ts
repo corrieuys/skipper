@@ -59,6 +59,12 @@ export interface LocalTeamConfig {
    * team with the arg text as the description. See src/slack/commands.ts.
    */
   slashCommand?: string;
+  /**
+   * Operator-defined tool names granted to this team's Skipper (src/custom-tools).
+   * Skipper is the implicit entrypoint and has no `agents[]` entry to carry a
+   * `customTools` list, so its grant lives here.
+   */
+  skipperCustomTools?: string[];
 }
 
 export interface LocalTeam {

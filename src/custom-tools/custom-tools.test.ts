@@ -245,6 +245,37 @@ describe("session resolution", () => {
     expect(resolveSessionCustomTools(db, "rt-2").map((t) => t.name)).toEqual(["lookup_customer"]);
   });
 
+  // Production spawns carry the shared-layer NAMESPACED id (`<teamId>:<authorId>`),
+  // not the author-facing id the local team stores.
+  it("grants the team card's tools to a member spawned under its namespaced id", () => {
+    createCustomTool(db, input());
+    const team = createLocalTeam(db, {
+      name: "T",
+      phases: [{ name: "build", prompt: "" }],
+      agents: [{ id: "coder", name: "Coder", type: "claude-code", model: "default", customTools: ["lookup_customer"] }],
+    });
+    db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('t-ns','T',?,'running')").run(team.id);
+    seedInstance("rt-ns", `${team.id}:coder`, "t-ns", "claude-code");
+
+    expect(resolveSessionCustomTools(db, "rt-ns").map((t) => t.name)).toEqual(["lookup_customer"]);
+  });
+
+  // Skipper is the implicit entrypoint with no agents[] entry; its grant lives
+  // on the team config (`skipperCustomTools`).
+  it("grants the team-config skipper tools to the entrypoint instance", () => {
+    createCustomTool(db, input());
+    const team = createLocalTeam(db, {
+      name: "T",
+      phases: [{ name: "build", prompt: "" }],
+      agents: [],
+      config: { skipperCustomTools: ["lookup_customer"] },
+    });
+    db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('t-skip','T',?,'running')").run(team.id);
+    seedInstance("rt-skip", "skipper", "t-skip", "claude-code");
+
+    expect(resolveSessionCustomTools(db, "rt-skip").map((t) => t.name)).toEqual(["lookup_customer"]);
+  });
+
   it("takes the union of both grants, without duplicating", () => {
     createCustomTool(db, input());
     createCustomTool(db, input({ name: "team_only", code: "return 1;" }));

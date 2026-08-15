@@ -4,12 +4,13 @@ import { escapeHtml } from "../atoms/escape-html";
 import { renderInlineMarkdown } from "../atoms/render-inline-markdown";
 import { formatTimestamp } from "../atoms/format-timestamp";
 import { badgeFragment } from "../fragments/badge.fragment";
-import { terminalJsonSummary, stripThinking } from "../terminalJsonSummary";
+import { terminalJsonSummary, stripThinking, classifyPlainTerminalLine } from "../terminalJsonSummary";
 import { iteratePanel } from "../panels/iterate.panel";
-import { isExperimental } from "../../config/feature-flags";
+import { isExperimental, isV2UI } from "../../config/feature-flags";
 import { parseScheduleMatrix } from "../../tasks/scheduled-scheduler";
 import { renderScheduleMatrixEditor, renderScheduleMatrixView, countMatrixHours } from "../atoms/schedule-matrix";
 import type { CommandCenterViewModel, TaskSummary, ScheduledTaskSummary } from "../view-models/command-center.vm";
+import type { ScheduledRunRow } from "../../data/command-center";
 import type { AgentTreeNode } from "../fragments/tree-node.fragment";
 
 interface ScheduledTaskOverride {
@@ -56,7 +57,6 @@ function renderSidebar(vm: CommandCenterViewModel, activeId: string | null): str
       <a href="/tasks/new" class="mc-sidebar__create">+ New Task</a>
       <button class="mc-sidebar__collapse-btn" data-sk-sidebar-toggle title="Pin sidebar open">&#x25C0;</button>
     </div>
-
     <div class="mc-sidebar__list" id="mc-sidebar-list">
       ${renderSidebarListBody(vm, activeId)}
     </div>
@@ -64,6 +64,7 @@ function renderSidebar(vm: CommandCenterViewModel, activeId: string | null): str
 }
 
 export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: string | null): string {
+  if (isV2UI()) return renderSidebarListBodyV2(vm, activeId);
   const running = vm.allTasks.filter(t => t.status === "running");
   const queued = vm.allTasks.filter(t => t.status === "approved");
   // Paused tasks live under Recent, sorted first so the 5-item cap can't push
@@ -100,6 +101,163 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
       ${vm.scheduledTasks.map(st => sidebarScheduledItem(st, activeId)).join("")}
     ` : ""}
   `;
+}
+
+/**
+ * v2 sidebar: one scrolling list, sectioned by liveness instead of storage.
+ * "Needs you" (always visible), then collapsible Active / Recurring / Teams,
+ * then a history link. Section + series expansion reuses the data-tc-team
+ * persistence in skipper.js (keys "sec:<name>" / "rec:<id>").
+ */
+function renderSidebarListBodyV2(vm: CommandCenterViewModel, activeId: string | null): string {
+  // Terminal tasks can carry a stale needs_review flag (completed while a
+  // review was pending); nothing is actionable on them, so they stay out.
+  const attention = vm.allTasks.filter(t =>
+    t.has_attention && t.status !== "completed" && t.status !== "failed");
+  const attnIds = new Set(attention.map(t => t.id));
+
+  // Active = alive or awaiting action, minus what already sits in Needs you.
+  const active = vm.allTasks.filter(t =>
+    !attnIds.has(t.id) &&
+    (t.status === "running" || t.status === "approved" || t.status === "paused" || t.status === "draft"));
+
+  const teamIds = new Set(vm.teams.map(t => t.id));
+  const byTeam = new Map<string, TaskSummary[]>();
+  const unassigned: TaskSummary[] = [];
+  for (const t of vm.allTasks) {
+    if (t.team_id && teamIds.has(t.team_id)) {
+      const list = byTeam.get(t.team_id) ?? [];
+      list.push(t);
+      byTeam.set(t.team_id, list);
+    } else {
+      unassigned.push(t);
+    }
+  }
+  const groups = vm.teams
+    .map(team => renderTeamGroup(team, byTeam.get(team.id) ?? [], activeId))
+    .join("");
+  const other = unassigned.length > 0
+    ? renderTeamGroup({ id: "", name: "No team" }, unassigned, activeId)
+    : "";
+
+  const recurring = vm.scheduledTasks
+    .map(st => renderRecurringSeries(st, vm.scheduledRuns[st.id] ?? [], activeId))
+    .join("");
+
+  const attnHtml = attention.length > 0 ? `
+    <div class="tc-attn">
+      <div class="tc-sec__label tc-attn__label">Needs you</div>
+      ${attention.map(t => sidebarItem(t, activeId)).join("")}
+    </div>` : "";
+
+  return `<div class="tc-side">
+    ${attnHtml}
+    ${section("active", "Active", active.length,
+      active.length > 0 ? active.map(t => sidebarItem(t, activeId)).join("") : `<div class="tc-team__empty">Nothing running</div>`)}
+    ${vm.scheduledTasks.length > 0 ? section("recurring", "Recurring", vm.scheduledTasks.length, recurring) : ""}
+    ${section("teams", "Teams", vm.teams.length, `${groups}${other}` || `<div class="tc-team__empty">No teams yet</div>`)}
+    <a class="tc-history" href="/tasks">Task history &rarr;</a>
+  </div>`;
+}
+
+function section(key: string, label: string, count: number, bodyHtml: string): string {
+  return `<details class="tc-sec" data-tc-team="sec:${key}" open>
+    <summary class="tc-sec__head">
+      <span class="tc-team__caret">&#x25B6;</span>
+      <span class="tc-sec__label">${escapeHtml(label)}</span>
+      ${count > 0 ? `<span class="tc-sec__count">${count}</span>` : ""}
+    </summary>
+    <div class="tc-sec__body">${bodyHtml}</div>
+  </details>`;
+}
+
+/**
+ * A recurring task as a series row: name (opens the detail view), a strip of
+ * the last runs as status squares, and an expandable list of those runs that
+ * open each run's task view directly.
+ */
+function renderRecurringSeries(st: ScheduledTaskSummary, runs: ScheduledRunRow[], activeId: string | null): string {
+  const eid = escapeHtml(st.id);
+  const badge = formatScheduleBadge(st.schedule_unit, st.schedule_amount, st.schedule_matrix ?? null);
+  // Oldest → newest left to right, like a CI run strip.
+  const strip = runs.length > 0
+    ? `<span class="tc-runstrip">${[...runs].reverse().map(r =>
+        `<span class="tc-runsq tc-runsq--${escapeHtml(r.status)}" title="${escapeHtml(r.status)}"></span>`).join("")}</span>`
+    : "";
+  const runRows = runs.map(r => `
+    <a href="/?task=${escapeHtml(r.id)}"
+        class="mc-sidebar__item${r.id === activeId ? " mc-sidebar__item--active" : ""}"
+        hx-get="/workspace/task/${escapeHtml(r.id)}" hx-target="#mc-main" hx-swap="innerHTML" hx-push-url="/?task=${escapeHtml(r.id)}">
+      <span class="mc-sidebar__item-dot mc-sidebar__item-dot--${escapeHtml(r.status)}"></span>
+      <span class="mc-sidebar__item-title">${formatTimestamp(r.created_at)}</span>
+      <span class="mc-sidebar__item-time">${escapeHtml(r.status)}</span>
+    </a>`).join("");
+  const hasRunning = runs.some(r => r.status === "running");
+  const isActive = st.id === activeId;
+
+  return `<details class="tc-team tc-rec${isActive ? " tc-team--active" : ""}" data-tc-team="rec:${eid}"${isActive || hasRunning ? " open" : ""}>
+    <summary>
+      <div class="tc-team__head">
+        <span class="tc-team__caret">&#x25B6;</span>
+        <span class="tc-team__dot${hasRunning ? " tc-team__dot--running" : ""}"></span>
+        <a href="/?scheduled=${eid}" class="tc-team__name" style="color:inherit;text-decoration:none;"
+          hx-get="/workspace/scheduled/${eid}" hx-target="#mc-main" hx-swap="innerHTML" hx-push-url="/?scheduled=${eid}">${escapeHtml(st.title)}</a>
+        ${strip}
+        <span class="tc-rec__badge">${escapeHtml(badge)}</span>
+      </div>
+    </summary>
+    <div class="tc-team__tasks">
+      ${runRows || `<div class="tc-team__empty">No runs yet</div>`}
+      <a class="tc-rec__all" href="/?scheduled=${eid}"
+        hx-get="/workspace/scheduled/${eid}" hx-target="#mc-main" hx-swap="innerHTML" hx-push-url="/?scheduled=${eid}">All runs &rarr;</a>
+    </div>
+  </details>`;
+}
+
+export function pickTeamLandingTask(tasks: TaskSummary[]): TaskSummary | null {
+  const rank = (t: TaskSummary): number =>
+    t.status === "running" ? 0 : t.status === "approved" ? 1 : t.status === "paused" ? 2 : 3;
+  // allTasks arrives created_at DESC, so within a rank the first hit is newest.
+  return [...tasks].sort((a, b) => rank(a) - rank(b))[0] ?? null;
+}
+
+function renderTeamGroup(team: { id: string; name: string }, tasks: TaskSummary[], activeId: string | null): string {
+  const hasActive = tasks.some(t => t.id === activeId);
+  const hasRunning = tasks.some(t => t.status === "running");
+  const attention = tasks.filter(t => t.has_attention).length;
+  const landing = pickTeamLandingTask(tasks);
+  const isOpen = hasActive || hasRunning;
+
+  const nameHtml = landing
+    ? `<a href="/?task=${escapeHtml(landing.id)}" class="tc-team__name"
+        hx-get="/workspace/task/${escapeHtml(landing.id)}" hx-target="#mc-main" hx-swap="innerHTML" hx-push-url="/?task=${escapeHtml(landing.id)}"
+        style="color:inherit;text-decoration:none;">${escapeHtml(team.name)}</a>`
+    : `<span class="tc-team__name">${escapeHtml(team.name)}</span>`;
+
+  // Recent tasks only — the deep archive lives on /tasks. The active task is
+  // force-included so the selection never renders outside its group.
+  const shown = tasks.slice(0, 8);
+  if (activeId && tasks.some(t => t.id === activeId) && !shown.some(t => t.id === activeId)) {
+    shown.push(tasks.find(t => t.id === activeId)!);
+  }
+  const overflow = tasks.length > shown.length
+    ? `<a class="tc-rec__all" href="/tasks">+${tasks.length - shown.length} older &rarr;</a>`
+    : "";
+  const taskRows = tasks.length > 0
+    ? shown.map(t => sidebarItem(t, activeId)).join("") + overflow
+    : `<div class="tc-team__empty">No tasks yet</div>`;
+
+  return `<details class="tc-team${hasActive ? " tc-team--active" : ""}"${isOpen ? " open" : ""} data-tc-team="${escapeHtml(team.id || "none")}">
+    <summary>
+      <div class="tc-team__head">
+        <span class="tc-team__caret">&#x25B6;</span>
+        <span class="tc-team__dot${hasRunning ? " tc-team__dot--running" : ""}"></span>
+        ${nameHtml}
+        ${attention > 0 ? `<span class="tc-team__count" title="Needs your input">${attention}</span>` : ""}
+      </div>
+    </summary>
+    <div class="tc-team__tasks">${taskRows}</div>
+  </details>`;
 }
 
 function sidebarItem(t: TaskSummary, activeId: string | null): string {
@@ -482,8 +640,145 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
   `;
 }
 
+/**
+ * v2 task view: full-width header, then a unified timeline column with an
+ * artifacts/notes rail inside the same container. Messages, tool groups and
+ * escalations all live in the timeline; notes input lives in the rail.
+ */
+function taskMainContentV2(vm: CommandCenterViewModel, task: TaskSummary): string {
+  const eid = escapeHtml(task.id);
+  const mission = vm.missionsByTask[task.id] ?? (vm.mission?.taskId === task.id ? vm.mission : null);
+  const isRunning = task.status === "running";
+  const needsReview = mission?.needsReview ?? false;
+  const phaseStepper = mission && mission.phases.length > 0 ? renderPhaseStepper(mission.phases, task.id, isRunning) : "";
+  const actions = renderActions(task, needsReview);
+
+  const resultHtml = (task.status === "completed" || task.status === "failed") && task.result_summary ? `
+    <div class="sk-panel"><div class="sk-panel__body" style="padding: var(--sk-space-3) var(--sk-space-4); color: var(--sk-text-muted); font-size: var(--sk-text-sm);">${escapeHtml(task.result_summary)}</div></div>
+  ` : "";
+  const reviewGate = task.status === "failed" && task.needs_review
+    ? renderRecoveryPausedBanner(task)
+    : needsReview ? renderReviewBanner(task) : "";
+  const iterate = task.status === "completed" ? iteratePanel(task.id) : "";
+  const attention = reviewGate || iterate || resultHtml
+    ? `<div class="mc-attention-slot">${reviewGate}${iterate}${resultHtml}</div>` : "";
+
+  return `
+    <!-- Task header: full width above timeline + rail -->
+    <div class="mc-task-header mc-task-header--with-phases${isRunning ? " mc-task-header--running" : ""}">
+      <span class="mc-node__indicator mc-node__indicator--${task.status === "waiting_delegation" ? "waiting" : task.status}"></span>
+      <span class="mc-task-header__title">${escapeHtml(task.title)}</span>
+      <div class="mc-task-header__scroll">
+        ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
+        ${isRunning || task.status === "completed" ? `<div class="mc-task-header__orbs">
+          <div id="mc-steer-${eid}"
+            hx-get="/fragments/dashboard/latest-steer?task=${eid}"
+            hx-trigger="load"
+            hx-target="this"
+            hx-swap="innerHTML"></div>
+        </div>` : ""}
+      </div>
+      <div class="mc-task-header__actions">${actions}</div>
+    </div>
+
+    ${attention}
+
+    <div class="tc-work">
+      <div class="tc-timeline-col">
+        <div class="tc-timeline" id="mc-timeline-${eid}" data-tc-stick="on">
+          <div class="tc-timeline__inner" id="mc-timeline-inner-${eid}"
+            hx-get="/workspace/task/${eid}/timeline" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading...</span></div>
+        </div>
+      </div>
+
+      <div class="tc-divider" data-tc-divider title="Drag to resize"></div>
+
+      <aside class="tc-rail">
+        <input type="radio" class="tc-rt tc-rt-arts" name="tc-rail-tab" id="tc-rt-arts" checked>
+        <input type="radio" class="tc-rt tc-rt-notes" name="tc-rail-tab" id="tc-rt-notes">
+        <input type="radio" class="tc-rt tc-rt-activity" name="tc-rail-tab" id="tc-rt-activity">
+        <div class="tc-rail__tabs">
+          <label class="tc-tab--arts" for="tc-rt-arts">Artifacts</label>
+          <label class="tc-tab--notes" for="tc-rt-notes">Notes</label>
+          <label class="tc-tab--activity" for="tc-rt-activity">Activity</label>
+        </div>
+        <div class="tc-rail__pane tc-rail__pane--arts">
+          <div id="mc-artifacts-${eid}" hx-get="/fragments/tasks/${eid}/artifacts" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading artifacts...</span></div>
+        </div>
+        <div class="tc-rail__pane tc-rail__pane--notes">
+          <div id="mc-notes-${eid}" hx-get="/fragments/tasks/${eid}/notes" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading notes...</span></div>
+        </div>
+        <div class="tc-rail__pane tc-rail__pane--activity">
+          <div class="mc-activity__controls">
+            <button class="mc-activity__filter" data-sk-activity-filter="all">All</button>
+            <button class="mc-activity__filter mc-activity__filter--active" data-sk-activity-filter="messages">Messages</button>
+            <button class="mc-activity__filter" data-sk-activity-filter="tools">Tools</button>
+          </div>
+          <div class="mc-activity__feed" id="mc-activity-feed-${eid}" data-activity-filter="messages"
+            hx-get="/workspace/task/${eid}/activity" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading...</span></div>
+        </div>
+        <div class="tc-rail__more">
+          <a onclick="Skipper.modal.open('tc-details-modal')"
+             hx-get="/workspace/task/${eid}/details" hx-target="#tc-details-modal-body" hx-swap="innerHTML">Details &amp; agents</a>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Fullscreen artifact overlay (same ids as the classic inset so the
+         artifact links, editor and close JS work unchanged) -->
+    <div id="sk-artifact-detail-window" class="tc-artifact-overlay" hidden>
+      <div class="artifact-inset__bar">
+        <span class="artifact-inset__bar-title">Artifact</span>
+        <button type="button" class="artifact-inset__close" data-sk-artifact-close title="Close" aria-label="Close artifact">&times;</button>
+      </div>
+      <div class="artifact-inset__body"><div id="sk-artifact-detail" data-sk-artifact-detail></div></div>
+    </div>
+
+    <!-- Details modal -->
+    <div id="tc-details-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
+      <div class="sk-modal__content" style="width:min(900px, 95vw); max-height:85vh; display:flex; flex-direction:column;">
+        <div class="sk-modal__header" style="padding:0.5rem 1rem; gap:0.75rem;">
+          <span style="font-weight:600;">Details</span>
+          <button class="sk-btn sk-btn--sm" data-sk-modal-close="tc-details-modal">Close</button>
+        </div>
+        <div class="sk-modal__body" id="tc-details-modal-body" style="flex:1; min-height:0; overflow:auto; padding:0.75rem 1rem;">
+          <span class="sk-muted">Loading...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Activity detail modal -->
+    <div id="activity-detail-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
+      <div class="sk-modal__content" style="width:min(900px, 95vw); max-height:85vh; display:flex; flex-direction:column;">
+        <div class="sk-modal__header" style="padding:0.5rem 1rem; gap:0.75rem;">
+          <span id="activity-detail-modal-title" style="font-weight:600;">Activity</span>
+          <span id="activity-detail-modal-meta" class="sk-muted sk-text-xs" style="flex:1;"></span>
+          <button class="sk-btn sk-btn--sm" data-sk-modal-close="activity-detail-modal">Close</button>
+        </div>
+        <div class="sk-modal__body" style="flex:1; min-height:0; overflow:auto; padding:0.75rem 1rem;">
+          <pre id="activity-detail-modal-body" style="margin:0; white-space:pre-wrap; word-break:break-word; font-family:var(--sk-font-mono); font-size:12px; line-height:1.45;"></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delegation prompt modal -->
+    <div id="sk-delegation-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
+      <div class="sk-modal__content" style="width:min(900px, 95vw); max-height:85vh; display:flex; flex-direction:column;">
+        <div class="sk-modal__header" style="padding:0.5rem 1rem; gap:0.75rem;">
+          <span style="font-weight:600;">Delegation</span>
+          <button class="sk-btn sk-btn--sm" data-sk-modal-close="sk-delegation-modal">Close</button>
+        </div>
+        <div class="sk-modal__body" id="sk-delegation-modal-body" style="flex:1; min-height:0; overflow:auto; padding:0.75rem 1rem;">
+          <span class="sk-muted">Loading delegation...</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 /** This is also served as a fragment at /workspace/task/:id for HTMX sidebar clicks */
 export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): string {
+  if (isV2UI()) return taskMainContentV2(vm, task);
   // Use task-specific mission data, fall back to running mission
   const mission = vm.missionsByTask[task.id] ?? (vm.mission?.taskId === task.id ? vm.mission : null);
   const isRunning = task.status === "running";
@@ -759,11 +1054,11 @@ export function parseTerminalActivity(
         }
       } else {
         summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
-        kind = line.stream === "stderr" ? "event" : "message";
+        kind = classifyPlainTerminalLine(line.stream, data);
       }
     } else {
       summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
-      kind = line.stream === "stderr" ? "event" : "message";
+      kind = classifyPlainTerminalLine(line.stream, data);
     }
 
     if (kind === "message") summary = stripThinking(summary);
@@ -877,11 +1172,11 @@ export function parseRealtimeActivity(rows: RealtimeActivityRow[]): string {
         }
       } else {
         summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
-        kind = row.stream === "stderr" ? "event" : "message";
+        kind = classifyPlainTerminalLine(row.stream, data);
       }
     } else {
       summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
-      kind = row.stream === "stderr" ? "event" : "message";
+      kind = classifyPlainTerminalLine(row.stream, data);
     }
 
     if (kind === "message") summary = stripThinking(summary);

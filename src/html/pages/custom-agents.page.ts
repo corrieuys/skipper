@@ -17,57 +17,125 @@ export interface CustomAgentsPageViewModel {
   escalationCount: number;
 }
 
+/** Mirrors the teams index: same card grid, same reading order. */
+function agentCard(agent: CustomAgent): string {
+  const tools = [
+    ...agent.enabledTools,
+    ...agent.enabledMcpTools,
+    ...agent.enabledServerTools,
+    ...agent.enabledCustomTools,
+  ];
+  const shown = tools.slice(0, 4);
+  const mini = tools.length > 0
+    ? `<div class="tm-mini">
+         ${shown.map((t) => `<span class="tm-mini__node">${escapeHtml(t)}</span>`).join("")}
+         ${tools.length > shown.length ? `<span class="tm-mini__node">+${tools.length - shown.length} more</span>` : ""}
+       </div>`
+    : `<div class="tm-mini"><span class="sk-text-xs sk-muted">No tools granted</span></div>`;
+  return `<div class="tm-card">
+    <a class="tm-card__link" href="/custom-agents/${escapeHtml(agent.id)}">
+      <div class="tm-card__name">${escapeHtml(agent.name)}</div>
+      ${agent.description ? `<p class="ca-card__desc">${escapeHtml(agent.description)}</p>` : ""}
+      <div class="tm-card__meta">
+        <span>${escapeHtml(agent.modelId)}</span>
+        <span>&middot;</span>
+        <span>${escapeHtml(hostOf(agent.baseUrl))}</span>
+        ${agent.enabledSkills.length > 0 ? `<span>&middot;</span><span>${agent.enabledSkills.length} skill${agent.enabledSkills.length === 1 ? "" : "s"}</span>` : ""}
+      </div>
+      ${mini}
+    </a>
+    <div class="tm-card__actions">
+      <a class="sk-btn sk-btn--sm" href="/custom-agents/${escapeHtml(agent.id)}">Open</a>
+      <button type="button" class="sk-btn sk-btn--sm sk-btn--danger" data-ca-delete="${escapeHtml(agent.id)}"
+        data-ca-name="${escapeHtml(agent.name)}">Delete</button>
+    </div>
+  </div>`;
+}
+
 /** Index of custom agents. Empty state does the explaining, since this is new. */
 export function customAgentsPage(vm: CustomAgentsPageViewModel): string {
-  const cards = vm.agents.map((agent) => `
-    <a class="sk-panel ca-card" href="/custom-agents/${escapeHtml(agent.id)}">
-      <div class="sk-panel__body">
-        <div class="ca-card__title">${escapeHtml(agent.name)}</div>
-        ${agent.description ? `<p class="ca-card__desc">${escapeHtml(agent.description)}</p>` : ""}
-        <div class="ca-card__meta">
-          <span>${escapeHtml(agent.modelId)}</span>
-          <span>·</span>
-          <span>${escapeHtml(hostOf(agent.baseUrl))}</span>
-          <span>·</span>
-          <span>${agent.enabledTools.length + agent.enabledMcpTools.length} tool(s)</span>
-        </div>
-      </div>
-    </a>`).join("");
-
   const body = vm.agents.length > 0
-    ? `<div class="ca-grid">${cards}</div>`
-    : `<div class="sk-panel"><div class="sk-panel__body">
-         <p class="sk-muted">No custom agents yet.</p>
-         <p class="sk-muted sk-text-xs">
+    ? `<div class="tm-grid">
+         ${vm.agents.map(agentCard).join("")}
+         <a class="tm-card tm-card--new" href="/custom-agents/new">+ New agent</a>
+       </div>`
+    : `<div class="tm-empty">
+         <p>No custom agents yet.</p>
+         <p class="sk-text-xs" style="max-width:34rem;margin:0 auto var(--sk-space-4);">
            A custom agent runs inside Skipper instead of spawning a CLI. You give it an
            endpoint, a system prompt, and exactly the tools it is allowed to use. Once saved
            it can be picked as the provider for any agent on a team.
          </p>
-       </div></div>`;
+         <a class="sk-btn sk-btn--primary" href="/custom-agents/new">Create your first agent</a>
+       </div>`;
 
   const content = `
     ${navbar({ currentPath: "/custom-agents", daemonState: vm.daemonState, daemonUptime: vm.daemonUptime, escalationCount: vm.escalationCount })}
     <style>
-      .ca-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:var(--sk-space-4); }
-      .ca-card { display:block; text-decoration:none; color:inherit; transition:border-color .12s ease; }
-      .ca-card:hover { border-color:var(--sk-accent); }
-      .ca-card__title { font-weight:600; margin-bottom:var(--sk-space-1); }
-      .ca-card__desc { margin:0 0 var(--sk-space-2); font-size:var(--sk-text-xs); color:var(--sk-text-muted); }
-      .ca-card__meta { display:flex; gap:var(--sk-space-2); flex-wrap:wrap; font-size:var(--sk-text-xs); color:var(--sk-text-muted); }
-      .ca-section-head { margin:var(--sk-space-6) 0 var(--sk-space-3); font-size:var(--sk-text-sm); font-weight:600; color:var(--sk-text-muted); text-transform:uppercase; letter-spacing:0.06em; }
+      .ca-shell { max-width: 1100px; }
+      .ca-card__desc { margin:0; font-size:var(--sk-text-xs); color:var(--sk-text-muted); line-height:1.5; }
+      .ca-section-head { margin:var(--sk-space-8) 0 var(--sk-space-3); font-size:var(--sk-text-sm); font-weight:600; color:var(--sk-text-muted); text-transform:uppercase; letter-spacing:0.06em; }
+
+      /* Panels: same surface language as the team cards, so they read as
+         objects on the wallpaper instead of faint boxes. */
+      .ca-panel { background:var(--sk-surface-3); border:1px solid var(--sk-border); border-radius:var(--sk-panel-radius); padding:var(--sk-space-4); margin-bottom:var(--sk-space-4); }
+      .ca-panel__title { font-family:var(--sk-font-heading); font-size:var(--sk-text-lg); color:var(--sk-text); margin:0 0 var(--sk-space-1); }
+      .ca-intro { margin:0 0 var(--sk-space-3); font-size:var(--sk-text-xs); color:var(--sk-text-muted); line-height:1.6; max-width:52rem; }
+      .ca-hint { margin:var(--sk-space-1) 0 0; font-size:var(--sk-text-xs); color:var(--sk-text-muted); }
+      .ca-field { margin-top:var(--sk-space-3); }
+      .ca-row2 { display:grid; grid-template-columns:minmax(0,1fr) 140px; gap:var(--sk-space-3); }
+      .ca-actions { margin-top:var(--sk-space-4); display:flex; gap:var(--sk-space-2); align-items:center; }
+
+      /* Expandable rows: add-server form, config imports, tool editors */
+      .ca-fold { background:var(--sk-surface-2); border:1px solid var(--sk-border); border-radius:var(--sk-radius-md); margin-top:var(--sk-space-3); transition:border-color .15s ease; }
+      .ca-fold:hover { border-color:var(--sk-border-active); }
+      .ca-fold > summary { list-style:none; cursor:pointer; padding:var(--sk-space-2) var(--sk-space-3); font-size:var(--sk-text-sm); color:var(--sk-text-muted); display:flex; gap:var(--sk-space-2); align-items:baseline; min-width:0; }
+      .ca-fold > summary::-webkit-details-marker { display:none; }
+      .ca-fold > summary:hover { color:var(--sk-text); }
+      .ca-fold[open] > summary { color:var(--sk-text); border-bottom:1px solid var(--sk-border); }
+      .ca-fold__body { padding:var(--sk-space-3); }
+      .ca-fold__desc { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--sk-text-xs); color:var(--sk-text-muted); }
+
+      .ct-editor.ca-fold { margin-top:var(--sk-space-2); }
+      .ct-head-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,2fr) 110px; gap:var(--sk-space-3); }
+      .ct-param { display:grid; grid-template-columns:minmax(0,1fr) 100px minmax(0,2fr) 60px auto; gap:var(--sk-space-2); margin-top:var(--sk-space-1); align-items:center; }
+      .ct-param__req { font-size:var(--sk-text-xs); display:flex; gap:0.3rem; align-items:center; }
+      .ct-result { white-space:pre-wrap; margin-top:var(--sk-space-2); padding:var(--sk-space-2); border:1px solid var(--sk-border); border-radius:var(--sk-radius-sm); max-height:16rem; overflow:auto; }
+      .ca-import-list { list-style:none; padding:0; margin:0; }
+      .ca-import-list li { display:flex; gap:var(--sk-space-2); align-items:center; margin-bottom:var(--sk-space-1); min-width:0; }
+      .ca-import-list .ca-import__cmd { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     </style>
-    <div class="sk-container">
-      <div class="sk-page-header" style="display:flex;align-items:center;justify-content:space-between;">
-        <h1 class="sk-page-header__title">Custom Agents</h1>
-        <a class="sk-btn sk-btn--sm sk-btn--primary" href="/custom-agents/new">New agent</a>
+    <div class="tm-shell ca-shell">
+      <div class="tm-topbar">
+        <div class="tm-topbar__heading">
+          <h1 class="tm-topbar__title">Custom Agents</h1>
+          <div class="tm-topbar__sub">In-process agents with their own endpoint, prompt and tools. Pick one as the provider for any agent on a team.</div>
+        </div>
+        <div class="tm-topbar__actions">
+          <a class="sk-btn sk-btn--sm sk-btn--primary" href="/custom-agents/new">New agent</a>
+        </div>
       </div>
       ${body}
 
       <!-- What an agent can be given, defined once here and ticked per agent. -->
-      <div class="ca-section-head">Tools</div>
+      <div class="ca-section-head">Tool sources</div>
       ${mcpServersPanel(vm.mcpServers, vm.importableServers)}
       ${customToolsPanel(vm.customTools)}
-    </div>`;
+    </div>
+
+    <script>
+    (function(){
+      document.querySelectorAll('[data-ca-delete]').forEach(function(btn){
+        btn.addEventListener('click', async function(){
+          var id = btn.getAttribute('data-ca-delete');
+          var name = btn.getAttribute('data-ca-name');
+          if (!window.confirm('Delete agent "' + name + '"? Teams using it will need a new provider.')) return;
+          var res = await fetch('/api/custom-agents/' + encodeURIComponent(id), { method: 'DELETE' });
+          if (res.ok) window.location.reload();
+        });
+      });
+    })();
+    </script>`;
 
   return v2layout("Custom Agents", content, "/custom-agents");
 }
@@ -122,16 +190,16 @@ export function mcpServersPanel(servers: McpServerRecord[], importable: Importab
   };
 
   const importRows = importable.map((i) => `
-    <li class="sk-text-xs" style="margin-bottom:var(--sk-space-1);">
+    <li class="sk-text-xs">
       <button type="button" class="sk-btn sk-btn--sm" data-import='${escapeHtml(JSON.stringify(i))}'>Import</button>
       <code>${escapeHtml(i.name)}</code>
-      <span class="sk-muted">${escapeHtml(i.source)} · ${escapeHtml([i.command, ...i.args].join(" "))}</span>
+      <span class="sk-muted ca-import__cmd">${escapeHtml(i.source)} · ${escapeHtml([i.command, ...i.args].join(" "))}</span>
     </li>`).join("");
 
-  return `<div id="sk-mcp-servers-panel" class="sk-panel" style="margin-bottom: var(--sk-space-6);">
-    <div class="sk-panel__header"><span class="sk-panel__title">MCP Servers</span></div>
-    <div class="sk-panel__body">
-      <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
+  return `<div id="sk-mcp-servers-panel" class="ca-panel">
+    <h2 class="ca-panel__title">MCP servers</h2>
+    <div>
+      <p class="ca-intro">
         Tool sources for custom agents. Skipper connects on save to read each server's tool list;
         those tools then appear as options on any custom agent, named <code>server__tool</code>.
         This is separate from the MCP servers your CLI agents use.
@@ -139,46 +207,51 @@ export function mcpServersPanel(servers: McpServerRecord[], importable: Importab
 
       ${servers.length > 0
         ? `<table class="sk-table"><thead><tr><th>Name</th><th>Type</th><th>Target</th><th>Tools</th><th></th></tr></thead><tbody>${servers.map(row).join("")}</tbody></table>`
-        : `<p class="sk-muted sk-text-xs">No MCP servers registered.</p>`}
+        : `<p class="sk-muted sk-text-xs" style="margin:0;">No MCP servers registered.</p>`}
 
-      <form id="sk-mcp-server-form" style="margin-top:var(--sk-space-4);">
-        <div style="display:grid;grid-template-columns:1fr 140px;gap:var(--sk-space-2);">
-          <div><label class="sk-label" for="mcp-name">Name</label>
-            <input class="sk-input sk-input--sm" id="mcp-name" type="text" placeholder="e.g. filesystem" required></div>
-          <div><label class="sk-label" for="mcp-transport">Type</label>
-            <select class="sk-select sk-input--sm" id="mcp-transport">
-              <option value="stdio">stdio</option>
-              <option value="http">http</option>
-            </select></div>
-        </div>
-        <div id="mcp-stdio-fields" style="margin-top:var(--sk-space-2);">
-          <label class="sk-label" for="mcp-command">Command</label>
-          <input class="sk-input sk-input--sm" id="mcp-command" type="text" placeholder="npx -y @modelcontextprotocol/server-filesystem /some/path">
-          <p class="sk-muted sk-text-xs" style="margin:var(--sk-space-1) 0 0;">The command and its arguments, as you would type them.</p>
-        </div>
-        <div id="mcp-http-fields" style="margin-top:var(--sk-space-2);display:none;">
-          <label class="sk-label" for="mcp-url">URL</label>
-          <input class="sk-input sk-input--sm" id="mcp-url" type="text" placeholder="https://example.com/mcp">
-        </div>
-        <div style="margin-top:var(--sk-space-2);">
-          <label class="sk-label" id="mcp-pairs-label">Environment variables</label>
-          <div id="mcp-pairs"></div>
-          <button type="button" class="sk-btn sk-btn--sm" id="mcp-add-pair" style="margin-top:var(--sk-space-1);">+ Add</button>
-          <p class="sk-muted sk-text-xs" style="margin:var(--sk-space-1) 0 0;">Values may use <code>\${ENV_VAR}</code> to read from the daemon's environment instead of storing a secret here.</p>
-        </div>
-        <div style="margin-top:var(--sk-space-3);display:flex;gap:var(--sk-space-2);align-items:center;">
-          <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Add server</button>
-          <span class="sk-muted sk-text-xs">Saving connects to the server and reads its tools.</span>
-        </div>
-      </form>
+      <details class="ca-fold" id="mcp-add-fold">
+        <summary>+ Add server</summary>
+        <form id="sk-mcp-server-form" class="ca-fold__body">
+          <div class="ca-row2">
+            <div><label class="sk-label" for="mcp-name">Name</label>
+              <input class="sk-input sk-input--sm" id="mcp-name" type="text" placeholder="e.g. filesystem" required></div>
+            <div><label class="sk-label" for="mcp-transport">Type</label>
+              <select class="sk-select sk-input--sm" id="mcp-transport">
+                <option value="stdio">stdio</option>
+                <option value="http">http</option>
+              </select></div>
+          </div>
+          <div id="mcp-stdio-fields" class="ca-field">
+            <label class="sk-label" for="mcp-command">Command</label>
+            <input class="sk-input sk-input--sm" id="mcp-command" type="text" placeholder="npx -y @modelcontextprotocol/server-filesystem /some/path">
+            <p class="ca-hint">The command and its arguments, as you would type them.</p>
+          </div>
+          <div id="mcp-http-fields" class="ca-field" style="display:none;">
+            <label class="sk-label" for="mcp-url">URL</label>
+            <input class="sk-input sk-input--sm" id="mcp-url" type="text" placeholder="https://example.com/mcp">
+          </div>
+          <div class="ca-field">
+            <label class="sk-label" id="mcp-pairs-label">Environment variables</label>
+            <div id="mcp-pairs"></div>
+            <button type="button" class="sk-btn sk-btn--sm" id="mcp-add-pair" style="margin-top:var(--sk-space-1);">+ Add</button>
+            <p class="ca-hint">Values may use <code>\${ENV_VAR}</code> to read from the daemon's environment instead of storing a secret here.</p>
+          </div>
+          <div class="ca-actions">
+            <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Add server</button>
+            <span class="sk-muted sk-text-xs">Saving connects to the server and reads its tools.</span>
+          </div>
+        </form>
+      </details>
 
       ${importable.length > 0 ? `
-      <details style="margin-top:var(--sk-space-4);">
-        <summary class="sk-text-xs" style="cursor:pointer;">Found in your Claude Code / Codex config (${importable.length})</summary>
-        <p class="sk-muted sk-text-xs" style="margin:var(--sk-space-2) 0;">
-          Importing copies the server here. Editing Skipper's copy never changes your Claude or Codex config.
-        </p>
-        <ul style="list-style:none;padding:0;margin:0;">${importRows}</ul>
+      <details class="ca-fold">
+        <summary>Found in your Claude Code / Codex config (${importable.length})</summary>
+        <div class="ca-fold__body">
+          <p class="ca-intro">
+            Importing copies the server here. Editing Skipper's copy never changes your Claude or Codex config.
+          </p>
+          <ul class="ca-import-list">${importRows}</ul>
+        </div>
       </details>` : ""}
     </div>
 
@@ -254,6 +327,8 @@ export function mcpServersPanel(servers: McpServerRecord[], importable: Importab
       Array.prototype.forEach.call(document.querySelectorAll('[data-import]'), function(btn){
         btn.addEventListener('click', function(){
           var s = JSON.parse(btn.dataset.import);
+          var fold = document.getElementById('mcp-add-fold');
+          if (fold) fold.open = true;
           document.getElementById('mcp-name').value = s.name;
           transport.value = 'stdio';
           syncTransport();
@@ -279,14 +354,14 @@ export function customToolsPanel(tools: CustomTool[]): string {
     const t = tool ?? { id: "", name: "", description: "", parameters: [], code: "", timeoutMs: 10000 };
     const paramRows = t.parameters.map(paramRow).join("");
     return `
-    <details class="ct-editor" data-tool-id="${escapeHtml(t.id)}" style="margin-bottom:var(--sk-space-2);border:1px solid var(--sk-border-subtle);border-radius:var(--sk-radius-sm);padding:var(--sk-space-2);">
-      <summary style="cursor:pointer;">
+    <details class="ct-editor ca-fold" data-tool-id="${escapeHtml(t.id)}">
+      <summary>
         ${tool
-        ? `<code>${escapeHtml(t.name)}</code> <span class="sk-muted sk-text-xs">${escapeHtml(t.description)}</span>`
-        : `<strong class="sk-text-sm">+ New tool</strong>`}
+        ? `<code>${escapeHtml(t.name)}</code><span class="ca-fold__desc">${escapeHtml(t.description)}</span>`
+        : `+ New tool`}
       </summary>
-      <div style="margin-top:var(--sk-space-3);">
-        <div style="display:grid;grid-template-columns:1fr 2fr 120px;gap:var(--sk-space-2);">
+      <div class="ca-fold__body">
+        <div class="ct-head-grid">
           <div><label class="sk-label" for="${uid}-name">Name</label>
             <input class="sk-input sk-input--sm" id="${uid}-name" type="text" value="${escapeHtml(t.name)}" placeholder="lookup_customer"></div>
           <div><label class="sk-label" for="${uid}-desc">Description</label>
@@ -295,17 +370,17 @@ export function customToolsPanel(tools: CustomTool[]): string {
             <input class="sk-input sk-input--sm" id="${uid}-timeout" type="number" min="100" max="120000" value="${t.timeoutMs}"></div>
         </div>
 
-        <div style="margin-top:var(--sk-space-3);">
+        <div class="ca-field">
           <label class="sk-label">Parameters</label>
           <div id="${uid}-params">${paramRows}</div>
           <button type="button" class="sk-btn sk-btn--sm" data-add-param="${uid}" style="margin-top:var(--sk-space-1);">+ Parameter</button>
         </div>
 
-        <div style="margin-top:var(--sk-space-3);">
+        <div class="ca-field">
           <label class="sk-label" for="${uid}-code">Function body</label>
           <textarea class="sk-input sk-mono" id="${uid}-code" rows="10"
             placeholder="const res = await fetch('https://api.example.com/customers/' + args.id);&#10;return await res.json();">${escapeHtml(t.code)}</textarea>
-          <p class="sk-muted sk-text-xs" style="margin:var(--sk-space-1) 0 0;">
+          <p class="ca-hint">
             An async function body. Available: <code>args</code> (the parameters),
             <code>ctx</code> (<code>taskId</code>, <code>agentId</code>, <code>instanceId</code>, <code>workingDir</code>),
             <code>console</code> (shown in the tool result) and <code>fetch</code>.
@@ -313,23 +388,23 @@ export function customToolsPanel(tools: CustomTool[]): string {
           </p>
         </div>
 
-        <div style="margin-top:var(--sk-space-3);display:flex;gap:var(--sk-space-2);align-items:center;">
+        <div class="ca-actions">
           <button type="button" class="sk-btn sk-btn--sm sk-btn--primary" data-save-tool="${uid}">${tool ? "Save" : "Create tool"}</button>
           <button type="button" class="sk-btn sk-btn--sm" data-test-tool="${uid}">Test run</button>
           ${tool ? `<button type="button" class="sk-btn sk-btn--sm sk-btn--danger" data-delete-tool="${escapeHtml(t.id)}">Delete</button>` : ""}
           <span class="sk-text-xs" data-status="${uid}"></span>
         </div>
-        <pre class="sk-text-xs sk-mono" data-result="${uid}" style="display:none;white-space:pre-wrap;margin-top:var(--sk-space-2);padding:var(--sk-space-2);border:1px solid var(--sk-border-subtle);border-radius:var(--sk-radius-sm);max-height:16rem;overflow:auto;"></pre>
+        <pre class="sk-text-xs sk-mono ct-result" data-result="${uid}" style="display:none;"></pre>
       </div>
     </details>`;
   };
 
-  return `<div id="sk-custom-tools-panel" class="sk-panel" style="margin-bottom: var(--sk-space-6);">
-    <div class="sk-panel__header"><span class="sk-panel__title">Custom Tools</span></div>
-    <div class="sk-panel__body">
-      <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
-        Tools you define yourself. Grant one to a custom agent on its own page, or to any agent —
-        including a CLI agent — from the agent's card on a team. The body runs inside Skipper with
+  return `<div id="sk-custom-tools-panel" class="ca-panel">
+    <h2 class="ca-panel__title">Custom tools</h2>
+    <div>
+      <p class="ca-intro">
+        Tools you define yourself. Grant one to a custom agent on its own page, or to any agent,
+        CLI agents included, from the agent's card on a team. The body runs inside Skipper with
         network access, so treat it like any other script you run on this machine.
       </p>
       ${tools.map((t, i) => editor(t, i)).join("")}
@@ -345,13 +420,13 @@ export function customToolsPanel(tools: CustomTool[]): string {
       var TYPES = ${JSON.stringify(PARAM_TYPES)};
 
       function paramRowHtml(){
-        return '<div class="ct-param" style="display:grid;grid-template-columns:1fr 110px 2fr 90px auto;gap:var(--sk-space-2);margin-top:var(--sk-space-1);align-items:center;">' +
+        return '<div class="ct-param">' +
           '<input class="sk-input sk-input--sm" data-p="name" type="text" placeholder="name">' +
           '<select class="sk-select sk-input--sm" data-p="type">' +
             TYPES.map(function(t){ return '<option value="' + t + '">' + t + '</option>'; }).join('') +
           '</select>' +
           '<input class="sk-input sk-input--sm" data-p="description" type="text" placeholder="what it is">' +
-          '<label class="sk-text-xs" style="display:flex;gap:0.3rem;align-items:center;"><input type="checkbox" data-p="required" checked>req</label>' +
+          '<label class="ct-param__req"><input type="checkbox" data-p="required" checked>req</label>' +
           '<button type="button" class="sk-btn sk-btn--sm sk-btn--danger">&times;</button>' +
         '</div>';
       }
@@ -459,11 +534,11 @@ function paramRow(p: ToolParameter): string {
   const options = PARAM_TYPES
     .map((t) => `<option value="${t}"${t === p.type ? " selected" : ""}>${t}</option>`)
     .join("");
-  return `<div class="ct-param" style="display:grid;grid-template-columns:1fr 110px 2fr 90px auto;gap:var(--sk-space-2);margin-top:var(--sk-space-1);align-items:center;">
+  return `<div class="ct-param">
     <input class="sk-input sk-input--sm" data-p="name" type="text" value="${escapeHtml(p.name)}" placeholder="name">
     <select class="sk-select sk-input--sm" data-p="type">${options}</select>
     <input class="sk-input sk-input--sm" data-p="description" type="text" value="${escapeHtml(p.description)}" placeholder="what it is">
-    <label class="sk-text-xs" style="display:flex;gap:0.3rem;align-items:center;"><input type="checkbox" data-p="required"${p.required ? " checked" : ""}>req</label>
+    <label class="ct-param__req"><input type="checkbox" data-p="required"${p.required ? " checked" : ""}>req</label>
     <button type="button" class="sk-btn sk-btn--sm sk-btn--danger">&times;</button>
   </div>`;
 }

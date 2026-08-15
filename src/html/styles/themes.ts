@@ -1298,6 +1298,20 @@ export function glassOverridesCss(): string {
     ${G} .tm-chip,
     ${G} .tm-phase__idx,
     ${G} .tm-mini__node { border-radius: var(--sk-radius-md); }
+
+    /* ── v2 command center (team-center) ──
+       The timeline column and rail sit directly on the wallpaper; give them the
+       same frosted glass as the sidebar so content stays legible. */
+    ${G} .tc-timeline-col {
+      background: rgba(12, 16, 24, 0.55);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+    ${G} .tc-rail {
+      background: rgba(12, 16, 24, 0.45);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
   `;
 }
 

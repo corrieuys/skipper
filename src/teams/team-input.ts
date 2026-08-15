@@ -91,6 +91,7 @@ function coerceTeamConfig(body: Record<string, unknown>, existing?: LocalTeamCon
   // fields — which readBody only sets when the Slack section was rendered).
   let slackEnabled = existing?.slackEnabled ?? false;
   let slashCommand: string | undefined = existing?.slashCommand;
+  let skipperCustomTools: string[] | undefined = existing?.skipperCustomTools;
 
   if (body.config && typeof body.config === "object") {
     const c = body.config as Record<string, unknown>;
@@ -98,6 +99,13 @@ function coerceTeamConfig(body: Record<string, unknown>, existing?: LocalTeamCon
     if ("slashCommand" in c) {
       slashCommand = typeof c.slashCommand === "string" && c.slashCommand.trim()
         ? normalizeSlashCommand(c.slashCommand)
+        : undefined;
+    }
+    // Custom tools granted to this team's Skipper. Same presence contract as
+    // slashCommand: the key must be there for the stored value to change.
+    if ("skipperCustomTools" in c) {
+      skipperCustomTools = Array.isArray(c.skipperCustomTools)
+        ? (c.skipperCustomTools as unknown[]).filter((n): n is string => typeof n === "string")
         : undefined;
     }
   }
@@ -108,7 +116,10 @@ function coerceTeamConfig(body: Record<string, unknown>, existing?: LocalTeamCon
     const raw = typeof body.slash_command === "string" ? body.slash_command.trim() : "";
     slashCommand = raw ? normalizeSlashCommand(raw) : undefined;
   }
-  return slashCommand ? { slackEnabled, slashCommand } : { slackEnabled };
+  const config: LocalTeamConfig = { slackEnabled };
+  if (slashCommand) config.slashCommand = slashCommand;
+  if (skipperCustomTools && skipperCustomTools.length > 0) config.skipperCustomTools = skipperCustomTools;
+  return config;
 }
 
 /** Build a LocalTeamInput from a raw JSON object (used by create/update/import). */

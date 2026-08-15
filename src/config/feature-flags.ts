@@ -2,6 +2,15 @@ export function isExperimental(): boolean {
   return process.argv.includes("--experimental");
 }
 
+/**
+ * Opt-in v2 command-center UI (team-grouped sidebar, unified task timeline,
+ * artifacts/notes rail). Enabled with the `--v2ui` startup flag or
+ * SKIPPER_V2UI=1; the classic dock UI stays the default.
+ */
+export function isV2UI(): boolean {
+  return process.argv.includes("--v2ui") || process.env.SKIPPER_V2UI === "1";
+}
+
 const ALLOWED_TEAM_IDS = new Set<string>([
   "952a24b2-e227-400b-935f-5a74d60998a4", // Software Team
   "b4a6b06b-ff1c-4d10-8ff2-4ced31d018e9", // Real Time

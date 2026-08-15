@@ -1,0 +1,305 @@
+import type { Database } from "bun:sqlite";
+import { escapeHtml } from "../atoms/escape-html";
+import { formatTimestamp } from "../atoms/format-timestamp";
+import { renderInlineMarkdown } from "../atoms/render-inline-markdown";
+import { terminalJsonSummary, stripThinking, classifyPlainTerminalLine } from "../terminalJsonSummary";
+import { looksLikeHtml } from "../atoms/sniff-html";
+import { escalationCardPanel, type EscalationCardData } from "../panels/escalation-card.panel";
+
+/**
+ * Unified task timeline for the v2 UI: operator messages (task_messages) render
+ * as cards, agent prose (assistant text frames from terminal_outputs) renders
+ * as quiet uncolored entries alongside the tool groups,
+ * consecutive tool/system frames collapse into expandable groups, and
+ * escalations sit inline as resolvable cards (the same escalationCardPanel the
+ * classic Escalations tab uses, so resolve/dismiss swaps work unchanged).
+ * Chronological, oldest first; the client sticks the scroll to the bottom.
+ *
+ * Shared by the /workspace/task/:id/timeline route and the WS live-push.
+ */
+
+interface TerminalRow {
+  stream: string;
+  data: string;
+  agent_name: string;
+  created_at: string;
+}
+
+interface OpMessageRow {
+  id: string;
+  agent_id: string;
+  agent_name: string | null;
+  content: string;
+  created_at: string;
+}
+
+interface TimelineItem {
+  t: string;
+  html: string;
+}
+
+const MAX_ITEMS = 300;
+const MAX_GROUP_ROWS = 40;
+
+// Stable small palette index per agent name; colors come from theme tokens.
+function avatarIndex(name: string): number {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+  return Math.abs(h) % 4;
+}
+
+function initials(name: string): string {
+  const words = name.trim().split(/\s+/);
+  const chars = words.length >= 2 ? `${words[0]![0]}${words[1]![0]}` : name.slice(0, 2);
+  return chars.toUpperCase();
+}
+
+/** Classify one raw terminal frame; mirrors parseTerminalActivity's rules. */
+function classifyRow(stream: string, rawData: string): { kind: "message" | "tool" | "event"; summary: string } {
+  const data = rawData.trim();
+  let kind: "message" | "tool" | "event" = "event";
+  let summary = "";
+
+  if (data.startsWith("{")) {
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      const firstLine = data.split("\n").find((l) => l.trim().startsWith("{"));
+      if (firstLine) {
+        try { parsed = JSON.parse(firstLine.trim()); } catch { /* give up */ }
+      }
+    }
+
+    if (parsed) {
+      // Final `result` frames repeat the last assistant text verbatim; showing
+      // both renders every closing message twice. Drop the result frame.
+      if (parsed.type === "result") return { kind: "event", summary: "" };
+      summary = terminalJsonSummary(parsed);
+      const type = typeof parsed.type === "string" ? parsed.type : "";
+      const item = parsed.item && typeof parsed.item === "object" ? parsed.item as Record<string, unknown> : null;
+      const itemType = item && typeof item.type === "string" ? item.type : "";
+      const message = parsed.message && typeof parsed.message === "object" ? parsed.message as Record<string, unknown> : null;
+      const content = message?.content;
+
+      if (itemType === "command_execution" || itemType === "tool_call" || itemType === "tool_result" || itemType === "tool_use" || type.includes("tool")) {
+        kind = "tool";
+      } else if (Array.isArray(content)) {
+        const hasToolBlock = content.some((b: any) => b?.type === "tool_use" || b?.type === "tool_result");
+        kind = hasToolBlock ? "tool" : "message";
+      } else if (type === "assistant" || type === "user" || type === "message" || typeof parsed.result === "string"
+        || ((type === "text" || type === "thought") && typeof parsed.data === "string")
+        || (type === "text" && !!(parsed.part as Record<string, unknown> | undefined)?.text)) {
+        kind = "message";
+      }
+    } else {
+      summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
+      kind = classifyPlainTerminalLine(stream, data);
+    }
+  } else {
+    summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
+    kind = classifyPlainTerminalLine(stream, data);
+  }
+
+  if (kind === "message") summary = stripThinking(summary);
+  return { kind, summary };
+}
+
+function activityDataAttrs(row: { data: string; agent_name?: string; created_at?: string }, kind: string): string {
+  return `data-sk-activity-row
+    data-sk-activity-data="${escapeHtml(row.data)}"
+    data-sk-activity-agent="${escapeHtml(row.agent_name ?? "")}"
+    data-sk-activity-pid=""
+    data-sk-activity-time="${escapeHtml(row.created_at ?? "")}"
+    data-sk-activity-kind="${kind}"`;
+}
+
+/** Agent prose from terminal frames: quiet inline entry, no avatar, no accent
+ *  color — visually adjacent to the tool groups. Operator messages
+ *  (task_messages) keep the full card via messageCard. */
+function proseEntry(agent: string, time: string, bodyHtml: string, attrs = ""): string {
+  return `<div class="tc-prose" ${attrs}>
+    <span class="tc-prose__who">${escapeHtml(agent)}</span>
+    <time class="tc-prose__time">${formatTimestamp(time)}</time>
+    <span class="tc-prose__body">${bodyHtml}</span>
+  </div>`;
+}
+
+function messageCard(agent: string, kindLabel: string, time: string, bodyHtml: string, attrs = ""): string {
+  const idx = avatarIndex(agent);
+  return `<div class="tc-entry">
+    <div class="tc-av tc-av--${idx}">${escapeHtml(initials(agent))}</div>
+    <div class="tc-entry__body">
+      <div class="tc-entry__meta">
+        <span class="tc-entry__who tc-who--${idx}">${escapeHtml(agent)}</span>
+        ${kindLabel ? `<span class="tc-entry__kind">${escapeHtml(kindLabel)}</span>` : ""}
+        <time class="tc-entry__time">${formatTimestamp(time)}</time>
+      </div>
+      <div class="tc-entry__card" ${attrs}>${bodyHtml}</div>
+    </div>
+  </div>`;
+}
+
+interface SysBuffer {
+  agent: string;
+  count: number;
+  toolCount: number;
+  rows: Array<{ summary: string; data: string; time: string }>;
+  /** Time of the group's first frame — stable while the group accumulates, so
+   *  the client can keep it expanded across live re-renders (data-tc-keep). */
+  firstTime: string;
+  lastTime: string;
+}
+
+function sysGroupHtml(buf: SysBuffer): string {
+  const rowsHtml = buf.rows.map((r) =>
+    `<div class="tc-sys__row" ${activityDataAttrs({ data: r.data, agent_name: buf.agent, created_at: r.time }, "tool")}>
+      <span class="tc-sys__time">${formatTimestamp(r.time)}</span>
+      <span class="tc-sys__text">${escapeHtml(r.summary)}</span>
+    </div>`,
+  ).join("");
+  const overflow = buf.count > buf.rows.length
+    ? `<div class="tc-sys__row tc-sys__row--overflow">and ${buf.count - buf.rows.length} earlier</div>`
+    : "";
+  const sysCount = buf.count - buf.toolCount;
+  const parts: string[] = [];
+  if (buf.toolCount > 0) parts.push(buf.toolCount === 1 ? "1 tool call" : `${buf.toolCount} tool calls`);
+  if (sysCount > 0) parts.push(sysCount === 1 ? "1 system event" : `${sysCount} system events`);
+  const label = parts.join(", ") || `${buf.count} events`;
+  return `<details class="tc-sys" data-tc-keep="sys:${escapeHtml(buf.agent)}:${escapeHtml(buf.firstTime)}">
+    <summary>${label} &middot; ${escapeHtml(buf.agent)}</summary>
+    <div class="tc-sys__rows">${overflow}${rowsHtml}</div>
+  </details>`;
+}
+
+// Agents sometimes author escalation text as HTML; mirror escalation-card's
+// trust model (sniff-html) so it renders instead of showing raw tags.
+function agentText(text: string): string {
+  return looksLikeHtml(text)
+    ? `<div class="sk-md">${text}</div>`
+    : `<div class="sk-md" data-artifact-md>${escapeHtml(text)}</div>`;
+}
+
+/** Resolved escalations collapse to one quiet line; expanding shows the
+ *  question and the response given. Open ones keep the full resolvable card. */
+function resolvedEscalationHtml(e: EscalationCardData): string {
+  const agentLabel = e.agent_name ?? e.agent_id.slice(0, 12);
+  const dismissed = e.response === "Dismissed by operator.";
+  return `<details class="tc-esc-done" data-tc-keep="esc:${escapeHtml(e.id)}">
+    <summary>
+      <span class="tc-esc-done__tick">&#x2713;</span>
+      <span class="tc-esc-done__label">Escalation ${dismissed ? "dismissed" : "resolved"}</span>
+      <span class="tc-esc-done__who">${escapeHtml(agentLabel)} &middot; ${escapeHtml(e.type)}</span>
+      <time class="tc-esc-done__time">${formatTimestamp(e.resolved_at ?? e.created_at)}</time>
+    </summary>
+    <div class="tc-esc-done__body">
+      <div class="tc-esc-done__q">${agentText(e.question)}</div>
+      <div class="tc-esc-done__r">
+        <span class="tc-esc-done__rlbl">Response</span>
+        ${agentText(e.response ?? "Dismissed")}
+      </div>
+    </div>
+  </details>`;
+}
+
+export function taskTimelineFragment(db: Database, taskId: string): string {
+  const terminalDesc = db.prepare(
+    `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name, t.created_at
+     FROM terminal_outputs t
+     JOIN agent_instances ai ON ai.id = t.agent_id
+     LEFT JOIN agents a ON a.id = ai.template_agent_id
+     WHERE ai.task_id = ?
+     ORDER BY t.id DESC LIMIT 2400`,
+  ).all(taskId) as TerminalRow[];
+  const terminal = terminalDesc.reverse();
+
+  const opMessages = db.prepare(
+    `SELECT m.id, m.agent_id, m.content, m.created_at, a.name AS agent_name
+     FROM task_messages m
+     LEFT JOIN agents a ON a.id = m.agent_id
+     WHERE m.task_id = ?
+     ORDER BY m.created_at ASC, m.rowid ASC
+     LIMIT 200`,
+  ).all(taskId) as OpMessageRow[];
+
+  const escalations = db.prepare(
+    `SELECT e.id, e.agent_id, e.runtime_agent_id, e.task_id, t.title AS task_title,
+            e.type, e.question, e.status, e.response, e.created_at, e.resolved_at,
+            COALESCE(a.name, e.agent_id) AS agent_name
+     FROM escalations e
+     LEFT JOIN tasks t ON t.id = e.task_id
+     LEFT JOIN agents a ON a.id = e.agent_id
+     WHERE e.task_id = ?
+     ORDER BY e.created_at ASC`,
+  ).all(taskId) as EscalationCardData[];
+
+  const items: TimelineItem[] = [];
+
+  // Terminal frames: prose becomes cards, tool/system frames accumulate into
+  // per-agent groups that flush on speaker change or when prose interrupts.
+  let sysBuf: SysBuffer | null = null;
+  const flushSys = () => {
+    if (!sysBuf) return;
+    items.push({ t: sysBuf.lastTime, html: sysGroupHtml(sysBuf) });
+    sysBuf = null;
+  };
+
+  for (const row of terminal) {
+    const { kind, summary } = classifyRow(row.stream, row.data);
+    if (!summary) continue;
+
+    if (kind === "message") {
+      flushSys();
+      const body = renderInlineMarkdown(summary);
+      items.push({
+        t: row.created_at,
+        html: proseEntry(row.agent_name, row.created_at, body, activityDataAttrs(row, "message")),
+      });
+    } else {
+      if (sysBuf && sysBuf.agent !== row.agent_name) flushSys();
+      if (!sysBuf) sysBuf = { agent: row.agent_name, count: 0, toolCount: 0, rows: [], firstTime: row.created_at, lastTime: row.created_at };
+      sysBuf.count++;
+      if (kind === "tool") sysBuf.toolCount++;
+      sysBuf.lastTime = row.created_at;
+      sysBuf.rows.push({ summary, data: row.data, time: row.created_at });
+      if (sysBuf.rows.length > MAX_GROUP_ROWS) sysBuf.rows.shift();
+    }
+  }
+  flushSys();
+
+  // Operator messages (task_messages): agent-to-human updates.
+  for (const m of opMessages) {
+    const agent = m.agent_name ?? m.agent_id;
+    items.push({
+      t: m.created_at,
+      html: messageCard(agent, "message", m.created_at, escapeHtml(m.content)),
+    });
+  }
+
+  // Escalations: inline resolvable cards. Card ids (#escalation-<id>) match the
+  // classic panel, so resolve/dismiss outerHTML swaps land in the timeline.
+  const escalationHtml = new Map<string, string>();
+  for (const e of escalations) {
+    const html = e.status === "open"
+      ? `<div class="tc-escwrap">${escalationCardPanel(e)}</div>`
+      : resolvedEscalationHtml(e);
+    escalationHtml.set(e.id, html);
+    items.push({ t: e.created_at, html });
+  }
+
+  if (items.length === 0) {
+    return `<div class="tc-empty">No activity yet</div>`;
+  }
+
+  items.sort((a, b) => a.t.localeCompare(b.t));
+  let final = items.slice(-MAX_ITEMS);
+
+  // An open escalation must never fall out of the window.
+  for (const e of escalations) {
+    if (e.status !== "open") continue;
+    const html = escalationHtml.get(e.id)!;
+    if (!final.some((i) => i.html === html)) final.push({ t: e.created_at, html });
+  }
+
+  return final.map((i) => i.html).join("");
+}

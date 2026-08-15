@@ -12,6 +12,7 @@ import { updateInstanceStatus, finalizeActiveInstancesForTask } from "./instance
 import type { AgentExitEvent, AgentSignalEvent } from "../events/bus";
 import { logError } from "../logging";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "./types";
+import { isCustomAgentType } from "../custom-agents/store";
 
 import { ReconciliationLoop } from "../orchestrator/tick-loop";
 import { TaskRunner } from "../orchestrator/task-runner";
@@ -340,7 +341,12 @@ export class ManagerDaemon {
       const sessionId = this.agentManager.getSessionId(row.id);
 
       let disabledReason: string | null = null;
-      if (!supportsResume) {
+      if (isCustomAgentType(templateAgent.type)) {
+        // An in-process run is one atomic generateText call — a mid-run steer
+        // would kill and replay it, not inject guidance. Off until steering has
+        // an in-process story; notes still reach the next spawn's prompt.
+        disabledReason = "Steering is not available for custom agents. Add an operator note instead.";
+      } else if (!supportsResume) {
         disabledReason = "Agent type does not support resume.";
       } else if (row.status !== "running") {
         disabledReason = row.status === "waiting_delegation"

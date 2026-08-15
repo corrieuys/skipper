@@ -1,7 +1,7 @@
 import { type RecentLogEntry, parseJsonLine, escapeHtml } from "./components";
 import { renderInlineMarkdown } from "./atoms/render-inline-markdown";
 import { formatTimestamp } from "./formatTimestamp";
-import { terminalJsonSummary, stripThinking } from "./terminalJsonSummary";
+import { terminalJsonSummary, stripThinking, classifyPlainTerminalLine } from "./terminalJsonSummary";
 
 // --- Dashboard: Recent Activity ---
 
@@ -14,7 +14,8 @@ export function recentActivityFragment(logs: RecentLogEntry[]): string {
     ): "message" | "tool" | "other" => {
         const parsed = parseJsonLine(entry.data.trim());
         if (!parsed) {
-            return entry.stream === "stderr" ? "other" : "message";
+            const kind = classifyPlainTerminalLine(entry.stream, entry.data.trim());
+            return kind === "event" ? "other" : kind;
         }
 
         const type = typeof parsed.type === "string" ? parsed.type : "";

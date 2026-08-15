@@ -40,6 +40,9 @@ import { dashboardSteerListFragment, steerCardInfoMarkup, type SteeringOption } 
 import { buildTeamAgentTiles } from "../data/queries";
 import { dashboardNotesFragment } from "../html/dashboardNotesFragment";
 import { taskMessagesFragment } from "../html/fragments/task-message.fragment";
+import { taskTimelineFragment } from "../html/fragments/task-timeline.fragment";
+import { artifactListFragment } from "../html/fragments/artifact-list.fragment";
+import { isV2UI } from "../config/feature-flags";
 import { MessageManager } from "../messages/manager";
 import type { TaskNoteData } from "../html/components";
 import { renderPhaseStripFragment, parseTerminalActivity, parseRealtimeActivity } from "../html/pages/command-center.page";
@@ -387,6 +390,7 @@ export class UIWebSocketManager {
     // --- Operator message posted (experimental) ---
     eventBus.on("task:message_posted", (event) => {
       this.pushV2Messages(event.taskId);
+      if (isV2UI()) this.pushV2Timeline(event.taskId);
     });
 
     // --- Artifact created ---
@@ -423,6 +427,7 @@ export class UIWebSocketManager {
       this.pushDashboardEscalations();
       this.pushCommandCenterSidebar();
       if (event.taskId) this.pushV2TaskEscalations(event.taskId);
+      if (event.taskId && isV2UI()) this.pushV2Timeline(event.taskId);
     });
     eventBus.on("escalation:resolved", (event) => {
       this.pushDashboardEscalations();
@@ -432,6 +437,7 @@ export class UIWebSocketManager {
       // dashboard count reflects the latest state and the user isn't misled into a second resolve.
       this.pushDashboardInstances();
       if (event.taskId) this.pushV2TaskEscalations(event.taskId);
+      if (event.taskId && isV2UI()) this.pushV2Timeline(event.taskId);
     });
   }
 
@@ -795,7 +801,20 @@ export class UIWebSocketManager {
     );
   }
 
+  /** v2: re-render the unified timeline (agent:output debounce + message/escalation events). */
+  private pushV2Timeline(taskId: string): void {
+    const content = taskTimelineFragment(this.db, taskId);
+    this.broadcastRaw(
+      `<div hx-swap-oob="innerHTML:#mc-timeline-inner-${esc(taskId)}">${content}</div>`,
+      [`dashboard`, `task:${taskId}`],
+    );
+  }
+
   private pushV2ActivityFeed(taskId: string): void {
+    // v2 renders both the unified timeline and (in the rail's Activity tab) the
+    // classic parsed feed — refresh the timeline, then fall through to the
+    // classic feed push, whose target exists in both UIs.
+    if (isV2UI()) this.pushV2Timeline(taskId);
     const rows = this.db.prepare(
       `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name, t.created_at
        FROM terminal_outputs t
@@ -865,6 +884,16 @@ export class UIWebSocketManager {
   }
 
   private pushV2Artifacts(taskId: string): void {
+    if (isV2UI()) {
+      const content = artifactListFragment(this.db, taskId, {
+        routePrefix: "/fragments/tasks",
+        openFn: "skOpenArtifactPanel",
+        target: "#sk-artifact-detail",
+        listId: (id) => `mc-artifacts-${id}`,
+      });
+      this.broadcastRaw(`<div hx-swap-oob="innerHTML:#mc-artifacts-${esc(taskId)}">${content}</div>`, [`dashboard`, `task:${taskId}`]);
+      return;
+    }
     const rows = this.db.prepare(
       `SELECT a.id, a.name, a.version, a.kind, a.description, a.created_at
        FROM task_artifacts a

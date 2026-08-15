@@ -106,8 +106,11 @@ export function dashboardSteerListFragment(
 export function agentInstancesModalFragment(options: SteeringOption[]): string {
   const steerable = options.filter((o) => o.can_steer);
   if (steerable.length === 0) {
+    // Instances may exist but be non-steerable (e.g. custom agents); say why
+    // rather than claiming nothing is running.
+    const reason = options.find((o) => o.disabled_reason)?.disabled_reason;
     // Sentinel: the open modal's poller closes when it sees this.
-    return `<div class="sk-muted" data-mc-agent-empty="1" style="padding:0.75rem;">No active instances</div>`;
+    return `<div class="sk-muted" data-mc-agent-empty="1" style="padding:0.75rem;">${reason ? escapeHtml(reason) : "No active instances"}</div>`;
   }
   return `<div class="mc-agent-instances">${steerable.map(steerCardMarkup).join("")}</div>`;
 }

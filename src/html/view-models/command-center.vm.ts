@@ -17,8 +17,10 @@ import {
   fetchTokenTotalsByTask,
   fetchScheduledTaskRows,
   fetchRealtimeSessionActive,
+  fetchRecentScheduledRuns,
   type CommandCenterTaskRow,
   type DelegationPillInfo,
+  type ScheduledRunRow,
 } from "../../data/command-center";
 import type { ActiveMissionData } from "../panels/active-mission.panel";
 import type { MetricsData } from "../panels/metrics-bar.panel";
@@ -86,6 +88,8 @@ export interface CommandCenterViewModel {
   queue: QueuedTask[];
   allTasks: TaskSummary[];
   scheduledTasks: ScheduledTaskSummary[];
+  /** Last 5 runs per recurring task, newest first — the v2 sidebar run strip. */
+  scheduledRuns: Record<string, ScheduledRunRow[]>;
   recentTasks: Array<{ id: string; title: string; status: string; completed_at: string | null }>;
   teams: Array<{ id: string; name: string }>;
   escalationCount: number;
@@ -221,6 +225,7 @@ export function buildCommandCenterViewModel(
   });
 
   const scheduledTasks: ScheduledTaskSummary[] = fetchScheduledTaskRows(db);
+  const scheduledRuns = fetchRecentScheduledRuns(db);
 
   const realtimeSessionActive = fetchRealtimeSessionActive(
     db,
@@ -236,6 +241,7 @@ export function buildCommandCenterViewModel(
     delegationSummary,
     allTasks: taskSummaries,
     scheduledTasks,
+    scheduledRuns,
     queue: queuedTasks.map((t) => ({ id: t.id, title: t.title, status: t.status, created_at: t.created_at })),
     recentTasks: recentTasks.map((t) => ({ id: t.id, title: t.title, status: t.status, completed_at: t.completed_at })),
     teams,

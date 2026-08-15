@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { generateText, stepCountIs, type ModelMessage, type Tool } from "ai";
 import { logError } from "../logging";
 import { buildModel } from "./model";
-import { connectMcpTools } from "./mcp-tools";
+import { connectMcpTools, daemonToolName } from "./mcp-tools";
 import { connectServerTools } from "./server-tools";
 import { listMcpServers } from "./servers";
 import { resolveSessionCustomTools } from "../custom-tools/registration";
@@ -152,7 +152,8 @@ export async function runCustomAgent(input: CustomAgentRunInput, handle: InProce
         closeMcp = bridge.close;
         Object.assign(tools, bridge.tools);
 
-        const missing = daemonToolNames.filter((name) => !(name in bridge.tools));
+        // Bridge keys carry the mcp__skipper-daemon__ prefix; the enabled list is bare.
+        const missing = daemonToolNames.filter((name) => !(daemonToolName(name) in bridge.tools));
         if (missing.length > 0) {
           // Usually correct rather than broken: phase-lifecycle tools are
           // root-only, so a delegated child legitimately gets fewer than the

@@ -12,6 +12,17 @@ export function stripThinking(text: string): string {
     return out.trim();
 }
 
+/**
+ * Classify a plain-text (non-JSON) terminal line. The custom-agent runner and
+ * the daemon write prefixed lines: `[tool]`/`[tool:result]` are tool activity
+ * and `[skipper]`/`[SKIPPER]` are harness notes — neither is agent prose.
+ */
+export function classifyPlainTerminalLine(stream: string, data: string): "message" | "tool" | "event" {
+  if (data.startsWith("[tool]") || data.startsWith("[tool:result]")) return "tool";
+  if (data.startsWith("[skipper]") || data.startsWith("[SKIPPER]")) return "event";
+  return stream === "stderr" ? "event" : "message";
+}
+
 export function terminalJsonSummary(event: Record<string, unknown>): string {
     const trunc = (s: string, n = 160) => s.length > n ? s.slice(0, n) + "…" : s;
 

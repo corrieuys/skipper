@@ -17,15 +17,20 @@ Two independent grants, and a session receives the **union**:
 |---|---|---|
 | custom agent definition (`/custom-agents/:id`) → `custom_agents.enabled_custom_tools` | that agent, wherever it is used | custom agents |
 | team agent card (the team map's agent modal) → `local_teams.agents[].customTools` | that agent, on that team | **any** agent, CLI ones included |
+| team Skipper card (the team map's Skipper modal) → `local_teams.team_config.skipperCustomTools` | the team's Skipper | the root Skipper on that team |
 
 The team grant is the only way a `claude-code` or `codex` agent gets a custom
 tool. Union rather than override because the two answer different questions, and
-an operator who ticked either box meant it.
+an operator who ticked either box meant it. Skipper gets its own config slot
+because it is the implicit entrypoint — it has no `agents[]` entry to carry a
+`customTools` list.
 
 `resolveSessionCustomTools` reads the instance's own resolved provider
 (`state_metadata.provider_type`, not the template row — a machine-scoped override
-makes those differ) and the task's team. A granted name whose tool has since been
-deleted is simply dropped.
+makes those differ) and the task's team. Member matching accepts both the bare
+author id and the shared-layer namespaced id (`<teamId>:<authorId>` — what real
+spawns carry); the entrypoint instance is matched via `teams.entrypoint_agent_id`.
+A granted name whose tool has since been deleted is simply dropped.
 
 ## Why the MCP server, not the runner's tool map
 

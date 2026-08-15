@@ -31,6 +31,24 @@ export interface McpBridgeOptions {
 const CLIENT_NAME = "skipper-custom-agent";
 
 /**
+ * Daemon tools are exposed to the model as `mcp__skipper-daemon__<tool>` — the
+ * name a CLI agent sees and the name every injected prompt template uses
+ * (`prompts/commands-*.md`, `mcp-tools-*.md`). Before this rename the prompt
+ * said `mcp__skipper-daemon__create_note` while the tool map said `create_note`,
+ * and a model taking the prompt literally called a tool that did not exist.
+ *
+ * The enabled list and the daemon wire name stay bare — only the model-facing
+ * key is prefixed. Names that would exceed the 64-char cap providers put on
+ * function names keep their bare name instead (long operator-defined tools).
+ */
+export const DAEMON_TOOL_PREFIX = "mcp__skipper-daemon__";
+
+export function daemonToolName(name: string): string {
+  const prefixed = `${DAEMON_TOOL_PREFIX}${name}`;
+  return prefixed.length <= 64 ? prefixed : name;
+}
+
+/**
  * Connect, list, and wrap. Returns an empty bridge (never throws) when the
  * daemon is unreachable or the token is rejected — a custom agent that cannot
  * reach the MCP server should still run with its local tools and say so in its
@@ -54,7 +72,7 @@ export async function connectMcpTools(options: McpBridgeOptions): Promise<McpToo
   const available = listed.tools.map((t) => t.name);
 
   return {
-    tools: wrapMcpTools(client, listed.tools, enabled),
+    tools: wrapMcpTools(client, listed.tools, enabled, daemonToolName),
     available,
     close: async () => {
       try { await client.close(); } catch { /* transport already gone */ }

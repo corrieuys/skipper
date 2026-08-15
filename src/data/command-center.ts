@@ -41,6 +41,39 @@ export function fetchCommandCenterTasks(db: Database, includeTaskId?: string): C
   ).all(includeTaskId ?? null) as CommandCenterTaskRow[];
 }
 
+export interface ScheduledRunRow {
+  id: string;
+  title: string;
+  status: string;
+  created_at: string;
+  completed_at: string | null;
+  source_scheduled_task_id: string;
+}
+
+/**
+ * The last `perTask` runs of every recurring task, newest first, keyed by the
+ * recurring task id. Feeds the v2 sidebar's per-series run strip; the full run
+ * history stays on the recurring task's detail view.
+ */
+export function fetchRecentScheduledRuns(db: Database, perTask = 5): Record<string, ScheduledRunRow[]> {
+  const rows = db.prepare(
+    `SELECT id, title, status, created_at, completed_at, source_scheduled_task_id
+     FROM (
+       SELECT t.id, t.title, t.status, t.created_at, t.completed_at, t.source_scheduled_task_id,
+              ROW_NUMBER() OVER (PARTITION BY t.source_scheduled_task_id ORDER BY t.created_at DESC) AS rn
+       FROM tasks t
+       WHERE t.source_scheduled_task_id IS NOT NULL
+     )
+     WHERE rn <= ?
+     ORDER BY source_scheduled_task_id, created_at DESC`,
+  ).all(perTask) as ScheduledRunRow[];
+  const byTask: Record<string, ScheduledRunRow[]> = {};
+  for (const row of rows) {
+    (byTask[row.source_scheduled_task_id] ??= []).push(row);
+  }
+  return byTask;
+}
+
 export interface ActiveInstanceRow {
   id: string;
   template_agent_id: string;

@@ -13,6 +13,7 @@ import { dashboardStyles } from "./dashboard";
 import { utilityStyles } from "./utilities";
 import { animationStyles } from "./animations";
 import { missionControlStyles } from "./mission-control";
+import { teamCenterStyles } from "./team-center";
 import { teamMapStyles } from "./team-map";
 import { toastStyles } from "./toast";
 
@@ -30,6 +31,7 @@ export function skStyles(): string {
     utilityStyles(),
     animationStyles(),
     missionControlStyles(),
+    teamCenterStyles(),
     teamMapStyles(),
     toastStyles(),
   ].join("\n");

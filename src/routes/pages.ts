@@ -5,7 +5,9 @@ import { looksLikeHtml } from "../html/atoms/sniff-html";
 import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { getConnectPublicBase, getPublicArtifactUrl, getWebhookTriggerUrl } from "../connect/public-links";
 import { getRealtimeTeamId, listTeamsForStandardTasks } from "../config/teams";
-import { isTeamVisible, isExperimental } from "../config/feature-flags";
+import { isTeamVisible, isExperimental, isV2UI } from "../config/feature-flags";
+import { taskTimelineFragment } from "../html/fragments/task-timeline.fragment";
+import { artifactListFragment } from "../html/fragments/artifact-list.fragment";
 import { listPreferences, setPreference } from "../notifications/store";
 import { NOTIFICATION_EVENTS, type NotificationEventKey } from "../notifications/types";
 import { listKeys } from "./api-keys";
@@ -179,7 +181,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
   const artifactManager = new ArtifactManager(db);
   for (const variant of ARTIFACT_MODAL_VARIANTS) {
     addRoute("GET", `${variant.routePrefix}/:id/artifacts`, (_req, params) =>
-      html(renderArtifactListFragment(db, params.id, variant)));
+      html(isV2UI() ? artifactListFragment(db, params.id, variant) : renderArtifactListFragment(db, params.id, variant)));
 
     addRoute("GET", `${variant.routePrefix}/:id/artifacts/:name`, (req, params) =>
       html(renderArtifactDetailFragment(db, params.id, params.name, new URL(req.url).searchParams.get("version") ?? "latest", variant)));
@@ -195,7 +197,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
         const deletedAt = deleteAction === "delete" ? "strftime('%Y-%m-%d %H:%M:%f','now')" : "NULL";
         db.prepare(`UPDATE task_artifacts SET deleted_at = ${deletedAt} WHERE task_id = ? AND name = ?`)
           .run(taskId, artifactName);
-        return html(renderArtifactListFragment(db, taskId, variant));
+        return html(isV2UI() ? artifactListFragment(db, taskId, variant) : renderArtifactListFragment(db, taskId, variant));
       });
     }
 
@@ -215,7 +217,8 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
         // Swap the modal detail (primary target) AND re-render the artifacts list
         // out-of-band, so its "published" badge stays in sync without a reload.
         const detail = renderArtifactDetailFragment(db, taskId, artifactName, versionParam, variant);
-        const listOob = `<div id="${escapeHtml(variant.listId(taskId))}" hx-swap-oob="innerHTML">${renderArtifactListFragment(db, taskId, variant)}</div>`;
+        const listHtml = isV2UI() ? artifactListFragment(db, taskId, variant) : renderArtifactListFragment(db, taskId, variant);
+        const listOob = `<div id="${escapeHtml(variant.listId(taskId))}" hx-swap-oob="innerHTML">${listHtml}</div>`;
         return html(detail + listOob);
       });
     }
@@ -800,13 +803,22 @@ function registerV2PageRoutes(): void {
 
   addRoute("GET", "/", (req) => {
     const url = new URL(req.url);
-    const selectedTask = url.searchParams.get("task") ?? undefined;
+    let selectedTask = url.searchParams.get("task") ?? undefined;
     const scheduledId = url.searchParams.get("scheduled");
+    const teamId = url.searchParams.get("team");
     const vm = buildCommandCenterViewModel(db);
 
     if (scheduledId) {
       const override = fetchScheduledOverride(scheduledId);
       if (override) return html(commandCenterPage(vm, undefined, override));
+    }
+
+    // v2: /?team=<id> opens the team's most relevant task (running > approved >
+    // paused > latest).
+    if (isV2UI() && teamId && !selectedTask) {
+      const { pickTeamLandingTask } = require("../html/pages/command-center.page");
+      const landing = pickTeamLandingTask(vm.allTasks.filter((t: any) => t.team_id === teamId));
+      if (landing) selectedTask = landing.id;
     }
 
     return html(commandCenterPage(vm, selectedTask));
@@ -876,6 +888,11 @@ function registerV2PageRoutes(): void {
     const { renderAgentList } = require("../html/pages/command-center.page");
     return html(renderAgentList(tree));
   });
+
+  // v2 unified timeline: agent prose + operator messages as cards, tool frames
+  // grouped, escalations inline. Serves the tc-timeline container.
+  addRoute("GET", "/workspace/task/:id/timeline", (_req, params) =>
+    html(taskTimelineFragment(db, params.id)));
 
   // Activity feed — parsed terminal output for the activity tab
   addRoute("GET", "/workspace/task/:id/activity", (req, params) => {

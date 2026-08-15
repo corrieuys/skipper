@@ -571,10 +571,10 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       // Operator-defined tools granted to this agent on this team. This is the
       // only way a CLI agent (claude-code, codex) gets one — a custom agent can
       // also carry its own list, and the session receives the union.
-      function customToolsField(a){
+      function customToolsField(grantedList){
         if (!CUSTOM_TOOLS.length) return '';
         var granted = {};
-        (a.customTools || []).forEach(function(n){ granted[n] = true; });
+        (grantedList || []).forEach(function(n){ granted[n] = true; });
         var boxes = CUSTOM_TOOLS.map(function(t){
           return '<label class="sk-checkbox" style="align-items:flex-start;">' +
             '<input type="checkbox" data-ct value="' + esc(t.name) + '"' + (granted[t.name] ? ' checked' : '') + '>' +
@@ -613,7 +613,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
           '</div>' +
           '<div class="tm-field"><label class="sk-label">Instruction</label>' +
             '<textarea class="sk-textarea tm-field__prompt" data-f="instruction" placeholder="System instruction for this agent...">' + esc(a.instruction || '') + '</textarea></div>' +
-          customToolsField(a);
+          customToolsField(a.customTools);
 
         openModal('Agent', body, doneFooter(), function(){
           var typeSel = modalBody.querySelector('[data-f="type"]');
@@ -641,16 +641,26 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         });
       }
 
-      // ── Skipper modal (prompt only) ───────────────────────────────────
+      // ── Skipper modal (prompt + custom tools) ─────────────────────────
       function openSkipperModal(){
+        var cfg = TEAM.config || {};
         var body =
           '<div class="tm-field"><label class="sk-label">Skipper prompt</label>' +
             '<textarea class="sk-textarea tm-field__prompt" data-f="skipper_prompt" placeholder="Extra context for Skipper, the team lead (optional)...">' + esc(TEAM.skipper_prompt || '') + '</textarea>' +
-            '<p class="tm-field__hint">Prepended to every phase Skipper runs for this team.</p></div>';
+            '<p class="tm-field__hint">Prepended to every phase Skipper runs for this team.</p></div>' +
+          customToolsField(cfg.skipperCustomTools);
 
         openModal('Skipper', body, doneFooter(), function(){
           wireFooter(function(){
             TEAM.skipper_prompt = modalBody.querySelector('[data-f="skipper_prompt"]').value;
+            // Only read the tool checkboxes when the section was rendered; with
+            // no tools defined it is absent and must leave the stored list alone.
+            if (CUSTOM_TOOLS.length > 0) {
+              TEAM.config = TEAM.config || {};
+              TEAM.config.skipperCustomTools = Array.prototype.filter.call(
+                modalBody.querySelectorAll('[data-ct]'), function(b){ return b.checked; }
+              ).map(function(b){ return b.value; });
+            }
           });
         });
       }

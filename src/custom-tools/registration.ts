@@ -2,7 +2,8 @@ import type { Database } from "bun:sqlite";
 import { logError } from "../logging";
 import { isCustomAgentType } from "../agents/types";
 import { getCustomAgentByType } from "../custom-agents/store";
-import { getLocalTeam, type LocalTeam } from "../teams/local-teams";
+import { getEntrypointAgentId } from "../agents/skipper";
+import { getLocalTeam, namespacedAgentId, type LocalTeam } from "../teams/local-teams";
 import { executeCustomTool, formatExecution, type ToolContext } from "./runtime";
 import { getCustomToolsByName, toolZodShape, type CustomTool } from "./store";
 
@@ -62,8 +63,19 @@ function teamAgentCustomTools(db: Database, instance: InstanceRow): string[] {
     const task = db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(instance.task_id) as { team_id: string | null } | null;
     if (!task?.team_id) return [];
     const team: LocalTeam | null = getLocalTeam(db, task.team_id);
-    const member = team?.agents?.find((a) => a.id === instance.template_agent_id);
-    return member?.customTools ?? [];
+    if (!team) return [];
+    // Spawned members carry the shared-layer NAMESPACED id (`<teamId>:<authorId>`);
+    // the local team stores the bare author id. Match either form.
+    const member = team.agents?.find(
+      (a) => a.id === instance.template_agent_id || namespacedAgentId(team.id, a.id) === instance.template_agent_id,
+    );
+    if (member) return member.customTools ?? [];
+    // Skipper is the implicit entrypoint — never in agents[] — so its grant
+    // lives on the team config instead of an agent card.
+    if (getEntrypointAgentId(db, instance.task_id) === instance.template_agent_id) {
+      return team.config?.skipperCustomTools ?? [];
+    }
+    return [];
   } catch (err) {
     logError(db, "custom_tools.resolve_team", { taskId: instance.task_id }, err);
     return [];
