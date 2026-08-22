@@ -13,12 +13,21 @@ export const MESSAGE_MAX_LENGTH = 2900;
 /** Window in which an identical message from the same agent is treated as a repeat. */
 const DEDUP_WINDOW_SECONDS = 5;
 
+/**
+ * Message body format. 'text' is the preferred, default choice — a message is a
+ * short status line for a person. 'markdown' and 'html' exist for the occasional
+ * update that genuinely benefits from light structure.
+ */
+export type MessageFormat = "text" | "markdown" | "html";
+const VALID_FORMATS = new Set<string>(["text", "markdown", "html"]);
+
 export interface TaskMessage {
   id: string;
   task_id: string;
   agent_id: string;
   agent_instance_id: string | null;
   content: string;
+  format: MessageFormat | null;
   created_at: string;
   /** Joined display name of the posting agent, when the caller asked for it. */
   agent_name?: string | null;
@@ -29,6 +38,8 @@ export interface PostMessageInput {
   agentId: string;
   agentInstanceId?: string | null;
   content: string;
+  /** Defaults to 'text' when omitted. */
+  format?: MessageFormat;
 }
 
 export interface PostMessageResult {
@@ -60,7 +71,11 @@ export class MessageManager {
    * absorbs the retry an agent makes when a tool result is slow to come back.
    */
   postMessage(input: PostMessageInput): PostMessageResult {
-    const content = normalizeContent(input.content);
+    if (input.format !== undefined && !VALID_FORMATS.has(input.format)) {
+      throw new Error(`Invalid message format: ${input.format}. Must be one of: ${Array.from(VALID_FORMATS).join(", ")}`);
+    }
+    const format: MessageFormat = input.format ?? "text";
+    const content = normalizeContent(input.content, format);
     if (!content) throw new Error("Message content is empty");
 
     const duplicate = this.db
@@ -77,9 +92,9 @@ export class MessageManager {
     const id = crypto.randomUUID();
     this.db
       .prepare(
-        "INSERT INTO task_messages (id, task_id, agent_id, agent_instance_id, content) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO task_messages (id, task_id, agent_id, agent_instance_id, content, format) VALUES (?, ?, ?, ?, ?, ?)",
       )
-      .run(id, input.taskId, input.agentId, input.agentInstanceId ?? null, content);
+      .run(id, input.taskId, input.agentId, input.agentInstanceId ?? null, content, format);
 
     eventBus.emit("task:message_posted", {
       messageId: id,
@@ -119,13 +134,18 @@ export class MessageManager {
 }
 
 /**
- * Messages render in a narrow column, so a body that arrives as a wrapped
- * paragraph or a bullet list is flattened to one line before storage. Truncation
- * is marked with an ellipsis so the operator can tell the agent overran rather
- * than stopped mid-thought.
+ * Messages render in a narrow column. A plain-text body is flattened to one line
+ * before storage — that is the register's whole point. A markdown/html body keeps
+ * its line breaks (they carry the structure) but has trailing blank lines and
+ * horizontal whitespace tidied. Either way the body is capped at
+ * MESSAGE_MAX_LENGTH, with truncation marked by an ellipsis so the operator can
+ * tell the agent overran rather than stopped mid-thought.
  */
-function normalizeContent(raw: string): string {
-  const collapsed = (raw ?? "").replace(/\s+/g, " ").trim();
-  if (collapsed.length <= MESSAGE_MAX_LENGTH) return collapsed;
-  return collapsed.slice(0, MESSAGE_MAX_LENGTH - 1).trimEnd() + "…";
+function normalizeContent(raw: string, format: MessageFormat = "text"): string {
+  const normalized = format === "text"
+    ? (raw ?? "").replace(/\s+/g, " ").trim()
+    // Preserve newlines; collapse runs of 3+ blank lines and trim the edges.
+    : (raw ?? "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (normalized.length <= MESSAGE_MAX_LENGTH) return normalized;
+  return normalized.slice(0, MESSAGE_MAX_LENGTH - 1).trimEnd() + "…";
 }

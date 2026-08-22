@@ -2,6 +2,8 @@ import type { Database } from "bun:sqlite";
 import { timingSafeEqual } from "node:crypto";
 import { getDb } from "../db/connection";
 import { eventBus } from "../events/bus";
+import { looksLikeHtml } from "../html/atoms/sniff-html";
+import { validateArtifactHtml } from "./html-validator";
 
 export interface TaskArtifact {
   id: string;
@@ -11,6 +13,7 @@ export interface TaskArtifact {
   kind: ArtifactKind;
   description: string | null;
   body: string;
+  format: ArtifactFormat | null;
   created_by_agent_id: string | null;
   created_at: string;
   publish_key: string | null;
@@ -18,8 +21,10 @@ export interface TaskArtifact {
 }
 
 export type ArtifactKind = "transcript" | "summary" | "plan" | "other";
+export type ArtifactFormat = "html" | "markdown";
 
 const VALID_KINDS = new Set<string>(["transcript", "summary", "plan", "other"]);
+const VALID_FORMATS = new Set<string>(["html", "markdown"]);
 
 export interface ArtifactListItem {
   id: string;
@@ -37,7 +42,29 @@ export interface CreateArtifactInput {
   kind: ArtifactKind;
   description?: string;
   body: string;
+  /**
+   * Body format. Agent-facing MCP tools require this explicitly; non-agent
+   * paths (REST data API, UI in-place edit) may omit it, in which case it is
+   * inferred from the body via the looksLikeHtml heuristic. When the resolved
+   * format is "html" the body is structurally validated and the create is
+   * rejected on failure.
+   */
+  format?: ArtifactFormat;
   createdByAgentId?: string;
+}
+
+/** Raised when an html-format artifact body fails structural validation. */
+export class ArtifactHtmlValidationError extends Error {
+  readonly line: number;
+  readonly column: number;
+  readonly tag?: string;
+  constructor(message: string, line: number, column: number, tag?: string) {
+    super(message);
+    this.name = "ArtifactHtmlValidationError";
+    this.line = line;
+    this.column = column;
+    this.tag = tag;
+  }
 }
 
 export interface ListArtifactsOptions {
@@ -59,6 +86,26 @@ export class ArtifactManager {
       throw new Error(`Invalid artifact kind: ${input.kind}. Must be one of: ${Array.from(VALID_KINDS).join(", ")}`);
     }
 
+    if (input.format !== undefined && !VALID_FORMATS.has(input.format)) {
+      throw new Error(`Invalid artifact format: ${input.format}. Must be one of: ${Array.from(VALID_FORMATS).join(", ")}`);
+    }
+
+    // Resolve format: explicit wins; otherwise infer from the body. Only the
+    // resolved "html" case is structurally validated — markdown is never
+    // rejected.
+    const format: ArtifactFormat = input.format ?? (looksLikeHtml(input.body) ? "html" : "markdown");
+    if (format === "html") {
+      const validation = validateArtifactHtml(input.body);
+      if (!validation.ok) {
+        throw new ArtifactHtmlValidationError(
+          `Artifact HTML is invalid and was not saved: ${validation.message}. Fix the markup, or set format:"markdown" if this is not HTML.`,
+          validation.line,
+          validation.column,
+          validation.tag,
+        );
+      }
+    }
+
     const id = crypto.randomUUID();
 
     // Auto-increment version for (task_id, name)
@@ -71,8 +118,8 @@ export class ArtifactManager {
 
     this.db
       .prepare(
-        `INSERT INTO task_artifacts (id, task_id, name, version, kind, description, body, created_by_agent_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO task_artifacts (id, task_id, name, version, kind, description, body, format, created_by_agent_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -82,6 +129,7 @@ export class ArtifactManager {
         input.kind,
         input.description ?? null,
         input.body,
+        format,
         input.createdByAgentId ?? null,
       );
 

@@ -189,8 +189,14 @@ export function registerDaemonTools(
           .describe(
             `What the operator should know, in one or two plain sentences (max ${MESSAGE_MAX_LENGTH} chars). No jargon, file paths, stack traces or tool output.`,
           ),
+        format: z
+          .enum(["text", "markdown", "html"])
+          .optional()
+          .describe(
+            "Body format. Strongly prefer 'text' — a short, plain sentence is what this register is for. Use 'markdown' only when a little structure genuinely helps (a short bullet list, emphasis) and 'html' only for the rare update that needs real layout. Defaults to 'text'.",
+          ),
       },
-      async ({ content }) => {
+      async ({ content, format }) => {
         const identity = getInternalIdentity();
         if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
         if (!identity.taskId) return { content: [{ type: "text" as const, text: "Error: no active task" }] };
@@ -201,6 +207,7 @@ export function registerDaemonTools(
             agentId: identity.templateAgentId,
             agentInstanceId: identity.runtimeId,
             content,
+            format,
           });
           return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
         } catch (err) {
@@ -217,10 +224,15 @@ export function registerDaemonTools(
     {
       name: z.string().describe("Artifact name (e.g., 'implementation-plan')"),
       kind: z.enum(["transcript", "summary", "plan", "other"]).describe("Artifact kind"),
-      body: z.string().describe("Artifact body content"),
+      body: z.string().describe("Artifact body content, in the chosen `format`"),
+      format: z
+        .enum(["markdown", "html"])
+        .describe(
+          "Body format. Choose based on content complexity: 'markdown' for prose, lists, and simple documents (the default choice); 'html' for complex layouts — multi-column tables, nested structures, or anything Markdown renders poorly. HTML bodies are structurally validated and rejected if malformed.",
+        ),
       description: z.string().optional().describe("One-line description"),
     },
-    async ({ name, kind, body, description }) => {
+    async ({ name, kind, body, format, description }) => {
       const identity = getInternalIdentity();
       if (!identity?.taskId) return { content: [{ type: "text" as const, text: "Error: no active task" }] };
 
@@ -230,6 +242,7 @@ export function registerDaemonTools(
           name,
           kind: kind as ArtifactKind,
           body,
+          format,
           description,
           createdByAgentId: identity.runtimeId,
         });

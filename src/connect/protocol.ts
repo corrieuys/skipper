@@ -22,6 +22,33 @@ export interface TaskListItem {
   needs_review: boolean;
   created_at: string;
   updated_at: string | null;
+  /** Set when this task is a run of a recurring task; null for standalone tasks.
+   * Lets clients present recurring runs separately (like the main UI, which
+   * keeps non-active recurring runs out of the Active/Teams lists). */
+  source_scheduled_task_id: string | null;
+}
+
+/** One run of a recurring task, for the recurring series' run strip. */
+export interface RecurringRunItem {
+  id: string;
+  title: string;
+  status: string;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+/** A recurring task (series) plus its most recent runs. `recurring/list`. */
+export interface RecurringSeriesItem {
+  id: string;
+  title: string;
+  teamName: string | null;
+  scheduleUnit: string | null;
+  scheduleAmount: number | null;
+  scheduleMatrix: string | null;
+  status: string;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  runs: RecurringRunItem[];
 }
 
 export interface EscalationItem {
@@ -44,6 +71,22 @@ export interface NoteItem {
   createdAt: string;
 }
 
+/**
+ * Operator message projection (agent → human progress update). Shares NoteItem's
+ * shape but is a distinct register: messages are operator-only and never fed back
+ * into any agent prompt. Carried by the `task:message_posted` fat event and the
+ * `messages/list` resource.
+ */
+export interface MessageItem {
+  id: string;
+  taskId: string;
+  agentName: string | null;
+  content: string;
+  /** Body format: 'text' | 'markdown' | 'html'. Null on legacy rows (= text). */
+  format: string | null;
+  createdAt: string;
+}
+
 /** Artifact projection without the body. */
 export interface ArtifactItem {
   id: string;
@@ -52,6 +95,8 @@ export interface ArtifactItem {
   kind: string;
   version: number;
   description: string | null;
+  /** Body format: 'html' | 'markdown' | 'text'. Null on legacy rows (heuristic). */
+  format: string | null;
   createdAt: string;
   publishedAt: string | null;
   publicUrl: string | null;
@@ -82,7 +127,11 @@ export type ClientMessage =
   // Coalesced live output for one task; only sent while the server reports
   // at least one subscribed consumer (see output-tail.ts). seq is
   // per-connection and informational (gap hint), not for reassembly.
-  | { type: "output_batch"; taskId: string; seq: number; entries: OutputBatchEntry[] }
+  // `backfill: true` marks the one-shot history frame sent immediately on
+  // subscribe (recent terminal output up to the subscribe point); live frames
+  // that follow omit it. Lets the integrator seed a task's timeline from a
+  // single subscribe with no separate read and no read-then-subscribe gap.
+  | { type: "output_batch"; taskId: string; seq: number; entries: OutputBatchEntry[]; backfill?: boolean }
   | { type: "pong" };
 
 export type ServerMessage =

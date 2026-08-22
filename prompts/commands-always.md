@@ -29,7 +29,7 @@ Notes are delivered to the next agent that starts on this task. Write them for a
 - Before completing your assigned work, you MUST call the note tool at least once summarizing the most relevant details another agent or operator may need.
 
 Artifact MCP tools (versioned, immutable data store shared across agents). Server: `skipper-daemon`. Claude Code exposes them with the `mcp__skipper-daemon__` prefix; Codex may show the bare names — call whichever appears in your tool list:
-- `mcp__skipper-daemon__create_artifact({ name, kind, body, description? })` — versions auto-increment per (task, name). Valid kinds: `transcript`, `summary`, `plan`, `other`. Write `body` as simple HTML, not Markdown. Use descriptive names like `implementation-plan` or `meeting-transcript`.
+- `mcp__skipper-daemon__create_artifact({ name, kind, body, format, description? })` — versions auto-increment per (task, name). Valid kinds: `transcript`, `summary`, `plan`, `other`. `format` is required: `"markdown"` for simple content (the default), `"html"` for complex layouts (tables, nested structures) — html bodies are structurally validated and rejected if malformed. Use descriptive names like `implementation-plan` or `meeting-transcript`.
 - `mcp__skipper-daemon__list_artifacts({ kind?, name_prefix?, limit? })` — list artifacts on the current task.
 - `mcp__skipper-daemon__get_artifact({ name, version? })` — retrieve a specific artifact. `version` is a number or `"latest"` (default).
 

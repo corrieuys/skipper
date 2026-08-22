@@ -51,6 +51,6 @@ TOOL REFERENCE (MCP server `skipper-daemon`; Claude Code prefixes with `mcp__ski
 - `mcp__skipper-daemon__delegate_batch({ items })` — parallel delegation to multiple agents in one barrier
 - `mcp__skipper-daemon__create_escalation({ question })` — flag for human attention
 - `mcp__skipper-daemon__create_note({ content })` — curated observation for the notes feed
-- `mcp__skipper-daemon__create_artifact({ name, kind, body, description? })` — versioned document
+- `mcp__skipper-daemon__create_artifact({ name, kind, body, format, description? })` — versioned document
 - `mcp__skipper-daemon__list_artifacts({ kind?, name_prefix?, limit? })` — list current task's artifacts
 - `mcp__skipper-daemon__get_artifact({ name, version? })` — retrieve a specific artifact

@@ -5,7 +5,7 @@ the human watching a task.
 
 | file | use |
 |---|---|
-| `manager.ts` | `MessageManager` — `postMessage`, `listMessages`, `countMessages`. Normalizes to one line, caps at `MESSAGE_MAX_LENGTH` (2900, sized to Slack's section limit), dedups an identical repost from the same agent within 5s, emits `task:message_posted` |
+| `manager.ts` | `MessageManager` — `postMessage`, `listMessages`, `countMessages`. Carries a `format` (`text`\|`markdown`\|`html`, default `text` — NULL on legacy rows = text; migration `0021_task_message_format.sql`). Text bodies collapse to one line; markdown/html keep their newlines. Caps at `MESSAGE_MAX_LENGTH` (2900, sized to Slack's section limit), dedups an identical repost from the same agent within 5s, emits `task:message_posted` |
 
 Third register alongside notes and artifacts, split by **audience**:
 
@@ -17,9 +17,13 @@ Third register alongside notes and artifacts, split by **audience**:
 
 Because nothing reads messages back, there is no list/get MCP tool — only
 `post_message` (registered on root AND delegated sessions, `isExperimental()` only,
-see [../mcp/CLAUDE.md](../mcp/CLAUDE.md)). Writing style is instructed in
+see [../mcp/CLAUDE.md](../mcp/CLAUDE.md)). It takes an optional `format`; agents are
+told to strongly prefer `text`. Writing style is instructed in
 [../../prompts/commands-messages.md](../../prompts/commands-messages.md): plain
-language, no jargon or paths, accurate, a handful per task.
+language, no jargon or paths, accurate, a handful per task. Both render surfaces
+honour the format via `html/atoms/render-message-body.ts` (text = escaped plain,
+markdown = `data-artifact-md` + client marked, html = trusted inline, scripts
+stripped).
 
 Storage is the runtime DB (`task_messages`, migration `0015_task_messages.sql`).
 `TaskScheduler.deleteTask` clears the rows explicitly, like other task-scoped

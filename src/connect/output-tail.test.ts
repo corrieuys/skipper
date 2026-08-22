@@ -9,6 +9,15 @@ interface BatchFrame {
   taskId: string;
   seq: number;
   entries: OutputBatchEntry[];
+  backfill?: boolean;
+}
+
+let seededRow = 0;
+function insertTerminalRow(instanceId: string, data: string): void {
+  seededRow += 1;
+  getDb()
+    .prepare("INSERT INTO terminal_outputs (agent_id, session_id, stream, data, sequence) VALUES (?, NULL, 'stdout', ?, ?)")
+    .run(instanceId, data, seededRow);
 }
 
 let frames: BatchFrame[];
@@ -47,6 +56,7 @@ beforeEach(() => {
   initializeDatabase(getDb(":memory:"));
   frames = [];
   manager = null;
+  seededRow = 0;
 });
 
 afterEach(() => {
@@ -76,6 +86,53 @@ describe("OutputTailManager", () => {
     await Bun.sleep(30);
     expect(frames).toHaveLength(2);
     expect(frames[1]!.seq).toBe(2);
+  });
+
+  it("replays recent terminal output as a backfill frame on subscribe, oldest-first", async () => {
+    const { taskId, instanceId, otherInstanceId } = seed();
+    insertTerminalRow(instanceId, "history 1");
+    insertTerminalRow(otherInstanceId, "other-task history");
+    insertTerminalRow(instanceId, "history 2");
+
+    manager = new OutputTailManager(getDb(), capture, { flushMs: 10, maxEntries: 50, maxBytes: 32_768, backfillEntries: 200 });
+    manager.handleSubscribe(taskId);
+
+    // Backfill is sent synchronously on subscribe, before any live flush.
+    expect(frames).toHaveLength(1);
+    expect(frames[0]!).toMatchObject({ type: "output_batch", taskId, backfill: true });
+    expect(frames[0]!.entries.map((e) => e.data)).toEqual(["history 1", "history 2"]);
+    expect(frames[0]!.entries[0]!.agentName).toBe("Tail Agent");
+
+    // Live output continues after the backfill, with a later seq.
+    emitOutput(instanceId, "live 1");
+    await Bun.sleep(30);
+    expect(frames).toHaveLength(2);
+    expect(frames[1]!.backfill).toBeUndefined();
+    expect(frames[1]!.seq).toBeGreaterThan(frames[0]!.seq);
+    expect(frames[1]!.entries.map((e) => e.data)).toEqual(["live 1"]);
+  });
+
+  it("sends no backfill frame when the task has no prior output", () => {
+    const { taskId } = seed();
+    manager = new OutputTailManager(getDb(), capture, { flushMs: 10, maxEntries: 50, maxBytes: 32_768, backfillEntries: 200 });
+    manager.handleSubscribe(taskId);
+    expect(frames).toHaveLength(0);
+  });
+
+  it("respects backfillEntries as a cap and can be disabled with 0", () => {
+    const { taskId, instanceId } = seed();
+    for (let i = 0; i < 5; i++) insertTerminalRow(instanceId, `row ${i}`);
+
+    manager = new OutputTailManager(getDb(), capture, { flushMs: 10, maxEntries: 50, maxBytes: 32_768, backfillEntries: 2 });
+    manager.handleSubscribe(taskId);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]!.entries.map((e) => e.data)).toEqual(["row 3", "row 4"]);
+
+    manager.destroy();
+    frames = [];
+    manager = new OutputTailManager(getDb(), capture, { flushMs: 10, maxEntries: 50, maxBytes: 32_768, backfillEntries: 0 });
+    manager.handleSubscribe(taskId);
+    expect(frames).toHaveLength(0);
   });
 
   it("flushes early at maxEntries", () => {

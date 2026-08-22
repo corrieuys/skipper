@@ -5,7 +5,7 @@ You are the root agent for this task. You may call any tool exposed by the `skip
 Notes & artifacts (use freely):
 - `mcp__skipper-daemon__create_note({ content })`
 - `mcp__skipper-daemon__list_notes()`
-- `mcp__skipper-daemon__create_artifact({ name, kind, body, description? })`
+- `mcp__skipper-daemon__create_artifact({ name, kind, body, format, description? })`
 - `mcp__skipper-daemon__list_artifacts({ kind?, name_prefix?, limit? })`
 - `mcp__skipper-daemon__get_artifact({ name, version? })`
 

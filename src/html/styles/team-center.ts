@@ -1,8 +1,7 @@
 /**
- * v2 command-center styles (`tc-` prefix): team-grouped sidebar, unified task
+ * Command-center styles (`tc-` prefix): team-grouped sidebar, unified task
  * timeline, artifacts/notes rail. Everything derives from the sk- theme tokens
- * so all named themes keep working. Active only under the --v2ui flag (the
- * markup simply isn't rendered otherwise).
+ * so all named themes keep working.
  */
 export function teamCenterStyles(): string {
   return `
@@ -118,12 +117,12 @@ export function teamCenterStyles(): string {
     .tc-empty { color: var(--sk-text-subtle); padding: var(--sk-space-4); }
 
     /* Timeline entries */
-    .tc-entry { display: flex; gap: 0.7rem; margin-bottom: 0.65rem; }
+    .tc-entry { margin-bottom: 0.65rem; }
     .tc-av {
-      flex: none; width: 26px; height: 26px; border-radius: var(--sk-radius-md);
+      flex: none; width: 20px; height: 20px; border-radius: var(--sk-radius-sm);
       display: flex; align-items: center; justify-content: center;
-      font-family: var(--sk-font-mono); font-size: 10px; font-weight: 700;
-      margin-top: 1px; color: var(--sk-surface-0);
+      font-family: var(--sk-font-mono); font-size: 9px; font-weight: 700;
+      color: var(--sk-surface-0);
     }
     .tc-av--0 { background: var(--sk-accent-secondary); }
     .tc-av--1 { background: var(--sk-accent-primary); }
@@ -133,9 +132,8 @@ export function teamCenterStyles(): string {
     .tc-who--1 { color: var(--sk-accent-primary); }
     .tc-who--2 { color: var(--sk-accent-tertiary); }
     .tc-who--3 { color: var(--sk-accent-warning); }
-    .tc-entry__body { flex: 1; min-width: 0; }
     .tc-entry__meta {
-      display: flex; align-items: baseline; gap: 0.55rem; margin-bottom: 0.25rem;
+      display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem;
     }
     .tc-entry__who { font-size: var(--sk-text-sm); font-weight: 650; }
     .tc-entry__kind {
@@ -154,7 +152,7 @@ export function teamCenterStyles(): string {
     /* Agent prose: quiet uncolored entry, sits with the tool groups.
        Name, time and text run inline and wrap as one block. */
     .tc-prose {
-      margin: 0 0 0.6rem 2.15rem; cursor: pointer;
+      margin: 0 0 0.6rem 0; cursor: pointer;
       font-size: var(--sk-text-sm); color: var(--sk-text-muted);
       overflow-wrap: break-word; line-height: 1.55;
     }
@@ -166,7 +164,7 @@ export function teamCenterStyles(): string {
     .tc-prose:hover .tc-prose__body { color: var(--sk-text); }
 
     /* Collapsed tool/system groups */
-    .tc-sys { margin: 0 0 0.6rem 2.15rem; }
+    .tc-sys { margin: 0 0 0.6rem 0; }
     .tc-sys > summary {
       list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 0.45rem;
       font-family: var(--sk-font-mono); font-size: var(--sk-text-xs); color: var(--sk-text-subtle);
@@ -189,7 +187,7 @@ export function teamCenterStyles(): string {
     .tc-sys__text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* Resolved escalations: one quiet line, expandable */
-    .tc-esc-done { margin: 0 0 0.6rem 2.15rem; }
+    .tc-esc-done { margin: 0 0 0.6rem 0; }
     .tc-esc-done > summary {
       list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 0.55rem;
       font-size: var(--sk-text-xs); color: var(--sk-text-subtle); padding: 0.1rem 0;
@@ -215,12 +213,22 @@ export function teamCenterStyles(): string {
       color: var(--sk-text-subtle); margin-bottom: 0.2rem;
     }
 
-    /* Escalation cards inline in the timeline */
-    .tc-escwrap { margin: 0 0 0.6rem 2.15rem; }
+    /* Escalation cards inline in the timeline: same card language as the message
+       entries (surface-2, rounded, plain full border) so it sits in the flow
+       instead of the heavy classic-panel chrome (sharp corners, header divider,
+       accent gradient) that clashed. It reads as "needs you" through the "!" bang
+       and OPEN badge in its header, not through any border accent. */
+    .tc-escwrap { margin: 0 0 0.65rem 0; }
     .tc-escwrap .sk-panel {
-      border: 1px solid var(--sk-border-active);
-      background: linear-gradient(0deg, var(--sk-accent-primary-dim), transparent 30%), var(--sk-surface-1);
+      border: 1px solid var(--sk-border);
+      border-radius: var(--sk-radius-lg);
+      background: var(--sk-surface-2);
     }
+    .tc-escwrap .sk-panel__header {
+      border-bottom: none; min-height: 0;
+      padding: 0.55rem 0.85rem 0.1rem;
+    }
+    .tc-escwrap .sk-panel__body { padding: 0.35rem 0.85rem 0.7rem; }
     .tc-escwrap .esc-previous { display: contents; }
     .tc-escwrap .esc-previous > summary { display: none; }
 

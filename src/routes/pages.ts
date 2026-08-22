@@ -5,7 +5,7 @@ import { looksLikeHtml } from "../html/atoms/sniff-html";
 import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { getConnectPublicBase, getPublicArtifactUrl, getWebhookTriggerUrl } from "../connect/public-links";
 import { getRealtimeTeamId, listTeamsForStandardTasks } from "../config/teams";
-import { isTeamVisible, isExperimental, isV2UI } from "../config/feature-flags";
+import { isTeamVisible, isExperimental } from "../config/feature-flags";
 import { taskTimelineFragment } from "../html/fragments/task-timeline.fragment";
 import { artifactListFragment } from "../html/fragments/artifact-list.fragment";
 import { listPreferences, setPreference } from "../notifications/store";
@@ -181,7 +181,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
   const artifactManager = new ArtifactManager(db);
   for (const variant of ARTIFACT_MODAL_VARIANTS) {
     addRoute("GET", `${variant.routePrefix}/:id/artifacts`, (_req, params) =>
-      html(isV2UI() ? artifactListFragment(db, params.id, variant) : renderArtifactListFragment(db, params.id, variant)));
+      html(artifactListFragment(db, params.id, variant)));
 
     addRoute("GET", `${variant.routePrefix}/:id/artifacts/:name`, (req, params) =>
       html(renderArtifactDetailFragment(db, params.id, params.name, new URL(req.url).searchParams.get("version") ?? "latest", variant)));
@@ -197,7 +197,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
         const deletedAt = deleteAction === "delete" ? "strftime('%Y-%m-%d %H:%M:%f','now')" : "NULL";
         db.prepare(`UPDATE task_artifacts SET deleted_at = ${deletedAt} WHERE task_id = ? AND name = ?`)
           .run(taskId, artifactName);
-        return html(isV2UI() ? artifactListFragment(db, taskId, variant) : renderArtifactListFragment(db, taskId, variant));
+        return html(artifactListFragment(db, taskId, variant));
       });
     }
 
@@ -217,7 +217,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
         // Swap the modal detail (primary target) AND re-render the artifacts list
         // out-of-band, so its "published" badge stays in sync without a reload.
         const detail = renderArtifactDetailFragment(db, taskId, artifactName, versionParam, variant);
-        const listHtml = isV2UI() ? artifactListFragment(db, taskId, variant) : renderArtifactListFragment(db, taskId, variant);
+        const listHtml = artifactListFragment(db, taskId, variant);
         const listOob = `<div id="${escapeHtml(variant.listId(taskId))}" hx-swap-oob="innerHTML">${listHtml}</div>`;
         return html(detail + listOob);
       });
@@ -813,9 +813,9 @@ function registerV2PageRoutes(): void {
       if (override) return html(commandCenterPage(vm, undefined, override));
     }
 
-    // v2: /?team=<id> opens the team's most relevant task (running > approved >
+    // /?team=<id> opens the team's most relevant task (running > approved >
     // paused > latest).
-    if (isV2UI() && teamId && !selectedTask) {
+    if (teamId && !selectedTask) {
       const { pickTeamLandingTask } = require("../html/pages/command-center.page");
       const landing = pickTeamLandingTask(vm.allTasks.filter((t: any) => t.team_id === teamId));
       if (landing) selectedTask = landing.id;
@@ -1663,63 +1663,9 @@ interface ArtifactRow {
   created_at: string;
 }
 
-interface ArtifactListRow extends ArtifactRow {
-  has_published: number;
-  deleted_at: string | null;
-}
-
 function artifactModalLink(variant: ArtifactModalVariant, taskId: string, name: string, version?: number): string {
   const versionQuery = version === undefined ? "" : `?version=${version}`;
   return `onclick="${variant.openFn}(); return false;" hx-get="${variant.routePrefix}/${escapeHtml(taskId)}/artifacts/${encodeURIComponent(name)}${versionQuery}" hx-target="${variant.target}" hx-swap="innerHTML"`;
-}
-
-function renderArtifactListFragment(db: ReturnType<typeof getDb>, taskId: string, variant: ArtifactModalVariant): string {
-  const rows = db.prepare(
-    `SELECT a.id, a.name, a.version, a.kind, a.description, a.created_at, a.deleted_at,
-       EXISTS(
-         SELECT 1 FROM task_artifacts p
-         WHERE p.task_id = a.task_id AND p.name = a.name AND p.published_at IS NOT NULL
-       ) AS has_published
-     FROM task_artifacts a
-     INNER JOIN (
-       SELECT name, MAX(version) AS max_version
-       FROM task_artifacts
-       WHERE task_id = ?
-       GROUP BY name
-     ) latest ON a.name = latest.name AND a.version = latest.max_version
-     WHERE a.task_id = ?
-     ORDER BY a.created_at DESC
-     LIMIT 50`,
-  ).all(taskId, taskId) as ArtifactListRow[];
-
-  if (rows.length === 0) {
-    return `<p class="muted">No artifacts yet.</p>`;
-  }
-
-  // Delete/restore act on the whole name (all versions). Deleted rows stay listed
-  // (dimmed + "deleted" badge, Restore action) but are excluded from injection.
-  const listTarget = `#${escapeHtml(variant.listId(taskId))}`;
-  const showPublished = isExperimental();
-  const tableRows = rows.map((r) => {
-    const isDeleted = !!r.deleted_at;
-    const actionAttrs = (action: "delete" | "restore") =>
-      `hx-post="${variant.routePrefix}/${escapeHtml(taskId)}/artifacts/${encodeURIComponent(r.name)}/${action}" hx-target="${listTarget}" hx-swap="innerHTML"`;
-    const rowAction = isDeleted
-      ? `<button type="button" class="sk-btn sk-btn--sm" title="Restore this artifact" ${actionAttrs("restore")}>Restore</button>`
-      : `<button type="button" class="sk-btn sk-btn--sm" title="Delete this artifact (removes it from agent context)" ${actionAttrs("delete")} style="opacity:0.7;">Delete</button>`;
-    return `<tr${isDeleted ? ' style="opacity:0.55;"' : ""}>
-      <td><a href="#" ${artifactModalLink(variant, taskId, r.name)}>${escapeHtml(r.name)}</a>${isDeleted ? ` <span class="badge" title="Deleted — excluded from agent context" style="color:var(--sk-accent-danger,#e06);border:1px solid currentColor;">deleted</span>` : ""}${showPublished && r.has_published ? ` <span class="badge badge-published" title="Has a published version">published</span>` : ""}</td>
-      <td>${escapeHtml(r.kind)}</td>
-      <td>v${r.version}</td>
-      <td>${formatTimestamp(r.created_at)}</td>
-      <td style="text-align:right;">${rowAction}</td>
-    </tr>`;
-  }).join("");
-
-  return `<table class="data-table">
-    <thead><tr><th>Name</th><th>Kind</th><th>Version</th><th>Updated</th><th></th></tr></thead>
-    <tbody>${tableRows}</tbody>
-  </table>`;
 }
 
 function renderArtifactDetailFragment(
@@ -1767,7 +1713,7 @@ function renderArtifactDetailFragment(
 }
 
 function renderArtifactDetail(
-  artifact: { id: string; name: string; version: number; kind: string; description: string | null; body: string | null; created_at: string },
+  artifact: { id: string; name: string; version: number; kind: string; description: string | null; body: string | null; format?: string | null; created_at: string },
   taskId: string,
   versionLinks: string,
   variant: ArtifactModalVariant,
@@ -1775,7 +1721,10 @@ function renderArtifactDetail(
 ): string {
   const bodyContent = artifact.body ? escapeHtml(artifact.body) : "(empty)";
   const rawBody = artifact.body ?? "";
-  const renderedBody = looksLikeHtml(rawBody)
+  // Prefer the stored format; fall back to the heuristic for legacy rows that
+  // predate the format column (format IS NULL).
+  const isHtml = artifact.format ? artifact.format === "html" : looksLikeHtml(rawBody);
+  const renderedBody = isHtml
     ? rawBody.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
     : `<div class="artifact-body-markdown" data-artifact-md>${escapeHtml(rawBody)}</div>`;
 

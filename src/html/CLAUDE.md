@@ -6,18 +6,19 @@ Server-side HTML rendering. No framework — string templates from TS.
 
 | dir | use |
 |---|---|
-| `atoms/` | Smallest helpers: `escape-html`, `render-inline-markdown` (safe inline md → HTML for the activity feed: escapes first, then a fixed `<strong>`/`<em>`/`<code>` allowlist; unrecognised/unbalanced markers stay plain text), `format-timestamp`, `format-tokens`, `sniff-html` |
+| `atoms/` | Smallest helpers: `escape-html`, `render-inline-markdown` (safe inline md → HTML for the activity feed: escapes first, then a fixed `<strong>`/`<em>`/`<code>` allowlist; unrecognised/unbalanced markers stay plain text), `render-message-body` (operator-message body by stored format: text=escaped, markdown=`data-artifact-md`, html=trusted inline w/ scripts stripped; shared by timeline + Messages dock), `format-timestamp`, `format-tokens`, `sniff-html` |
 | `fragments/` | Single-element snippets (badge, metric, task-row, tree-node, phase-step…). Also the v2-UI composite fragments: `task-timeline.fragment.ts` (unified timeline: agent prose + operator messages as cards, tool frames grouped into `<details>`, escalations inline via `escalationCardPanel`; drops duplicate `result` frames) and `artifact-list.fragment.ts` (per-name rows, main link opens latest, expandable version sub-list) — both shared by the fragment routes and `ws/ui-push.ts` |
 | `panels/` | Larger composite cards (steer panel, active mission, task queue, phase stepper, escalation bar/card, iterate, metrics bar, artifacts, notes) |
 | `pages/` | Full-page renderers (command-center, task-list, task-create, config, logs, grug, agent-terminal, teams, team-map). Recurring tasks use the same task-create form (Task Type = Recurring) |
 
-## v2 UI (`--v2ui` flag / `SKIPPER_V2UI=1`)
+## Command center UI
 
-Opt-in command-center redesign, gated by `isV2UI()` (feature-flags). Classic
-dock UI stays the default; realtime, draft and scheduled views are unchanged
-either way. When on:
+The command center (`command-center.page.ts`) is the one and only task UI — the
+old classic dock sidebar/task-view were removed (there is no `isV2UI` flag). The
+`tc-` ("team-center") layout below is what renders; realtime, draft and scheduled
+views share the same shell.
 
-- **Sidebar** (`renderSidebarListBodyV2`) is one scrolling list sectioned by
+- **Sidebar** (`renderSidebarListBody`) is one scrolling list sectioned by
   liveness, not tabs: **Needs you** (tasks with `has_attention`, always visible,
   never collapsible) → **Active** (running/approved/paused/draft, any kind) →
   **Recurring** (one series row per recurring task: name opens the detail view,
@@ -30,7 +31,7 @@ either way. When on:
   the same `data-tc-team` toggle store in `skipper.js` (keys `sec:<name>` /
   `rec:<id>`) because WS pushes re-render the list blind. `/?team=<id>` opens a
   team's landing task.
-- **Task view** (`taskMainContentV2`): full-width task header (stepper, orbs,
+- **Task view** (`taskMainContent`): full-width task header (stepper, orbs,
   lifecycle actions), attention slot (review/recovery/iterate/result), then
   `.tc-work` = timeline column + draggable divider (`data-tc-divider`; rail
   width % persisted as `tcRailWidthPct`, default 50/50) + artifacts/notes rail.

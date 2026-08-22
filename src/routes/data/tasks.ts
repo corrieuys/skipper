@@ -378,6 +378,8 @@ export function registerDataTaskRoutes(
         name: body.name.trim(),
         kind: body.kind.trim() as Parameters<typeof artifactManager.createArtifact>[0]["kind"],
         body: body.body,
+        // Optional: omit to infer from the body. The manager validates html.
+        format: (body.format?.trim() || undefined) as Parameters<typeof artifactManager.createArtifact>[0]["format"],
         description: body.description?.trim() || undefined,
         createdByAgentId: "api",
       });

@@ -180,6 +180,9 @@ CREATE TABLE IF NOT EXISTS task_messages (
   agent_id TEXT NOT NULL,
   agent_instance_id TEXT,
   content TEXT NOT NULL,
+  -- Body format: 'text' | 'markdown' | 'html'. NULL = 'text' (the default).
+  -- Enum enforced in MessageManager, not a CHECK.
+  format TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
 );
 
@@ -270,6 +273,9 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   publish_key TEXT,
   published_at TEXT,
+  -- Body format: 'html' | 'markdown'. NULL on legacy rows (resolved by heuristic
+  -- at render time). Enum enforced in ArtifactManager, not a CHECK.
+  format TEXT,
   -- Soft-delete: set on ALL versions of a name at once. Deleted artifacts stay
   -- visible in the list (annotated) but are excluded from agent context injection.
   deleted_at TEXT,

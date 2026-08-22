@@ -48,7 +48,7 @@ describe("subscribeConnectEvents", () => {
     expect(frames[0]!.event).toBe("connect:capabilities");
     expect(frames[0]!.payload).toEqual({
       protocolVersion: 2,
-      features: ["snapshot", "fat_events", "output_tail"],
+      features: ["snapshot", "fat_events", "output_tail", "messages"],
     });
   });
 

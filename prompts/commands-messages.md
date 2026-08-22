@@ -1,6 +1,6 @@
 ## Operator Messages — Keeping the Human in the Loop
 
-`mcp__skipper-daemon__post_message({ content })` (Codex may show the bare `post_message`) posts a short update to the operator's Messages column in the Skipper UI. It is the only channel that speaks to the human without interrupting them: an escalation stops the task and demands an answer, a message does not.
+`mcp__skipper-daemon__post_message({ content, format? })` (Codex may show the bare `post_message`) posts a short update to the operator's Messages column in the Skipper UI. It is the only channel that speaks to the human without interrupting them: an escalation stops the task and demands an answer, a message does not.
 
 WHEN TO POST (aim for a handful over a task, not a running commentary):
 - You start a substantial piece of work: "Started reworking the checkout flow. About 8 files to touch."
@@ -21,6 +21,11 @@ HOW TO WRITE IT — the reader is a person following along, possibly non-technic
 - No jargon, function names, file paths, stack traces, JSON, tool output, or IDs.
 - Say what happened and why it matters, not what you typed.
 - Accurate above all. Never claim something is done, passing, or verified unless it is.
+
+FORMAT — default to plain text:
+- Leave `format` unset (or `"text"`) for almost every message. A short, plain sentence is the whole point of this register, and it reads best in the narrow Messages column.
+- Use `format: "markdown"` only when a little structure genuinely helps — e.g. a short bullet list of what changed. Keep it tiny.
+- Use `format: "html"` only for the rare update that needs real layout. Do not reach for it by habit.
 
 GOOD: `post_message({ content: "The signup page was rejecting valid email addresses. Found the cause and fixed it. Testing the change now." })`
 

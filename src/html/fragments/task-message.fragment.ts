@@ -1,11 +1,13 @@
 import { escapeHtml } from "../atoms/escape-html";
 import { formatTimestamp } from "../atoms/format-timestamp";
+import { renderMessageBody } from "../atoms/render-message-body";
 import type { TaskMessage } from "../../messages/manager";
 
 /**
- * One operator message: who said it, when, and the sentence itself. Rendered as
- * plain text, never Markdown or HTML — the whole point of the register is that an
- * agent writes a sentence a person can read, so there is no formatting to honour.
+ * One operator message: who said it, when, and the sentence itself. The body is
+ * usually plain text — the register's default and preferred format — but an agent
+ * may pick markdown or html, so it renders by the stored format (see
+ * render-message-body).
  */
 export function taskMessageFragment(message: TaskMessage): string {
   const who = message.agent_name || message.agent_id || "agent";
@@ -14,7 +16,7 @@ export function taskMessageFragment(message: TaskMessage): string {
       <span class="sk-message__agent">${escapeHtml(who)}</span>
       <span class="sk-message__time">${formatTimestamp(message.created_at)}</span>
     </div>
-    <div class="sk-message__body">${escapeHtml(message.content)}</div>
+    <div class="sk-message__body">${renderMessageBody(message.content, message.format)}</div>
   </div>`;
 }
 

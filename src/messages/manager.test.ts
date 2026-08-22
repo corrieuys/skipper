@@ -76,6 +76,34 @@ describe("postMessage", () => {
     expect(() => manager.postMessage({ taskId: "task-1", agentId: "agent-1", content: "   " })).toThrow();
   });
 
+  describe("format", () => {
+    it("defaults to text when omitted", () => {
+      manager.postMessage({ taskId: "task-1", agentId: "agent-1", content: "plain update" });
+      expect(manager.listMessages("task-1")[0]!.format).toBe("text");
+    });
+
+    it("stores the chosen format", () => {
+      manager.postMessage({ taskId: "task-1", agentId: "agent-1", content: "- one\n- two", format: "markdown" });
+      expect(manager.listMessages("task-1")[0]!.format).toBe("markdown");
+    });
+
+    it("preserves newlines for markdown/html but not for text", () => {
+      manager.postMessage({ taskId: "task-1", agentId: "agent-1", content: "line one\nline two", format: "markdown" });
+      manager.postMessage({ taskId: "task-1", agentId: "agent-1", content: "line one\nline two", format: "text" });
+      const rows = manager.listMessages("task-1"); // newest first
+      const md = rows.find((r) => r.format === "markdown")!;
+      const txt = rows.find((r) => r.format === "text")!;
+      expect(md.content).toBe("line one\nline two");
+      expect(txt.content).toBe("line one line two");
+    });
+
+    it("rejects an unknown format", () => {
+      expect(() =>
+        manager.postMessage({ taskId: "task-1", agentId: "agent-1", content: "x", format: "xml" as never }),
+      ).toThrow(/Invalid message format/);
+    });
+  });
+
   it("treats an identical repost from the same agent as a duplicate", () => {
     const first = manager.postMessage({ taskId: "task-1", agentId: "agent-1", content: "Same thing" });
     const second = manager.postMessage({ taskId: "task-1", agentId: "agent-1", content: "Same thing" });

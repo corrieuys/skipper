@@ -1,13 +1,37 @@
-## Artifact HTML Formatting
+## Artifact Formatting
 
-When you call `mcp__skipper-daemon__create_artifact`, the `body` argument MUST be **simple, semantic HTML** — not Markdown.
+When you call `mcp__skipper-daemon__create_artifact`, you MUST pass a `format`
+field alongside `body`. Choose the format based on how complex the content is:
 
-### Rules
-- Use standard HTML elements: `<h1>`–`<h3>`, `<p>`, `<ul>/<ol>`, `<table>`, `<code>`, `<pre>`, `<blockquote>`, `<a>`, `<hr>`, `<strong>`, `<em>`
-- Do NOT include `<html>`, `<head>`, `<body>`, `<style>`, or `<script>` tags — your HTML is rendered inside an existing styled container
-- Do NOT add inline styles unless absolutely necessary — the app's CSS already styles all standard elements within the artifact viewer
-- Do NOT include external resources (images, scripts, stylesheets)
-- Keep it simple and semantic — the viewer has built-in styles for headings, tables, lists, code blocks, and blockquotes
+- **`format: "markdown"`** — the default choice. Use for prose, notes,
+  summaries, plans, checklists, and any document that is mostly headings,
+  paragraphs, lists, inline code, and simple tables. Write the `body` as plain
+  GitHub-flavoured Markdown.
+- **`format: "html"`** — use only when Markdown renders the content poorly:
+  multi-column or spanning tables, nested structures, or layouts that need
+  precise element control. Write the `body` as simple, semantic HTML.
+
+If in doubt, prefer `markdown`. Reach for `html` only when the structure
+genuinely needs it.
+
+### HTML rules (only when `format: "html"`)
+The body is **structurally validated before it is saved**. If the HTML is
+malformed the tool call is **rejected** with the exact tag and the line/column
+where the node tree broke — fix it and retry. To pass validation:
+
+- Every element must be correctly nested and closed (`<ul><li>…</li></ul>`, not
+  `<ul><li>…</ul>`). Unclosed or mismatched tags are rejected.
+- Use standard elements: `<h1>`–`<h3>`, `<p>`, `<ul>/<ol>/<li>`, `<table>` (with
+  `<thead>/<tbody>/<tr>/<th>/<td>`), `<code>`, `<pre>`, `<blockquote>`, `<a>`,
+  `<hr>`, `<strong>`, `<em>`, `<br>`.
+- Do NOT include `<html>`, `<head>`, `<body>`, `<style>`, `<script>`, `<iframe>`,
+  or `<object>` tags — these are rejected. Your HTML renders inside an existing
+  styled container.
+- Escape literal angle brackets inside text/code as `&lt;` / `&gt;` so they are
+  not parsed as tags.
+- Do NOT include external resources (images, scripts, stylesheets) and avoid
+  inline styles unless absolutely necessary — the viewer already styles all
+  standard elements.
 
 ### Available CSS Variables (for rare inline style needs)
 If you must use an inline style, these CSS variables are available:
@@ -18,11 +42,33 @@ If you must use an inline style, these CSS variables are available:
 - Borders: `var(--sk-border)`, `var(--sk-border-subtle)`
 - Fonts: `var(--sk-font-body)`, `var(--sk-font-heading)`, `var(--sk-font-mono)`
 
-### Example
+### Examples
+
+Markdown (simple content — the common case):
 ```
 mcp__skipper-daemon__create_artifact({
-  name: "analysis-report",
+  name: "auth-findings",
   kind: "summary",
+  format: "markdown",
+  description: "Auth review notes",
+  body: `## Auth Review
+
+Three issues found:
+
+- Session tokens never expire
+- Password reset lacks rate limiting
+- CSRF token is reused across forms
+
+**Recommendation:** rotate tokens on privilege change.`
+})
+```
+
+HTML (complex table — needs precise structure):
+```
+mcp__skipper-daemon__create_artifact({
+  name: "coupling-analysis",
+  kind: "summary",
+  format: "html",
   description: "Component coupling analysis",
   body: `<h2>Component Coupling Analysis</h2>
 <p>Found <strong>3 high-coupling</strong> areas requiring attention:</p>

@@ -338,10 +338,15 @@ const TASK_TOOLS: TaskToolSpec[] = [
       task_id: z.string().describe("Task ID to attach the artifact to"),
       name: z.string().describe("Artifact name (e.g. 'implementation-plan'). Re-using one versions it."),
       kind: z.enum(["transcript", "summary", "plan", "other"]).describe("Artifact kind"),
-      body: z.string().describe("Artifact body content"),
+      body: z.string().describe("Artifact body content, in the chosen `format`"),
+      format: z
+        .enum(["markdown", "html"])
+        .describe(
+          "Body format. Use 'markdown' for prose, lists, and simple documents; 'html' for complex layouts (tables, nested structures). HTML bodies are structurally validated and rejected if malformed.",
+        ),
       description: z.string().optional().describe("One-line description"),
     },
-    handler: ({ task_id, name, kind, body, description }, deps) => {
+    handler: ({ task_id, name, kind, body, format, description }, deps) => {
       const task = deps.taskScheduler.getTask(task_id);
       if (!task) throw new Error(`Task not found: ${task_id}`);
       const artifact = deps.artifactManager.createArtifact({
@@ -349,6 +354,7 @@ const TASK_TOOLS: TaskToolSpec[] = [
         name,
         kind,
         body,
+        format,
         description,
         // Matches POST /data/tasks/:id/artifacts — an artifact from outside the
         // runtime has no authoring agent, and the column is a free-text marker.

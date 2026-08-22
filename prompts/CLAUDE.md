@@ -16,4 +16,4 @@ Markdown prompt templates loaded at runtime by `src/agents/prompt-builder.ts`.
 | `skipper.md` | Skipper system prompt |
 | `notary.md` | Realtime task notary system prompt |
 | `greg.md` | Greg/Grug heckler persona |
-| `artifact-html.md` | Artifact rendering guidance |
+| `artifact-html.md` | Artifact formatting guidance — how agents choose the `create_artifact` `format` (markdown vs html) and the html well-formedness rules (validated + rejected on failure) |

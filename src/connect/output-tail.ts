@@ -14,12 +14,18 @@ export interface OutputTailOptions {
   maxEntries: number;
   /** Flush early once a task buffer holds this many bytes of data. */
   maxBytes: number;
+  /**
+   * How many recent terminal-output lines to replay in the one-shot backfill
+   * frame sent on subscribe. 0 disables backfill (live-only, the old behaviour).
+   */
+  backfillEntries: number;
 }
 
 const DEFAULT_OPTIONS: OutputTailOptions = {
   flushMs: 1_500,
   maxEntries: 50,
   maxBytes: 32_768,
+  backfillEntries: 200,
 };
 
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "deleted"]);
@@ -60,16 +66,69 @@ export class OutputTailManager {
     this.drop(event.taskId);
   };
 
+  private opts: OutputTailOptions;
+
   constructor(
     private db: Database,
     private sender: (frame: string) => void,
-    private opts: OutputTailOptions = DEFAULT_OPTIONS,
-  ) {}
+    opts: Partial<OutputTailOptions> = {},
+  ) {
+    this.opts = { ...DEFAULT_OPTIONS, ...opts };
+  }
 
   handleSubscribe(taskId: string): void {
     if (!taskId || this.subscribed.has(taskId)) return;
     this.subscribed.add(taskId);
+    // Attach before replaying history: both run synchronously with no yield
+    // between them and agent:output fires synchronously, so a line is either
+    // already in terminal_outputs (→ backfill) or arrives after attach (→ live),
+    // never both and never lost. The backfill frame is sent synchronously here,
+    // ahead of the first live flush (which waits for the timer / thresholds).
     this.attach();
+    this.sendBackfill(taskId);
+  }
+
+  /**
+   * One-shot replay of a task's recent terminal output, sent immediately on
+   * subscribe so the integrator seeds its timeline without a separate read and
+   * without the read-then-subscribe gap. Marked `backfill: true`; skipped when
+   * disabled (backfillEntries = 0) or the task has no output yet.
+   */
+  private sendBackfill(taskId: string): void {
+    if (this.opts.backfillEntries <= 0) return;
+    const rows = this.db
+      .prepare(
+        `SELECT tout.agent_id, tout.stream, tout.data, tout.created_at, a.name AS agent_name
+         FROM terminal_outputs tout
+         LEFT JOIN agent_instances ai ON ai.id = tout.agent_id
+         LEFT JOIN agents a ON a.id = ai.template_agent_id
+         WHERE ai.task_id = ?
+         ORDER BY tout.id DESC
+         LIMIT ?`,
+      )
+      .all(taskId, this.opts.backfillEntries) as Array<{
+        agent_id: string; stream: string; data: string; created_at: string; agent_name: string | null;
+      }>;
+    if (rows.length === 0) return;
+
+    // Query is newest-first (so the LIMIT keeps the most recent N); replay
+    // oldest-first so the integrator appends in chronological order.
+    const entries: OutputBatchEntry[] = rows.reverse().map((r) => ({
+      agentId: r.agent_id,
+      agentName: r.agent_name ?? null,
+      stream: r.stream === "stderr" ? "stderr" : "stdout",
+      data: r.data,
+      ts: r.created_at,
+    }));
+
+    const seq = (this.seqs.get(taskId) ?? 0) + 1;
+    this.seqs.set(taskId, seq);
+    const frame: ClientMessage = { type: "output_batch", taskId, seq, entries, backfill: true };
+    try {
+      this.sender(JSON.stringify(frame));
+    } catch {
+      // sender failures must not break the subscribe path
+    }
   }
 
   handleUnsubscribe(taskId: string): void {

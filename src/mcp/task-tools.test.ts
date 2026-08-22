@@ -386,10 +386,10 @@ describe("create_note (operator note)", () => {
 describe("create_artifact (operator artifact)", () => {
   it("creates version 1 and versions a re-used name", async () => {
     const t = await call("create_task", { title: "A", team_id: "team-1" });
-    const first = await call("create_artifact", { task_id: t.id, name: "spec", kind: "plan", body: "v1 body", description: "The spec" });
+    const first = await call("create_artifact", { task_id: t.id, name: "spec", kind: "plan", body: "v1 body", format: "markdown", description: "The spec" });
     expect(first).toMatchObject({ name: "spec", version: 1, kind: "plan" });
 
-    const second = await call("create_artifact", { task_id: t.id, name: "spec", kind: "plan", body: "v2 body" });
+    const second = await call("create_artifact", { task_id: t.id, name: "spec", kind: "plan", body: "v2 body", format: "markdown" });
     expect(second.version).toBe(2);
 
     // Both versions are retained; the agent-facing read resolves 'latest' to v2.
@@ -397,15 +397,30 @@ describe("create_artifact (operator artifact)", () => {
     expect(new ArtifactManager(db).getArtifact(t.id, "spec", 1)!.body).toBe("v1 body");
   });
 
+  it("persists the chosen format", async () => {
+    const t = await call("create_task", { title: "A", team_id: "team-1" });
+    const out = await call("create_artifact", { task_id: t.id, name: "tbl", kind: "summary", body: "<p>ok</p>", format: "html" });
+    expect(new ArtifactManager(db).getArtifactById(out.id)!.format).toBe("html");
+  });
+
+  it("rejects malformed html with the location where it broke", async () => {
+    const t = await call("create_task", { title: "A", team_id: "team-1" });
+    const res = await call("create_artifact", { task_id: t.id, name: "broken", kind: "summary", body: "<ul><li>x</ul>", format: "html" });
+    expect(res).toContain("invalid");
+    expect(res).toMatch(/line \d+, col \d+/);
+    // Nothing was persisted.
+    expect(new ArtifactManager(db).getArtifact(t.id, "broken", "latest")).toBeNull();
+  });
+
   it("marks the artifact as externally authored", async () => {
     const t = await call("create_task", { title: "A", team_id: "team-1" });
-    const out = await call("create_artifact", { task_id: t.id, name: "notes", kind: "summary", body: "b" });
+    const out = await call("create_artifact", { task_id: t.id, name: "notes", kind: "summary", body: "b", format: "markdown" });
     const row = db.prepare("SELECT created_by_agent_id FROM task_artifacts WHERE id = ?").get(out.id) as { created_by_agent_id: string };
     expect(row.created_by_agent_id).toBe("api");
   });
 
   it("rejects an unknown task", async () => {
-    expect(await call("create_artifact", { task_id: "nope", name: "x", kind: "other", body: "b" })).toContain("Task not found");
+    expect(await call("create_artifact", { task_id: "nope", name: "x", kind: "other", body: "b", format: "markdown" })).toContain("Task not found");
   });
 });
 

@@ -77,6 +77,53 @@ describe("ArtifactManager", () => {
       expect(v2.body).toBe("Version 2");
     });
 
+    describe("format", () => {
+      it("stores an explicit format", () => {
+        const taskId = seedTask(db);
+        const a = artifactManager.createArtifact({ taskId, name: "a", kind: "other", body: "# hi", format: "markdown" });
+        expect(a.format).toBe("markdown");
+      });
+
+      it("infers markdown when format is omitted and body is not html", () => {
+        const taskId = seedTask(db);
+        const a = artifactManager.createArtifact({ taskId, name: "a", kind: "other", body: "just prose" });
+        expect(a.format).toBe("markdown");
+      });
+
+      it("infers html when format is omitted and body looks like html, validating it", () => {
+        const taskId = seedTask(db);
+        const a = artifactManager.createArtifact({ taskId, name: "a", kind: "other", body: "<h2>ok</h2><p>fine</p>" });
+        expect(a.format).toBe("html");
+      });
+
+      it("rejects an invalid format value", () => {
+        const taskId = seedTask(db);
+        expect(() =>
+          artifactManager.createArtifact({ taskId, name: "a", kind: "other", body: "x", format: "xml" as never }),
+        ).toThrow(/Invalid artifact format/);
+      });
+
+      it("validates html bodies and rejects malformed markup with a location", () => {
+        const taskId = seedTask(db);
+        let caught: unknown;
+        try {
+          artifactManager.createArtifact({ taskId, name: "bad", kind: "other", body: "<div><p>x</div>", format: "html" });
+        } catch (e) {
+          caught = e;
+        }
+        expect(caught).toBeInstanceOf(Error);
+        expect((caught as Error).message).toMatch(/line \d+, col \d+/);
+        // Nothing persisted on a rejected create.
+        expect(artifactManager.getArtifact(taskId, "bad", "latest")).toBeNull();
+      });
+
+      it("does not validate markdown bodies even if they contain angle brackets", () => {
+        const taskId = seedTask(db);
+        const a = artifactManager.createArtifact({ taskId, name: "md", kind: "other", body: "use <T> generics like a < b", format: "markdown" });
+        expect(a.format).toBe("markdown");
+      });
+    });
+
     it("rejects invalid artifact kind", () => {
       const taskId = seedTask(db);
       expect(() => artifactManager.createArtifact({

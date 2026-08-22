@@ -139,9 +139,9 @@ export function fetchTaskNotes(db: ReturnType<typeof getDb>, taskId: string): Ta
 export function fetchTaskArtifacts(
   db: ReturnType<typeof getDb>,
   taskId: string,
-): { id: string; name: string; version: number; kind: string; description: string | null; created_by_agent_id: string | null; created_at: string }[] {
+): { id: string; name: string; version: number; kind: string; description: string | null; format: string | null; created_by_agent_id: string | null; created_at: string }[] {
   return db.prepare(
-    `SELECT a.id, a.name, a.version, a.kind, a.description, a.created_by_agent_id, a.created_at
+    `SELECT a.id, a.name, a.version, a.kind, a.description, a.format, a.created_by_agent_id, a.created_at
      FROM task_artifacts a
      INNER JOIN (
        SELECT name, MAX(version) AS max_version
@@ -151,7 +151,7 @@ export function fetchTaskArtifacts(
      ) latest ON a.name = latest.name AND a.version = latest.max_version
      WHERE a.task_id = ?
      ORDER BY a.created_at DESC`,
-  ).all(taskId, taskId) as { id: string; name: string; version: number; kind: string; description: string | null; created_by_agent_id: string | null; created_at: string }[];
+  ).all(taskId, taskId) as { id: string; name: string; version: number; kind: string; description: string | null; format: string | null; created_by_agent_id: string | null; created_at: string }[];
 }
 
 export function fetchTaskArtifactByName(

@@ -5,8 +5,11 @@ import type { ArtifactManager } from "../orchestrator/artifact-manager";
 import type { PhaseManager } from "../orchestrator/phase-manager";
 import { timingSafeEqual } from "crypto";
 import { fetchTaskNotes, fetchTaskArtifacts } from "../data/queries";
+import { fetchScheduledTaskRows, fetchRecentScheduledRuns } from "../data/command-center";
+import { MessageManager } from "../messages/manager";
 import { TeamManager } from "../teams/manager";
 import { getDb } from "../db/connection";
+import { eventBus } from "../events/bus";
 import { looksLikeHtml } from "../html/atoms/sniff-html";
 import { CONNECT_PROTOCOL_VERSION, type StateSnapshot } from "./protocol";
 import { getPublicArtifactUrl } from "./public-links";
@@ -71,6 +74,11 @@ export async function handleResourceRequest(
             if (task.status === "paused") return { ok: true, data: taskScheduler.resumeFromPause(id) };
             return { ok: false, error: `Cannot resume task with status: ${task.status}` };
           }
+          case "pause": {
+            const id = String(params.id ?? "");
+            if (!id) return { ok: false, error: "id is required" };
+            return { ok: true, data: taskScheduler.pauseTask(id) };
+          }
           case "retry": {
             const id = String(params.id ?? "");
             if (!id) return { ok: false, error: "id is required" };
@@ -109,6 +117,34 @@ export async function handleResourceRequest(
           };
         }
         return { ok: false, error: `Unknown teams action: ${action}` };
+      }
+
+      case "recurring": {
+        // Recurring task series + their recent runs, for a client-side
+        // "Recurring" view. Mirrors the main UI's sidebar run strip.
+        if (action === "list") {
+          const runsBy = fetchRecentScheduledRuns(db);
+          const series = fetchScheduledTaskRows(db).map((s) => ({
+            id: s.id,
+            title: s.title,
+            teamName: s.team_name ?? null,
+            scheduleUnit: s.schedule_unit ?? null,
+            scheduleAmount: s.schedule_amount ?? null,
+            scheduleMatrix: s.schedule_matrix ?? null,
+            status: s.status,
+            nextRunAt: s.next_run_at ?? null,
+            lastRunAt: s.last_run_at ?? null,
+            runs: (runsBy[s.id] ?? []).map((r) => ({
+              id: r.id,
+              title: r.title,
+              status: r.status,
+              createdAt: r.created_at,
+              completedAt: r.completed_at ?? null,
+            })),
+          }));
+          return { ok: true, data: series };
+        }
+        return { ok: false, error: `Unknown recurring action: ${action}` };
       }
 
       case "escalations": {
@@ -168,9 +204,54 @@ export async function handleResourceRequest(
       }
 
       case "notes": {
-        if (action !== "list") return { ok: false, error: `Unknown notes action: ${action}` };
         // Support both "taskId" and "id" param names for robustness.
         const taskId = String(params.taskId ?? params.id ?? "");
+        if (action === "create") {
+          const content = String(params.content ?? "").trim();
+          if (!taskId) return { ok: false, error: "taskId is required" };
+          if (!content) return { ok: false, error: "content is required" };
+          const task = taskScheduler.getTask(taskId);
+          if (!task) return { ok: false, error: "Task not found" };
+
+          // Find a valid agent_id: use the team entrypoint to satisfy FK
+          // constraints in monolith mode; 'user' is fine in split-mode runtime.
+          let agentId = "user";
+          try {
+            if (task.team_id) {
+              const teamRow = db
+                .prepare("SELECT entrypoint_agent_id FROM teams WHERE id = ?")
+                .get(task.team_id) as { entrypoint_agent_id: string | null } | null;
+              if (teamRow?.entrypoint_agent_id) agentId = teamRow.entrypoint_agent_id;
+            }
+          } catch { /* ignore — fallback to 'user' */ }
+
+          const noteId = crypto.randomUUID();
+          try {
+            db.prepare(
+              "INSERT INTO task_notes (id, task_id, agent_id, content, source) VALUES (?, ?, ?, ?, 'user')",
+            ).run(noteId, taskId, agentId, content);
+          } catch (err: unknown) {
+            return { ok: false, error: err instanceof Error ? err.message : "Internal error" };
+          }
+
+          eventBus.emit("task:note_added", { noteId, taskId, agentId, content });
+
+          const created = fetchTaskNotes(db, taskId).find((n) => n.id === noteId);
+          return {
+            ok: true,
+            data: created
+              ? {
+                  id: created.id,
+                  taskId: created.task_id,
+                  agentName: created.agent_name ?? null,
+                  source: created.source ?? null,
+                  content: created.content,
+                  createdAt: created.created_at,
+                }
+              : { id: noteId, taskId, agentName: null, source: "user", content, createdAt: null },
+          };
+        }
+        if (action !== "list") return { ok: false, error: `Unknown notes action: ${action}` };
         const raw = fetchTaskNotes(db, taskId);
         return {
           ok: true,
@@ -178,8 +259,29 @@ export async function handleResourceRequest(
             id: n.id,
             taskId: n.task_id,
             agentName: n.agent_name ?? null,
+            source: n.source ?? null,
             content: n.content,
             createdAt: n.created_at,
+          })),
+        };
+      }
+
+      case "messages": {
+        if (action !== "list") return { ok: false, error: `Unknown messages action: ${action}` };
+        // Operator messages (agent → human progress updates), newest-first.
+        // Support both "taskId" and "id" param names for robustness.
+        const taskId = String(params.taskId ?? params.id ?? "");
+        if (!taskId) return { ok: false, error: "taskId is required" };
+        const rows = new MessageManager(db).listMessages(taskId);
+        return {
+          ok: true,
+          data: rows.map((m) => ({
+            id: m.id,
+            taskId: m.task_id,
+            agentName: m.agent_name ?? null,
+            content: m.content,
+            format: m.format ?? null,
+            createdAt: m.created_at,
           })),
         };
       }
@@ -202,6 +304,7 @@ export async function handleResourceRequest(
                 kind: artifact.kind,
                 version: artifact.version,
                 description: artifact.description ?? null,
+                format: artifact.format ?? null,
                 body: artifact.body,
                 createdAt: artifact.created_at,
                 publishedAt: artifact.published_at,
@@ -224,6 +327,7 @@ export async function handleResourceRequest(
               kind: artifact.kind,
               version: artifact.version,
               description: artifact.description ?? null,
+              format: artifact.format ?? null,
               body: artifact.body,
               createdAt: artifact.created_at,
               publishedAt: artifact.published_at,
@@ -253,7 +357,11 @@ export async function handleResourceRequest(
               id: updated.id,
               taskId: updated.task_id,
               name: updated.name,
+              kind: updated.kind,
               version: updated.version,
+              description: updated.description ?? null,
+              format: updated.format ?? null,
+              createdAt: updated.created_at,
               publishedAt: updated.published_at,
               publicUrl: updated.published_at ? getPublicArtifactUrl(db, updated) : null,
             },
@@ -274,7 +382,11 @@ export async function handleResourceRequest(
               kind: artifact.kind,
               version: artifact.version,
               body: artifact.body,
-              contentType: looksLikeHtml(artifact.body) ? "text/html; charset=utf-8" : "text/plain; charset=utf-8",
+              // Prefer the stored format; fall back to the heuristic for legacy
+              // rows created before the format column existed.
+              contentType: (artifact.format ? artifact.format === "html" : looksLikeHtml(artifact.body))
+                ? "text/html; charset=utf-8"
+                : "text/plain; charset=utf-8",
             },
           };
         }
@@ -290,6 +402,7 @@ export async function handleResourceRequest(
             kind: a.kind,
             version: a.version,
             description: a.description ?? null,
+            format: a.format ?? null,
             createdAt: a.created_at,
           })),
         };

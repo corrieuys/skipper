@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { escapeHtml } from "../atoms/escape-html";
 import { formatTimestamp } from "../atoms/format-timestamp";
 import { renderInlineMarkdown } from "../atoms/render-inline-markdown";
+import { renderMessageBody } from "../atoms/render-message-body";
 import { terminalJsonSummary, stripThinking, classifyPlainTerminalLine } from "../terminalJsonSummary";
 import { looksLikeHtml } from "../atoms/sniff-html";
 import { escalationCardPanel, type EscalationCardData } from "../panels/escalation-card.panel";
@@ -30,6 +31,7 @@ interface OpMessageRow {
   agent_id: string;
   agent_name: string | null;
   content: string;
+  format: string | null;
   created_at: string;
 }
 
@@ -128,15 +130,13 @@ function proseEntry(agent: string, time: string, bodyHtml: string, attrs = ""): 
 function messageCard(agent: string, kindLabel: string, time: string, bodyHtml: string, attrs = ""): string {
   const idx = avatarIndex(agent);
   return `<div class="tc-entry">
-    <div class="tc-av tc-av--${idx}">${escapeHtml(initials(agent))}</div>
-    <div class="tc-entry__body">
-      <div class="tc-entry__meta">
-        <span class="tc-entry__who tc-who--${idx}">${escapeHtml(agent)}</span>
-        ${kindLabel ? `<span class="tc-entry__kind">${escapeHtml(kindLabel)}</span>` : ""}
-        <time class="tc-entry__time">${formatTimestamp(time)}</time>
-      </div>
-      <div class="tc-entry__card" ${attrs}>${bodyHtml}</div>
+    <div class="tc-entry__meta">
+      <div class="tc-av tc-av--${idx}">${escapeHtml(initials(agent))}</div>
+      <span class="tc-entry__who tc-who--${idx}">${escapeHtml(agent)}</span>
+      ${kindLabel ? `<span class="tc-entry__kind">${escapeHtml(kindLabel)}</span>` : ""}
+      <time class="tc-entry__time">${formatTimestamp(time)}</time>
     </div>
+    <div class="tc-entry__card" ${attrs}>${bodyHtml}</div>
   </div>`;
 }
 
@@ -214,7 +214,7 @@ export function taskTimelineFragment(db: Database, taskId: string): string {
   const terminal = terminalDesc.reverse();
 
   const opMessages = db.prepare(
-    `SELECT m.id, m.agent_id, m.content, m.created_at, a.name AS agent_name
+    `SELECT m.id, m.agent_id, m.content, m.format, m.created_at, a.name AS agent_name
      FROM task_messages m
      LEFT JOIN agents a ON a.id = m.agent_id
      WHERE m.task_id = ?
@@ -267,12 +267,13 @@ export function taskTimelineFragment(db: Database, taskId: string): string {
   }
   flushSys();
 
-  // Operator messages (task_messages): agent-to-human updates.
+  // Operator messages (task_messages): agent-to-human updates. Rendered by the
+  // stored format (plain text by default; markdown/html when the agent chose it).
   for (const m of opMessages) {
     const agent = m.agent_name ?? m.agent_id;
     items.push({
       t: m.created_at,
-      html: messageCard(agent, "message", m.created_at, escapeHtml(m.content)),
+      html: messageCard(agent, "message", m.created_at, renderMessageBody(m.content, m.format)),
     });
   }
 

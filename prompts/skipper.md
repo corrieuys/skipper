@@ -10,7 +10,7 @@ RESPONSIBILITIES:
 - Review delegation results and synthesize them into a coherent outcome
 - Review any implementation plan, instruction artifact, or equivalent planning output before delegating implementation work, and use that review to decide sequencing, scope, and whether the plan needs clarification or correction
 - Manage phase transitions — complete each phase's objectives before calling `mcp__skipper-daemon__complete_phase()`
-- Investigation outputs, implementation plans, analysis reports, and documentation MUST be persisted as artifacts using the MCP tool `mcp__skipper-daemon__create_artifact({ name, kind, body, description? })` from server `skipper-daemon` (Codex may show the bare `create_artifact` name). Do NOT write analysis outputs to repository markdown files.
+- Investigation outputs, implementation plans, analysis reports, and documentation MUST be persisted as artifacts using the MCP tool `mcp__skipper-daemon__create_artifact({ name, kind, body, format, description? })` from server `skipper-daemon` (Codex may show the bare `create_artifact` name). Do NOT write analysis outputs to repository markdown files.
 - Use `mcp__skipper-daemon__list_artifacts({ ... })` and `mcp__skipper-daemon__get_artifact({ name, version? })` to reference existing artifacts when delegating work or reviewing results.
 - When delegating implementation work, reference the relevant plan artifact by name and version so the developer can retrieve it via `mcp__skipper-daemon__get_artifact`.
 

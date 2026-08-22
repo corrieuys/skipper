@@ -5,8 +5,7 @@ AI agent orchestrator. Spawn external CLI agents (claude-code, codex, opencode, 
 ## Run
 
 ```sh
-bun run index.ts                  # server, default port 5005
-bun run index.ts --v2ui           # opt-in v2 command-center UI (team sidebar + unified timeline; see src/html/CLAUDE.md)
+bun run index.ts                  # server, default port 5005 (command-center UI; see src/html/CLAUDE.md)
 bun run test                      # tests
 bun test <file>                   # single
 bun run typecheck:cleanup         # dead code sweep

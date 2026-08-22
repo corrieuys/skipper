@@ -6,7 +6,7 @@ import { formatTimestamp } from "../atoms/format-timestamp";
 import { badgeFragment } from "../fragments/badge.fragment";
 import { terminalJsonSummary, stripThinking, classifyPlainTerminalLine } from "../terminalJsonSummary";
 import { iteratePanel } from "../panels/iterate.panel";
-import { isExperimental, isV2UI } from "../../config/feature-flags";
+import { isExperimental } from "../../config/feature-flags";
 import { parseScheduleMatrix } from "../../tasks/scheduled-scheduler";
 import { renderScheduleMatrixEditor, renderScheduleMatrixView, countMatrixHours } from "../atoms/schedule-matrix";
 import type { CommandCenterViewModel, TaskSummary, ScheduledTaskSummary } from "../view-models/command-center.vm";
@@ -63,53 +63,13 @@ function renderSidebar(vm: CommandCenterViewModel, activeId: string | null): str
   </aside>`;
 }
 
-export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: string | null): string {
-  if (isV2UI()) return renderSidebarListBodyV2(vm, activeId);
-  const running = vm.allTasks.filter(t => t.status === "running");
-  const queued = vm.allTasks.filter(t => t.status === "approved");
-  // Paused tasks live under Recent, sorted first so the 5-item cap can't push
-  // them out — unlike completed/failed they still need operator action (Resume).
-  const recent = vm.allTasks
-    .filter(t => t.status === "completed" || t.status === "failed" || t.status === "paused")
-    .sort((a, b) => (a.status === "paused" ? 0 : 1) - (b.status === "paused" ? 0 : 1))
-    .slice(0, 5);
-  const drafts = vm.allTasks.filter(t => t.status === "draft").slice(0, 5);
-
-  return `
-    ${running.length > 0 ? `
-      <div class="mc-sidebar__group-label">Running</div>
-      ${running.map(t => sidebarItem(t, activeId)).join("")}
-    ` : ""}
-
-    ${queued.length > 0 ? `
-      <div class="mc-sidebar__group-label">Queue (${queued.length})</div>
-      ${queued.map(t => sidebarItem(t, activeId)).join("")}
-    ` : ""}
-
-    ${recent.length > 0 ? `
-      <div class="mc-sidebar__group-label">Recent</div>
-      ${recent.map(t => sidebarItem(t, activeId)).join("")}
-    ` : ""}
-
-    ${drafts.length > 0 ? `
-      <div class="mc-sidebar__group-label">Drafts</div>
-      ${drafts.map(t => sidebarItem(t, activeId)).join("")}
-    ` : ""}
-
-    ${vm.scheduledTasks.length > 0 ? `
-      <div class="mc-sidebar__group-label">Recurring</div>
-      ${vm.scheduledTasks.map(st => sidebarScheduledItem(st, activeId)).join("")}
-    ` : ""}
-  `;
-}
-
 /**
- * v2 sidebar: one scrolling list, sectioned by liveness instead of storage.
+ * Sidebar: one scrolling list, sectioned by liveness instead of storage.
  * "Needs you" (always visible), then collapsible Active / Recurring / Teams,
  * then a history link. Section + series expansion reuses the data-tc-team
  * persistence in skipper.js (keys "sec:<name>" / "rec:<id>").
  */
-function renderSidebarListBodyV2(vm: CommandCenterViewModel, activeId: string | null): string {
+export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: string | null): string {
   // Terminal tasks can carry a stale needs_review flag (completed while a
   // review was pending); nothing is actionable on them, so they stay out.
   const attention = vm.allTasks.filter(t =>
@@ -272,20 +232,6 @@ function sidebarItem(t: TaskSummary, activeId: string | null): string {
     ${t.has_attention ? '<span class="mc-sidebar__item-attention" title="Needs your input (escalation or review)"></span>' : ""}
     ${isRT ? '<span class="sk-badge sk-badge--waiting" style="font-size:8px;padding:1px 4px;">RT</span>' : ""}
     <span class="mc-sidebar__item-time">${t.completed_at ? formatTimestamp(t.completed_at) : formatTimestamp(t.created_at)}</span>
-  </a>`;
-}
-
-function sidebarScheduledItem(st: ScheduledTaskSummary, activeId: string | null): string {
-  const isActive = st.id === activeId;
-  const badge = formatScheduleBadge(st.schedule_unit, st.schedule_amount);
-  const statusDot = st.status === "approved" ? "mc-sidebar__item-dot--running" : "mc-sidebar__item-dot--draft";
-  return `<a href="/?scheduled=${escapeHtml(st.id)}"
-      class="mc-sidebar__item${isActive ? " mc-sidebar__item--active" : ""}"
-      hx-get="/workspace/scheduled/${escapeHtml(st.id)}" hx-target="#mc-main" hx-swap="innerHTML" hx-push-url="/?scheduled=${escapeHtml(st.id)}">
-    <span class="mc-sidebar__item-dot ${statusDot}"></span>
-    <span class="mc-sidebar__item-title">${escapeHtml(st.title)}</span>
-    <span class="sk-badge sk-badge--waiting" style="font-size:8px;padding:1px 4px;">${badge}</span>
-    <span class="mc-sidebar__item-time">${formatTimestamp(st.created_at)}</span>
   </a>`;
 }
 
@@ -641,11 +587,13 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
 }
 
 /**
- * v2 task view: full-width header, then a unified timeline column with an
+ * Task view: full-width header, then a unified timeline column with an
  * artifacts/notes rail inside the same container. Messages, tool groups and
  * escalations all live in the timeline; notes input lives in the rail.
+ *
+ * Also served as a fragment at /workspace/task/:id for HTMX sidebar clicks.
  */
-function taskMainContentV2(vm: CommandCenterViewModel, task: TaskSummary): string {
+export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): string {
   const eid = escapeHtml(task.id);
   const mission = vm.missionsByTask[task.id] ?? (vm.mission?.taskId === task.id ? vm.mission : null);
   const isRunning = task.status === "running";
@@ -773,101 +721,6 @@ function taskMainContentV2(vm: CommandCenterViewModel, task: TaskSummary): strin
         </div>
       </div>
     </div>
-  `;
-}
-
-/** This is also served as a fragment at /workspace/task/:id for HTMX sidebar clicks */
-export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): string {
-  if (isV2UI()) return taskMainContentV2(vm, task);
-  // Use task-specific mission data, fall back to running mission
-  const mission = vm.missionsByTask[task.id] ?? (vm.mission?.taskId === task.id ? vm.mission : null);
-  const isRunning = task.status === "running";
-  const needsReview = mission?.needsReview ?? false;
-
-  // Phase stepper with labels — passes taskId + isRunning so it can poll itself
-  const phaseStepper = mission && mission.phases.length > 0 ? renderPhaseStepper(mission.phases, task.id, isRunning) : "";
-
-  // Status-appropriate actions
-  const actions = renderActions(task, needsReview);
-
-  // Result for completed/failed tasks. Only emit the wrapper when there's a
-  // summary to show — otherwise the empty padded div leaves a dark band
-  // between the phase stepper and the tab row.
-  const resultHtml = (task.status === "completed" || task.status === "failed") && task.result_summary ? `
-    <div style="padding: var(--sk-space-3) var(--sk-space-4); font-size: var(--sk-text-sm);">
-      <div style="color: var(--sk-text-muted); margin-bottom: var(--sk-space-3);">${escapeHtml(task.result_summary)}</div>
-    </div>
-  ` : "";
-
-  // Review gate / recovery banner sits between the task bar and the tab strip
-  // (its historic home), not inside a tab.
-  const reviewGate = task.status === "failed" && task.needs_review
-    ? renderRecoveryPausedBanner(task)
-    : needsReview ? renderReviewBanner(task) : "";
-  // The iterate panel sits in the same banner slot as the review gate (between
-  // the task bar and the tabs), not inside a tab.
-  const iterate = task.status === "completed" ? iteratePanel(task.id) : "";
-  // Open the Escalations panel by default (first-ever load, no saved layout) when
-  // it holds a result summary worth seeing; else Timeline + Notes.
-  const inputHasContent = !!resultHtml;
-  const escalationsExtra = `${resultHtml}${!resultHtml
-    ? `<div class="sk-panel"><div class="sk-panel__body mc-userinput__empty sk-muted" style="padding: var(--sk-space-4); text-align:center;">Nothing needs your input right now.</div></div>`
-    : ""}`;
-
-  return `
-    <!-- Task header (phase stepper + agent orbs inlined) -->
-    <div class="mc-task-header mc-task-header--with-phases${isRunning ? " mc-task-header--running" : ""}">
-      <span class="mc-node__indicator mc-node__indicator--${task.status === "waiting_delegation" ? "waiting" : task.status}"></span>
-      <span class="mc-task-header__title">${escapeHtml(task.title)}</span>
-      <div class="mc-task-header__scroll">
-        ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
-        ${isRunning || task.status === "completed" ? `<div class="mc-task-header__orbs">
-          <div id="mc-steer-${escapeHtml(task.id)}"
-            hx-get="/fragments/dashboard/latest-steer?task=${escapeHtml(task.id)}"
-            hx-trigger="load"
-            hx-target="this"
-            hx-swap="innerHTML"></div>
-        </div>` : ""}
-      </div>
-      <div class="mc-task-header__actions">
-        ${actions}
-      </div>
-    </div>
-
-    <!-- Review gate / recovery banner + iterate panel — between the task bar
-         and the tabs -->
-    ${reviewGate || iterate ? `<div class="mc-attention-slot">${reviewGate}${iterate}</div>` : ""}
-
-    <!-- Toggle bar + resizable panel dock (flush against the task bar) -->
-    ${renderTaskDock(task.id, { variant: "standard", escalationsExtra, defaultOpen: inputHasContent ? "timeline,input" : "timeline,notes" })}
-
-    <!-- Activity detail modal -->
-    <div id="activity-detail-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
-      <div class="sk-modal__content" style="width:min(900px, 95vw); max-height:85vh; display:flex; flex-direction:column;">
-        <div class="sk-modal__header" style="padding:0.5rem 1rem; gap:0.75rem;">
-          <span id="activity-detail-modal-title" style="font-weight:600;">Activity</span>
-          <span id="activity-detail-modal-meta" class="sk-muted sk-text-xs" style="flex:1;"></span>
-          <button class="sk-btn sk-btn--sm" data-sk-modal-close="activity-detail-modal">Close</button>
-        </div>
-        <div class="sk-modal__body" style="flex:1; min-height:0; overflow:auto; padding:0.75rem 1rem;">
-          <pre id="activity-detail-modal-body" style="margin:0; white-space:pre-wrap; word-break:break-word; font-family:var(--sk-font-mono); font-size:12px; line-height:1.45;"></pre>
-        </div>
-      </div>
-    </div>
-
-    <!-- Delegation prompt modal -->
-    <div id="sk-delegation-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
-      <div class="sk-modal__content" style="width:min(900px, 95vw); max-height:85vh; display:flex; flex-direction:column;">
-        <div class="sk-modal__header" style="padding:0.5rem 1rem; gap:0.75rem;">
-          <span style="font-weight:600;">Delegation</span>
-          <button class="sk-btn sk-btn--sm" data-sk-modal-close="sk-delegation-modal">Close</button>
-        </div>
-        <div class="sk-modal__body" id="sk-delegation-modal-body" style="flex:1; min-height:0; overflow:auto; padding:0.75rem 1rem;">
-          <span class="sk-muted">Loading delegation...</span>
-        </div>
-      </div>
-    </div>
-
   `;
 }
 

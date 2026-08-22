@@ -1,7 +1,7 @@
 import { eventBus, type DelegationGroupProgressEvent, type EventName } from "../events/bus";
 import { getDb } from "../db/connection";
 import { CONNECT_PROTOCOL_VERSION } from "./protocol";
-import { fetchArtifactItem, fetchEscalationItem, fetchNoteItem, toTaskListItem } from "./serializers";
+import { fetchArtifactItem, fetchEscalationItem, fetchMessageItem, fetchNoteItem, toTaskListItem } from "./serializers";
 
 // Events pushed to integrators. Excludes chatty per-line outputs (those go
 // through the subscription-gated output tail instead - see output-tail.ts).
@@ -10,6 +10,7 @@ const FORWARDED_EVENTS: readonly EventName[] = [
   "task:state_changed",
   "task:phase_changed",
   "task:note_added",
+  "task:message_posted",
   "task:needs_review_changed",
   "escalation:created",
   "escalation:resolved",
@@ -54,6 +55,10 @@ function enrichPayload(eventName: EventName, payload: unknown): unknown {
     if (eventName === "task:note_added" && typeof p.noteId === "string") {
       const note = fetchNoteItem(db, p.noteId);
       return note ? { ...p, note } : p;
+    }
+    if (eventName === "task:message_posted" && typeof p.messageId === "string") {
+      const message = fetchMessageItem(db, p.messageId);
+      return message ? { ...p, message } : p;
     }
     if ((eventName === "escalation:created" || eventName === "escalation:resolved") && typeof p.escalationId === "string") {
       const escalation = fetchEscalationItem(db, p.escalationId);
@@ -109,7 +114,7 @@ export function subscribeConnectEvents(sender: EventSender, options: SubscribeCo
   // servers fan it out, old consumers ignore the unknown name.
   send("connect:capabilities", {
     protocolVersion: CONNECT_PROTOCOL_VERSION,
-    features: ["snapshot", "fat_events", "output_tail"],
+    features: ["snapshot", "fat_events", "output_tail", "messages"],
   });
 
   for (const eventName of FORWARDED_EVENTS) {

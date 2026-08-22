@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { fetchEscalations, fetchTaskById, fetchTasksWithTeams } from "../data/queries";
 import type { EscalationData, TaskData } from "../html/components";
-import type { ArtifactItem, EscalationItem, NoteItem, TaskListItem } from "./protocol";
+import type { ArtifactItem, EscalationItem, MessageItem, NoteItem, TaskListItem } from "./protocol";
 import { getPublicArtifactUrl } from "./public-links";
 
 /**
@@ -24,6 +24,8 @@ function projectTask(row: TaskData, phaseCount: number | null): TaskListItem {
     needs_review: !!row.needs_review,
     created_at: row.created_at,
     updated_at: (row as unknown as { updated_at?: string | null }).updated_at ?? null,
+    source_scheduled_task_id:
+      (row as unknown as { source_scheduled_task_id?: string | null }).source_scheduled_task_id ?? null,
   };
 }
 
@@ -99,15 +101,35 @@ export function fetchNoteItem(db: Database, noteId: string): NoteItem | null {
   };
 }
 
+export function fetchMessageItem(db: Database, messageId: string): MessageItem | null {
+  const row = db
+    .prepare(
+      `SELECT m.id, m.task_id, m.content, m.format, m.created_at, a.name AS agent_name
+       FROM task_messages m
+       LEFT JOIN agents a ON a.id = m.agent_id
+       WHERE m.id = ?`,
+    )
+    .get(messageId) as { id: string; task_id: string; content: string; format: string | null; created_at: string; agent_name: string | null } | null;
+  if (!row) return null;
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    agentName: row.agent_name ?? null,
+    content: row.content,
+    format: row.format ?? null,
+    createdAt: row.created_at,
+  };
+}
+
 export function fetchArtifactItem(db: Database, artifactId: string): ArtifactItem | null {
   const row = db
     .prepare(
-      `SELECT id, task_id, name, kind, version, description, created_at, published_at, publish_key
+      `SELECT id, task_id, name, kind, version, description, format, created_at, published_at, publish_key
        FROM task_artifacts WHERE id = ?`,
     )
     .get(artifactId) as {
       id: string; task_id: string; name: string; kind: string; version: number;
-      description: string | null; created_at: string; published_at: string | null; publish_key: string | null;
+      description: string | null; format: string | null; created_at: string; published_at: string | null; publish_key: string | null;
     } | null;
   if (!row) return null;
   return {
@@ -117,6 +139,7 @@ export function fetchArtifactItem(db: Database, artifactId: string): ArtifactIte
     kind: row.kind,
     version: row.version,
     description: row.description,
+    format: row.format ?? null,
     createdAt: row.created_at,
     publishedAt: row.published_at,
     publicUrl: row.published_at ? getPublicArtifactUrl(db, { id: row.id, publish_key: row.publish_key }) : null,
