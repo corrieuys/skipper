@@ -259,6 +259,9 @@ export async function handleResourceRequest(
             return { ok: true, data: { deleted: taskScheduler.deleteTask(String(params.id ?? "")) } };
           case "approve":
             return { ok: true, data: taskScheduler.approveTask(String(params.id ?? "")) };
+          case "unapprove":
+            // Send an approved (not-yet-running) task back to draft.
+            return { ok: true, data: taskScheduler.unapproveTask(String(params.id ?? "")) };
           case "update": {
             // Edit a task's title / description / assignee. Draft-only, via the
             // guarded domain method: an approved or running task is mid-flight
