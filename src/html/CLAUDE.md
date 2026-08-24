@@ -57,19 +57,28 @@ Lots of legacy flat `*Fragment.ts` files at this level — pre-reorg into `fragm
 | file | use |
 |---|---|
 | `components.ts` | Big top-level renderer for standard pages. Wire DTO types (TaskData, ForensicsData, …) moved to `src/contracts/types.ts` — re-exported here for legacy importers |
-| `realtime-components.ts` | Realtime task pages (list, detail, timeline, notes, pipeline, agent assign) |
+| `realtime-components.ts` | LEGACY realtime pieces. The standalone detail page is retired (`/realtime/:id` now 302s to `/?task=<id>`); the real-time task renders in the v2 command center via `command-center.page.ts:realtimeTaskContent` (the `tc-work` timeline+rail layout + the audio/text `mc-rt-composer`, feed container `#mc-rt-feed-<id>`). This file still exports fragment renderers (`timelineEntriesFragment`, `notesFragment`, `runningAgentsFragment`, `agentAssignmentFragment`) used by `ws/ui-push.ts` + the `/api/realtime-tasks/*` routes |
 | `layout.ts`, `baseStyles.ts` | Shared shell + base CSS |
 | `forensics*.ts` | Forensics tab on task detail (timeline, instance tree, delegations, escalations, token usage, terminal tails) |
 | `dashboard*Fragment.ts` | Dashboard polling fragments |
 | `terminalJsonSummary.ts` | One JSON stdout frame → one activity-feed line, per provider shape (claude-code `message.content`, codex `item`, grok `{type:"text"\|"thought",data}`, opencode `{type:"text",part:{text}}`, `result`, errors). **A shape it doesn't know summarises to `""`, and the activity feed drops empty rows** — so an unhandled provider looks like it produced no output at all, not like it rendered badly. Add a case here (and to the two `parseTerminalActivity`/`recentActivityFragment` classifiers) when adding a provider |
 
-## Custom agent pages
+## Agent library (single + custom agents)
 
-`pages/custom-agents.page.ts` (index) + `pages/custom-agent-form.page.ts` (editor),
-on `/custom-agents` and `/custom-agents/:id`, experimental only. The index also
-carries the two panels that define what an agent can be granted — `mcpServersPanel`
-and `customToolsPanel` — so the supply and the ticking sit on one page rather than
-across Config. The editor works
+`pages/custom-agents.page.ts` renders the **combined "Agents" library** at
+`/agent-library` (nav "Agents", experimental): a "Headless CLI agents" section + a
+"Custom agents" section (each card kind-badged), plus the `mcpServersPanel` and
+`customToolsPanel` that define what a custom agent can be granted. The two old
+index paths `/custom-agents` and `/single-agents` now **302 to `/agent-library`**;
+the editors stay split — `pages/custom-agent-form.page.ts` (`/custom-agents/:id`,
+`/custom-agents/new`) and `pages/single-agent-form.page.ts`
+(`/single-agents/:id`, `/single-agents/new`) — since the two kinds' configs
+differ (endpoint/secrets/tools vs provider/model/slack). Both editors share the
+same `tm-topbar` chrome (back arrow → `/agent-library` "Agents", unsaved-changes
+dot, error slot) so they read as one surface. Combining is UI-only; the
+two stores/tables stay separate. The command-center sidebar groups all solo runs
+(`sa:`/`ca:`) under one "Agents" section, and the task-form picker offers one
+"Agents" optgroup. The editor works
 like the team map: one client-side `AGENT` object, every field a mutation, nothing
 persisted until Save POSTs the whole thing as JSON. Tool and skill checkboxes are
 rendered from `custom-agents/tools/registry.ts` and

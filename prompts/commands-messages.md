@@ -9,6 +9,7 @@ WHEN TO POST (aim for a handful over a task, not a running commentary):
 - You find something unexpected: "The failing test was already broken before this change, so it is not caused by the new code."
 - You hit a slow stretch, so the silence is explained: "Running the full suite now. Takes about 10 minutes."
 - You finish something meaningful: "Login fix is done and tested. Moving on to the signup form."
+- Always post at least one message with this tool before finishing.
 
 WHEN NOT TO POST:
 - Routine tool calls, file reads, or step-by-step narration.

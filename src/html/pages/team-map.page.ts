@@ -31,6 +31,19 @@ export interface TeamMapViewModel {
   agentTypes: AgentTypeChoice[];
   /** Operator-defined tools selectable per agent. Empty when none are defined. */
   customTools: CustomToolChoice[];
+  /**
+   * Providers selectable for a real-time team's transcription-summary model
+   * (the model-settings allowlist). Model itself is free text, per convention.
+   */
+  modelProviders: string[];
+  /**
+   * Agent library, offered in the crew's "add from library" control. A pick adds
+   * a LIVE REFERENCE member carrying `refType` (`single:<id>` for a headless CLI
+   * agent, `custom:<id>` for a custom agent); the definition's provider, model,
+   * prompt and tools are resolved from the record at run time, not copied. Empty
+   * when none / not experimental.
+   */
+  agentLibrary: Array<{ id: string; name: string; refType: string; kind: "single" | "custom"; provider: string; model: string }>;
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
@@ -133,11 +146,33 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       })};
       var AGENT_TYPES = ${jsonScript(vm.agentTypes)};
       var CUSTOM_TOOLS = ${jsonScript(vm.customTools)};
+      var MODEL_PROVIDERS = ${jsonScript(vm.modelProviders)};
+      var LIBRARY = ${jsonScript(vm.agentLibrary)};
       var IS_NEW = ${isNew ? "true" : "false"};
 
-      // Custom agents are keyed custom:<uuid>. Show the definition's name
-      // wherever a provider is displayed; fall back to the raw type so an agent
-      // pointing at a deleted definition still reads as something.
+      // A library reference member carries a ref token as its type: single:<id>
+      // (headless CLI agent) or custom:<id> (custom agent). Its provider/model/
+      // prompt/tools live in the record and are resolved at run time, so the
+      // editor shows it as a locked reference, not editable provider fields.
+      var REF = {};
+      LIBRARY.forEach(function(e){ REF[e.refType] = e; });
+      function isRefType(t){ return !!t && (t.indexOf('single:') === 0 || t.indexOf('custom:') === 0); }
+      function refKindLabel(kind){ return kind === 'custom' ? 'Custom agent' : 'Headless CLI agent'; }
+      function refEntry(t){ return REF[t] || null; }
+      function refKindOf(t){ return t.indexOf('custom:') === 0 ? 'custom' : 'single'; }
+      // Editor page for the referenced record, so "Edit agent" lands on the agent
+      // itself (same tab), not the library index.
+      function refEditHref(e){
+        if (!e) return '';
+        return (e.kind === 'custom' ? '/custom-agents/' : '/single-agents/') + encodeURIComponent(e.id);
+      }
+      // Small link glyph marking a member as an externally-referenced library agent.
+      var REF_ICON = '<span class="tm-ref-icon" title="Referenced from the agent library">' +
+        '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" ' +
+        'stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;opacity:0.75">' +
+        '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
+        '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>';
+
       function typeLabel(name){
         for (var i = 0; i < AGENT_TYPES.length; i++) {
           if (AGENT_TYPES[i].name === name) return AGENT_TYPES[i].label || AGENT_TYPES[i].name;
@@ -332,17 +367,32 @@ export function teamMapPage(vm: TeamMapViewModel): string {
 
       // ── Crew tree ─────────────────────────────────────────────────────
       function agentNode(a){
+        var meta, instr = '';
+        if (isRefType(a.type)) {
+          // Live reference: mark it with the link icon and show the record's
+          // provider/model (owned by the library) so the card is not just a label.
+          var e = refEntry(a.type);
+          var kind = e ? e.kind : refKindOf(a.type);
+          meta = REF_ICON + '<span>' + esc(refKindLabel(kind)) + '</span>';
+          if (e) {
+            if (kind === 'single' && e.provider) meta += '<span>·</span><span>' + esc(e.provider) + '</span>';
+            if (e.model) meta += '<span>·</span><span>' + esc(e.model) + '</span>';
+          } else {
+            meta += '<span>·</span><span class="sk-muted">missing</span>';
+          }
+        } else {
+          meta = '<span>' + esc(typeLabel(a.type)) + '</span><span>·</span><span>' + esc(a.model || 'default') + '</span>';
+          if (a.instruction) instr = '<div class="tm-agent__instr">' + esc(a.instruction) + '</div>';
+        }
+        if (a.role) meta += '<span>·</span><span>' + esc(a.role) + '</span>';
         var node = el(
           '<div class="tm-agent" role="button" tabindex="0">' +
             '<div class="tm-tools">' +
               '<button type="button" class="tm-tools__btn tm-tools__btn--danger" data-a="del" title="Remove agent" aria-label="Remove agent">&times;</button>' +
             '</div>' +
             '<div class="tm-agent__name">' + esc(a.name || a.id) + '</div>' +
-            '<div class="tm-agent__meta">' +
-              '<span>' + esc(typeLabel(a.type)) + '</span><span>·</span><span>' + esc(a.model || 'default') + '</span>' +
-              (a.role ? '<span>·</span><span>' + esc(a.role) + '</span>' : '') +
-            '</div>' +
-            (a.instruction ? '<div class="tm-agent__instr">' + esc(a.instruction) + '</div>' : '') +
+            '<div class="tm-agent__meta">' + meta + '</div>' +
+            instr +
           '</div>'
         );
         function open(){ openAgentModal(a.id); }
@@ -395,12 +445,50 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         var addNode = el('<button type="button" class="tm-add tm-add--agent">+ Agent</button>');
         addNode.addEventListener('click', function(){ addAgent(); });
         crewEl.appendChild(addNode);
+
+        // Add a library agent as a LIVE REFERENCE member (headless CLI or custom).
+        // The member only carries a ref token + name/role; the provider, model,
+        // prompt and tools are resolved from the record at run time, so later
+        // edits to the library agent flow through to this team.
+        if (LIBRARY.length) {
+          var lib = el('<select class="sk-select tm-add tm-add--lib" title="Add a live reference to a library agent"><option value="">+ From library</option></select>');
+          function group(kind, label){
+            var items = LIBRARY.filter(function(e){ return e.kind === kind; });
+            if (!items.length) return;
+            var og = document.createElement('optgroup');
+            og.label = label;
+            items.forEach(function(e){
+              var opt = document.createElement('option');
+              opt.value = e.refType;
+              opt.textContent = e.name;
+              og.appendChild(opt);
+            });
+            lib.appendChild(og);
+          }
+          group('single', 'Headless CLI agents');
+          group('custom', 'Custom agents');
+          lib.addEventListener('change', function(){
+            var e = refEntry(lib.value);
+            if (e) addFromLibrary(e);
+            lib.value = '';
+          });
+          crewEl.appendChild(lib);
+        }
       }
 
       function addAgent(){
         var type = (AGENT_TYPES[0] && AGENT_TYPES[0].name) || 'claude-code';
         var id = uniqueAgentId('agent');
         TEAM.agents.push({ id: id, name: 'New Agent', type: type, model: 'default', instruction: '', customTools: [] });
+        markDirty(); render();
+        openAgentModal(id);
+      }
+
+      // A library pick is a reference: store only the ref token + a display name.
+      // Everything else is resolved from the record at run time.
+      function addFromLibrary(entry){
+        var id = uniqueAgentId(entry.name || 'agent');
+        TEAM.agents.push({ id: id, name: entry.name || 'Agent', type: entry.refType });
         markDirty(); render();
         openAgentModal(id);
       }
@@ -591,6 +679,53 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       function openAgentModal(agentId){
         var a = TEAM.agents.find(function(x){ return x.id === agentId; });
         if (!a) return;
+
+        // A library reference: only the display name + role are editable. The
+        // provider, model, prompt and tools come live from the record, so the
+        // editor shows them as owned by the library, not as fields.
+        if (isRefType(a.type)) {
+          var e = refEntry(a.type);
+          var kind = e ? e.kind : refKindOf(a.type);
+          var kindLabel = refKindLabel(kind);
+          var refName = e ? e.name : 'Missing - this library agent was deleted';
+          // Provider is only meaningful for a headless CLI agent; a custom agent
+          // runs against its own endpoint, so only its model is shown.
+          var detailRow = '';
+          if (e && kind === 'single' && e.provider) {
+            detailRow += '<div class="tm-field"><label class="sk-label">Provider</label>' +
+              '<input class="sk-input" type="text" value="' + esc(e.provider) + '" readonly></div>';
+          }
+          if (e && e.model) {
+            detailRow += '<div class="tm-field"><label class="sk-label">Model</label>' +
+              '<input class="sk-input" type="text" value="' + esc(e.model) + '" readonly></div>';
+          }
+          var refBody =
+            '<div class="tm-field__row">' +
+              '<div class="tm-field"><label class="sk-label">Name</label>' +
+                '<input class="sk-input" data-f="name" type="text" value="' + esc(a.name) + '" placeholder="e.g. Coder"></div>' +
+              '<div class="tm-field"><label class="sk-label">Role</label>' +
+                '<input class="sk-input" data-f="role" type="text" value="' + esc(a.role || '') + '" placeholder="e.g. worker (optional)"></div>' +
+            '</div>' +
+            '<div class="tm-field"><label class="sk-label">' + REF_ICON + ' ' + esc(kindLabel) + '</label>' +
+              '<div class="sk-input" style="display:flex;align-items:center;justify-content:space-between;gap:var(--sk-space-2);">' +
+                '<span>' + esc(refName) + '</span>' +
+                (e ? '<a class="sk-btn sk-btn--sm" href="' + refEditHref(e) + '">Edit agent</a>' : '') +
+              '</div></div>' +
+            (detailRow ? '<div class="tm-field__row">' + detailRow + '</div>' : '') +
+            '<p class="tm-field__hint">A live reference. Its provider, model, prompt and tools come from the library ' +
+              'record and update here whenever you edit it there.</p>';
+          openModal('Agent', refBody, doneFooter(), function(){
+            wireFooter(function(){
+              var name = modalBody.querySelector('[data-f="name"]').value.trim();
+              if (!name) { flashError('An agent needs a name.'); return false; }
+              a.name = name;
+              var role = modalBody.querySelector('[data-f="role"]').value.trim();
+              if (role) a.role = role; else delete a.role;
+            });
+          });
+          return;
+        }
+
         var typeOpts = AGENT_TYPES.map(function(t){
           return '<option value="' + esc(t.name) + '"' + (t.name === a.type ? ' selected' : '') + '>' + esc(t.label || t.name) + '</option>';
         }).join('');
@@ -665,13 +800,40 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         });
       }
 
-      // ── Team settings modal (name + Slack) ────────────────────────────
+      // ── Team settings modal (name + mode + realtime + Slack) ──────────
       function openSettingsModal(){
         var cfg = TEAM.config || {};
+        var rt = cfg.realtime || {};
+        var providerOpts = MODEL_PROVIDERS.map(function(p){
+          return '<option value="' + esc(p) + '"' + (rt.summaryProvider === p ? ' selected' : '') + '>' + esc(p) + '</option>';
+        }).join('');
         var body =
           '<div class="tm-field"><label class="sk-label">Team name</label>' +
             '<input class="sk-input" data-f="name" type="text" value="' + esc(TEAM.name) + '" placeholder="e.g. Feature Strike Team"></div>' +
           (EXPERIMENTAL ?
+          '<div class="tm-sub">' +
+            '<div class="tm-field"><label class="sk-label">Team mode</label>' +
+              '<select class="sk-select" data-f="team_mode">' +
+                '<option value="regular"' + (cfg.mode === 'realtime' ? '' : ' selected') + '>Regular</option>' +
+                '<option value="realtime"' + (cfg.mode === 'realtime' ? ' selected' : '') + '>Real-time</option>' +
+              '</select>' +
+              '<p class="tm-field__hint">Real-time teams back audio/text tasks and need no phases.</p></div>' +
+          '</div>' +
+          '<div class="tm-sub" id="tm-rt-config"' + (cfg.mode === 'realtime' ? '' : ' style="display:none"') + '>' +
+            '<div class="tm-sub__head"><strong class="sk-text-sm">Transcription summary</strong></div>' +
+            '<div class="tm-field">' +
+              '<label class="sk-checkbox"><input type="checkbox" data-f="rt_summary_enabled"' + (rt.summaryEnabled === false ? '' : ' checked') + '>' +
+              '<span class="sk-checkbox__toggle"></span>' +
+              '<span class="sk-checkbox__label">Summarize the transcript before feeding the agent</span></label>' +
+              '<p class="tm-field__hint">Off feeds the raw cleaned transcript instead.</p>' +
+            '</div>' +
+            '<div class="sk-model-row">' +
+              '<div class="sk-model-row__field"><label class="sk-label">Summary provider</label>' +
+                '<select class="sk-select" data-f="rt_summary_provider">' + providerOpts + '</select></div>' +
+              '<div class="sk-model-row__field"><label class="sk-label">Summary model</label>' +
+                '<input class="sk-input" data-f="rt_summary_model" type="text" value="' + esc(rt.summaryModel || '') + '" placeholder="default"></div>' +
+            '</div>' +
+          '</div>' +
           '<div class="tm-sub">' +
             '<div class="tm-sub__head"><strong class="sk-text-sm">Slack</strong></div>' +
             '<div class="tm-field">' +
@@ -687,13 +849,27 @@ export function teamMapPage(vm: TeamMapViewModel): string {
 
         var isCreate = !TEAM.id;
         openModal(isCreate ? 'New team' : 'Team settings', body, doneFooter(isCreate ? 'Create team' : null), function(){
+          // Show the realtime summary controls only while mode is realtime.
+          var modeSel = modalBody.querySelector('[data-f="team_mode"]');
+          var rtBlock = modalBody.querySelector('#tm-rt-config');
+          if (modeSel && rtBlock) {
+            modeSel.addEventListener('change', function(){
+              rtBlock.style.display = modeSel.value === 'realtime' ? '' : 'none';
+            });
+          }
           wireFooter(function(){
             var name = modalBody.querySelector('[data-f="name"]').value.trim();
             if (!name) { flashError('A team needs a name.'); return false; }
             TEAM.name = name;
             TEAM.config = TEAM.config || {};
-            // Not rendered → leave the stored Slack settings untouched.
+            // Not rendered → leave the stored mode/Slack settings untouched.
             if (!EXPERIMENTAL) return;
+            TEAM.config.mode = modalBody.querySelector('[data-f="team_mode"]').value === 'realtime' ? 'realtime' : 'regular';
+            TEAM.config.realtime = TEAM.config.realtime || {};
+            TEAM.config.realtime.summaryEnabled = modalBody.querySelector('[data-f="rt_summary_enabled"]').checked;
+            var rtProv = modalBody.querySelector('[data-f="rt_summary_provider"]');
+            TEAM.config.realtime.summaryProvider = rtProv ? rtProv.value : '';
+            TEAM.config.realtime.summaryModel = modalBody.querySelector('[data-f="rt_summary_model"]').value.trim();
             TEAM.config.slackEnabled = modalBody.querySelector('[data-f="slack_enabled"]').checked;
             var cmd = modalBody.querySelector('[data-f="slash_command"]').value.trim();
             // Send an explicit '' when cleared rather than deleting the key: the
@@ -716,7 +892,8 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       var saveBtn = document.getElementById('tm-save');
       async function saveTeam(){
         if (!TEAM.name || !TEAM.name.trim()) { openSettingsModal(); flashError('Name the team before saving.'); return; }
-        if (TEAM.phases.length === 0) { flashError('A team needs at least one phase.'); return; }
+        var isRealtime = TEAM.config && TEAM.config.mode === 'realtime';
+        if (!isRealtime && TEAM.phases.length === 0) { flashError('A team needs at least one phase.'); return; }
         var label = saveBtn.textContent;
         saveBtn.disabled = true;
         saveBtn.textContent = 'Saving...';

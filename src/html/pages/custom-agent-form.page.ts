@@ -108,18 +108,18 @@ export function customAgentFormPage(vm: CustomAgentFormViewModel): string {
       </div>
     </div>`;
     }).join("")
-    : `<p class="sk-muted sk-text-xs">No MCP servers registered. Add one under <strong>MCP Servers</strong> on the <a href="/custom-agents">Custom Agents</a> page and its tools will appear here.</p>`;
+    : `<p class="sk-muted sk-text-xs">No MCP servers registered. Add one under <strong>MCP Servers</strong> on the <a href="/agent-library">Agents</a> page and its tools will appear here.</p>`;
 
   const customToolRows = vm.customTools.length > 0
     ? vm.customTools.map((t) => checkboxRow("custom", t.name, t.name, t.description, false)).join("")
-    : `<p class="sk-muted sk-text-xs">No custom tools defined. Add one under <strong>Custom Tools</strong> on the <a href="/custom-agents">Custom Agents</a> page.</p>`;
+    : `<p class="sk-muted sk-text-xs">No custom tools defined. Add one under <strong>Custom Tools</strong> on the <a href="/agent-library">Agents</a> page.</p>`;
 
   const skillRows = vm.skills.length > 0
     ? vm.skills.map((s) => checkboxRow("skill", s.name, s.name, s.description, false)).join("")
     : `<p class="sk-muted sk-text-xs">No skills found on this machine. Skipper reads them from <code>~/.claude/skills</code> and <code>~/.agents/skills</code>.</p>`;
 
   const content = `
-    ${navbar({ currentPath: "/custom-agents", daemonState: vm.daemonState, daemonUptime: vm.daemonUptime, escalationCount: vm.escalationCount })}
+    ${navbar({ currentPath: "/agent-library", daemonState: vm.daemonState, daemonUptime: vm.daemonUptime, escalationCount: vm.escalationCount })}
     <style>
       .ca-form { display:flex; flex-direction:column; gap:var(--sk-space-6); }
       .ca-row { display:grid; grid-template-columns:1fr 1fr; gap:var(--sk-space-4); }
@@ -144,16 +144,19 @@ export function customAgentFormPage(vm: CustomAgentFormViewModel): string {
       .ca-probe--ok { color:var(--sk-success, #4ade80); }
       .ca-probe--err { color:var(--sk-danger, #f87171); }
     </style>
-    <div class="sk-container">
-      <div class="sk-page-header" style="display:flex;align-items:center;justify-content:space-between;gap:var(--sk-space-3);">
-        <h1 class="sk-page-header__title">${isNew ? "New Custom Agent" : escapeHtml(agent.name)}</h1>
-        <div class="sk-flex sk-gap-2">
-          <a class="sk-btn sk-btn--sm" href="/custom-agents">Back</a>
+    <div class="tm-shell">
+      <div class="tm-topbar">
+        <a class="tm-topbar__back" href="/agent-library">&larr; Agents</a>
+        <div class="tm-topbar__heading">
+          <h1 class="tm-topbar__title">${escapeHtml(isNew ? "New custom agent" : agent.name)}<span class="tm-dot" id="ca-dirty" hidden title="Unsaved changes"></span></h1>
+          <div class="tm-topbar__sub">A custom agent that runs in-process against its own endpoint.</div>
+        </div>
+        <div class="tm-topbar__actions">
+          <span class="tm-error" id="ca-error"></span>
           ${isNew ? "" : `<button type="button" class="sk-btn sk-btn--sm sk-btn--danger" id="ca-delete">Delete</button>`}
           <button type="button" class="sk-btn sk-btn--sm sk-btn--primary" id="ca-save">${isNew ? "Create agent" : "Save"}</button>
         </div>
       </div>
-      <div id="ca-error" class="sk-text-xs" style="color:var(--sk-danger,#f87171);margin-bottom:var(--sk-space-3);"></div>
 
       <div class="ca-form">
         <div class="sk-panel">
@@ -290,6 +293,9 @@ export function customAgentFormPage(vm: CustomAgentFormViewModel): string {
       function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
         return ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' })[c]; }); }
 
+      var dirty = false;
+      function markDirty(){ dirty = true; var d = $('ca-dirty'); if (d) d.hidden = false; }
+
       // ── Key/value rows ────────────────────────────────────────────────
       // A stored secret arrives as the sentinel and is rendered blank, so an
       // untouched row saves as "" and the server keeps what it already has.
@@ -423,7 +429,8 @@ export function customAgentFormPage(vm: CustomAgentFormViewModel): string {
         }).then(function(r){ return r.json().then(function(b){ return { ok: r.ok, body: b }; }); })
           .then(function(res){
             if (!res.ok) { showError(res.body.error || 'Save failed'); return; }
-            window.location.href = '/custom-agents';
+            dirty = false;
+            window.location.href = '/agent-library';
           })
           .catch(function(err){ showError(String(err)); });
       });
@@ -432,12 +439,19 @@ export function customAgentFormPage(vm: CustomAgentFormViewModel): string {
       if (del) del.addEventListener('click', function(){
         if (!window.confirm('Delete this agent? Team members using it will need a different provider.')) return;
         fetch('/api/custom-agents/' + encodeURIComponent(AGENT.id), { method: 'DELETE' })
-          .then(function(){ window.location.href = '/custom-agents'; });
+          .then(function(){ dirty = false; window.location.href = '/agent-library'; });
       });
+
+      // ── Dirty guard ───────────────────────────────────────────────────
+      Array.prototype.forEach.call(document.querySelectorAll('.ca-form input, .ca-form textarea, .ca-form select'), function(elm){
+        elm.addEventListener('input', markDirty);
+        elm.addEventListener('change', markDirty);
+      });
+      window.addEventListener('beforeunload', function(e){ if (!dirty) return; e.preventDefault(); e.returnValue = ''; });
     })();
     </script>`;
 
-  return v2layout(isNew ? "New Custom Agent" : agent.name, content, "/custom-agents");
+  return v2layout(isNew ? "New custom agent" : agent.name, content, "/agent-library");
 }
 
 function checkboxRow(

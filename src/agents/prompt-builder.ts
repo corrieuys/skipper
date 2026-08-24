@@ -9,6 +9,7 @@ import { assetTextSync } from "../assets";
 import { isExperimental } from "../config/feature-flags";
 import { isSlackConfigured } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
+import { isSoloAgentId } from "./solo";
 import { SLACK_NOTE_PREFIX, type SlackOrigin } from "../slack/slash-command";
 import { SLACK_ESCALATION_SOFT_LIMIT } from "../slack/blocks";
 
@@ -25,6 +26,7 @@ const COMMANDS_ALWAYS = loadPrompt("commands-always.md");
 const COMMANDS_MESSAGES = loadPrompt("commands-messages.md");
 const MCP_TOOLS_SKIPPER = loadPrompt("mcp-tools-skipper.md");
 const MCP_TOOLS_DELEGATE = loadPrompt("mcp-tools-delegate.md");
+const MCP_TOOLS_SINGLE = loadPrompt("mcp-tools-single.md");
 const MCP_TOOLS_PREFERENCE = [
   "Notes and artifacts are created via the `skipper-daemon` MCP server. The tools are exposed as `mcp__skipper-daemon__create_note`, `mcp__skipper-daemon__create_artifact`, `mcp__skipper-daemon__list_artifacts`, `mcp__skipper-daemon__list_notes`, and `mcp__skipper-daemon__get_artifact` (Claude Code prefixes them with `mcp__<server>__`; on Codex the bare tool name may appear — call whichever your tool list shows).",
   // grok keeps MCP tools out of the registry entirely and reaches them through a
@@ -42,6 +44,23 @@ const CAVEMAN_STYLE_GUIDANCE = [
 const ARTIFACT_HTML = loadPrompt("artifact-html.md");
 // File-based prompts as fallback defaults
 const SKIPPER_PROMPT_DEFAULT = loadPrompt("skipper.md");
+// System prompt for a single agent - a standalone executor that runs a whole
+// task alone: no delegation, no phases, but the full internal-tool surface.
+const SINGLE_AGENT_PROMPT = loadPrompt("single-agent.md");
+
+// `iterateTask` (tasks/scheduler.ts) appends each new operator instruction to the
+// task description under this exact separator. On a solo RESUME the earlier
+// description is already in the agent's own conversation, so re-sending the whole
+// thing makes it re-anchor on the ORIGINAL task and ignore the new ask; we send
+// only the text after the last marker instead. Returns null when the description
+// carries no iteration segment (a fresh task, or a plain recovery resume).
+const ITERATION_MARKER = /\n\n---\nITERATION \d+ \([^)]*\):\n/g;
+function latestIterationInstruction(description: string): string | null {
+  const segments = description.split(ITERATION_MARKER);
+  if (segments.length < 2) return null;
+  const last = segments[segments.length - 1]?.trim();
+  return last ? last : null;
+}
 
 export interface TaskInfo {
   id: string;
@@ -155,8 +174,28 @@ export class PromptBuilder {
     parts.push(EXECUTION_CONTEXT);
     parts.push("");
 
-    // Agent instruction (Skipper uses hardcoded prompt)
-    if (getEntrypointAgentId(this.db, options.task.id) === options.agent.id) {
+    // Agent instruction. A solo agent (single agent OR custom agent run solo) is
+    // its own entrypoint but must NOT get Skipper's orchestration/phase prompt -
+    // it runs the task alone. Check it first, since its id also satisfies the
+    // entrypoint test below. For a custom agent the runner supplies its own
+    // system prompt separately (buildSystemPrompt), so this adds only the solo
+    // framing on top.
+    const solo = isSoloAgentId(options.agent.id);
+    if (solo) {
+      // On resume the SAME conversation continues (task-runner passes --resume of
+      // this agent's own session), so the full "you run one task from start to
+      // finish, by yourself" framing is already in context. Re-sending it makes a
+      // resumed agent read itself as a fresh instance and dissociate from its own
+      // earlier work ("a previous agent did that"). Send it only on a cold start.
+      if (!options.isResume) {
+        parts.push(SINGLE_AGENT_PROMPT);
+        parts.push("");
+      }
+      if (options.agent.instruction) {
+        parts.push(`INSTRUCTION: ${options.agent.instruction}`);
+        parts.push("");
+      }
+    } else if (getEntrypointAgentId(this.db, options.task.id) === options.agent.id) {
       const config = getSkipperConfig(this.db);
       parts.push(config.prompt || SKIPPER_PROMPT_DEFAULT);
       parts.push("");
@@ -179,21 +218,49 @@ export class PromptBuilder {
     // progress (notes, artifacts, completed delegations); resuming naively
     // would redo that work.
     if (options.isResume) {
-      parts.push("RESUMING TASK — this is NOT a fresh start.");
-      parts.push("A previous attempt at this task may have produced notes, artifacts, delegations, and partial phase progress. Before you do ANY new work:");
-      parts.push("1. Read every note in this prompt — first the OPERATOR INSTRUCTIONS section (human-typed, highest priority), then NOTES FROM OTHER AGENTS / PREVIOUS AGENTS.");
-      parts.push("2. Inspect existing artifacts with `mcp__skipper-daemon__list_artifacts` and read the relevant ones with `mcp__skipper-daemon__get_artifact`.");
-      parts.push("3. Review the PRIOR DELEGATIONS section below to see which child agents were spawned, what work they did, and which are resumable.");
-      parts.push("4. Cross-check artifact and note timestamps against each other (see chronology guidance in COMMANDS_ALWAYS) — the newest signal wins.");
-      parts.push("5. Decide where the task actually is in its phase pipeline and continue from there. Do NOT redo work that already has a recent passing artifact or note. Do NOT skip steps that were left incomplete.");
-      parts.push("If after reading existing state you cannot tell what the next step should be, call `mcp__skipper-daemon__create_escalation({ question })` with a specific question rather than guessing.");
-      parts.push("");
+      if (solo) {
+        // A solo agent's resume continues its OWN conversation, so it already
+        // remembers what it did — the team-style "a previous attempt / previous
+        // agents, go read the notes" framing below would wrongly make it treat
+        // its own work as someone else's. Tell it plainly this is the same thread.
+        parts.push("CONTINUING YOUR OWN SESSION — this is a direct resume of the same conversation you were already running, not a fresh start and not another agent's work. You still have full memory of everything you did and said earlier in this thread.");
+        parts.push("A new instruction for this iteration is shown below. Respond to THAT specific instruction, building on what you already did — do NOT restart the original task from the top or repeat work you have already done, and do not describe your earlier output as belonging to a previous agent. You do not need to re-read notes or artifacts to recall your own prior work (though you may consult them if genuinely useful).");
+        parts.push("");
+      } else {
+        parts.push("RESUMING TASK — this is NOT a fresh start.");
+        parts.push("A previous attempt at this task may have produced notes, artifacts, delegations, and partial phase progress. Before you do ANY new work:");
+        parts.push("1. Read every note in this prompt — first the OPERATOR INSTRUCTIONS section (human-typed, highest priority), then NOTES FROM OTHER AGENTS / PREVIOUS AGENTS.");
+        parts.push("2. Inspect existing artifacts with `mcp__skipper-daemon__list_artifacts` and read the relevant ones with `mcp__skipper-daemon__get_artifact`.");
+        parts.push("3. Review the PRIOR DELEGATIONS section below to see which child agents were spawned, what work they did, and which are resumable.");
+        parts.push("4. Cross-check artifact and note timestamps against each other (see chronology guidance in COMMANDS_ALWAYS) — the newest signal wins.");
+        parts.push("5. Decide where the task actually is in its phase pipeline and continue from there. Do NOT redo work that already has a recent passing artifact or note. Do NOT skip steps that were left incomplete.");
+        parts.push("If after reading existing state you cannot tell what the next step should be, call `mcp__skipper-daemon__create_escalation({ question })` with a specific question rather than guessing.");
+        parts.push("");
+      }
     }
 
-    // Task info
+    // Task info. On a solo resume the full description is already in the agent's
+    // resumed conversation; re-sending it makes the agent re-do the ORIGINAL task
+    // instead of the new iteration. So send only the latest iteration instruction
+    // (falling back to the full description if the marker is missing, so an
+    // instruction is never dropped). A fresh run gets the whole description.
     parts.push(`TASK: ${options.task.title}`);
     if (options.task.description) {
-      parts.push(options.task.description);
+      const soloDelta = solo && options.isResume
+        ? latestIterationInstruction(options.task.description)
+        : null;
+      if (solo && options.isResume) {
+        if (soloDelta) {
+          parts.push("NEW INSTRUCTION FOR THIS ITERATION:");
+          parts.push(soloDelta);
+        } else if (options.isIteration) {
+          // Iteration with no parseable marker — do not drop the ask.
+          parts.push(options.task.description);
+        }
+        // else: plain recovery resume, nothing new — the task is already in context.
+      } else {
+        parts.push(options.task.description);
+      }
     }
     // Optional one-off operator input for this run (e.g. recurring "Run Now"),
     // injected directly below the description.
@@ -355,10 +422,12 @@ export class PromptBuilder {
 
   private buildEnrichmentInternal(agentId: string, taskId: string, agentInstanceId?: string): { text: string; noteIds: string[] } {
     const parts: string[] = [];
+    const solo = isSoloAgentId(agentId);
 
-    // Team roster
+    // Team roster - a solo agent works alone, so it gets no roster (there is
+    // nothing to delegate to).
     const roster = this.getTeamRoster(agentId, taskId);
-    if (roster.length > 0) {
+    if (roster.length > 0 && !solo) {
       parts.push("TEAM ROSTER (use agent IDs for delegation):");
       for (const member of roster) {
         const capabilities = member.capabilities.length > 0 ? member.capabilities.join(", ") : "none";
@@ -416,16 +485,19 @@ export class PromptBuilder {
     }
 
     parts.push(COMMANDS_ALWAYS);
-    // Operator messages ride the same experimental flag as the post_message tool
-    // itself — describing a tool the session does not register would just make
-    // the agent try a call that fails.
-    if (isExperimental()) parts.push(COMMANDS_MESSAGES);
+    // Operator messages: the `post_message` tool is registered on every internal
+    // session, so its guidance is always described.
+    parts.push(COMMANDS_MESSAGES);
     parts.push(MCP_TOOLS_PREFERENCE);
 
-    // Tool allowlist — root Skipper gets the full lifecycle toolkit; everyone
-    // else (mid-level leads who never see this path AND delegated children) is
-    // explicitly told which tools are off-limits.
-    if (this.isTeamEntrypoint(agentId, taskId)) {
+    // Tool allowlist - a solo agent gets the solo toolkit (notes, artifacts,
+    // escalate, complete_task; NO delegation or phase tools); root Skipper gets
+    // the full lifecycle toolkit; everyone else (mid-level leads who never see
+    // this path AND delegated children) is told which tools are off-limits.
+    if (solo) {
+      parts.push("");
+      parts.push(MCP_TOOLS_SINGLE);
+    } else if (this.isTeamEntrypoint(agentId, taskId)) {
       parts.push("");
       parts.push(MCP_TOOLS_SKIPPER);
     } else {
@@ -540,7 +612,7 @@ export class PromptBuilder {
     // definition NOT the team entrypoint. Children must return work by exiting;
     // the orchestrator routes their result back to the parent automatically.
     parts.push(COMMANDS_ALWAYS);
-    if (isExperimental()) parts.push(COMMANDS_MESSAGES);
+    parts.push(COMMANDS_MESSAGES);
     parts.push(MCP_TOOLS_PREFERENCE);
     parts.push("");
     parts.push(MCP_TOOLS_DELEGATE);

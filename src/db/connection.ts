@@ -3,7 +3,8 @@ import { dirname } from "path";
 import { mkdirSync } from "fs";
 import { loadConfigSnapshotIntoDb, loadRealtimeDefaultsIntoDb, readConfigSnapshot } from "../config/store";
 import { flattenLocalTeamsIntoStore } from "../teams/local-teams";
-import { ensureCustomAgentTypeStubs, registerCustomAgentTypes } from "../custom-agents/store";
+import { flattenSingleAgentsIntoStore } from "../single-agents/store";
+import { ensureCustomAgentTypeStubs, registerCustomAgentTypes, flattenCustomAgentsAsSoloTeams } from "../custom-agents/store";
 import { getRuntimeDbPath, migrateLegacyDbIfNeeded } from "../paths";
 import { migrateLegacySchema, tableExists } from "./legacy-migrations";
 import { assetTextSync, listAssets } from "../assets";
@@ -52,6 +53,7 @@ const RUNTIME_TABLES = [
   "app_settings",
   "api_keys",
   "local_teams",
+  "single_agents",
 ];
 
 function configureDatabase(database: Database): void {
@@ -167,6 +169,7 @@ function initializeSplitDatabases(runtimeDb: Database): void {
   // Register teams into the in-memory store Maps before seeding the shared.*
   // tables, so the snapshot below already includes them.
   flattenLocalTeamsIntoStore(runtimeDb);
+  flattenSingleAgentsIntoStore(runtimeDb);
   // Custom agent types must exist in `agent_types` BEFORE the snapshot inserts
   // agents, because `agents.type` has a foreign key onto it. A team containing a
   // custom agent is flattened into the snapshot above, so without this the whole
@@ -174,6 +177,9 @@ function initializeSplitDatabases(runtimeDb: Database): void {
   // references after their definition was deleted.
   registerCustomAgentTypes(runtimeDb);
   ensureCustomAgentTypeStubs(runtimeDb, readConfigSnapshot().agents.map((a) => String(a.type)));
+  // Project each custom agent as a `ca:<id>` solo team-of-one (after its type row
+  // exists, before the snapshot seeds the shared tables).
+  flattenCustomAgentsAsSoloTeams(runtimeDb);
   loadConfigSnapshotIntoDb(runtimeDb, "shared");
   loadRealtimeDefaultsIntoDb(runtimeDb);
   installSplitSqlRouting(runtimeDb);
@@ -185,6 +191,7 @@ function initializeSingleDatabase(database: Database): void {
   migrateLegacySchema(database);
   applyVersionedMigrations(database);
   flattenLocalTeamsIntoStore(database);
+  flattenSingleAgentsIntoStore(database);
   // Custom agent types must exist in `agent_types` BEFORE the snapshot inserts
   // agents, because `agents.type` has a foreign key onto it. A team containing a
   // custom agent is flattened into the snapshot above, so without this the whole
@@ -192,6 +199,7 @@ function initializeSingleDatabase(database: Database): void {
   // references after their definition was deleted.
   registerCustomAgentTypes(database);
   ensureCustomAgentTypeStubs(database, readConfigSnapshot().agents.map((a) => String(a.type)));
+  flattenCustomAgentsAsSoloTeams(database);
   loadConfigSnapshotIntoDb(database, "main");
   loadRealtimeDefaultsIntoDb(database);
 }

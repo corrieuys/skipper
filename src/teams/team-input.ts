@@ -92,9 +92,20 @@ function coerceTeamConfig(body: Record<string, unknown>, existing?: LocalTeamCon
   let slackEnabled = existing?.slackEnabled ?? false;
   let slashCommand: string | undefined = existing?.slashCommand;
   let skipperCustomTools: string[] | undefined = existing?.skipperCustomTools;
+  let mode: "regular" | "realtime" | undefined = existing?.mode;
+  let realtime = existing?.realtime;
 
   if (body.config && typeof body.config === "object") {
     const c = body.config as Record<string, unknown>;
+    if ("mode" in c) mode = c.mode === "realtime" ? "realtime" : "regular";
+    if ("realtime" in c && c.realtime && typeof c.realtime === "object") {
+      const r = c.realtime as Record<string, unknown>;
+      realtime = {
+        summaryEnabled: r.summaryEnabled !== false,
+        ...(typeof r.summaryProvider === "string" && r.summaryProvider.trim() ? { summaryProvider: r.summaryProvider.trim() } : {}),
+        ...(typeof r.summaryModel === "string" ? { summaryModel: r.summaryModel.trim() } : {}),
+      };
+    }
     if ("slackEnabled" in c) slackEnabled = c.slackEnabled === true;
     if ("slashCommand" in c) {
       slashCommand = typeof c.slashCommand === "string" && c.slashCommand.trim()
@@ -117,6 +128,8 @@ function coerceTeamConfig(body: Record<string, unknown>, existing?: LocalTeamCon
     slashCommand = raw ? normalizeSlashCommand(raw) : undefined;
   }
   const config: LocalTeamConfig = { slackEnabled };
+  if (mode) config.mode = mode;
+  if (realtime) config.realtime = realtime;
   if (slashCommand) config.slashCommand = slashCommand;
   if (skipperCustomTools && skipperCustomTools.length > 0) config.skipperCustomTools = skipperCustomTools;
   return config;

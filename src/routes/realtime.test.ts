@@ -82,7 +82,9 @@ describe("POST /api/realtime-tasks/:id", () => {
       body: updateBody.toString(),
     });
     expect(updateRes.status).toBe(200);
-    expect(updateRes.headers.get("HX-Redirect")).toBe(`/realtime/${created.id}`);
+    // Legacy /realtime/:id page retired: real-time tasks now open in the v2
+    // command center via /?task=<id>.
+    expect(updateRes.headers.get("HX-Redirect")).toBe(`/?task=${created.id}`);
   });
 });
 

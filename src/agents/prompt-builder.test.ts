@@ -937,3 +937,83 @@ describe("slack origin injection", () => {
     expect(build()).not.toContain("SLACK ORIGIN");
   });
 });
+
+describe("solo agent resume framing", () => {
+  // A solo agent (sa:/ca: id) resumes its OWN conversation on iterate, so the
+  // resume prompt must not re-frame it as a fresh instance or a previous agent's
+  // work — otherwise it dissociates and answers as if it has no memory.
+  function soloAgent(): string {
+    const id = "sa:" + crypto.randomUUID();
+    db.prepare("INSERT INTO agents (id, name, type, config, capabilities) VALUES (?, ?, ?, ?, '[]')")
+      .run(id, "Researcher", "claude-code", JSON.stringify({ instruction: "Research well" }));
+    db.prepare("INSERT INTO teams (id, name, entrypoint_agent_id) VALUES (?, ?, ?)").run(id, "Researcher", id);
+    return id;
+  }
+
+  it("cold start gets the full solo framing", () => {
+    const id = soloAgent();
+    db.prepare("INSERT INTO tasks (id, title, team_id) VALUES ('t-cold', 'T', ?)").run(id);
+    const prompt = builder.buildInitialPrompt({
+      agent: { id, name: "Researcher", type: "claude-code", instruction: "Research well" },
+      task: { id: "t-cold", title: "T", description: "do it" },
+      isResume: false,
+    });
+    expect(prompt).toContain("You are a single agent running one task from start to finish, by yourself.");
+    expect(prompt).not.toContain("CONTINUING YOUR OWN SESSION");
+  });
+
+  it("resume continues the same session — no fresh/previous-agent framing", () => {
+    const id = soloAgent();
+    db.prepare("INSERT INTO tasks (id, title, team_id) VALUES ('t-res', 'T', ?)").run(id);
+    const prompt = builder.buildInitialPrompt({
+      agent: { id, name: "Researcher", type: "claude-code", instruction: "Research well" },
+      task: { id: "t-res", title: "T", description: "do it\n\n---\nITERATION 1:\nwhat was the word?" },
+      isResume: true,
+      isIteration: true,
+    });
+    expect(prompt).toContain("CONTINUING YOUR OWN SESSION");
+    // must NOT re-push the cold-start framing or the team-style resume preamble
+    expect(prompt).not.toContain("You are a single agent running one task from start to finish, by yourself.");
+    expect(prompt).not.toContain("RESUMING TASK — this is NOT a fresh start.");
+  });
+});
+
+describe("solo iterate sends only the new instruction", () => {
+  function soloAgent(id = "sa:" + crypto.randomUUID()): string {
+    db.prepare("INSERT INTO agents (id, name, type, config, capabilities) VALUES (?, ?, ?, ?, '[]')")
+      .run(id, "R", "claude-code", JSON.stringify({ instruction: "Research well" }));
+    db.prepare("INSERT INTO teams (id, name, entrypoint_agent_id) VALUES (?, ?, ?)").run(id, "R", id);
+    return id;
+  }
+
+  it("resume sends the latest iteration delta, not the whole accumulated task", () => {
+    const id = soloAgent();
+    db.prepare("INSERT INTO tasks (id, title, team_id) VALUES ('t-it', 'T', ?)").run(id);
+    // The exact separator iterateTask writes.
+    const description =
+      "articulate the original task into a note" +
+      "\n\n---\nITERATION 1 (2026-08-24T09:41:56.676Z):\ndid you get the new instruction?";
+    const prompt = builder.buildInitialPrompt({
+      agent: { id, name: "R", type: "claude-code", instruction: "Research well" },
+      task: { id: "t-it", title: "T", description },
+      isResume: true,
+      isIteration: true,
+    });
+    expect(prompt).toContain("NEW INSTRUCTION FOR THIS ITERATION:");
+    expect(prompt).toContain("did you get the new instruction?");
+    // The original task line must NOT be re-sent (that is what caused the agent to
+    // re-do the original task on every iterate).
+    expect(prompt).not.toContain("articulate the original task into a note");
+  });
+
+  it("a FRESH run still gets the whole description", () => {
+    const id = soloAgent("sa:fresh-" + crypto.randomUUID().slice(0, 8));
+    db.prepare("INSERT INTO tasks (id, title, team_id) VALUES ('t-fresh', 'T', ?)").run(id);
+    const prompt = builder.buildInitialPrompt({
+      agent: { id, name: "R", type: "claude-code", instruction: "Research well" },
+      task: { id: "t-fresh", title: "T", description: "do the whole thing" },
+      isResume: false,
+    });
+    expect(prompt).toContain("do the whole thing");
+  });
+});

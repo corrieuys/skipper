@@ -7,6 +7,7 @@ import { badgeFragment } from "../fragments/badge.fragment";
 import { terminalJsonSummary, stripThinking, classifyPlainTerminalLine } from "../terminalJsonSummary";
 import { iteratePanel } from "../panels/iterate.panel";
 import { isExperimental } from "../../config/feature-flags";
+import { isSoloTeamId } from "../../agents/solo";
 import { parseScheduleMatrix } from "../../tasks/scheduled-scheduler";
 import { renderScheduleMatrixEditor, renderScheduleMatrixView, countMatrixHours } from "../atoms/schedule-matrix";
 import type { CommandCenterViewModel, TaskSummary, ScheduledTaskSummary } from "../view-models/command-center.vm";
@@ -93,9 +94,15 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
       unassigned.push(t);
     }
   }
-  const groups = vm.teams
-    .map(team => renderTeamGroup(team, byTeam.get(team.id) ?? [], activeId))
-    .join("");
+  // Solo agents (single agent OR custom agent run solo) are projected as
+  // teams-of-one (`sa:`/`ca:`); group them all under one "Agents" section, apart
+  // from real teams.
+  const regularTeams = vm.teams.filter(t => !isSoloTeamId(t.id));
+  const soloTeams = vm.teams.filter(t => isSoloTeamId(t.id));
+  const renderGroups = (teams: Array<{ id: string; name: string }>): string =>
+    teams.map(team => renderTeamGroup(team, byTeam.get(team.id) ?? [], activeId)).join("");
+  const groups = renderGroups(regularTeams);
+  const soloGroups = renderGroups(soloTeams);
   const other = unassigned.length > 0
     ? renderTeamGroup({ id: "", name: "No team" }, unassigned, activeId)
     : "";
@@ -115,7 +122,8 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
     ${section("active", "Active", active.length,
       active.length > 0 ? active.map(t => sidebarItem(t, activeId)).join("") : `<div class="tc-team__empty">Nothing running</div>`)}
     ${vm.scheduledTasks.length > 0 ? section("recurring", "Recurring", vm.scheduledTasks.length, recurring) : ""}
-    ${section("teams", "Teams", vm.teams.length, `${groups}${other}` || `<div class="tc-team__empty">No teams yet</div>`)}
+    ${section("teams", "Teams", regularTeams.length, `${groups}${other}` || `<div class="tc-team__empty">No teams yet</div>`)}
+    ${soloTeams.length > 0 ? section("agents", "Agents", soloTeams.length, soloGroups) : ""}
     <a class="tc-history" href="/tasks">Task history &rarr;</a>
   </div>`;
 }
@@ -357,84 +365,7 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
   `;
 }
 
-/** Real-time task view — shows timeline, session controls, and audio pipeline */
-/**
- * The panel dock: a toggle bar (Timeline · Details · Escalations · Notes ·
- * Artifacts · Messages) over a row of resizable, reorderable columns.
- * `Skipper.dock` (skipper.js) shows any number of them side by side (one must
- * stay open), persists the layout, and inserts the resize dividers. Every panel
- * stays mounted so its hx-get / WS-OOB targets (mc-notes-<id>,
- * mc-artifacts-<id>, mc-messages-<id>, mc-task-escalations-<id>, feed ids) stay
- * stable; the JS just flips `display`. Shared by the standard and realtime task
- * renderers below.
- */
-function renderTaskDock(taskId: string, opts: {
-  variant: "standard" | "realtime";
-  escalationsExtra?: string;
-  defaultOpen?: string;
-}): string {
-  const eid = escapeHtml(taskId);
-  const tl = opts.variant === "realtime"
-    ? { title: "Timeline", feedId: `mc-rt-feed-${eid}`, url: `/workspace/task/${eid}/realtime-activity`, def: "all",
-        filters: [["all", "All"], ["timeline", "Timeline"], ["activity", "Activity"]] as [string, string][] }
-    : { title: "Activity", feedId: `mc-activity-feed-${eid}`, url: `/workspace/task/${eid}/activity`, def: "messages",
-        filters: [["all", "All"], ["messages", "Messages"], ["tools", "Tools"]] as [string, string][] };
-
-  const timelineControls = `<div class="mc-activity__controls">${tl.filters.map(([k, l]) =>
-    `<button class="mc-activity__filter${k === tl.def ? " mc-activity__filter--active" : ""}" data-sk-activity-filter="${k}">${l}</button>`).join("")}</div>`;
-  const timelineBody = `<div class="mc-activity__feed" id="${tl.feedId}" data-activity-filter="${tl.def}"
-       hx-get="${tl.url}" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading...</span></div>`;
-
-  // Column shell: header is the reorder drag handle + a close ✕. `flush` = no body
-  // padding (the inner container pads itself).
-  const col = (name: string, title: string, controls: string, body: string, flush: boolean) => `
-      <div class="mc-outputs__col" data-dock-panel="${name}">
-        <div class="mc-outputs__col-header" draggable="true" data-dock-handle="${name}">
-          <span class="mc-outputs__col-title">${title}</span>
-          <button type="button" class="mc-outputs__col-close" data-dock-close="${name}" title="Close panel" aria-label="Close panel">&times;</button>
-        </div>
-        ${controls}
-        <div class="mc-outputs__col-body"${flush ? ' style="padding:0;"' : ""}>${body}</div>
-      </div>`;
-
-  // Details is heavy (agent tree) — defer its fetch until the panel is first
-  // opened via the `dockopen` trigger that Skipper.dock fires.
-  const detailsBody = `<div data-dock-lazy hx-get="/workspace/task/${eid}/details" hx-trigger="dockopen" hx-swap="innerHTML"><span class="sk-muted" style="padding:var(--sk-space-4);">Loading...</span></div>`;
-  const escalationsBody = `<div id="mc-task-escalations-${eid}" hx-get="/fragments/tasks/${eid}/escalations" hx-trigger="load" hx-swap="innerHTML"></div>${opts.escalationsExtra ?? ""}`;
-  const notesBody = `<div id="mc-notes-${eid}" style="padding:var(--sk-space-2);" hx-get="/fragments/tasks/${eid}/notes" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading notes...</span></div>`;
-  // Operator messages (experimental): agent-written updates for the human. Kept
-  // out of the dock entirely when the flag is off so the tab bar does not offer a
-  // panel whose fragment route 404s.
-  const showMessages = isExperimental();
-  const messagesBody = `<div id="mc-messages-${eid}" hx-get="/fragments/tasks/${eid}/messages" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted" style="padding:var(--sk-space-3);display:block;">Loading messages...</span></div>`;
-  const artifactsBody = `<div id="mc-artifacts-${eid}" style="padding:var(--sk-space-2);" hx-get="/fragments/tasks/${eid}/artifacts" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading artifacts...</span></div>
-        <div id="sk-artifact-detail-window" class="artifact-inset" hidden>
-          <div class="artifact-inset__bar">
-            <span class="artifact-inset__bar-title">Artifact</span>
-            <button type="button" class="artifact-inset__close" data-sk-artifact-close title="Close" aria-label="Close artifact">&times;</button>
-          </div>
-          <div class="artifact-inset__body"><div id="sk-artifact-detail" data-sk-artifact-detail></div></div>
-        </div>`;
-
-  return `
-    <div class="mc-tabs" role="tablist">
-      <button type="button" class="mc-tab" data-mc-tab="timeline" onclick="Skipper.dock.toggle('timeline')">${tl.title}</button>
-      <button type="button" class="mc-tab" data-mc-tab="details" onclick="Skipper.dock.toggle('details')">Details</button>
-      <button type="button" class="mc-tab" data-mc-tab="input" onclick="Skipper.dock.toggle('input')">Escalations<span data-mc-tab-badge class="mc-tab__badge" hidden></span></button>
-      <button type="button" class="mc-tab" data-mc-tab="notes" onclick="Skipper.dock.toggle('notes')">Notes</button>
-      <button type="button" class="mc-tab" data-mc-tab="artifacts" onclick="Skipper.dock.toggle('artifacts')">Artifacts</button>
-      ${showMessages ? `<button type="button" class="mc-tab" data-mc-tab="messages" onclick="Skipper.dock.toggle('messages')">Messages</button>` : ""}
-    </div>
-    <div class="mc-outputs" id="mc-outputs" data-dock-default="${escapeHtml(opts.defaultOpen ?? "timeline,notes")}">
-      ${col("timeline", tl.title, timelineControls, timelineBody, false)}
-      ${col("details", "Details", "", detailsBody, false)}
-      ${col("input", "Escalations", "", escalationsBody, false)}
-      ${col("notes", "Notes", "", notesBody, true)}
-      ${col("artifacts", "Artifacts", "", artifactsBody, true)}
-      ${showMessages ? col("messages", "Messages", "", messagesBody, true) : ""}
-    </div>`;
-}
-
+/** Real-time task view - v2 timeline + rail, with the audio/text composer. */
 export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummary, isSessionActive?: boolean): string {
   const eid = escapeHtml(task.id);
   const isRunning = task.status === "running";
@@ -553,8 +484,61 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
     <!-- Review gate / recovery banner — between the task bar and the tabs -->
     ${reviewGate ? `<div class="mc-attention-slot">${reviewGate}</div>` : ""}
 
-    <!-- Toggle bar + resizable panel dock (flush against the composer) -->
-    ${renderTaskDock(task.id, { variant: "realtime" })}
+    <!-- v2 timeline + rail. The timeline column is the merged realtime feed
+         (transcript / summary / agent output) - its container id stays
+         mc-rt-feed-<id> so ui-push.pushRealtimeUnifiedFeed lands unchanged. The
+         rail carries artifacts + notes + a details/agents link. -->
+    <div class="tc-work">
+      <div class="tc-timeline-col">
+        <div class="tc-timeline" id="mc-timeline-${eid}" data-tc-stick="on">
+          <div class="tc-timeline__inner" id="mc-rt-feed-${eid}"
+            hx-get="/workspace/task/${eid}/realtime-activity" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading...</span></div>
+        </div>
+      </div>
+
+      <div class="tc-divider" data-tc-divider title="Drag to resize"></div>
+
+      <aside class="tc-rail">
+        <input type="radio" class="tc-rt tc-rt-arts" name="tc-rail-tab" id="tc-rt-arts" checked>
+        <input type="radio" class="tc-rt tc-rt-notes" name="tc-rail-tab" id="tc-rt-notes">
+        <div class="tc-rail__tabs">
+          <label class="tc-tab--arts" for="tc-rt-arts">Artifacts</label>
+          <label class="tc-tab--notes" for="tc-rt-notes">Notes</label>
+        </div>
+        <div class="tc-rail__pane tc-rail__pane--arts">
+          <div id="mc-artifacts-${eid}" hx-get="/fragments/tasks/${eid}/artifacts" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading artifacts...</span></div>
+        </div>
+        <div class="tc-rail__pane tc-rail__pane--notes">
+          <div id="mc-notes-${eid}" hx-get="/fragments/tasks/${eid}/notes" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading notes...</span></div>
+        </div>
+        <div class="tc-rail__more">
+          <a onclick="Skipper.modal.open('tc-details-modal')"
+             hx-get="/workspace/task/${eid}/details" hx-target="#tc-details-modal-body" hx-swap="innerHTML">Details &amp; agents</a>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Fullscreen artifact overlay (shared ids so the artifact links/editor/close JS work unchanged) -->
+    <div id="sk-artifact-detail-window" class="tc-artifact-overlay" hidden>
+      <div class="artifact-inset__bar">
+        <span class="artifact-inset__bar-title">Artifact</span>
+        <button type="button" class="artifact-inset__close" data-sk-artifact-close title="Close" aria-label="Close artifact">&times;</button>
+      </div>
+      <div class="artifact-inset__body"><div id="sk-artifact-detail" data-sk-artifact-detail></div></div>
+    </div>
+
+    <!-- Details modal -->
+    <div id="tc-details-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
+      <div class="sk-modal__content" style="width:min(900px, 95vw); max-height:85vh; display:flex; flex-direction:column;">
+        <div class="sk-modal__header" style="padding:0.5rem 1rem; gap:0.75rem;">
+          <span style="font-weight:600;">Details</span>
+          <button class="sk-btn sk-btn--sm" data-sk-modal-close="tc-details-modal">Close</button>
+        </div>
+        <div class="sk-modal__body" id="tc-details-modal-body" style="flex:1; min-height:0; overflow:auto; padding:0.75rem 1rem;">
+          <span class="sk-muted">Loading...</span>
+        </div>
+      </div>
+    </div>
 
     <!-- Activity detail modal -->
     <div id="activity-detail-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
@@ -570,7 +554,7 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
       </div>
     </div>
 
-    <!-- Delegation prompt modal (Details tab prompt pills open here) -->
+    <!-- Delegation prompt modal -->
     <div id="sk-delegation-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
       <div class="sk-modal__content" style="width:min(900px, 95vw); max-height:85vh; display:flex; flex-direction:column;">
         <div class="sk-modal__header" style="padding:0.5rem 1rem; gap:0.75rem;">

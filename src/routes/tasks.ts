@@ -243,7 +243,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       if (req.headers.get("HX-Request")) {
         const redirectTo = shouldAutoApprove
           ? (created.task_type === "real_time" ? `/?task=${created.id}` : "/")
-          : (created.task_type === "real_time" ? `/realtime/${created.id}` : `/tasks/${created.id}`);
+          : (created.task_type === "real_time" ? `/?task=${created.id}` : `/tasks/${created.id}`);
         return hxRedirect(redirectTo);
       }
       return new Response(null, { status: 302, headers: { Location: "/" } });

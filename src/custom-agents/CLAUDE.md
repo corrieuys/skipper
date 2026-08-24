@@ -20,9 +20,13 @@ daemon process** instead of spawning a vendor CLI.
 
 ## Why it plugs in without touching the orchestrator
 
-A definition registers an `agent_types` row named `custom:<id>`, so a custom agent
-is selectable wherever a provider is (`routes/pages.ts:teamAgentTypeChoices`) and
-`getAgentTypeDefinition` resolves it like any other type. Those rows are written
+A definition registers an `agent_types` row named `custom:<id>`, so
+`getAgentTypeDefinition` resolves it like any other type. On a team a custom agent
+is NOT offered in the provider dropdown (that is raw CLIs only now); it is added
+from the "+ From library" control as a `custom:<id>` reference member (name + role
+only, the record owns the rest). Deleting a definition that a team still
+references is blocked (409, `teams/local-teams.ts:teamsReferencingAgentType`).
+Those rows are written
 into the **in-memory** config DB only: `config/store.ts` seeds the shared tables
 from `config/*.json` and never writes them back, so no definition — and no API
 key — can reach a committed snapshot. Call `registerCustomAgentTypes` after any
@@ -34,9 +38,39 @@ spawn site — task-runner, delegation, phase, consensus, idle-poke — already 
 the `initialPrompt` branch and never calls `sendInput`. None of them know custom
 agents exist.
 
+Because they are non-streaming, `manager-daemon.ts:hasCompletedTurnOutput` fails a
+clean exit that left no `result`/`turn.completed`/`step_finish` frame in
+`terminal_outputs`. A CLI emits one every turn; the in-process runner writes plain
+text, so `runner.ts` emits a synthetic `step_finish` frame on a clean finish
+(skipped when truncated at the step cap). Without it, a turn that ends WITHOUT
+calling `complete_task` (e.g. a small model that just answers in prose) is wrongly
+failed instead of parked idle for a poke.
+
 `isAllowedProvider` (`config/model-settings.ts`) is deliberately **not** widened:
 it gates the config page's Skipper/Greg/Dictation pickers, and a custom agent is
-not a root Skipper. Round one runs them as team members only.
+not a root Skipper. That gate does not touch the spawn path, so it does not block
+a custom agent from being a task **entrypoint**.
+
+## Running a custom agent SOLO
+
+A custom agent can run a whole task by itself, not only as a team member. Each is
+projected as a `ca:<id>` **team-of-one** (`store.ts:flattenCustomAgentsAsSoloTeams`
+at boot, `refreshCustomAgentSolo` on mutation) via the shared solo helpers
+(`src/agents/solo.ts`): a shared `agents` row `ca:<id>` (type `custom:<id>`) and a
+`teams` row whose entrypoint is that agent, no Skipper, no phases. A task assigned
+`team_id = ca:<id>` then runs the custom agent as its sole executor - the same
+"solo" run context single agents use (`isSoloTeamId`). Written to the shared
+**tables only**, never the in-memory config Maps: a `custom:<id>` type is DB-local,
+and seeding it into the Maps (which reseed every attached DB) would FK-break
+sibling databases.
+
+In a solo run the prompt-builder adds the solo framing as the **user** message
+(no delegation, no phases, `complete_task`) on top of the agent's own system
+prompt (`buildSystemPrompt`), and the runner auto-includes the solo essential
+daemon tools (`complete_task`, `escalate`, notes, artifacts) so the sole executor
+can close its own task even if its definition did not tick them. Team-member use
+is unchanged: an inline member is namespaced `<teamId>:<authorId>`, not `ca:`, so
+it is not solo. See [../single-agents/CLAUDE.md](../single-agents/CLAUDE.md).
 
 ## The process that is not a process
 

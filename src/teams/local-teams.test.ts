@@ -9,6 +9,7 @@ import {
   listLocalTeams,
   getLocalTeam,
   namespacedAgentId,
+  isRealtimeTeam,
   type LocalTeamInput,
 } from "./local-teams";
 
@@ -173,5 +174,109 @@ describe("local teams persistence + flatten", () => {
     expect(() =>
       createLocalTeam(db, { ...baseInput(), agents: [{ id: "skipper", name: "S", type: pickAgentType(), model: "default" }] }),
     ).toThrow();
+  });
+});
+
+describe("real-time team mode", () => {
+  const realtimeInput = (): LocalTeamInput => ({
+    id: "rt",
+    name: "Voice Room",
+    phases: [], // realtime teams carry no phases
+    agents: [],
+    config: {
+      mode: "realtime",
+      realtime: { summaryEnabled: true, summaryProvider: "claude-code", summaryModel: "claude-sonnet-4-6" },
+    },
+  });
+
+  it("allows creating a realtime team with no phases", () => {
+    const team = createLocalTeam(db, realtimeInput());
+    expect(team.config.mode).toBe("realtime");
+    expect(team.phases.length).toBe(0);
+    expect(isRealtimeTeam(team)).toBe(true);
+  });
+
+  it("still requires >=1 phase for a regular team", () => {
+    expect(() => createLocalTeam(db, { ...realtimeInput(), config: { mode: "regular" } })).toThrow();
+    // absent mode defaults to regular -> phase required
+    expect(() => createLocalTeam(db, { id: "r2", name: "R2", phases: [], agents: [] })).toThrow();
+  });
+
+  it("round-trips mode + summary config through the JSON blob", () => {
+    createLocalTeam(db, realtimeInput());
+    const rt = getLocalTeam(db, "rt")!.config.realtime!;
+    expect(rt.summaryEnabled).toBe(true);
+    expect(rt.summaryProvider).toBe("claude-code");
+    expect(rt.summaryModel).toBe("claude-sonnet-4-6");
+  });
+
+  it("can toggle a regular team into realtime mode on update", () => {
+    createLocalTeam(db, baseInput());
+    expect(isRealtimeTeam(getLocalTeam(db, "alpha"))).toBe(false);
+    // switching to realtime no longer needs phases
+    const updated = updateLocalTeam(db, "alpha", { ...baseInput(), phases: [], config: { mode: "realtime" } });
+    expect(isRealtimeTeam(updated)).toBe(true);
+  });
+});
+
+describe("headless CLI agent references (live members)", () => {
+  it("resolves a single:<id> member to the record's provider/model/prompt at flatten", () => {
+    const { createSingleAgent, singleAgentRefType } = require("../single-agents/store");
+    const sa = createSingleAgent(db, {
+      name: "Researcher",
+      agent_type: "claude-code",
+      model: "claude-opus-5",
+      instruction: "RESEARCH PROMPT",
+      capabilities: ["web"],
+      config: { customTools: [] },
+    });
+    createLocalTeam(db, {
+      id: "reft",
+      name: "Ref Team",
+      phases: [{ name: "work", prompt: "do" }],
+      agents: [{ id: "r1", name: "Researcher", type: singleAgentRefType(sa.id) }],
+    });
+    const shared = getAgent(namespacedAgentId("reft", "r1"));
+    expect(shared?.type).toBe("claude-code");
+    expect(shared?.model).toBe("claude-opus-5");
+    expect(shared?.instruction).toBe("RESEARCH PROMPT");
+    expect(shared?.capabilities).toEqual(["web"]);
+  });
+
+  it("propagates a record edit to referencing teams (live, not a snapshot)", () => {
+    const { createSingleAgent, updateSingleAgent, singleAgentRefType } = require("../single-agents/store");
+    const { reflattenTeamsReferencingAgentType } = require("./local-teams");
+    const sa = createSingleAgent(db, { name: "R", agent_type: "claude-code", model: "claude-opus-5", instruction: "OLD" });
+    createLocalTeam(db, {
+      id: "reft",
+      name: "Ref Team",
+      phases: [{ name: "work", prompt: "do" }],
+      agents: [{ id: "r1", name: "R", type: singleAgentRefType(sa.id) }],
+    });
+    updateSingleAgent(db, sa.id, { name: "R", agent_type: "claude-code", model: "claude-sonnet-5", instruction: "NEW" });
+    reflattenTeamsReferencingAgentType(db, singleAgentRefType(sa.id));
+    const shared = getAgent(namespacedAgentId("reft", "r1"));
+    expect(shared?.model).toBe("claude-sonnet-5");
+    expect(shared?.instruction).toBe("NEW");
+  });
+
+  it("teamsReferencingAgentType lists teams using the ref, and rejects a save with a dangling ref", () => {
+    const { createSingleAgent, singleAgentRefType } = require("../single-agents/store");
+    const { teamsReferencingAgentType } = require("./local-teams");
+    const sa = createSingleAgent(db, { name: "R", agent_type: "claude-code", model: "default", instruction: "" });
+    createLocalTeam(db, {
+      id: "reft",
+      name: "Ref Team",
+      phases: [{ name: "work", prompt: "do" }],
+      agents: [{ id: "r1", name: "R", type: singleAgentRefType(sa.id) }],
+    });
+    expect(teamsReferencingAgentType(db, singleAgentRefType(sa.id))).toEqual(["Ref Team"]);
+    // a ref to a non-existent record is rejected on save
+    expect(() => createLocalTeam(db, {
+      id: "bad",
+      name: "Bad",
+      phases: [{ name: "work", prompt: "do" }],
+      agents: [{ id: "x", name: "X", type: "single:nope" }],
+    })).toThrow();
   });
 });

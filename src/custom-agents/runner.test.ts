@@ -258,6 +258,35 @@ describe("output and signals", () => {
       .map((o) => o.data).join("");
     expect(joined).toContain("Here is what I found.");
   });
+
+  it("emits a turn-end frame on a clean finish (so the daemon's completed-turn gate passes)", async () => {
+    // A turn that just answers in prose and stops - no complete_task - must still
+    // leave a result/step_finish frame, else manager-daemon fails the task with
+    // "exited without completed turn output".
+    turns = [assistant("The word was Executor.")];
+    const { runtimeId } = await runAgent(defineAgent(), "what was the word?");
+    const row = db.prepare(
+      `SELECT json_extract(data, '$.type') AS ty FROM terminal_outputs
+        WHERE agent_id = ? AND json_valid(data) AND json_extract(data, '$.type') IN ('result','turn.completed','step_finish')`,
+    ).get(runtimeId) as { ty: string } | null;
+    expect(row?.ty).toBe("step_finish");
+  });
+
+  it("does NOT emit a turn-end frame when truncated at the step limit", async () => {
+    // Truncation is a failure (exit 1); it must not look like a completed turn.
+    turns = [
+      assistant(null, [{ name: "read_file", args: { path: "a.txt" } }]),
+      assistant(null, [{ name: "read_file", args: { path: "a.txt" } }]),
+    ];
+    writeFileSync(join(workingDir, "a.txt"), "x");
+    const { exit, runtimeId } = await runAgent(defineAgent({ maxSteps: 2 }), "loop");
+    expect(exit.code).toBe(1);
+    const row = db.prepare(
+      `SELECT 1 FROM terminal_outputs
+        WHERE agent_id = ? AND json_valid(data) AND json_extract(data, '$.type') IN ('result','turn.completed','step_finish')`,
+    ).get(runtimeId);
+    expect(row).toBeNull();
+  });
 });
 
 describe("failure and cancellation", () => {

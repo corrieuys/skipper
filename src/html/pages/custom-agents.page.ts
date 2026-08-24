@@ -2,11 +2,14 @@ import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
 import type { CustomAgent } from "../../custom-agents/store";
+import type { SingleAgent } from "../../single-agents/store";
 import type { McpServerRecord } from "../../custom-agents/servers";
 import { PARAM_TYPES, type CustomTool, type ToolParameter } from "../../custom-tools/store";
 
 export interface CustomAgentsPageViewModel {
   agents: CustomAgent[];
+  /** Single agents (CLI provider + model + prompt), shown alongside custom agents. */
+  singleAgents: SingleAgent[];
   /** MCP servers custom agents can draw tools from. */
   mcpServers: McpServerRecord[];
   importableServers: ImportableServer[];
@@ -15,6 +18,28 @@ export interface CustomAgentsPageViewModel {
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
+}
+
+/** A single-agent card for the combined library. Kind badge tells it from a custom agent. */
+function singleAgentCard(agent: SingleAgent): string {
+  const slack = agent.config.slackEnabled ? `<span class="tm-chip tm-chip--slack">Slack</span>` : "";
+  const slash = agent.config.slashCommand ? `<span class="tm-chip">${escapeHtml(agent.config.slashCommand)}</span>` : "";
+  return `<div class="tm-card">
+    <a class="tm-card__link" href="/single-agents/${escapeHtml(agent.id)}">
+      <div class="tm-card__name">${escapeHtml(agent.name)} <span class="tm-chip ca-kind">Headless CLI</span></div>
+      <div class="tm-card__meta">
+        <span>${escapeHtml(agent.agent_type)}</span>
+        <span>&middot;</span>
+        <span>${escapeHtml(agent.model || "default")}</span>
+      </div>
+    </a>
+    ${slack || slash ? `<div class="tm-phase__chips">${slack}${slash}</div>` : ""}
+    <div class="tm-card__actions">
+      <a class="sk-btn sk-btn--sm" href="/single-agents/${escapeHtml(agent.id)}">Open</a>
+      <button type="button" class="sk-btn sk-btn--sm sk-btn--danger" data-sa-delete="${escapeHtml(agent.id)}"
+        data-sa-name="${escapeHtml(agent.name)}">Delete</button>
+    </div>
+  </div>`;
 }
 
 /** Mirrors the teams index: same card grid, same reading order. */
@@ -34,7 +59,7 @@ function agentCard(agent: CustomAgent): string {
     : `<div class="tm-mini"><span class="sk-text-xs sk-muted">No tools granted</span></div>`;
   return `<div class="tm-card">
     <a class="tm-card__link" href="/custom-agents/${escapeHtml(agent.id)}">
-      <div class="tm-card__name">${escapeHtml(agent.name)}</div>
+      <div class="tm-card__name">${escapeHtml(agent.name)} <span class="tm-chip ca-kind">Custom</span></div>
       ${agent.description ? `<p class="ca-card__desc">${escapeHtml(agent.description)}</p>` : ""}
       <div class="tm-card__meta">
         <span>${escapeHtml(agent.modelId)}</span>
@@ -54,27 +79,22 @@ function agentCard(agent: CustomAgent): string {
 
 /** Index of custom agents. Empty state does the explaining, since this is new. */
 export function customAgentsPage(vm: CustomAgentsPageViewModel): string {
-  const body = vm.agents.length > 0
-    ? `<div class="tm-grid">
-         ${vm.agents.map(agentCard).join("")}
-         <a class="tm-card tm-card--new" href="/custom-agents/new">+ New agent</a>
-       </div>`
-    : `<div class="tm-empty">
-         <p>No custom agents yet.</p>
-         <p class="sk-text-xs" style="max-width:34rem;margin:0 auto var(--sk-space-4);">
-           A custom agent runs inside Skipper instead of spawning a CLI. You give it an
-           endpoint, a system prompt, and exactly the tools it is allowed to use. Once saved
-           it can be picked as the provider for any agent on a team.
-         </p>
-         <a class="sk-btn sk-btn--primary" href="/custom-agents/new">Create your first agent</a>
-       </div>`;
+  const singleGrid = `<div class="tm-grid">
+    ${vm.singleAgents.map(singleAgentCard).join("")}
+    <a class="tm-card tm-card--new" href="/single-agents/new">+ New headless CLI agent</a>
+  </div>`;
+  const customGrid = `<div class="tm-grid">
+    ${vm.agents.map(agentCard).join("")}
+    <a class="tm-card tm-card--new" href="/custom-agents/new">+ New custom agent</a>
+  </div>`;
 
   const content = `
-    ${navbar({ currentPath: "/custom-agents", daemonState: vm.daemonState, daemonUptime: vm.daemonUptime, escalationCount: vm.escalationCount })}
+    ${navbar({ currentPath: "/agent-library", daemonState: vm.daemonState, daemonUptime: vm.daemonUptime, escalationCount: vm.escalationCount })}
     <style>
       .ca-shell { max-width: 1100px; }
       .ca-card__desc { margin:0; font-size:var(--sk-text-xs); color:var(--sk-text-muted); line-height:1.5; }
       .ca-section-head { margin:var(--sk-space-8) 0 var(--sk-space-3); font-size:var(--sk-text-sm); font-weight:600; color:var(--sk-text-muted); text-transform:uppercase; letter-spacing:0.06em; }
+      .ca-kind { font-size:0.6rem; opacity:0.7; vertical-align:middle; }
 
       /* Panels: same surface language as the team cards, so they read as
          objects on the wallpaper instead of faint boxes. */
@@ -108,16 +128,22 @@ export function customAgentsPage(vm: CustomAgentsPageViewModel): string {
     <div class="tm-shell ca-shell">
       <div class="tm-topbar">
         <div class="tm-topbar__heading">
-          <h1 class="tm-topbar__title">Custom Agents</h1>
-          <div class="tm-topbar__sub">In-process agents with their own endpoint, prompt and tools. Pick one as the provider for any agent on a team.</div>
+          <h1 class="tm-topbar__title">Agents</h1>
+          <div class="tm-topbar__sub">Reusable agents you can assign to run a task alone, or add to a team. A headless CLI agent spawns a CLI provider; a custom agent runs in-process against its own endpoint.</div>
         </div>
         <div class="tm-topbar__actions">
-          <a class="sk-btn sk-btn--sm sk-btn--primary" href="/custom-agents/new">New agent</a>
+          <a class="sk-btn sk-btn--sm" href="/single-agents/new">New headless CLI agent</a>
+          <a class="sk-btn sk-btn--sm sk-btn--primary" href="/custom-agents/new">New custom agent</a>
         </div>
       </div>
-      ${body}
 
-      <!-- What an agent can be given, defined once here and ticked per agent. -->
+      <div class="ca-section-head">Headless CLI agents</div>
+      ${singleGrid}
+
+      <div class="ca-section-head">Custom agents</div>
+      ${customGrid}
+
+      <!-- What a custom agent can be given, defined once here and ticked per agent. -->
       <div class="ca-section-head">Tool sources</div>
       ${mcpServersPanel(vm.mcpServers, vm.importableServers)}
       ${customToolsPanel(vm.customTools)}
@@ -134,10 +160,19 @@ export function customAgentsPage(vm: CustomAgentsPageViewModel): string {
           if (res.ok) window.location.reload();
         });
       });
+      document.querySelectorAll('[data-sa-delete]').forEach(function(btn){
+        btn.addEventListener('click', async function(){
+          var id = btn.getAttribute('data-sa-delete');
+          var name = btn.getAttribute('data-sa-name');
+          if (!window.confirm('Delete headless CLI agent "' + name + '"? Tasks assigned to it will need a new assignee.')) return;
+          var res = await fetch('/api/single-agents/' + encodeURIComponent(id), { method: 'DELETE' });
+          if (res.ok) window.location.reload();
+        });
+      });
     })();
     </script>`;
 
-  return v2layout("Custom Agents", content, "/custom-agents");
+  return v2layout("Agents", content, "/agent-library");
 }
 
 function hostOf(url: string): string {

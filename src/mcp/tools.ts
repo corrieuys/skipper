@@ -17,6 +17,7 @@ import { registerCustomTools } from "../custom-tools/registration";
 import { isExperimental } from "../config/feature-flags";
 import { isSlackConfigured, getSlackDefaultChannel } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
+import { isSingleAgentId, isSlackEnabledForSingleAgent } from "../single-agents/store";
 import { SlackClient } from "../slack/client";
 import { ESCALATION_TEXT_LIMIT, SLACK_ESCALATION_SOFT_LIMIT } from "../slack/blocks";
 import { stampTaskSlackOrigin, readTaskSlackOrigin } from "../slack/slash-command";
@@ -46,6 +47,17 @@ export interface RegisterDaemonToolsOptions {
    */
   isDelegated?: boolean;
   /**
+   * When true, this session is a SOLO run - a single agent OR a custom agent
+   * assigned to run a whole task alone. It gets the notes/artifacts/escalation/
+   * global-store surface plus `complete_task` (it owns its task end to end), but
+   * NOT delegation, phase-lifecycle (`complete_phase`/`regress_phase`), consensus,
+   * or the recurring-task pair. Composes with `isDelegated` (a solo agent runs as
+   * a root, so `isDelegated` is false).
+   *
+   * Defaults to false.
+   */
+  isSolo?: boolean;
+  /**
    * Instance whose custom-tool grants this session should resolve. Normally
    * taken from the identity; passed explicitly by tests that register without
    * one.
@@ -55,6 +67,17 @@ export interface RegisterDaemonToolsOptions {
 
 function errorResult(err: unknown) {
   return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] };
+}
+
+/**
+ * Whether a task's assignment (team or single agent) has opted into Slack. A
+ * single-agent-backed task carries a projected `sa:<id>` team id, whose opt-in
+ * lives on the single_agents record rather than local_teams.
+ */
+function slackEnabledForTaskTeam(db: Database, teamId: string): boolean {
+  return isSingleAgentId(teamId)
+    ? isSlackEnabledForSingleAgent(db, teamId)
+    : isSlackEnabledForTeam(db, teamId);
 }
 
 /**
@@ -73,7 +96,7 @@ function slackLengthWarning(db: Database, taskId: string, text: string): { slack
   try {
     if (!isExperimental() || !isSlackConfigured(db)) return {};
     const teamId = (db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(taskId) as { team_id: string | null } | null)?.team_id;
-    if (!teamId || !isSlackEnabledForTeam(db, teamId)) return {};
+    if (!teamId || !slackEnabledForTaskTeam(db, teamId)) return {};
     if (!readTaskSlackOrigin(db, taskId)) return {};
     return {
       slack_warning: `This task reports to Slack, where this was posted as a single message and truncated at ${ESCALATION_TEXT_LIMIT} characters, so the end of your text was cut off for the operator. Keep escalation questions under ~${SLACK_ESCALATION_SOFT_LIMIT} characters: ask up front and put supporting detail in an artifact you reference.`,
@@ -175,47 +198,45 @@ export function registerDaemonTools(
     },
   );
 
-  // ── Operator messages (experimental) ─────────────────────
+  // ── Operator messages ────────────────────────────────────
   // Registered for every agent, root and delegated alike: any of them can notice
   // something the human should hear about. Nothing reads these back into a
   // prompt, so there is no matching list/get tool.
-  if (isExperimental()) {
-    server.tool(
-      "post_message",
-      "Tell the human operator something noteworthy about this task, in plain language",
-      {
-        content: z
-          .string()
-          .describe(
-            `What the operator should know, in one or two plain sentences (max ${MESSAGE_MAX_LENGTH} chars). No jargon, file paths, stack traces or tool output.`,
-          ),
-        format: z
-          .enum(["text", "markdown", "html"])
-          .optional()
-          .describe(
-            "Body format. Strongly prefer 'text' — a short, plain sentence is what this register is for. Use 'markdown' only when a little structure genuinely helps (a short bullet list, emphasis) and 'html' only for the rare update that needs real layout. Defaults to 'text'.",
-          ),
-      },
-      async ({ content, format }) => {
-        const identity = getInternalIdentity();
-        if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
-        if (!identity.taskId) return { content: [{ type: "text" as const, text: "Error: no active task" }] };
+  server.tool(
+    "post_message",
+    "Tell the human operator something noteworthy about this task, in plain language",
+    {
+      content: z
+        .string()
+        .describe(
+          `What the operator should know, in one or two plain sentences (max ${MESSAGE_MAX_LENGTH} chars). No jargon, file paths, stack traces or tool output.`,
+        ),
+      format: z
+        .enum(["text", "markdown", "html"])
+        .optional()
+        .describe(
+          "Body format. Strongly prefer 'text' — a short, plain sentence is what this register is for. Use 'markdown' only when a little structure genuinely helps (a short bullet list, emphasis) and 'html' only for the rare update that needs real layout. Defaults to 'text'.",
+        ),
+    },
+    async ({ content, format }) => {
+      const identity = getInternalIdentity();
+      if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
+      if (!identity.taskId) return { content: [{ type: "text" as const, text: "Error: no active task" }] };
 
-        try {
-          const result = messageManager.postMessage({
-            taskId: identity.taskId,
-            agentId: identity.templateAgentId,
-            agentInstanceId: identity.runtimeId,
-            content,
-            format,
-          });
-          return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
-        } catch (err) {
-          return errorResult(err);
-        }
-      },
-    );
-  }
+      try {
+        const result = messageManager.postMessage({
+          taskId: identity.taskId,
+          agentId: identity.templateAgentId,
+          agentInstanceId: identity.runtimeId,
+          content,
+          format,
+        });
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
 
   // ── Artifacts ────────────────────────────────────────────
   server.tool(
@@ -379,7 +400,7 @@ export function registerDaemonTools(
   const slackTeamId = slackIdentity?.taskId
     ? (db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(slackIdentity.taskId) as { team_id: string | null } | null)?.team_id ?? null
     : null;
-  if (!options?.isDelegated && isExperimental() && isSlackConfigured(db) && slackTeamId && isSlackEnabledForTeam(db, slackTeamId)) {
+  if (!options?.isDelegated && isExperimental() && isSlackConfigured(db) && slackTeamId && slackEnabledForTaskTeam(db, slackTeamId)) {
     const slack = new SlackClient(db);
 
     // Result of a send, plus — when this send is what gave the task its Slack
@@ -500,7 +521,8 @@ export function registerDaemonTools(
     );
   }
 
-  // ── Delegation ───────────────────────────────────────────
+  // ── Delegation (omitted for single agents - they have no team) ──
+  if (!options?.isSolo) {
   server.tool(
     "delegate",
     "Delegate work to another agent on your team. Spawns a fresh child instance with no prior conversation history.",
@@ -709,6 +731,7 @@ export function registerDaemonTools(
       }) }] };
     },
   );
+  } // end delegation surface (single-agent gate)
 
   // ── Escalation ───────────────────────────────────────────
   server.tool(
@@ -760,8 +783,10 @@ export function registerDaemonTools(
     },
   );
 
-  // ── Phase lifecycle (root-only — omitted from delegated child sessions) ──
-  if (!options?.isDelegated) {
+  // ── Phase lifecycle ──
+  // complete_phase / regress_phase are root-Skipper only: omitted from delegated
+  // children AND from single agents (a single agent has no phases).
+  if (!options?.isDelegated && !options?.isSolo) {
     server.tool(
       "complete_phase",
       "Signal that the current phase is complete (root Skipper only)",
@@ -807,10 +832,14 @@ export function registerDaemonTools(
         return { content: [{ type: "text" as const, text: JSON.stringify({ status: "regressed", target_phase: target }) }] };
       },
     );
+  }
 
+  // complete_task: root Skipper AND single agents (a single agent owns its whole
+  // task, so it must close it), but NOT delegated children.
+  if (!options?.isDelegated) {
     server.tool(
       "complete_task",
-      "Signal that the entire task is complete (root Skipper only)",
+      "Signal that the entire task is complete (root Skipper or single agent)",
       { summary: z.string().describe("Summary of what was accomplished") },
       async ({ summary }) => {
         const identity = getInternalIdentity();
@@ -831,7 +860,8 @@ export function registerDaemonTools(
     );
   }
 
-  // ── Consensus ────────────────────────────────────────────
+  // ── Consensus (multi-agent only - omitted for single agents) ──
+  if (!options?.isSolo) {
   server.tool(
     "consensus_pick",
     "Pick the best agent output in a consensus review",
@@ -871,12 +901,13 @@ export function registerDaemonTools(
       }
     },
   );
+  } // end consensus surface (single-agent gate)
 
   // Audience-tagged task-management tools. Most entries are external-only; the
   // recurring-task pair (list_recurring_tasks / run_recurring_task) is "both" +
   // root-only, so the root Skipper can fire off another recurring run. Delegated
-  // children are skipped via the isDelegated flag.
-  registerTaskTools(server, deps, getIdentity, "internal", !!options?.isDelegated);
+  // children AND single agents are skipped (a single agent runs one task alone).
+  registerTaskTools(server, deps, getIdentity, "internal", !!options?.isDelegated || !!options?.isSolo);
 
   // Operator-defined tools (src/custom-tools), resolved per session from what the
   // custom agent definition and the team agent each grant. Registered last so a

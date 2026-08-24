@@ -9,8 +9,10 @@ import {
   getCustomAgent,
   listCustomAgents,
   updateCustomAgent,
+  customAgentTypeName,
   type CustomAgentInput,
 } from "../custom-agents/store";
+import { teamsReferencingAgentType } from "../teams/local-teams";
 import {
   createMcpServer,
   deleteMcpServer,
@@ -70,7 +72,17 @@ export function registerCustomAgentRoutes(): void {
   });
 
   addRoute("DELETE", "/api/custom-agents/:id", (_req, params) => {
-    return deleteCustomAgent(db, params.id!) ? Response.json({ ok: true }) : notFound();
+    const id = params.id!;
+    // Block the delete while a team references this agent as a member, so the
+    // team never carries a dangling reference. Surface the teams.
+    const referencing = teamsReferencingAgentType(db, customAgentTypeName(id));
+    if (referencing.length > 0) {
+      return Response.json(
+        { error: `In use by ${referencing.length} team(s): ${referencing.join(", ")}. Remove it from them first.` },
+        { status: 409 },
+      );
+    }
+    return deleteCustomAgent(db, id) ? Response.json({ ok: true }) : notFound();
   });
 
   // ── MCP server registry ─────────────────────────────────────────────

@@ -809,6 +809,27 @@ describe("iterateTask", () => {
     expect(worker.session_id).toBe("child-sess");
   });
 
+  it("keeps a single agent's root session on iteration (it resumes, not re-plans)", () => {
+    // A single-agent task carries the projected `sa:<id>` team id. The single
+    // agent is the sole executor (no phases, no delegation), so it must resume
+    // its own conversation on iterate - its session_id must survive.
+    db.prepare("INSERT OR IGNORE INTO agents (id, name, type, config, capabilities) VALUES ('sa:researcher','Researcher','claude-code','{}','[]')").run();
+    db.prepare("INSERT INTO teams (id, name, entrypoint_agent_id) VALUES ('sa:researcher','Researcher','sa:researcher')").run();
+    const task = scheduler.createTask({ title: "Solo Task", teamId: "sa:researcher" });
+    scheduler.approveTask(task.id);
+    scheduler.startTask(task.id);
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, session_id, attempt)
+       VALUES ('sa-inst', ?, 'sa:researcher', NULL, 'sa-inst', 'completed', 'sa-sess', 1)`,
+    ).run(task.id);
+
+    scheduler.completeTask(task.id, { output: "v1" });
+    scheduler.iterateTask(task.id, "dig deeper");
+
+    const root = db.prepare("SELECT session_id FROM agent_instances WHERE id = 'sa-inst'").get() as { session_id: string | null };
+    expect(root.session_id).toBe("sa-sess"); // preserved -> task-runner resumes the conversation
+  });
+
   it("rejects iteration on non-completed tasks", () => {
     const task = scheduler.createTask({ title: "Draft Task" });
     expect(() => scheduler.iterateTask(task.id, "input")).toThrow("Can only iterate completed tasks, current status: draft");

@@ -3,6 +3,7 @@ import { parseJsonOr } from "../db/json";
 import { getDb } from "../db/connection";
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
+import { isSoloTeamId } from "../agents/solo";
 
 export type TaskType = "standard" | "real_time";
 
@@ -525,14 +526,23 @@ export class TaskScheduler {
       // done, we're in Cleanup" context and confuses the new iteration's phase
       // boundaries (Skipper would make code changes itself or delegate to Coder
       // during Planning). Delegated children (parent_instance_id IS NOT NULL)
-      // keep their session_id so they stay resumable — the new iteration's
+      // keep their session_id so they stay resumable - the new iteration's
       // Skipper can choose delegate_resume (continue a worker's conversation)
       // vs delegate (fresh child) per the PRIOR DELEGATIONS menu.
       // Notes, artifacts, and delegation rows stay intact for context.
-      this.db.prepare(
-        `UPDATE agent_instances SET session_id = NULL
-         WHERE task_id = ? AND parent_instance_id IS NULL AND session_id IS NOT NULL`,
-      ).run(id);
+      //
+      // EXCEPT a solo run (single agent OR custom agent run solo): it is the
+      // sole executor (no phases, no delegation), so it MUST resume its own
+      // conversation on iterate and continue with the new instruction. Clearing
+      // its session would drop all its context - which is exactly what we do NOT
+      // want. task-runner resumes the root when session_id survives, so we simply
+      // skip the detach here.
+      if (!isSoloTeamId(task.team_id)) {
+        this.db.prepare(
+          `UPDATE agent_instances SET session_id = NULL
+           WHERE task_id = ? AND parent_instance_id IS NULL AND session_id IS NOT NULL`,
+        ).run(id);
+      }
     })();
 
     const updated = this.getTask(id)!;

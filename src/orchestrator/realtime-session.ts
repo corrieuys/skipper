@@ -9,6 +9,7 @@ import { getRealtimeConfig } from "../realtime/config";
 import { createTranscriptionAdapter, stripFillerMarkers } from "../realtime/transcription";
 import { getSkipperConfig, getEntrypointAgentId } from "../agents/skipper";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
+import { getLocalTeam } from "../teams/local-teams";
 import { deduplicateOverlap } from "../realtime/dedup";
 import { unlinkSync, readdirSync } from "fs";
 
@@ -642,6 +643,25 @@ export class RealtimeSessionManager {
     }
   }
 
+  /**
+   * Per-team transcription-summary config, or null when the task's team is not an
+   * operator-defined real-time team (the built-in Real Time team lives in the
+   * shared config layer, not local_teams, so it returns null and keeps the legacy
+   * behaviour: summarizer agent's own model, always on).
+   */
+  private getRealtimeSummaryConfig(taskId: string): { enabled: boolean; provider?: string; model?: string } | null {
+    const row = this.db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(taskId) as { team_id: string | null } | null;
+    if (!row?.team_id) return null;
+    const team = getLocalTeam(this.db, row.team_id);
+    if (!team || team.config?.mode !== "realtime") return null;
+    const rt = team.config.realtime;
+    return {
+      enabled: rt?.summaryEnabled !== false, // absent = enabled
+      provider: rt?.summaryProvider,
+      model: rt?.summaryModel,
+    };
+  }
+
   private getRealtimeDelegationAgentIds(taskId: string): string[] {
     const ids = new Set<string>();
     const cfg = this.getRealtimeTaskConfig(taskId);
@@ -699,6 +719,14 @@ export class RealtimeSessionManager {
 
     // If no agent manager, fall back to raw transcript timeline entries
     if (!this.agentManager) {
+      this.createRawTranscriptTimeline(taskId, ready);
+      return;
+    }
+
+    // Per-team real-time config: an operator may disable the summary entirely, in
+    // which case feed the raw transcript instead of spawning a summarizer.
+    const summaryCfg = this.getRealtimeSummaryConfig(taskId);
+    if (summaryCfg && summaryCfg.enabled === false) {
       this.createRawTranscriptTimeline(taskId, ready);
       return;
     }
@@ -774,12 +802,25 @@ export class RealtimeSessionManager {
     console.log(`[realtime-session] spawnSummarizer: spawning ${summarizer.id} for task=${taskId} segments=${firstSeq}-${lastSeq} (${segmentIds.length} segments)`);
 
     this.agentManager.clearSessionId(summarizer.id);
-    const summarizerType = this.agentManager.getEffectiveRootTypeDef(summarizer.id) ?? getAgentTypeDefinition(summarizer.type, this.db);
+    // Per-team summary provider/model override (real-time teams). Absent → the
+    // summarizer agent's own committed type/model (legacy default, e.g. the
+    // built-in realtime-summarizer on claude-sonnet-4-6).
+    const overrideProvider = summaryCfg?.provider?.trim() || undefined;
+    const overrideModel = summaryCfg?.model?.trim() || undefined;
+    const summarizerType = overrideProvider
+      ? getAgentTypeDefinition(overrideProvider, this.db)
+      : (this.agentManager.getEffectiveRootTypeDef(summarizer.id) ?? getAgentTypeDefinition(summarizer.type, this.db));
     const summarizerUsesInlinePrompt = summarizerType ? agentTypeUsesInlinePrompt(summarizerType) : false;
     const summarizerTask = this.db.prepare("SELECT working_directory FROM tasks WHERE id = ?").get(taskId) as { working_directory: string } | null;
     const summarizerWorkingDir = summarizerTask?.working_directory || process.cwd();
     this.agentManager
-      .spawnAgent(summarizer.id, { workingDir: summarizerWorkingDir, taskId, initialPrompt: summarizerUsesInlinePrompt ? prompt : undefined })
+      .spawnAgent(summarizer.id, {
+        workingDir: summarizerWorkingDir,
+        taskId,
+        initialPrompt: summarizerUsesInlinePrompt ? prompt : undefined,
+        ...(overrideProvider ? { agentTypeOverride: overrideProvider } : {}),
+        ...(overrideModel ? { modelOverride: overrideModel } : {}),
+      })
       .then(() => {
         if (!summarizerUsesInlinePrompt) {
           this.agentManager!.sendInput(summarizer.id, prompt, true);

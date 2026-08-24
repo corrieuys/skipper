@@ -88,6 +88,28 @@ describe("registerDaemonTools — role-based registration", () => {
     for (const tool of RECURRING_TOOLS) expect(child.registeredNames).not.toContain(tool);
   });
 
+  it("single-agent session: keeps complete_task + notes/artifacts/escalate, drops delegation/phase/consensus/recurring", () => {
+    const { server, registeredNames } = makeFakeMcpServer();
+    registerDaemonTools(server as any, makeDeps(), () => null, { isSolo: true });
+
+    // Kept - a single agent works alone but records + closes its own task.
+    for (const tool of ["create_note", "list_notes", "create_artifact", "get_artifact", "list_artifacts", "escalate", "check_escalation", "complete_task"]) {
+      expect(registeredNames).toContain(tool);
+    }
+    // Global store stays available.
+    for (const tool of ["set_global_value", "get_global_value", "query_global_store", "delete_global_value"]) {
+      expect(registeredNames).toContain(tool);
+    }
+    // Dropped - no team, no phases, no multi-agent machinery.
+    for (const tool of [
+      "delegate", "delegate_batch", "delegate_resume", "list_delegations", "check_delegation", "check_delegation_group",
+      "complete_phase", "regress_phase", "consensus_pick", "consensus_merge",
+      "list_recurring_tasks", "run_recurring_task",
+    ]) {
+      expect(registeredNames).not.toContain(tool);
+    }
+  });
+
   it("registers global-store tools for both root and delegated sessions (no experimental flag needed)", () => {
     const gsTools = ["set_global_value", "get_global_value", "query_global_store", "delete_global_value"];
     const root = makeFakeMcpServer();
@@ -174,7 +196,7 @@ describe("registerDaemonTools — Slack tools (experimental + configured + team 
   });
 });
 
-describe("registerDaemonTools — post_message (experimental)", () => {
+describe("registerDaemonTools — post_message", () => {
   beforeEach(() => {
     db = new Database(TEST_DB);
     db.exec("PRAGMA foreign_keys = ON");
@@ -182,21 +204,13 @@ describe("registerDaemonTools — post_message (experimental)", () => {
   });
 
   afterEach(() => {
-    const i = process.argv.indexOf("--experimental");
-    if (i !== -1) process.argv.splice(i, 1);
     db.close();
     try { require("fs").unlinkSync(TEST_DB); } catch {}
   });
 
-  it("is omitted without the experimental flag", () => {
-    const { server, registeredNames } = makeFakeMcpServer();
-    registerDaemonTools(server as any, makeDeps(), () => null);
-    expect(registeredNames).not.toContain("post_message");
-  });
-
-  it("is registered for root AND delegated sessions under --experimental", () => {
-    process.argv.push("--experimental");
-
+  // No longer behind --experimental: every internal session (root, delegated,
+  // solo) can post an operator message.
+  it("is registered for root, delegated AND solo sessions", () => {
     const root = makeFakeMcpServer();
     registerDaemonTools(root.server as any, makeDeps(), () => null);
     expect(root.registeredNames).toContain("post_message");
@@ -204,6 +218,10 @@ describe("registerDaemonTools — post_message (experimental)", () => {
     const child = makeFakeMcpServer();
     registerDaemonTools(child.server as any, makeDeps(), () => null, { isDelegated: true });
     expect(child.registeredNames).toContain("post_message");
+
+    const soloSrv = makeFakeMcpServer();
+    registerDaemonTools(soloSrv.server as any, makeDeps(), () => null, { isSolo: true });
+    expect(soloSrv.registeredNames).toContain("post_message");
   });
 });
 

@@ -13,6 +13,7 @@ import {
 } from "../config/feature-flags";
 import { isSlackConfigured } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
+import { isSingleAgentId, isSlackEnabledForSingleAgent } from "../single-agents/store";
 import { SlackClient } from "./client";
 import {
   escalationMessageBlocks,
@@ -106,7 +107,7 @@ export class SlackPushManager {
       slackLog("push.skip", { kind, taskId, reason: "task_has_no_team" });
       return null;
     }
-    if (!isSlackEnabledForTeam(this.db, task.team_id)) {
+    if (!this.slackEnabledForTask(task.team_id)) {
       slackLog("push.skip", { kind, taskId, teamId: task.team_id, reason: "team_slack_disabled" });
       return null;
     }
@@ -116,6 +117,17 @@ export class SlackPushManager {
       return null;
     }
     return { channel: origin.channel, threadTs: origin.thread_ts, task };
+  }
+
+  /**
+   * Whether a task's assignment has opted into Slack. A single-agent-backed task
+   * carries a projected `sa:<id>` team id whose opt-in lives on the single_agents
+   * record; every other task keys off its team's local_teams config.
+   */
+  private slackEnabledForTask(teamId: string): boolean {
+    return isSingleAgentId(teamId)
+      ? isSlackEnabledForSingleAgent(this.db, teamId)
+      : isSlackEnabledForTeam(this.db, teamId);
   }
 
   private onEscalationCreated(e: EscalationCreatedEvent): void {
@@ -209,7 +221,7 @@ export class SlackPushManager {
     const task = this.db
       .prepare("SELECT team_id, title FROM tasks WHERE id = ?")
       .get(taskId) as TaskRow | null;
-    if (!task || !task.team_id || !isSlackEnabledForTeam(this.db, task.team_id)) return null;
+    if (!task || !task.team_id || !this.slackEnabledForTask(task.team_id)) return null;
     const origin = readTaskSlackOrigin(this.db, taskId);
     if (!origin?.thread_ts) return null; // completion notice only makes sense in a thread
     slackLog("push.event", { kind: `task_${status}`, taskId });

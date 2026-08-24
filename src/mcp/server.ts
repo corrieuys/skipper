@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { resolveAgentFromToken, describeTokenState, type AgentIdentity } from "./auth";
 import { registerDaemonTools, registerExternalTools, type DaemonDeps } from "./tools";
+import { isSoloTeamId } from "../agents/solo";
 import { logError } from "../logging";
 
 /**
@@ -38,7 +39,8 @@ export class DaemonMcpServer {
       registerExternalTools(server, this.deps, () => currentIdentity);
     } else {
       const isDelegated = this.isDelegatedRuntime(identity.runtimeId);
-      registerDaemonTools(server, this.deps, () => currentIdentity, { isDelegated });
+      const isSolo = this.isSoloRuntime(identity.runtimeId);
+      registerDaemonTools(server, this.deps, () => currentIdentity, { isDelegated, isSolo });
     }
 
     return { server, setIdentity: (id) => { currentIdentity = id; } };
@@ -52,6 +54,19 @@ export class DaemonMcpServer {
     // delegated session: phase-lifecycle tools are omitted so they cannot
     // advance/regress phases or complete the task.
     return !!row?.parent_instance_id || row?.oneshot === 1;
+  }
+
+  /**
+   * A solo session - its task is assigned to a single agent OR a custom agent
+   * run solo (projected team id `sa:<id>` / `ca:<id>`). Such a session gets the
+   * restricted solo tool profile (no delegation/phase/consensus/recurring, but
+   * keeps complete_task so the sole executor can close its own task).
+   */
+  private isSoloRuntime(runtimeId: string): boolean {
+    const row = this.db
+      .prepare("SELECT t.team_id AS team_id FROM agent_instances ai JOIN tasks t ON t.id = ai.task_id WHERE ai.id = ?")
+      .get(runtimeId) as { team_id: string | null } | null;
+    return isSoloTeamId(row?.team_id);
   }
 
   async handleRequest(req: Request): Promise<Response> {

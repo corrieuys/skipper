@@ -116,6 +116,7 @@ repo's GitHub Releases.
 |---|---|
 | agent process spawn/parse/resume | [src/agents/CLAUDE.md](src/agents/CLAUDE.md) |
 | custom agents (in-process, own harness + tools) | [src/custom-agents/CLAUDE.md](src/custom-agents/CLAUDE.md) |
+| single agents (standalone agent runs a task alone, projected as a team-of-one) | [src/single-agents/CLAUDE.md](src/single-agents/CLAUDE.md) |
 | custom tools (operator-defined JS tools) | [src/custom-tools/CLAUDE.md](src/custom-tools/CLAUDE.md) |
 | tick loop, phase, delegation, recovery, health, artifacts, realtime session | [src/orchestrator/CLAUDE.md](src/orchestrator/CLAUDE.md) |
 | DB lifecycle, schemas, migrations | [src/db/CLAUDE.md](src/db/CLAUDE.md) |

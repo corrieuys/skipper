@@ -10,6 +10,7 @@ import { registerScheduledTaskRoutes } from "./src/routes/scheduled-tasks";
 import { registerApiKeyRoutes } from "./src/routes/api-keys";
 import { registerDictationRoutes } from "./src/routes/dictation";
 import { registerCustomAgentRoutes } from "./src/routes/custom-agents";
+import { registerSingleAgentRoutes } from "./src/routes/single-agents";
 import { registerCustomToolRoutes } from "./src/routes/custom-tools";
 import { registerCustomAgentTypes } from "./src/custom-agents/store";
 import { ManagerDaemon } from "./src/agents/manager-daemon";
@@ -77,6 +78,8 @@ registerApiKeyRoutes();
 registerDictationRoutes();
 // Custom agents (experimental): CRUD for in-process agent definitions.
 registerCustomAgentRoutes();
+// Single agents (experimental): CRUD for standalone agents that run a task alone.
+registerSingleAgentRoutes();
 // Custom tools (experimental): operator-defined tools executed by the daemon.
 registerCustomToolRoutes();
 

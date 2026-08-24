@@ -4,7 +4,7 @@ import { escapeHtml } from "../html/atoms/escape-html";
 import { looksLikeHtml } from "../html/atoms/sniff-html";
 import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { getConnectPublicBase, getPublicArtifactUrl, getWebhookTriggerUrl } from "../connect/public-links";
-import { getRealtimeTeamId, listTeamsForStandardTasks } from "../config/teams";
+import { getRealtimeTeamId, listRealtimeTeams, listTeamsForStandardTasks } from "../config/teams";
 import { isTeamVisible, isExperimental } from "../config/feature-flags";
 import { taskTimelineFragment } from "../html/fragments/task-timeline.fragment";
 import { artifactListFragment } from "../html/fragments/artifact-list.fragment";
@@ -308,24 +308,36 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
       };
     };
 
-    // Providers a team agent may be set to: the allowlisted CLIs, plus every
-    // custom agent defined on this machine.
+    // Providers a NEW inline team agent may be set to: the allowlisted CLIs only.
+    // Saved agents (custom + headless CLI) are no longer providers here - they are
+    // added as live references via "From library" (teamAgentLibrary), so a custom
+    // agent's model/prompt/tools never show up as noise on a provider dropdown.
     //
-    // The two come from different places and cannot be filtered as one list.
-    // `listAgentTypes()` here reads the JSON config snapshot, which is where the
-    // CLI providers live; custom agents live in the runtime DB and are only
-    // mirrored into the in-memory `agent_types` TABLE. Hence the concatenation.
-    //
-    // `isAllowedProvider` is deliberately not widened — it also gates the config
-    // page's Skipper/Greg/Dictation model pickers, and a custom agent is not a
-    // root Skipper.
-    const teamAgentTypeChoices = () => {
-      const cli = (listAgentTypes() as Array<{ name: string }>)
+    // `isAllowedProvider` is deliberately not widened - it also gates the config
+    // page's Skipper/Greg/Dictation model pickers.
+    const teamAgentTypeChoices = () =>
+      (listAgentTypes() as Array<{ name: string }>)
         .filter((t) => isAllowedProvider(t.name))
         .map((t) => ({ name: t.name }));
-      const custom = (listCustomAgents(db) as Array<{ id: string; name: string }>)
-        .map((a) => ({ name: customAgentTypeName(a.id), label: a.name }));
-      return [...cli, ...custom];
+
+    // Providers selectable for a real-time team's transcription-summary model
+    // (the model-settings allowlist - claude-code, plus experimental providers).
+    const teamModelProviders = () => (listAgentTypes() as Array<{ name: string }>)
+      .filter((t) => isAllowedProvider(t.name))
+      .map((t) => t.name);
+
+    // Agent library for the crew's "add from library" control. Both kinds are
+    // offered and each pick adds a LIVE REFERENCE member (type = the ref token),
+    // not a copy: a headless CLI agent as `single:<id>`, a custom agent as
+    // `custom:<id>`. Experimental only.
+    const teamAgentLibrary = () => {
+      if (!isExperimental()) return [];
+      const { listSingleAgents, singleAgentRefType } = require("../single-agents/store");
+      const single = (listSingleAgents(db) as Array<{ id: string; name: string; agent_type: string; model: string }>)
+        .map((a) => ({ id: a.id, name: a.name, refType: singleAgentRefType(a.id), kind: "single" as const, provider: a.agent_type, model: a.model }));
+      const custom = (listCustomAgents(db) as Array<{ id: string; name: string; modelId: string }>)
+        .map((a) => ({ id: a.id, name: a.name, refType: customAgentTypeName(a.id), kind: "custom" as const, provider: "", model: a.modelId }));
+      return [...single, ...custom];
     };
 
     addRoute("GET", "/teams", () => {
@@ -340,13 +352,13 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
       : []);
 
     addRoute("GET", "/teams/new", () => {
-      return html(teamMapPage({ team: null, agentTypes: teamAgentTypeChoices(), customTools: teamCustomToolChoices(), ...teamPageMeta() }));
+      return html(teamMapPage({ team: null, agentTypes: teamAgentTypeChoices(), customTools: teamCustomToolChoices(), modelProviders: teamModelProviders(), agentLibrary: teamAgentLibrary(), ...teamPageMeta() }));
     });
 
     addRoute("GET", "/teams/:id", (_req, params) => {
       const team = getLocalTeam(db, params.id!);
       if (!team) return new Response(null, { status: 302, headers: { Location: "/teams" } });
-      return html(teamMapPage({ team, agentTypes: teamAgentTypeChoices(), customTools: teamCustomToolChoices(), ...teamPageMeta() }));
+      return html(teamMapPage({ team, agentTypes: teamAgentTypeChoices(), customTools: teamCustomToolChoices(), modelProviders: teamModelProviders(), agentLibrary: teamAgentLibrary(), ...teamPageMeta() }));
     });
 
     // Custom agents — agents Skipper runs in-process. Experimental only, so the
@@ -355,6 +367,7 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
       const { customAgentsPage } = require("../html/pages/custom-agents.page");
       const { customAgentFormPage } = require("../html/pages/custom-agent-form.page");
       const { getCustomAgent } = require("../custom-agents/store");
+      const { listSingleAgents: listSingleAgentsForLibrary } = require("../single-agents/store");
       const { listAvailableSkills } = require("../custom-agents/skills");
       const { listMcpServers, listImportableServers } = require("../custom-agents/servers");
       const { listCustomTools } = require("../custom-tools/store");
@@ -365,11 +378,13 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
           description: s.description,
         }));
 
-      addRoute("GET", "/custom-agents", () => {
-        // Servers render from the cached tool catalogue only — no server is
-        // contacted on a page load, so a dead stdio server cannot hang the page.
+      // Combined agent library: single agents + custom agents in one place, plus
+      // the custom-agent tool sources. Servers render from the cached catalogue
+      // only - no server is contacted on a page load.
+      addRoute("GET", "/agent-library", () => {
         return html(customAgentsPage({
           agents: listCustomAgents(db),
+          singleAgents: listSingleAgentsForLibrary(db),
           mcpServers: listMcpServers(db),
           importableServers: listImportableServers(db),
           customTools: listCustomTools(db),
@@ -377,13 +392,16 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
         }));
       });
 
+      // The old split index paths now fold into the combined library.
+      addRoute("GET", "/custom-agents", () => new Response(null, { status: 302, headers: { Location: "/agent-library" } }));
+
       addRoute("GET", "/custom-agents/new", () => {
         return html(customAgentFormPage({ agent: null, skills: skillChoices(), mcpServers: listMcpServers(db), customTools: listCustomTools(db), ...teamPageMeta() }));
       });
 
       addRoute("GET", "/custom-agents/:id", (_req, params) => {
         const agent = getCustomAgent(db, params.id!);
-        if (!agent) return new Response(null, { status: 302, headers: { Location: "/custom-agents" } });
+        if (!agent) return new Response(null, { status: 302, headers: { Location: "/agent-library" } });
         // The editor must never receive a stored secret. Blank fields plus the
         // "leave blank to keep" contract in `updateCustomAgent` cover the round trip.
         const safe = {
@@ -394,6 +412,24 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
           ),
         };
         return html(customAgentFormPage({ agent: safe, skills: skillChoices(), mcpServers: listMcpServers(db), customTools: listCustomTools(db), ...teamPageMeta() }));
+      });
+    }
+
+    // Single-agent editors (experimental). The index folds into /agent-library.
+    if (isExperimental()) {
+      const { singleAgentFormPage } = require("../html/pages/single-agent-form.page");
+      const { getSingleAgent } = require("../single-agents/store");
+
+      addRoute("GET", "/single-agents", () => new Response(null, { status: 302, headers: { Location: "/agent-library" } }));
+
+      addRoute("GET", "/single-agents/new", () => {
+        return html(singleAgentFormPage({ agent: null, modelProviders: teamModelProviders(), customTools: teamCustomToolChoices(), ...teamPageMeta() }));
+      });
+
+      addRoute("GET", "/single-agents/:id", (_req, params) => {
+        const agent = getSingleAgent(db, params.id!);
+        if (!agent) return new Response(null, { status: 302, headers: { Location: "/agent-library" } });
+        return html(singleAgentFormPage({ agent, modelProviders: teamModelProviders(), customTools: teamCustomToolChoices(), ...teamPageMeta() }));
       });
     }
   }
@@ -1579,38 +1615,71 @@ function registerV2PageRoutes(): void {
       `id="task-form-team-slot" style="display:contents;" hx-get="/fragments/task-form/team?context=${ctx}" hx-trigger="change from:[name=taskType]" hx-include="[name=taskType]" hx-target="this" hx-swap="outerHTML"`;
 
     if (taskType === "real_time") {
-      const rtId = getRealtimeTeamId();
-      const rtHidden = `<input type="hidden" name="teamId" value="${escapeHtml(rtId ?? "")}">`;
+      // Real-time tasks pick among operator-defined real-time teams (mode ===
+      // 'realtime') plus the built-in Real Time team. Default to the configured
+      // realtime team, else the first available.
+      const rtTeams = listRealtimeTeams();
+      const preferred = getRealtimeTeamId();
+      const rtDefault =
+        (selectedTeamId && rtTeams.some((t) => t.id === selectedTeamId) && selectedTeamId) ||
+        (preferred && rtTeams.some((t) => t.id === preferred) && preferred) ||
+        (rtTeams[0]?.id ?? preferred ?? "");
+      const source = rtTeams.length
+        ? rtTeams
+        : [{ id: preferred ?? "", name: "Real Time (auto)" }];
+      const rtOptions = source
+        .map((t) => `<option value="${escapeHtml(t.id)}"${t.id === rtDefault ? " selected" : ""}>${escapeHtml(t.name)}</option>`)
+        .join("");
 
       if (context === "inline") {
         return html(`<div ${slotAttrs("inline")}>
-          <span class="dashboard-inline-team-locked">${rtHidden}<span class="muted">Real Time (auto)</span></span>
+          <select name="teamId" id="dashboard-inline-team">${rtOptions}</select>
         </div>`);
       }
       if (context === "compact") {
         return html(`<div ${slotAttrs("compact")}>
-          <label><span>Team</span>${rtHidden}<small class="muted">Real Time (auto)</small></label>
+          <label id="team-field-wrapper"><span>Team</span>
+            <select name="teamId" id="team-field">${rtOptions}</select>
+          </label>
         </div>`);
       }
       return html(`<div ${slotAttrs("full")}>
         <div class="sk-form-group" style="flex:1;">
-          <label class="sk-label">Team</label>
-          ${rtHidden}
-          <div class="sk-text-sm sk-muted" style="padding-top:var(--sk-space-2);">Real Time (auto-assigned)</div>
+          <label class="sk-label">Real-time team</label>
+          <select name="teamId" class="sk-select">${rtOptions}</select>
         </div>
       </div>`);
     }
 
-    // standard branch
+    // standard branch - teams plus (experimental) single agents. A single agent
+    // is assigned by setting team_id to its projected `sa:<id>` team id, so the
+    // whole team-keyed pipeline runs it unchanged.
     const teams = listTeamsForStandardTasks();
     const teamOptions = teams.map(t =>
       `<option value="${escapeHtml(t.id)}"${t.id === selectedTeamId ? " selected" : ""}>${escapeHtml(t.name)}</option>`
     ).join("");
+    // Solo agents (experimental): a single agent OR a custom agent can run a task
+    // alone. Assigned by setting team_id to its projected `sa:<id>` / `ca:<id>`
+    // solo-team id, so the whole team-keyed pipeline runs it unchanged. Both
+    // libraries share one "Agents" optgroup.
+    let agentGroups = "";
+    if (isExperimental()) {
+      const { listSingleAgents, singleAgentTeamId } = require("../single-agents/store");
+      const { listCustomAgents, customAgentSoloTeamId } = require("../custom-agents/store");
+      const entries = [
+        ...(listSingleAgents(db) as Array<{ id: string; name: string }>).map((a) => ({ value: singleAgentTeamId(a.id), name: a.name })),
+        ...(listCustomAgents(db) as Array<{ id: string; name: string }>).map((a) => ({ value: customAgentSoloTeamId(a.id), name: a.name })),
+      ];
+      const opts = entries
+        .map((e) => `<option value="${escapeHtml(e.value)}"${e.value === selectedTeamId ? " selected" : ""}>${escapeHtml(e.name)}</option>`)
+        .join("");
+      if (opts) agentGroups = `<optgroup label="Agents">${opts}</optgroup>`;
+    }
 
     if (context === "inline") {
       return html(`<div ${slotAttrs("inline")}>
         <select name="teamId" id="dashboard-inline-team">
-          <option value=""${selectedTeamId === "" ? " selected" : ""}>Unassigned</option>${teamOptions}
+          <option value=""${selectedTeamId === "" ? " selected" : ""}>Unassigned</option>${teamOptions}${agentGroups}
         </select>
       </div>`);
     }
@@ -1618,7 +1687,7 @@ function registerV2PageRoutes(): void {
       return html(`<div ${slotAttrs("compact")}>
         <label id="team-field-wrapper"><span>Team</span>
           <select name="teamId" id="team-field">
-            <option value=""${selectedTeamId === "" ? " selected" : ""}>Unassigned</option>${teamOptions}
+            <option value=""${selectedTeamId === "" ? " selected" : ""}>Unassigned</option>${teamOptions}${agentGroups}
           </select>
         </label>
       </div>`);
@@ -1626,9 +1695,9 @@ function registerV2PageRoutes(): void {
     // full
     return html(`<div ${slotAttrs("full")}>
       <div class="sk-form-group" style="flex:1;">
-        <label class="sk-label">Team</label>
+        <label class="sk-label">Team or agent</label>
         <select name="teamId" class="sk-select">
-          <option value=""${selectedTeamId === "" ? " selected" : ""}>Unassigned</option>${teamOptions}
+          <option value=""${selectedTeamId === "" ? " selected" : ""}>Unassigned</option>${teamOptions}${agentGroups}
         </select>
       </div>
     </div>`);

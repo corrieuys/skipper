@@ -19,7 +19,19 @@ reporting hierarchy, and the delegate roster an agent is given
 (`agents/prompt-builder.ts:getTeamRoster`) lists every member of the task's team.
 
 UI: the team map at `/teams` — see [../html/CLAUDE.md](../html/CLAUDE.md). It
-writes the `/api/teams` endpoints, which also accept form and import bodies.
+writes the `/api/teams` endpoints, which also accept form and import bodies. The
+provider dropdown offers **raw CLIs only**. Saved agents (headless CLI + custom)
+are added through the crew's "+ From library" control (experimental) as **live
+references**, not copies: the member stores just a ref token + display name/role
+(`single:<id>` for a headless CLI agent, `custom:<id>` for a custom agent) and
+`local-teams.ts:resolveTeamAgentRefs` resolves the record's provider, model,
+prompt, capabilities and tools at flatten time. So editing the library agent
+updates every team that references it — `single:<id>` edits re-project via
+`reflattenTeamsReferencingAgentType` (called from the single-agents route);
+`custom:<id>` resolves in-process at run time. A referenced member exposes only
+name + role in its modal (the record owns the rest). Deleting a library agent
+that a team still references is **blocked** (409, `teamsReferencingAgentType`),
+and a save carrying a dangling `single:<id>` ref is rejected (`validateInput`).
 
 Teams persist in the runtime `local_teams` table (`src/teams/local-teams.ts`),
 flattened into the shared config `teams`/`team_agents` at boot + on mutation. The
@@ -27,3 +39,14 @@ flattened into the shared config `teams`/`team_agents` at boot + on mutation. Th
 (`isSlackEnabledForTeam`), gating the Slack MCP tools for that team's tasks, and
 `slashCommand` (`findTeamBySlashCommand`), binding a Slack slash command that
 creates + auto-approves a task on this team. See [../slack/CLAUDE.md](../slack/CLAUDE.md).
+
+`team_config` also carries the team **mode**: `mode: 'regular' | 'realtime'`
+(absent = regular, `isRealtimeTeam`). Real-time teams back real-time tasks
+(audio/text), carry **no phases** (the phase-count guard in `validateInput` is
+relaxed for them), and expose `config.realtime = { summaryEnabled, summaryProvider,
+summaryModel }` — the per-team transcription-summary config the realtime session
+reads (`orchestrator/realtime-session.ts:getRealtimeSummaryConfig`). `config/teams.ts`
+`listRealtimeTeams()` / `listTeamsForStandardTasks()` split teams by mode; the
+provider list for the summary model comes from `model-settings.ts:listModelOptions`
+(never a hardcoded model). The built-in "Real Time" team predates this and keeps
+its legacy summarizer default.

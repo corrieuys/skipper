@@ -36,7 +36,31 @@ export interface CustomAgentRunInput {
   sessionId: string | null;
   /** Port the daemon's own MCP endpoint is listening on. */
   daemonPort: number;
+  /**
+   * True when this custom agent is running a task SOLO (entrypoint of a
+   * team-of-one). The runner then auto-includes the solo essential daemon tools
+   * (complete_task, escalate, notes, artifacts) so the sole executor can close
+   * its own task even if its definition did not enable them. The daemon still
+   * gates by session role, so only tools it offers a solo session are connected.
+   */
+  solo?: boolean;
 }
+
+/**
+ * Daemon tools a solo custom agent needs to function as the sole executor of a
+ * task, regardless of what its definition ticked. All are in the daemon's solo
+ * (single-agent) tool profile, so connecting them is safe.
+ */
+const SOLO_ESSENTIAL_TOOLS = [
+  "complete_task",
+  "escalate",
+  "post_message",
+  "create_note",
+  "list_notes",
+  "create_artifact",
+  "list_artifacts",
+  "get_artifact",
+] as const;
 
 export interface CustomAgentRunResult {
   exitCode: number;
@@ -140,7 +164,11 @@ export async function runCustomAgent(input: CustomAgentRunInput, handle: InProce
     // from `agent.enabledCustomTools` alone — otherwise a tool granted by the
     // TEAM would be registered on the session and then filtered back out here.
     const customToolNames = resolveSessionCustomTools(db, runtimeId).map((t) => t.name);
-    const daemonToolNames = [...agent.enabledMcpTools, ...customToolNames];
+    const daemonToolNames = Array.from(new Set([
+      ...agent.enabledMcpTools,
+      ...customToolNames,
+      ...(input.solo ? SOLO_ESSENTIAL_TOOLS : []),
+    ]));
 
     if (daemonToolNames.length > 0) {
       try {
@@ -246,6 +274,23 @@ export async function runCustomAgent(input: CustomAgentRunInput, handle: InProce
       runtimeId,
       `[skipper] ${truncated ? "stopped at the step limit" : "finished"} after ${result.steps.length} step(s), ${result.usage.totalTokens ?? 0} tokens\n`,
     );
+
+    // Emit a turn-end marker frame on a clean finish. A CLI agent ends every turn
+    // with a `result`/`turn.completed`/`step_finish` JSON frame, and the daemon's
+    // exit handler FAILS a non-streaming clean exit that has none
+    // (`manager-daemon.ts:hasCompletedTurnOutput`). An in-process agent otherwise
+    // emits only plain text, so a turn that ends WITHOUT calling `complete_task`
+    // (e.g. a small model that just answers in prose) would be wrongly failed
+    // instead of parked idle for a poke. Skip it when truncated - that IS a
+    // failure and must exit non-zero. `appendSyntheticOutput` stores the raw JSON
+    // without signal-scanning; a text-less `step_finish` renders nothing in the
+    // activity feed (see `terminalJsonSummary.ts`).
+    if (!truncated) {
+      host.appendSyntheticOutput(
+        runtimeId,
+        JSON.stringify({ type: "step_finish", subtype: "custom_agent_turn_end" }) + "\n",
+      );
+    }
 
     return { exitCode: truncated ? 1 : 0, sessionId };
   } catch (err) {

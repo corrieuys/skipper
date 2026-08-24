@@ -1,23 +1,25 @@
 import type { Database } from "bun:sqlite";
 import { listLocalTeams } from "../teams/local-teams";
+import { listSingleAgents } from "../single-agents/store";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { normalizeSlashCommand } from "./slash-command";
 
 export interface SlashCommandConflict {
-  kind: "team" | "scheduled";
+  kind: "team" | "scheduled" | "agent";
   id: string;
   label: string;
 }
 
 /**
- * A slash command binds to at most one target. Return the existing team or
- * scheduled task already bound to `command` (excluding the record being edited),
- * or null if the command is free. Used to reject duplicate bindings at save time.
+ * A slash command binds to at most one target. Return the existing team,
+ * scheduled task, or single agent already bound to `command` (excluding the
+ * record being edited), or null if the command is free. Used to reject duplicate
+ * bindings at save time.
  */
 export function findSlashCommandConflict(
   db: Database,
   command: string,
-  exclude: { teamId?: string; scheduledTaskId?: string } = {},
+  exclude: { teamId?: string; scheduledTaskId?: string; singleAgentId?: string } = {},
 ): SlashCommandConflict | null {
   const want = normalizeSlashCommand(command);
   if (!want) return null;
@@ -26,6 +28,13 @@ export function findSlashCommandConflict(
     if (team.id === exclude.teamId) continue;
     if (normalizeSlashCommand(team.config?.slashCommand) === want) {
       return { kind: "team", id: team.id, label: team.name };
+    }
+  }
+
+  for (const agent of listSingleAgents(db)) {
+    if (agent.id === exclude.singleAgentId) continue;
+    if (normalizeSlashCommand(agent.config?.slashCommand) === want) {
+      return { kind: "agent", id: agent.id, label: agent.name };
     }
   }
 

@@ -9,6 +9,7 @@ import { signalTextSnippet } from "./signal-utils";
 import { buildMcpSpawnOverrides, injectDaemonMcpServer, cleanupMcpTempFiles, restoreMcpConfigFiles, type McpRestoreFile, type McpSpawnOverrides } from "./mcp-spawn-helper";
 import { getCustomAgentByType, isCustomAgentType } from "../custom-agents/store";
 import { InProcessHandle, NOOP_STDIN, runCustomAgent } from "../custom-agents/runner";
+import { isSoloAgentId } from "./solo";
 import { signalBridge } from "../mcp/signal-bridge";
 import { getStringSetting } from "../config/app-settings";
 import { SETTING_SKIPPER_AGENT_TYPE, SETTING_SKIPPER_MODEL } from "../config/model-settings";
@@ -522,16 +523,21 @@ export class AgentManager {
     // them); otherwise the root Skipper (a template runtime) reads its own
     // app_settings override so every skipper spawn path — initial, resume,
     // recovery, idle-poke, realtime — honors the config-page choice.
+    //
+    // The SETTING_SKIPPER_* override is Skipper's alone: it must apply ONLY when
+    // the template being spawned is the "skipper" agent. Any other template
+    // runtime (a single agent as a task root, the realtime summarizer) must use
+    // its OWN committed type/model, not silently inherit Skipper's.
     let overrideType = options.agentTypeOverride;
     let overrideModel = options.modelOverride;
-    if (isTemplateRuntime) {
+    if (isTemplateRuntime && templateAgentId === "skipper") {
       if (overrideType === undefined) {
         overrideType = getStringSetting(this.db, SETTING_SKIPPER_AGENT_TYPE, "") || undefined;
       }
       if (overrideModel === undefined) {
         overrideModel = getStringSetting(this.db, SETTING_SKIPPER_MODEL, "") || undefined;
       }
-    } else if (overrideType === undefined || overrideModel === undefined) {
+    } else if (!isTemplateRuntime && (overrideType === undefined || overrideModel === undefined)) {
       // Runtime-keyed respawn (resume, compact, pause/resume, regression): keep
       // the provider + model this instance was originally resolved with, so an
       // overridden root does not silently flip back to the template row's type
@@ -894,6 +900,10 @@ export class AgentManager {
       prompt,
       sessionId: runningAgent.sessionId,
       daemonPort,
+      // A custom agent assigned to run a task SOLO (entrypoint id `ca:<id>`) must
+      // be able to close its own task even if its definition did not tick the
+      // lifecycle tools - the runner auto-includes the solo essentials.
+      solo: isSoloAgentId(runningAgent.templateAgentId),
     }, handle)
       .then((result) => {
         // Session id is what keys the conversation history for the next resume.
@@ -1396,7 +1406,10 @@ export class AgentManager {
   getEffectiveRootTypeDef(templateAgentId: string): AgentTypeDefinition | null {
     const agent = this.getAgent(templateAgentId);
     if (!agent) return null;
-    const { agentTypeOverride } = this.getRootSpawnOverrides();
+    // The Skipper provider override applies ONLY to the skipper template. Any
+    // other entrypoint spawned as a root (a single agent, the realtime
+    // summarizer) uses its own committed type.
+    const agentTypeOverride = templateAgentId === "skipper" ? this.getRootSpawnOverrides().agentTypeOverride : undefined;
     return getAgentTypeDefinition(agentTypeOverride || agent.type, this.db);
   }
 

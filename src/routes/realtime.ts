@@ -10,13 +10,12 @@ import {
   EMPTY_PIPELINE_COUNTS,
 } from "../data/realtime";
 import { eventBus } from "../events/bus";
-import { getRealtimeTeamId } from "../config/teams";
+import { getRealtimeTeamId, listRealtimeTeams } from "../config/teams";
 import { getRealtimeConfig, updateRealtimeConfig } from "../realtime/config";
 import type { RealtimeConfig } from "../realtime/config";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 import {
   realtimeTasksPage,
-  realtimeTaskDetailPage,
   timelineEntriesFragment,
   notesFragment,
   runningAgentsFragment,
@@ -26,7 +25,6 @@ import type {
   RealtimeTaskData,
   AvailableAgent,
   RealtimeTaskConfig,
-  TeamAssignedAgent,
 } from "../html/realtime-components";
 import { htmlResponse as html, hxRedirect } from "./utils";
 
@@ -49,6 +47,9 @@ function resolveDefaultRealtimeTeamId(): string | null {
   const preferred = getRealtimeTeamId();
   if (preferred) return preferred;
 
+  const rt = listRealtimeTeams();
+  if (rt[0]) return rt[0].id;
+
   const fallback = getDb()
     .prepare("SELECT id FROM teams ORDER BY created_at, id LIMIT 1")
     .get() as { id: string } | null;
@@ -69,47 +70,11 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
     return new Response("", { status: 302, headers: { "Location": "/tasks/new", "HX-Redirect": "/tasks/new" } });
   });
 
+  // Legacy standalone real-time page retired: the real-time task now renders in
+  // the v2 command center (realtimeTaskContent). Redirect any old link to it.
   addRoute("GET", "/realtime/:id", (_req, params) => {
-    const db = getDb();
-    const task = db
-      .prepare(
-        `SELECT t.*, tm.name AS team_name, (SELECT COUNT(*) FROM task_input_streams WHERE task_id = t.id) AS segment_count
-         FROM tasks t
-         LEFT JOIN teams tm ON tm.id = t.team_id
-         WHERE t.id = ? AND t.task_type = 'real_time'`,
-      )
-      .get(params.id) as RealtimeTaskData | null;
-
-    if (!task) {
-      return new Response("<p>Real-time task not found</p>", {
-        status: 404,
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
-    }
-
-    const timeline = fetchRealtimeTimeline(db, params.id);
-    const pipelineStatus = fetchRealtimePipelineStatus(db, params.id);
-
-    const config = getRealtimeConfig(db);
-    const isSessionActive = daemon
-      ? daemon.getRealtimeSessionManager().isSessionActive(params.id)
-      : (pipelineStatus?.cadence_timer_active === 1);
-
-    const runningAgents = fetchRealtimeRunningAgents(db, params.id);
-    const notes = fetchRealtimeNotes(db, params.id);
-
-    const availableAgents = fetchAvailableAgents();
-    const teamAgents = task.team_id
-      ? db.prepare(
-        `SELECT a.id, a.name, ta.role
-         FROM team_agents ta
-         JOIN agents a ON a.id = ta.agent_id
-         WHERE ta.team_id = ? AND a.id != 'skipper'
-         ORDER BY ta.level ASC, a.name ASC`,
-      ).all(task.team_id) as TeamAssignedAgent[]
-      : [];
-
-    return html(realtimeTaskDetailPage(task, timeline, pipelineStatus, config, isSessionActive, runningAgents, notes, availableAgents, teamAgents, daemon?.getStatus()));
+    const to = `/?task=${encodeURIComponent(params.id!)}`;
+    return new Response("", { status: 302, headers: { Location: to, "HX-Redirect": to } });
   });
 
   // --- API routes ---
@@ -179,7 +144,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
 
       if (req.headers.get("HX-Request")) {
         // Redirect to detail page
-        return hxRedirect(`/realtime/${task.id}`);
+        return hxRedirect(`/?task=${task.id}`);
       }
       return Response.json(task, { status: 201 });
     } catch (err: unknown) {
@@ -246,7 +211,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
     );
 
     if (req.headers.get("HX-Request")) {
-      return hxRedirect(`/realtime/${params.id}`);
+      return hxRedirect(`/?task=${params.id}`);
     }
 
     const updated = db.prepare("SELECT * FROM tasks WHERE id = ?").get(params.id);
@@ -282,7 +247,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
             headers: { "Content-Type": "text/html; charset=utf-8" },
           });
         }
-        return hxRedirect(`/realtime/${params.id}`);
+        return hxRedirect(`/?task=${params.id}`);
       }
 
       return Response.json({ ok: true });
@@ -303,7 +268,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       }
 
       if (_req.headers.get("HX-Request")) {
-        return hxRedirect(`/realtime/${params.id}`);
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -322,7 +287,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       rtMgr.resumeSession(params.id);
 
       if (_req.headers.get("HX-Request")) {
-        return hxRedirect(`/realtime/${params.id}`);
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {
@@ -345,7 +310,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       }
 
       if (_req.headers.get("HX-Request")) {
-        return hxRedirect(`/realtime/${params.id}`);
+        return hxRedirect(`/?task=${params.id}`);
       }
       return Response.json({ ok: true });
     } catch (err: unknown) {

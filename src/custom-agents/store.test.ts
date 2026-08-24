@@ -2,9 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { clearAgentTypeCache, getAgentTypeDefinition, agentTypeUsesInlinePrompt } from "../agents/types";
+import { TeamManager } from "../teams/manager";
 import {
   createCustomAgent,
   customAgentTypeName,
+  customAgentSoloTeamId,
   deleteCustomAgent,
   getCustomAgentByType,
   isCustomAgentType,
@@ -198,5 +200,33 @@ describe("agent-type registration", () => {
     createCustomAgent(db, input());
     registerCustomAgentTypes(db);
     expect(getAgentTypeDefinition("claude-code", db)).not.toBeNull();
+  });
+});
+
+describe("solo projection (ca:<id> team-of-one)", () => {
+  it("projects a resolvable, skipper-free team-of-one whose entrypoint is the custom agent", () => {
+    const agent = createCustomAgent(db, input({ name: "Solo Bot" }));
+    const teamId = customAgentSoloTeamId(agent.id);
+    const exec = new TeamManager(db).getTeamForExecution(teamId);
+    expect(exec).toBeTruthy();
+    expect(exec!.entrypoint_agent_id).toBe(teamId); // entrypoint = the ca: agent itself
+    expect(exec!.team.phases.length).toBe(0);
+    // Entrypoint agent row exists with the custom:<id> type.
+    const row = db.prepare("SELECT type FROM agents WHERE id = ?").get(teamId) as { type: string } | null;
+    expect(row?.type).toBe(customAgentTypeName(agent.id));
+    // Exactly one member (the agent); NO skipper lead.
+    const members = db.prepare("SELECT agent_id FROM team_agents WHERE team_id = ?").all(teamId) as Array<{ agent_id: string }>;
+    expect(members.length).toBe(1);
+    expect(members[0]!.agent_id).toBe(teamId);
+    expect(members.some((m) => m.agent_id === "skipper")).toBe(false);
+  });
+
+  it("removes the solo projection on delete", () => {
+    const agent = createCustomAgent(db, input());
+    const teamId = customAgentSoloTeamId(agent.id);
+    expect(new TeamManager(db).getTeamForExecution(teamId)).toBeTruthy();
+    deleteCustomAgent(db, agent.id);
+    expect(new TeamManager(db).getTeamForExecution(teamId)).toBeNull();
+    expect(db.prepare("SELECT id FROM agents WHERE id = ?").get(teamId)).toBeNull();
   });
 });

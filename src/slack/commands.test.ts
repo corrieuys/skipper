@@ -6,6 +6,7 @@ import { TaskScheduler } from "../tasks/scheduler";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { saveSlackConfig } from "../config/slack-settings";
 import { handleSlashCommand } from "./commands";
+import { createSingleAgent, singleAgentTeamId } from "../single-agents/store";
 import type { SlackClient } from "./client";
 
 let db: Database;
@@ -183,6 +184,38 @@ describe("handleSlashCommand", () => {
       user_id: USER,
     });
     expect(reply.text).toContain("No Skipper action");
+  });
+
+  it("creates + auto-approves a task assigned to a single agent (team_id = sa:<id>)", async () => {
+    createSingleAgent(db, {
+      id: "researcher",
+      name: "Researcher",
+      agent_type: "claude-code",
+      config: { slashCommand: "/researcher" },
+    });
+    const reply = await handleSlashCommand(db, taskScheduler, scheduled, {
+      command: "/researcher",
+      text: "summarize the latest report",
+      user_id: USER,
+    });
+    expect(reply.text).toContain("Started task");
+    const row = db
+      .prepare("SELECT status, team_id, description FROM tasks")
+      .get() as { status: string; team_id: string; description: string };
+    expect(["approved", "running"]).toContain(row.status);
+    expect(row.team_id).toBe(singleAgentTeamId("researcher"));
+    expect(row.description).toBe("summarize the latest report");
+  });
+
+  it("asks for a description when a single-agent command has no text", async () => {
+    createSingleAgent(db, { id: "researcher", name: "Researcher", agent_type: "claude-code", config: { slashCommand: "/researcher" } });
+    const reply = await handleSlashCommand(db, taskScheduler, scheduled, {
+      command: "/researcher",
+      text: "",
+      user_id: USER,
+    });
+    expect(reply.text).toContain("description");
+    expect((db.prepare("SELECT COUNT(*) AS c FROM tasks").get() as { c: number }).c).toBe(0);
   });
 });
 

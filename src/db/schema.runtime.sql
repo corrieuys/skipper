@@ -502,6 +502,23 @@ CREATE TABLE IF NOT EXISTS local_teams (
 );
 
 
+-- Single agents: a standalone agent (NOT the root Skipper) that runs a regular
+-- or recurring task by itself, with no delegation and no phases. Projected into
+-- the shared config layer as a "team of one" (id prefix "sa:") so the team-keyed
+-- task pipeline runs it unchanged. `config` JSON holds the Slack opt-in +
+-- slash-command binding, mirroring local_teams.team_config.
+CREATE TABLE IF NOT EXISTS single_agents (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  agent_type TEXT NOT NULL,
+  model TEXT NOT NULL DEFAULT 'default',
+  instruction TEXT NOT NULL DEFAULT '',
+  capabilities TEXT NOT NULL DEFAULT '[]',
+  config TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Custom agents: agent definitions that Skipper executes inside its own process
 -- instead of spawning a vendor CLI. A definition names an OpenAI-compatible
 -- endpoint, its auth, a system prompt, and the exact set of tools the agent is

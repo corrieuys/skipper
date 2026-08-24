@@ -36,6 +36,9 @@ function miniFlow(team: LocalTeam): string {
 
 function teamCard(team: LocalTeam): string {
   const gates = team.phases.filter((p) => p.review).length;
+  const realtime = team.config?.mode === "realtime"
+    ? `<span class="tm-chip tm-chip--rt">Real-time</span>`
+    : "";
   const slack = team.config?.slackEnabled
     ? `<span class="tm-chip tm-chip--slack">Slack</span>`
     : "";
@@ -53,7 +56,7 @@ function teamCard(team: LocalTeam): string {
       </div>
       ${miniFlow(team)}
     </a>
-    ${slack || slash ? `<div class="tm-phase__chips">${slack}${slash}</div>` : ""}
+    ${realtime || slack || slash ? `<div class="tm-phase__chips">${realtime}${slack}${slash}</div>` : ""}
     <div class="tm-card__actions">
       <a class="sk-btn sk-btn--sm" href="/teams/${escapeHtml(team.id)}">Open</a>
       <a class="sk-btn sk-btn--sm" href="/api/teams/export?id=${encodeURIComponent(team.id)}">Export</a>

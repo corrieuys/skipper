@@ -1,8 +1,72 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "crypto";
 import { clearAgentTypeCache, CUSTOM_TYPE_PREFIX, isCustomAgentType } from "../agents/types";
+import {
+  CUSTOM_AGENT_SOLO_PREFIX,
+  soloProjectedId,
+  upsertSoloIntoSharedTables,
+  removeSoloFromShared,
+  type SoloAgentSpec,
+} from "../agents/solo";
 
 export { CUSTOM_TYPE_PREFIX, isCustomAgentType };
+
+/** Projected `ca:<id>` team/agent id for running this custom agent SOLO on a task. */
+export function customAgentSoloTeamId(id: string): string {
+  return soloProjectedId(CUSTOM_AGENT_SOLO_PREFIX, id);
+}
+
+/**
+ * A custom agent as a generic solo-agent projection spec. Its own system prompt
+ * is supplied by the in-process runner (buildSystemPrompt), so `instruction`
+ * stays empty here - the prompt-builder adds only the solo framing on top.
+ */
+function toSoloSpec(agent: CustomAgent): SoloAgentSpec {
+  return {
+    prefix: CUSTOM_AGENT_SOLO_PREFIX,
+    id: agent.id,
+    name: agent.name,
+    type: customAgentTypeName(agent.id),
+    model: agent.modelId,
+    instruction: "",
+    capabilities: [],
+  };
+}
+
+/**
+ * Project every custom agent as a `ca:<id>` team-of-one so it can be assigned to
+ * run a task SOLO (entrypoint = the custom agent, no Skipper, no phases).
+ *
+ * Writes the shared config TABLES directly, NOT the in-memory config-store Maps.
+ * The runtime resolves the entrypoint from the tables (`AgentManager.getAgent`,
+ * `TeamManager.getTeamForExecution`), and a custom agent's `custom:<id>` type is
+ * DB-local, so seeding it into the global Maps (which reseed every attached DB)
+ * would break sibling databases with a missing-type FK. Call AFTER
+ * registerCustomAgentTypes so the `custom:<id>` agent_types row exists.
+ */
+export function flattenCustomAgentsAsSoloTeams(db: Database): void {
+  for (const agent of listCustomAgents(db)) {
+    try {
+      upsertSoloIntoSharedTables(db, toSoloSpec(agent));
+    } catch {
+      /* shared tables not ready yet */
+    }
+  }
+}
+
+/** Re-project one custom agent's solo team into the config tables (after a mutation). */
+function refreshCustomAgentSolo(db: Database, id: string): void {
+  const agent = getCustomAgent(db, id);
+  if (!agent) {
+    removeSoloFromShared(db, CUSTOM_AGENT_SOLO_PREFIX, id);
+    return;
+  }
+  try {
+    upsertSoloIntoSharedTables(db, toSoloSpec(agent));
+  } catch {
+    /* shared tables not ready */
+  }
+}
 
 /**
  * A custom agent definition. Everything Skipper needs to build and run an agent
@@ -232,6 +296,7 @@ export function createCustomAgent(db: Database, input: CustomAgentInput): Custom
     normalized.temperature,
   );
   registerCustomAgentTypes(db);
+  refreshCustomAgentSolo(db, id);
   return getCustomAgent(db, id)!;
 }
 
@@ -276,12 +341,14 @@ export function updateCustomAgent(db: Database, id: string, input: CustomAgentIn
     id,
   );
   registerCustomAgentTypes(db);
+  refreshCustomAgentSolo(db, id);
   return getCustomAgent(db, id)!;
 }
 
 export function deleteCustomAgent(db: Database, id: string): boolean {
   const res = db.prepare("DELETE FROM custom_agents WHERE id = ?").run(id);
   db.prepare("DELETE FROM agent_types WHERE name = ?").run(customAgentTypeName(id));
+  removeSoloFromShared(db, CUSTOM_AGENT_SOLO_PREFIX, id);
   clearAgentTypeCache();
   return res.changes > 0;
 }

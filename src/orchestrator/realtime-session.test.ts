@@ -439,6 +439,84 @@ describe("RealtimeSessionManager", () => {
     });
   });
 
+  describe("real-time team summary config", () => {
+    // A local team in realtime mode whose id the task points at, plus a
+    // summarization-capable agent so a summarizer WOULD spawn were it enabled.
+    function seedRealtimeTeamTask(rt: Record<string, unknown>, taskId = "task-rt-cfg"): string {
+      // Shared teams row satisfies the task.team_id FK; local_teams row carries
+      // the mode + realtime config that getRealtimeSummaryConfig reads (mirrors
+      // the real flatten of a local team into the shared layer).
+      db.prepare("INSERT OR IGNORE INTO teams (id, name) VALUES ('rt-team', 'Voice')").run();
+      db.prepare(
+        `INSERT INTO local_teams (id, name, skipper_prompt, hooks, phases, agents, team_config, created_at, updated_at)
+         VALUES ('rt-team', 'Voice', '', '[]', '[]', '[]', ?, datetime('now'), datetime('now'))`,
+      ).run(JSON.stringify({ mode: "realtime", realtime: rt }));
+      // The built-in realtime-summarizer (capability "summarization") is already
+      // seeded, so findSummarizerAgent resolves it - a summarizer WOULD spawn
+      // were it enabled, which is what makes the disabled-case assertion meaningful.
+      db.prepare(
+        "INSERT INTO tasks (id, title, team_id, status, task_type, task_config) VALUES (?, 'RT', 'rt-team', 'running', 'real_time', '{}')",
+      ).run(taskId);
+      db.prepare(
+        `INSERT INTO task_input_streams (id, task_id, source_type, content_type, content_body, sequence, transcription_status, transcribed_text)
+         VALUES (?, ?, 'audio', 'audio/wav', 'raw', 1, 'transcribed', 'billing question')`,
+      ).run(crypto.randomUUID(), taskId);
+      return taskId;
+    }
+
+    function recordingAgentManager(spawns: Array<{ id: string; opts: Record<string, unknown> }>) {
+      return {
+        getRunningAgent: () => undefined,
+        clearSessionId: () => {},
+        getEffectiveRootTypeDef: () => null,
+        getTemplateAgentId: () => null,
+        getAgent: () => null,
+        getEntrypointSessionIdForTask: () => null,
+        sendInput: () => {},
+        spawnAgent: async (id: string, opts: Record<string, unknown>) => {
+          spawns.push({ id, opts });
+          return { id: "runtime-" + id, process: { pid: 1 } };
+        },
+      } as unknown as RealtimeSessionManager["agentManager"];
+    }
+
+    it("skips the summarizer and feeds raw transcript when summary is disabled", async () => {
+      const spawns: Array<{ id: string; opts: Record<string, unknown> }> = [];
+      const mgr = new RealtimeSessionManager(db, artifactManager, recordingAgentManager(spawns));
+      try {
+        const taskId = seedRealtimeTeamTask({ summaryEnabled: false });
+        mgr.startSession(taskId);
+        await mgr.processCadenceTick(taskId);
+        // Gate fired: the summarizer was not spawned (feedSkipper may still spawn
+        // the entrypoint to deliver the raw transcript - that is expected).
+        expect(spawns.filter((s) => s.id === "realtime-summarizer").length).toBe(0);
+        const entry = db
+          .prepare("SELECT content FROM realtime_timeline WHERE task_id = ? AND entry_type = 'summary'")
+          .get(taskId) as { content: string } | null;
+        expect(entry).not.toBeNull();
+        expect(entry!.content).toContain("billing question");
+      } finally {
+        mgr.dispose();
+      }
+    });
+
+    it("spawns the summarizer with the team's provider + model override when enabled", async () => {
+      const spawns: Array<{ id: string; opts: Record<string, unknown> }> = [];
+      const mgr = new RealtimeSessionManager(db, artifactManager, recordingAgentManager(spawns));
+      try {
+        const taskId = seedRealtimeTeamTask({ summaryEnabled: true, summaryProvider: "claude-code", summaryModel: "claude-opus-4-8" });
+        mgr.startSession(taskId);
+        await mgr.processCadenceTick(taskId);
+        expect(spawns.length).toBe(1);
+        expect(spawns[0]!.id).toBe("realtime-summarizer");
+        expect(spawns[0]!.opts.agentTypeOverride).toBe("claude-code");
+        expect(spawns[0]!.opts.modelOverride).toBe("claude-opus-4-8");
+      } finally {
+        mgr.dispose();
+      }
+    });
+  });
+
   describe("feedSkipper", () => {
     it("collects unfed timeline entries and marks them as fed", async () => {
       const taskId = seedRealtimeTask(db);

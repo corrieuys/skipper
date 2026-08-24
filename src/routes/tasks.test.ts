@@ -101,7 +101,7 @@ describe("POST /api/tasks", () => {
     expect(row!.team_id).toBe(teamId);
   });
 
-  it("returns HX-Redirect to realtime detail when creating a real-time task from HTMX", async () => {
+  it("returns HX-Redirect to the command-center task view when creating a real-time task from HTMX", async () => {
     const db = getDb();
     const teamId = crypto.randomUUID();
     db.prepare("INSERT INTO teams (id, name) VALUES (?, ?)").run(teamId, "Realtime Team");
@@ -123,7 +123,8 @@ describe("POST /api/tasks", () => {
     expect(res.status).toBe(200);
     const redirect = res.headers.get("HX-Redirect");
     expect(redirect).toBeTruthy();
-    expect(redirect!).toContain("/realtime/");
+    // Legacy /realtime/:id retired: real-time tasks open in the v2 command center.
+    expect(redirect!).toContain("/?task=");
   });
 
   it("returns HX-Redirect to standard task detail when creating a standard task from HTMX", async () => {

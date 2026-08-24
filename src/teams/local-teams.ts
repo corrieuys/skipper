@@ -15,6 +15,7 @@ import {
 import { isCustomAgentType } from "../agents/types";
 import { registerVisibleLocalTeam, unregisterVisibleLocalTeam } from "../config/feature-flags";
 import { normalizeSlashCommand } from "../slack/slash-command";
+import { getSingleAgent, isSingleAgentRefType, singleAgentIdFromRefType } from "../single-agents/store";
 
 // ---------------------------------------------------------------------------
 // A team embeds its own agents + phases and is persisted in the runtime DB.
@@ -49,8 +50,33 @@ export interface LocalTeamAgent {
   customTools?: string[];
 }
 
+/**
+ * Real-time team config (only meaningful when `mode === 'realtime'`). Drives the
+ * transcription-summary step of a real-time session. See src/orchestrator/realtime-session.ts.
+ */
+export interface RealtimeTeamConfig {
+  /**
+   * When false, no summarizer agent runs; the raw transcript is fed to the
+   * entrypoint instead (the existing raw-transcript fallback). Default true.
+   */
+  summaryEnabled?: boolean;
+  /** Provider (agent_type) for the summary, e.g. "claude-code". Empty = built-in default. */
+  summaryProvider?: string;
+  /** Model id for the summary. Free text; empty = the provider's default model. */
+  summaryModel?: string;
+}
+
 /** Per-team settings blob (runtime `local_teams.team_config` JSON column). */
 export interface LocalTeamConfig {
+  /**
+   * Team mode. 'regular' (default) teams run standard/recurring tasks through the
+   * normal queue and require >=1 phase. 'realtime' teams back real-time tasks
+   * (audio/text + transcription); they carry no phases and expose `realtime`
+   * below. Absent = 'regular' (back-compat for teams saved before this field).
+   */
+  mode?: "regular" | "realtime";
+  /** Real-time config; only read when `mode === 'realtime'`. */
+  realtime?: RealtimeTeamConfig;
   /** When true, this team's tasks expose the Slack MCP tools to their agents. */
   slackEnabled?: boolean;
   /**
@@ -65,6 +91,13 @@ export interface LocalTeamConfig {
    * `customTools` list, so its grant lives here.
    */
   skipperCustomTools?: string[];
+}
+
+/** Whether a team is in real-time mode (absent mode defaults to regular). */
+export function isRealtimeTeam(team: Pick<LocalTeam, "config"> | LocalTeamConfig | null | undefined): boolean {
+  if (!team) return false;
+  const config = "config" in team ? team.config : team;
+  return config?.mode === "realtime";
 }
 
 export interface LocalTeam {
@@ -193,7 +226,41 @@ function toSharedTeam(team: LocalTeam): TeamDefinition {
   };
 }
 
-/** Register one local team into the in-memory store Maps (idempotent). */
+/**
+ * Resolve library-reference members to their live definition before projection.
+ * A `single:<id>` member (a headless CLI agent added from the library) is a LIVE
+ * reference: its provider/model/instruction/capabilities/tools come from the
+ * single_agents record at flatten time, so editing the record updates every team
+ * that references it. A `custom:<id>` member resolves in-process at run time, so
+ * it only needs its optional fields defaulted here (the runner owns its prompt +
+ * model). A dangling ref (record deleted) is left as-is - deletes are blocked
+ * while a team references the agent, and saves validate the ref exists, so this
+ * is only reachable transiently. Returns a shallow team copy; the stored JSON
+ * keeps the ref token untouched.
+ */
+function resolveTeamAgentRefs(db: Database, team: LocalTeam): LocalTeam {
+  const agents = team.agents.map((a): LocalTeamAgent => {
+    if (isSingleAgentRefType(a.type)) {
+      const rec = getSingleAgent(db, singleAgentIdFromRefType(a.type));
+      if (!rec) return a;
+      return {
+        ...a,
+        type: rec.agent_type,
+        model: rec.model,
+        instruction: rec.instruction,
+        capabilities: rec.capabilities,
+        customTools: rec.config.customTools ?? [],
+      };
+    }
+    if (isCustomAgentType(a.type)) {
+      return { ...a, model: a.model || "default", instruction: a.instruction ?? "" };
+    }
+    return a;
+  });
+  return { ...team, agents };
+}
+
+/** Register one local team into the in-memory store Maps (idempotent). Expects a ref-resolved team. */
 export function flattenLocalTeamIntoMaps(team: LocalTeam): void {
   for (const a of team.agents) {
     setAgent(toSharedAgent(team.id, a));
@@ -210,7 +277,7 @@ export function flattenLocalTeamIntoMaps(team: LocalTeam): void {
 export function flattenLocalTeamsIntoStore(db: Database): void {
   if (!localTeamsTableExists(db)) return;
   for (const team of listLocalTeams(db)) {
-    flattenLocalTeamIntoMaps(team);
+    flattenLocalTeamIntoMaps(resolveTeamAgentRefs(db, team));
   }
 }
 
@@ -318,11 +385,12 @@ export function refreshLocalTeamInShared(db: Database, teamId: string): void {
     );
   }
 
-  flattenLocalTeamIntoMaps(team);
+  const resolved = resolveTeamAgentRefs(db, team);
+  flattenLocalTeamIntoMaps(resolved);
   // Best-effort table sync: only meaningful once the shared schema exists.
   try {
-    deleteTeamFromSharedTables(db, teamId, team.agents.map((a) => a.id));
-    upsertTeamIntoSharedTables(db, team);
+    deleteTeamFromSharedTables(db, teamId, resolved.agents.map((a) => a.id));
+    upsertTeamIntoSharedTables(db, resolved);
   } catch {
     /* shared tables not ready yet (pre-boot flatten path handles seeding) */
   }
@@ -355,11 +423,13 @@ export function removeLocalTeamFromShared(db: Database, teamId: string): void {
 // Validation
 // ---------------------------------------------------------------------------
 
-function validateInput(input: LocalTeamInput): void {
+function validateInput(db: Database, input: LocalTeamInput): void {
   if (!input.name || !input.name.trim()) {
     throw new Error("team: name is required");
   }
-  if (!Array.isArray(input.phases) || input.phases.length === 0) {
+  // Real-time teams carry no phases (the session drives them, not the phase
+  // loop). Only regular teams require at least one.
+  if (!isRealtimeTeam(input.config) && (!Array.isArray(input.phases) || input.phases.length === 0)) {
     throw new Error("team: at least one phase is required");
   }
   const agents = input.agents ?? [];
@@ -369,6 +439,15 @@ function validateInput(input: LocalTeamInput): void {
     if (a.id === SKIPPER_AGENT_ID) throw new Error('team: "skipper" is implicit and cannot be an inline agent');
     if (seen.has(a.id)) throw new Error(`team: duplicate inline agent id "${a.id}"`);
     seen.add(a.id);
+    // A `single:<id>` member is a live reference to a headless CLI agent - the
+    // record must exist, since the flatten layer resolves it into a real
+    // provider at run time.
+    if (isSingleAgentRefType(a.type)) {
+      if (!getSingleAgent(db, singleAgentIdFromRefType(a.type))) {
+        throw new Error(`team: headless CLI agent for "${a.id}" no longer exists`);
+      }
+      continue;
+    }
     // `getAgentType` reads the JSON config snapshot, which is where the CLI
     // providers live. Custom agents are registered into the in-memory
     // `agent_types` TABLE only (they carry secrets and must never reach a
@@ -377,6 +456,26 @@ function validateInput(input: LocalTeamInput): void {
     if (!isCustomAgentType(a.type) && !getAgentType(a.type)) {
       throw new Error(`team: unknown agent type "${a.type}" for agent "${a.id}"`);
     }
+  }
+}
+
+/** Local team names that reference a given agent-type token (`single:<id>` / `custom:<id>`). */
+export function teamsReferencingAgentType(db: Database, type: string): string[] {
+  if (!localTeamsTableExists(db)) return [];
+  return listLocalTeams(db)
+    .filter((t) => t.agents.some((a) => a.type === type))
+    .map((t) => t.name);
+}
+
+/**
+ * Re-project every local team that references a given agent-type token, so a live
+ * edit to a library agent (headless CLI agent) propagates into the shared tables
+ * without re-saving each team.
+ */
+export function reflattenTeamsReferencingAgentType(db: Database, type: string): void {
+  if (!localTeamsTableExists(db)) return;
+  for (const t of listLocalTeams(db)) {
+    if (t.agents.some((a) => a.type === type)) refreshLocalTeamInShared(db, t.id);
   }
 }
 
@@ -404,7 +503,7 @@ export function getLocalTeam(db: Database, id: string): LocalTeam | null {
 }
 
 export function createLocalTeam(db: Database, input: LocalTeamInput): LocalTeam {
-  validateInput(input);
+  validateInput(db, input);
   const id = input.id?.trim() || randomUUID();
   if (getLocalTeam(db, id)) throw new Error(`team: id "${id}" already exists`);
   const ts = nowTs();
@@ -429,7 +528,7 @@ export function createLocalTeam(db: Database, input: LocalTeamInput): LocalTeam 
 export function updateLocalTeam(db: Database, id: string, input: LocalTeamInput): LocalTeam {
   const existing = getLocalTeam(db, id);
   if (!existing) throw new Error(`team: id "${id}" not found`);
-  validateInput(input);
+  validateInput(db, input);
   const ts = nowTs();
   db.prepare(
     `UPDATE local_teams

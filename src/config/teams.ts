@@ -1,11 +1,34 @@
 import { getDb } from "../db/connection";
 import { isTeamVisible } from "./feature-flags";
+import { listLocalTeams } from "../teams/local-teams";
 
 const REALTIME_TEAM_NAME = "real time";
 
 export interface TeamOption {
   id: string;
   name: string;
+}
+
+/**
+ * Ids of every real-time team: operator teams flagged `config.mode === 'realtime'`
+ * plus the built-in "Real Time" team. Used to keep real-time teams out of the
+ * standard-task picker and to populate the real-time picker.
+ */
+function realtimeTeamIdSet(): Set<string> {
+  const ids = new Set<string>();
+  for (const t of listLocalTeams(getDb())) {
+    if (t.config?.mode === "realtime") ids.add(t.id);
+  }
+  const builtin = getRealtimeTeamId();
+  if (builtin) ids.add(builtin);
+  return ids;
+}
+
+/** Operator-selectable real-time teams (for the real-time task picker). */
+export function listRealtimeTeams(): TeamOption[] {
+  const all = getDb().prepare("SELECT id, name FROM teams ORDER BY name").all() as TeamOption[];
+  const rt = realtimeTeamIdSet();
+  return all.filter((t) => rt.has(t.id) && isTeamVisible(t.id));
 }
 
 export function getRealtimeTeamId(): string | null {
@@ -33,8 +56,8 @@ export function listTeamsForStandardTasks(): TeamOption[] {
   const all = getDb()
     .prepare("SELECT id, name FROM teams ORDER BY name")
     .all() as TeamOption[];
-  const rtId = getRealtimeTeamId();
-  return all.filter((t) => (rtId ? t.id !== rtId : true) && isTeamVisible(t.id));
+  const rt = realtimeTeamIdSet();
+  return all.filter((t) => !rt.has(t.id) && isTeamVisible(t.id));
 }
 
 export function listAllTeams(): TeamOption[] {

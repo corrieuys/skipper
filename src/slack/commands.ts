@@ -3,6 +3,7 @@ import type { TaskScheduler, RealtimeTaskConfig } from "../tasks/scheduler";
 import type { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { isSlackUserAllowed, isSlackConfigured } from "../config/slack-settings";
 import { findTeamBySlashCommand } from "../teams/local-teams";
+import { findSingleAgentBySlashCommand, singleAgentTeamId } from "../single-agents/store";
 import { logError } from "../logging";
 import type { SlackClient } from "./client";
 import type { SlackOrigin } from "./slash-command";
@@ -110,6 +111,28 @@ export async function handleSlashCommand(
       taskScheduler.approveTask(task.id);
       slackLog("cmd.team.started", { command, teamId: team.id, taskId: task.id, anchored });
       return anchored ? { text: anchor, posted: true } : { text: `✅ Started task ${task.id} on ${team.name}` };
+    }
+
+    const agent = findSingleAgentBySlashCommand(db, command);
+    if (agent) {
+      if (!text) {
+        slackLog("cmd.agent.no_text", { command, agentId: agent.id });
+        return { text: `Add a description, e.g. \`${command} "summarize the latest report"\`` };
+      }
+      const anchor = `:robot_face: Started a *${agent.name}* task${mention(userId)}${THREAD_NOTE_HINT}`;
+      const { origin, anchored } = await captureOrigin(db, client, payload, anchor);
+      // A single agent is assigned by setting team_id to its projected `sa:<id>`
+      // team id - the team-keyed pipeline runs it unchanged.
+      const task = taskScheduler.createTask({
+        title: text.length > MAX_TITLE ? `${text.slice(0, MAX_TITLE - 1)}…` : text,
+        description: text,
+        teamId: singleAgentTeamId(agent.id),
+        workingDirectory: process.cwd(),
+        taskConfig: origin ? ({ slack_origin: origin } as unknown as RealtimeTaskConfig) : undefined,
+      });
+      taskScheduler.approveTask(task.id);
+      slackLog("cmd.agent.started", { command, agentId: agent.id, taskId: task.id, anchored });
+      return anchored ? { text: anchor, posted: true } : { text: `✅ Started task ${task.id} on ${agent.name}` };
     }
 
     slackLog("cmd.unbound", { command });
