@@ -17,6 +17,8 @@ export interface TaskCreateViewModel {
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
+  /** When true the title may be left blank (the daemon generates one). */
+  titleGeneratorConfigured: boolean;
 }
 
 export type TaskPhaseOverride = { prompt?: string; review?: boolean; consensus?: ConsensusConfig | null };
@@ -147,10 +149,18 @@ export function taskPhaseConfigFragment(
   </div>`;
 }
 
-export function taskCreatePage(vm: TaskCreateViewModel): string {
+export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): string {
   // The team field is rendered server-side via the slot endpoint, which reacts to
   // taskType changes. `vm.teams` is no longer used here directly.
   void vm.teams;
+
+  // A sidebar "+" opens this page with ?team=<id>; forward it to the slot so the
+  // picker pre-selects that team/agent. The fragment already honours selectedTeamId.
+  const teamParam = selectedTeamId ? `&amp;selectedTeamId=${encodeURIComponent(selectedTeamId)}` : "";
+  const titleRequired = vm.titleGeneratorConfigured ? "" : " required";
+  const titlePlaceholder = vm.titleGeneratorConfigured
+    ? "Optional, a title will be generated"
+    : "What needs to be done?";
 
   return v2layout("New Task", `
     ${navbar({ currentPath: "/tasks", daemonState: vm.daemonState, daemonUptime: vm.daemonUptime, escalationCount: vm.escalationCount })}
@@ -168,7 +178,7 @@ export function taskCreatePage(vm: TaskCreateViewModel): string {
           <form hx-post="/api/tasks" hx-target="body" hx-swap="innerHTML">
             <div class="sk-form-group">
               <label class="sk-label">Title</label>
-              <input type="text" name="title" class="sk-input" placeholder="What needs to be done?" required autofocus>
+              <input type="text" name="title" class="sk-input" placeholder="${titlePlaceholder}"${titleRequired} autofocus>
             </div>
             <div class="sk-form-group">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--sk-space-2);">
@@ -191,7 +201,7 @@ export function taskCreatePage(vm: TaskCreateViewModel): string {
                 </select>
               </div>
               <div id="task-form-team-slot" style="display:contents;"
-                hx-get="/fragments/task-form/team?taskType=standard&amp;context=full"
+                hx-get="/fragments/task-form/team?taskType=standard&amp;context=full${teamParam}"
                 hx-trigger="load, change from:[name=taskType]"
                 hx-include="[name=taskType]"
                 hx-target="this"

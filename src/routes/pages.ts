@@ -1181,16 +1181,20 @@ function registerV2PageRoutes(): void {
     return new Response(null, { status: 302, headers: { Location: "/tasks/new" } });
   });
 
-  addRoute("GET", "/tasks/new", () => {
+  addRoute("GET", "/tasks/new", (req) => {
     const teams = (db.prepare("SELECT id, name FROM teams ORDER BY name").all() as Array<{ id: string; name: string }>)
       .filter(t => isTeamVisible(t.id));
     const escalationCount = getOpenEscalationCount(db);
+    const { isTaskTitleGeneratorConfigured } = require("../config/model-settings");
+    // A sidebar "+" opens /tasks/new?team=<id> to pre-select that team/agent.
+    const selectedTeamId = new URL(req.url).searchParams.get("team") ?? "";
     return html(taskCreatePage({
       teams,
       daemonState: isDaemonPaused(db) ? "paused" : "running",
       daemonUptime: process.uptime(),
       escalationCount,
-    }));
+      titleGeneratorConfigured: isTaskTitleGeneratorConfigured(db),
+    }, selectedTeamId));
   });
 
   // Task List. Split into two sections: regular task instances (created directly)
@@ -1295,7 +1299,7 @@ function registerV2PageRoutes(): void {
       const body = await req.json() as { target?: string; agent_type?: string; model?: string };
       target = body.target ?? ""; agentType = body.agent_type ?? ""; model = body.model ?? "";
     }
-    const validTargets = ["skipper", "greg"];
+    const validTargets = ["skipper", "greg", "task_title"];
     // Dictation is experimental-only; its config row is hidden without the flag,
     // so reject writes too.
     const { isExperimental } = require("../config/feature-flags");
@@ -1658,12 +1662,14 @@ function registerV2PageRoutes(): void {
     const teamOptions = teams.map(t =>
       `<option value="${escapeHtml(t.id)}"${t.id === selectedTeamId ? " selected" : ""}>${escapeHtml(t.name)}</option>`
     ).join("");
-    // Solo agents (experimental): a single agent OR a custom agent can run a task
+    // Solo agents: a single (headless CLI) agent OR a custom agent can run a task
     // alone. Assigned by setting team_id to its projected `sa:<id>` / `ca:<id>`
     // solo-team id, so the whole team-keyed pipeline runs it unchanged. Both
-    // libraries share one "Agents" optgroup.
+    // libraries share one "Agents" optgroup. Not gated: the sidebar lists solo
+    // runs ungated, and a sidebar "+" on an agent row must pre-select it here; the
+    // list is empty anyway unless the operator created agents (an experimental UI).
     let agentGroups = "";
-    if (isExperimental()) {
+    {
       const { listSingleAgents, singleAgentTeamId } = require("../single-agents/store");
       const { listCustomAgents, customAgentSoloTeamId } = require("../custom-agents/store");
       const entries = [

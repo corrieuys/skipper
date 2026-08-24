@@ -68,6 +68,29 @@ describe("createTask", () => {
   });
 });
 
+describe("updateTitle", () => {
+  it("updates the title and emits a same-status task:state_changed", () => {
+    const task = scheduler.createTask({ title: "" });
+    const events: Array<{ taskId: string; previousStatus: string; newStatus: string }> = [];
+    const handler = (e: { taskId: string; previousStatus: string; newStatus: string }) => events.push(e);
+    eventBus.on("task:state_changed", handler);
+    try {
+      scheduler.updateTitle(task.id, "Generated title");
+    } finally {
+      eventBus.off("task:state_changed", handler);
+    }
+    expect(scheduler.getTask(task.id)!.title).toBe("Generated title");
+    const evt = events.find((e) => e.taskId === task.id);
+    expect(evt).toBeTruthy();
+    expect(evt!.previousStatus).toBe("draft");
+    expect(evt!.newStatus).toBe("draft");
+  });
+
+  it("no-ops on an unknown task id", () => {
+    expect(() => scheduler.updateTitle("nope", "x")).not.toThrow();
+  });
+});
+
 describe("deleteTask", () => {
   it("deletes a non-running task", () => {
     const task = scheduler.createTask({ title: "Task to delete" });

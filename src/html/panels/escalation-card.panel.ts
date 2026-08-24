@@ -1,18 +1,7 @@
 import { escapeHtml } from "../atoms/escape-html";
 import { badgeFragment } from "../fragments/badge.fragment";
 import { formatTimestamp } from "../atoms/format-timestamp";
-import { looksLikeHtml } from "../atoms/sniff-html";
-
-// Agents sometimes author an escalation as an HTML snippet (a rendered table,
-// a formatted diff, etc.). Escaping it and leaning on the client markdown pass
-// can leave the raw tags visible. When the text looks like HTML, drop it into
-// the card as-is so it renders; otherwise keep the escape + `data-artifact-md`
-// markdown path. Same trust model as artifacts (see sniff-html).
-function renderAgentText(text: string): string {
-  return looksLikeHtml(text)
-    ? `<div class="sk-md">${text}</div>`
-    : `<div class="sk-md" data-artifact-md>${escapeHtml(text)}</div>`;
-}
+import { renderAgentText } from "../atoms/render-agent-text";
 
 export interface EscalationCardData {
   id: string;

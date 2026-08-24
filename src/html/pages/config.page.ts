@@ -24,6 +24,7 @@ export interface ConfigPageViewModel {
     skipper: ModelChoice;
     greg: ModelChoice;
     dictation: ModelChoice;
+    task_title: Partial<ModelChoice>;
     options: AgentTypeOption[];
   };
   slack?: SlackConfigView;
@@ -37,13 +38,19 @@ export interface ConfigPageViewModel {
 /** One provider (agent type) + model row for a subsystem. Model list is filtered
  *  client-side when the provider changes (see the script in modelSettingsPanel). */
 function modelSettingRow(
-  target: "skipper" | "greg" | "dictation",
+  target: "skipper" | "greg" | "dictation" | "task_title",
   label: string,
   hint: string,
-  current: ModelChoice,
+  current: Partial<ModelChoice>,
   options: AgentTypeOption[],
+  allowUnset = false,
 ): string {
-  const typeOpts = options
+  // A row that allows "unset" (task_title) offers a leading blank option so the
+  // operator can clear the provider and keep the title required.
+  const unsetOpt = allowUnset
+    ? `<option value=""${!current.agent_type ? " selected" : ""}>Not set (title required)</option>`
+    : "";
+  const typeOpts = unsetOpt + options
     .map((o) => `<option value="${escapeHtml(o.name)}"${o.name === current.agent_type ? " selected" : ""}>${escapeHtml(o.name)}</option>`)
     .join("");
   return `<form class="sk-model-row" data-model-target="${target}"
@@ -61,7 +68,7 @@ function modelSettingRow(
     <div class="sk-model-row__field">
       <label class="sk-model-row__label" for="model-model-${target}">Model</label>
       <input id="model-model-${target}" type="text" name="model" class="sk-input sk-input--sm" data-model-model
-             value="${escapeHtml(current.model)}" placeholder="default" autocomplete="off">
+             value="${escapeHtml(current.model ?? "")}" placeholder="default" autocomplete="off">
     </div>
     <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary sk-model-row__save">Save</button>
   </form>`;
@@ -81,6 +88,7 @@ function modelSettingsPanel(ms: ConfigPageViewModel["modelSettings"]): string {
       </p>
       ${modelSettingRow("skipper", "Skipper", "Root task orchestrator", ms.skipper, ms.options)}
       ${modelSettingRow("greg", "Greg", "Heckler bot", ms.greg, ms.options)}
+      ${modelSettingRow("task_title", "Task Title Generator", "Generates a short title from the description when none is given", ms.task_title ?? {}, ms.options, true)}
       ${isExperimental() ? modelSettingRow("dictation", "Dictation Rewriter", "Cleans up dictated task descriptions", ms.dictation, ms.options) : ""}
     </div>
   </div>`;

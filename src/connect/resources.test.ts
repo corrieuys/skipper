@@ -6,6 +6,8 @@ import { handleResourceRequest, type ResourceDeps } from "./resources";
 import { getPublicArtifactUrl, getWebhookTriggerUrl, gidFromConnectKey } from "./public-links";
 import { TaskScheduler } from "../tasks/scheduler";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
+import { registerVisibleLocalTeam, unregisterVisibleLocalTeam } from "../config/feature-flags";
+import { createLocalTeam } from "../teams/local-teams";
 
 // Unsigned JWT-shaped token; only the payload's gid claim matters client-side.
 function fakeConnectKey(gid: string): string {
@@ -46,6 +48,8 @@ describe("connect teams list + task create", () => {
     ]);
     db.prepare("INSERT INTO teams (id, name, goal, phases) VALUES (?, ?, ?, ?)").run("team-a", "Alpha", "ship things", phases);
     db.prepare("INSERT INTO teams (id, name, phases) VALUES (?, ?, ?)").run("team-b", "Beta", "[]");
+    registerVisibleLocalTeam("team-a");
+    registerVisibleLocalTeam("team-b");
 
     const result = await handleResourceRequest("teams", "list", {}, deps);
     expect(result.ok).toBe(true);
@@ -58,6 +62,29 @@ describe("connect teams list + task create", () => {
     expect(alpha.phase_count).toBe(2);
     // never leak full team config through connect
     expect(alpha.phases).toBeUndefined();
+
+    unregisterVisibleLocalTeam("team-a");
+    unregisterVisibleLocalTeam("team-b");
+  });
+
+  it("teams/list excludes realtime and hidden teams (same rule as the web picker)", async () => {
+    const db = getDb();
+    db.prepare("INSERT INTO teams (id, name, phases) VALUES (?, ?, ?)").run("team-reg", "Regular", "[]");
+    registerVisibleLocalTeam("team-reg");
+    // A hidden team: present in the teams table but never registered visible.
+    db.prepare("INSERT INTO teams (id, name, phases) VALUES (?, ?, ?)").run("team-hidden", "Hidden", "[]");
+    // A realtime team (visible, but excluded because it is not a queued team).
+    const realtime = createLocalTeam(db, { name: "Live", phases: [], config: { mode: "realtime" } });
+
+    const result = await handleResourceRequest("teams", "list", {}, deps);
+    expect(result.ok).toBe(true);
+    const ids = (result as { ok: true; data: Array<{ id: string }> }).data.map((t) => t.id);
+    expect(ids).toContain("team-reg");
+    expect(ids).not.toContain("team-hidden");
+    expect(ids).not.toContain(realtime.id);
+
+    unregisterVisibleLocalTeam("team-reg");
+    unregisterVisibleLocalTeam(realtime.id);
   });
 
   it("teams rejects unknown actions", async () => {

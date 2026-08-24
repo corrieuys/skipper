@@ -1,5 +1,6 @@
 import { type ForensicsEscalation, escapeHtml } from "./components";
 import { formatTimestamp } from "./formatTimestamp";
+import { agentTextPreview } from "./atoms/render-agent-text";
 
 
 export function forensicsEscalations(escalations: ForensicsEscalation[]): string {
@@ -12,8 +13,8 @@ export function forensicsEscalations(escalations: ForensicsEscalation[]): string
     <td>${escapeHtml(e.type)}</td>
     <td>${escapeHtml(e.severity)}</td>
     <td>${e.agent_name ? escapeHtml(e.agent_name) : escapeHtml(e.agent_id.slice(0, 8))}</td>
-    <td>${escapeHtml(e.question.length > 80 ? e.question.slice(0, 80) + "…" : e.question)}</td>
-    <td>${e.response ? escapeHtml(e.response.length > 60 ? e.response.slice(0, 60) + "…" : e.response) : "-"}</td>
+    <td>${escapeHtml(agentTextPreview(e.question, 80))}</td>
+    <td>${e.response ? escapeHtml(agentTextPreview(e.response, 60)) : "-"}</td>
     <td>${formatTimestamp(e.created_at)}</td>
     <td>${e.resolved_at ? formatTimestamp(e.resolved_at) : "-"}</td>
   </tr>`

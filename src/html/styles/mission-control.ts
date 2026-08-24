@@ -880,20 +880,20 @@ export function missionControlStyles(): string {
       color: var(--sk-text-subtle);
     }
 
-    /* --- Agent orbs (zen 3D gems on the dashboard; click → instance modal) --- */
-    /* Reuses .zen-orb / .zen-view__orb-wrapper / .zen-view__orb-label so the
-       zen-orbs-3d.js scanner upgrades these to 3D. Compact sizing for the panel. */
+    /* --- Agent orbs (2D spinning cubes on the dashboard; click → instance modal) --- */
+    /* Reuses .zen-orb / .zen-view__orb-wrapper / .zen-view__orb-label; zen-cube-2d.js
+       spins the active ones in-plane. Compact sizing for the panel. */
     .mc-agent-orbs {
       gap: var(--sk-space-4);
       padding: var(--sk-space-2) 0;
       min-height: 0;
     }
-    .mc-agent-orb-wrapper { width: 92px; position: relative; }
-    .mc-agent-orb-wrapper .zen-orb { width: 64px; height: 64px; }
-    .mc-agent-orb-wrapper .zen-view__orb-label { width: 92px; font-size: 12px; }
+    .mc-agent-orb-wrapper { width: 78px; position: relative; }
+    .mc-agent-orb-wrapper .zen-orb { width: 44px; height: 44px; }
+    .mc-agent-orb-wrapper .zen-view__orb-label { width: 78px; font-size: 12px; }
     .mc-agent-orb--clickable { cursor: pointer; }
-    /* Count badge — on the wrapper (not the orb, which is overflow:hidden in the
-       CSS fallback) and above the z-index:5 WebGL orb canvas. */
+    /* Count badge — on the wrapper (not the orb, so it stays upright while the
+       cube spins) and above it. */
     .mc-agent-orb__count {
       position: absolute;
       top: 2px;

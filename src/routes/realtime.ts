@@ -11,6 +11,8 @@ import {
 } from "../data/realtime";
 import { eventBus } from "../events/bus";
 import { getRealtimeTeamId, listRealtimeTeams } from "../config/teams";
+import { isTaskTitleGeneratorConfigured } from "../config/model-settings";
+import { ensureTaskTitle } from "../tasks/title-generator";
 import { getRealtimeConfig, updateRealtimeConfig } from "../realtime/config";
 import type { RealtimeConfig } from "../realtime/config";
 import type { ManagerDaemon } from "../agents/manager-daemon";
@@ -97,7 +99,10 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       teamId = body.teamId ?? null;
     }
 
-    if (!title || typeof title !== "string" || !title.trim()) {
+    // Title is optional only when a title-generator provider is configured (the
+    // daemon generates one from the description); otherwise it stays required.
+    const titleStr = typeof title === "string" ? title.trim() : "";
+    if (!titleStr && !isTaskTitleGeneratorConfigured(getDb())) {
       if (req.headers.get("HX-Request")) {
         const db = getDb();
         const tasks = db
@@ -117,7 +122,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
         : resolveDefaultRealtimeTeamId() ?? undefined;
       // Create the task with realtime team
       const task = scheduler.createTask({
-        title: title.trim(),
+        title: titleStr,
         description: typeof description === "string" && description.trim() ? description.trim() : undefined,
         teamId: resolvedTeamId,
         workingDirectory: process.cwd(),
@@ -131,6 +136,12 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       db.prepare(
         `UPDATE tasks SET status = 'running', approved_at = datetime('now'), started_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
       ).run(task.id);
+
+      // Blank title: generate asynchronously from the description. Realtime tasks
+      // bypass the queue, so this is the only place generation gets triggered.
+      if (!titleStr) {
+        void ensureTaskTitle(db, scheduler, task.id);
+      }
 
       // Initialize realtime session if daemon available
       if (daemon) {

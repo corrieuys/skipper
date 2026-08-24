@@ -3,23 +3,13 @@ import type { RealtimeSessionManager, InputChunk } from "../orchestrator/realtim
 import { logError } from "../logging";
 import { getDb } from "../db/connection";
 import { eventBus } from "../events/bus";
-import type { RealtimeWindowReadyEvent, RealtimeTriggerFiredEvent, RealtimeSessionStateEvent, RealtimeTimelineUpdatedEvent } from "../events/bus";
+import type { RealtimeWindowReadyEvent, RealtimeTriggerFiredEvent, RealtimeSessionStateEvent, RealtimeTimelineUpdatedEvent, RealtimeAudioLockEvent } from "../events/bus";
 import type { WSData } from "../ws/types";
 
 export type RealtimeWSData = WSData & { type: "realtime" };
 
 /** Track per-connection event handlers for cleanup */
 const wsCleanupHandlers = new WeakMap<ServerWebSocket<WSData>, () => void>();
-
-/**
- * Called when the client reports recording stopped, after remaining segments
- * are transcribed. index.ts wires this to WhisperManager.stop — injected so
- * this module never has to loop back through its own HTTP surface.
- */
-let onRecordingStopped: () => void = () => {};
-export function setRecordingStoppedHandler(fn: () => void): void {
-  onRecordingStopped = fn;
-}
 
 /**
  * Handle WebSocket upgrade for realtime input ingestion.
@@ -73,6 +63,16 @@ export const realtimeWsHandlers = {
       state: ws.data.realtimeSessionManager.isSessionActive(taskId) ? "active" : "paused",
     }));
 
+    // Send the current recording-lock state so a late joiner disables its Record
+    // button immediately if another client already holds the lock.
+    const initialLock = ws.data.realtimeSessionManager.getRecordingOwner(taskId);
+    ws.send(JSON.stringify({
+      type: "audio.lock",
+      locked: !!initialLock,
+      owner: initialLock?.owner,
+      owner_label: initialLock?.ownerLabel,
+    }));
+
     // Subscribe to event bus for live push events
     const windowHandler = (event: RealtimeWindowReadyEvent) => {
       if (event.taskId !== taskId) return;
@@ -122,10 +122,23 @@ export const realtimeWsHandlers = {
       } catch { /* ws closed */ }
     };
 
+    const audioLockHandler = (event: RealtimeAudioLockEvent) => {
+      if (event.taskId !== taskId) return;
+      try {
+        ws.send(JSON.stringify({
+          type: "audio.lock",
+          locked: event.locked,
+          owner: event.owner,
+          owner_label: event.ownerLabel,
+        }));
+      } catch { /* ws closed */ }
+    };
+
     eventBus.on("realtime:window_ready", windowHandler);
     eventBus.on("realtime:trigger_fired", triggerHandler);
     eventBus.on("realtime:session_state", sessionHandler);
     eventBus.on("realtime:timeline_updated", timelineHandler);
+    eventBus.on("realtime:audio_lock", audioLockHandler);
 
     // Store cleanup function for this connection
     wsCleanupHandlers.set(ws, () => {
@@ -133,6 +146,7 @@ export const realtimeWsHandlers = {
       eventBus.off("realtime:trigger_fired", triggerHandler);
       eventBus.off("realtime:session_state", sessionHandler);
       eventBus.off("realtime:timeline_updated", timelineHandler);
+      eventBus.off("realtime:audio_lock", audioLockHandler);
     });
   },
 
@@ -210,16 +224,46 @@ export const realtimeWsHandlers = {
           return;
         }
 
-        case "recording.stopped": {
-          // Wait for in-flight ingests + cadence ticks to finish, then transcribe
-          // remaining segments — ensures whisper stays alive until all audio is done.
-          try {
-            await realtimeSessionManager.drainAndTranscribe(taskId);
-          } catch (err) {
-            logError(getDb(), "realtime_ws.recording_stopped_transcribe", { taskId }, err);
+        case "recording.start": {
+          // Claim the single-writer audio lock for this connection. The client
+          // supplies a stable clientId so it can recognise itself as the owner.
+          const clientId = (parsed.clientId as string) || crypto.randomUUID();
+          const label = (parsed.label as string) || "web";
+          const source = `web:${clientId}`;
+          const result = await realtimeSessionManager.acquireRecording(taskId, { id: source, label });
+          if (!result.ok) {
+            ws.send(JSON.stringify({
+              type: "error",
+              code: result.error,
+              message: result.error === "RECORDING_IN_USE"
+                ? `Recording in use by ${result.ownerLabel}`
+                : result.error === "TASK_NOT_APPROVED"
+                  ? "Task must be approved before recording"
+                  : result.error,
+              owner_label: result.ownerLabel,
+            }));
+            return;
           }
-          try { onRecordingStopped(); } catch { /* whisper stop is best-effort */ }
-          ws.send(JSON.stringify({ type: "ack", ref: "recording.stopped" }));
+          (ws.data as RealtimeWSData).recordingSource = source;
+          ws.send(JSON.stringify({ type: "ack", ref: "recording.start", source }));
+          ws.send(JSON.stringify({ type: "session.state", state: result.state }));
+          return;
+        }
+
+        case "recording.stop":
+        case "recording.stopped": {
+          // Release the lock this connection holds. releaseRecording drains the
+          // owner's pending audio and ref-releases whisper.
+          const source = (ws.data as RealtimeWSData).recordingSource;
+          if (source) {
+            try {
+              await realtimeSessionManager.releaseRecording(taskId, source);
+            } catch (err) {
+              logError(getDb(), "realtime_ws.recording_release", { taskId }, err);
+            }
+            (ws.data as RealtimeWSData).recordingSource = undefined;
+          }
+          ws.send(JSON.stringify({ type: "ack", ref: msgType }));
           return;
         }
 
@@ -239,7 +283,14 @@ export const realtimeWsHandlers = {
             chunkEndAt: parsed.timestamp as string | undefined,
             metadata: { format, overlap_seconds: parsed.overlap_seconds ?? 0 },
           };
-          await realtimeSessionManager.ingestInput(taskId, audioInput);
+          const source = (ws.data as RealtimeWSData).recordingSource;
+          try {
+            await realtimeSessionManager.ingestInput(taskId, audioInput, source);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            ws.send(JSON.stringify({ type: "error", code: msg === "NOT_RECORDING_OWNER" ? "NOT_RECORDING_OWNER" : "INGEST_FAILED", message: msg }));
+            return;
+          }
           ws.send(JSON.stringify({ type: "ack", ref: "input.audio_chunk" }));
           return;
         }
@@ -257,6 +308,11 @@ export const realtimeWsHandlers = {
   },
 
   close(ws: ServerWebSocket<WSData>, code: number, reason: string) {
+    // Release the recording lock if this connection held it (immediate; the
+    // lease sweep is only a backstop for clients we cannot observe closing).
+    if (ws.data.type === "realtime" && ws.data.recordingSource) {
+      void ws.data.realtimeSessionManager.releaseRecording(ws.data.taskId, ws.data.recordingSource);
+    }
     // Clean up event bus subscriptions for this connection
     const cleanup = wsCleanupHandlers.get(ws);
     if (cleanup) {

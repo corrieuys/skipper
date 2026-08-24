@@ -222,10 +222,22 @@ function renderTeamGroup(team: { id: string; name: string }, tasks: TaskSummary[
         <span class="tc-team__dot${hasRunning ? " tc-team__dot--running" : ""}"></span>
         ${nameHtml}
         ${attention > 0 ? `<span class="tc-team__count" title="Needs your input">${attention}</span>` : ""}
+        ${team.id ? `<a class="tc-team__add" href="/tasks/new?team=${escapeHtml(team.id)}"
+          hx-get="/tasks/new?team=${escapeHtml(team.id)}" hx-target="#mc-main" hx-swap="innerHTML"
+          hx-push-url="/tasks/new?team=${escapeHtml(team.id)}" onclick="event.stopPropagation();"
+          title="New task for this team" aria-label="New task for this team">+</a>` : ""}
       </div>
     </summary>
     <div class="tc-team__tasks">${taskRows}</div>
   </details>`;
+}
+
+// A blank title means the daemon is still generating one; show a shimmer
+// placeholder until it lands. updateTitle emits task:state_changed, which
+// re-renders this row with the real title, so no client polling is needed.
+function sidebarTitle(title: string): string {
+  if (title && title.trim()) return `<span class="mc-sidebar__item-title">${escapeHtml(title)}</span>`;
+  return `<span class="mc-sidebar__item-title tc-title-skel" title="Generating title..." aria-label="Generating title"><span class="tc-title-skel__bar"></span></span>`;
 }
 
 function sidebarItem(t: TaskSummary, activeId: string | null): string {
@@ -236,7 +248,7 @@ function sidebarItem(t: TaskSummary, activeId: string | null): string {
       class="mc-sidebar__item${isActive ? " mc-sidebar__item--active" : ""}${isRunning ? " mc-sidebar__item--running" : ""}"
       hx-get="/workspace/task/${escapeHtml(t.id)}" hx-target="#mc-main" hx-swap="innerHTML" hx-push-url="/?task=${escapeHtml(t.id)}">
     <span class="mc-sidebar__item-dot mc-sidebar__item-dot--${t.status}"></span>
-    <span class="mc-sidebar__item-title">${escapeHtml(t.title)}</span>
+    ${sidebarTitle(t.title)}
     ${t.has_attention ? '<span class="mc-sidebar__item-attention" title="Needs your input (escalation or review)"></span>' : ""}
     ${isRT ? '<span class="sk-badge sk-badge--waiting" style="font-size:8px;padding:1px 4px;">RT</span>' : ""}
     <span class="mc-sidebar__item-time">${t.completed_at ? formatTimestamp(t.completed_at) : formatTimestamp(t.created_at)}</span>

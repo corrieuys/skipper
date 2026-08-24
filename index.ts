@@ -15,7 +15,7 @@ import { registerCustomToolRoutes } from "./src/routes/custom-tools";
 import { registerCustomAgentTypes } from "./src/custom-agents/store";
 import { ManagerDaemon } from "./src/agents/manager-daemon";
 import { initializeDatabase, closeDb, getDb } from "./src/db/connection";
-import { tryUpgradeRealtimeWs, realtimeWsHandlers, setRecordingStoppedHandler } from "./src/routes/realtime-ws";
+import { tryUpgradeRealtimeWs, realtimeWsHandlers } from "./src/routes/realtime-ws";
 import { UIWebSocketManager } from "./src/ws/ui-push";
 import { NotificationManager } from "./src/notifications/manager";
 import { WhisperManager } from "./src/whisper/manager";
@@ -64,6 +64,14 @@ const mcpServer = new DaemonMcpServer(getDb(), {
 });
 const whisperManager = new WhisperManager();
 
+// Drive the shared transcriber from the recording lock: whisper starts when the
+// first client acquires and stops when the last releases (ref-counted), so a
+// remote connect/iOS client starts it too and one stop can't kill another's.
+daemon.getRealtimeSessionManager().setWhisperControls({
+  acquire: (ownerKey, db) => whisperManager.acquire(ownerKey, db),
+  release: (ownerKey, db) => whisperManager.release(ownerKey, db),
+});
+
 registerTaskRoutes(daemon);
 // Teams (with inline agents) CRUD + /api/teams/import|export.
 registerTeamRoutes();
@@ -111,8 +119,6 @@ addRoute("POST", "/api/whisper/stop", () => {
   return Response.json({ running: false });
 });
 
-// Realtime WS "recording.stopped" → stop whisper directly (no HTTP self-call).
-setRecordingStoppedHandler(() => whisperManager.stop(getDb()));
 
 // Register WebSocket upgrade handlers (tried in order)
 setWebSocketUpgradeHandlers([
@@ -132,6 +138,7 @@ const connectClient = initConnectClient(
   daemon.getEscalationManager(),
   daemon.getArtifactManager(),
   daemon.getPhaseManager(),
+  daemon.getRealtimeSessionManager(),
 );
 
 // Slack Socket Mode (experimental): inbound slash commands + interactive

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { clearAgentTypeCache } from "../agents/types";
-import { isAllowedProvider, listModelOptions, saveModelSetting } from "./model-settings";
+import { isAllowedProvider, listModelOptions, saveModelSetting, getTaskTitleModelOverride, isTaskTitleGeneratorConfigured } from "./model-settings";
 
 let db: Database;
 
@@ -73,5 +73,26 @@ describe("saveModelSetting with grok", () => {
       const err = saveModelSetting(db, "skipper", "grok", "grok-4.5");
       expect(err).toBeNull();
     });
+  });
+});
+
+describe("task title generator setting", () => {
+  it("is unset by default (title stays required)", () => {
+    expect(getTaskTitleModelOverride(db).agent_type).toBeUndefined();
+    expect(isTaskTitleGeneratorConfigured(db)).toBe(false);
+  });
+
+  it("round-trips a provider + model and flips configured to true", () => {
+    const err = saveModelSetting(db, "task_title", "claude-code", "claude-haiku-4-5");
+    expect(err).toBeNull();
+    expect(getTaskTitleModelOverride(db)).toEqual({ agent_type: "claude-code", model: "claude-haiku-4-5" });
+    expect(isTaskTitleGeneratorConfigured(db)).toBe(true);
+  });
+
+  it("clears with an empty provider (back to title-required)", () => {
+    saveModelSetting(db, "task_title", "claude-code", "claude-haiku-4-5");
+    const err = saveModelSetting(db, "task_title", "", "");
+    expect(err).toBeNull();
+    expect(isTaskTitleGeneratorConfigured(db)).toBe(false);
   });
 });

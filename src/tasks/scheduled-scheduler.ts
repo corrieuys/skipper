@@ -3,6 +3,8 @@ import { parseJsonOr } from "../db/json";
 import { getDb } from "../db/connection";
 import { normalizeSlashCommand, type SlackOrigin } from "../slack/slash-command";
 import type { TaskScheduler, Task } from "./scheduler";
+import { isTaskTitleGeneratorConfigured } from "../config/model-settings";
+import { ensureTaskTitle } from "./title-generator";
 
 export type ScheduleUnit = "minutes" | "hours" | "days";
 
@@ -513,10 +515,24 @@ export class ScheduledTaskScheduler {
     if (scheduled.status !== "approved") throw new Error("Scheduled task must be approved to run");
 
     const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+    const trimmedInput = runInput?.trim();
+    const seriesTitle = scheduled.title?.trim();
+    const generatorOn = isTaskTitleGeneratorConfigured(this.db);
+    // Run title: a manual input is the strongest signal, so when a generator is
+    // configured and an input is given, start blank and generate from that input.
+    // Otherwise use the series title stamped with the run time; if the series has
+    // no title, generate from the description (or, with no generator, fall back to
+    // the timestamp so the run is never nameless).
+    let initialTitle: string;
+    if (generatorOn && trimmedInput) initialTitle = "";
+    else if (seriesTitle) initialTitle = `${seriesTitle} (${timestamp})`;
+    else if (generatorOn) initialTitle = "";
+    else initialTitle = timestamp;
+
     // The global-store contract and Slack origin ride in the run's task_config so
     // the prompt builder can inject them without a schema change on tasks.
     const task = taskScheduler.createTask({
-      title: `${scheduled.title} (${timestamp})`,
+      title: initialTitle,
       description: scheduled.description ?? undefined,
       teamId: scheduled.team_id ?? undefined,
       workingDirectory: scheduled.working_directory,
@@ -529,10 +545,13 @@ export class ScheduledTaskScheduler {
 
     // Optional one-off operator input injected into the run's prompt (below the
     // task description). Only manual "Run Now" carries this — cron firing does not.
-    const trimmedInput = runInput?.trim();
     this.db
       .prepare("UPDATE tasks SET source_scheduled_task_id = ?, run_input = ? WHERE id = ?")
       .run(scheduled.id, trimmedInput || null, task.id);
+    // Blank title (generator on): generate asynchronously from description + input.
+    if (!initialTitle) {
+      void ensureTaskTitle(this.db, taskScheduler, task.id, { runInput: trimmedInput });
+    }
     taskScheduler.approveTask(task.id);
     this.recordRun(scheduled.id);
     return task;

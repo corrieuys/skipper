@@ -1,5 +1,6 @@
 import { type ForensicsTimelineEntry, escapeHtml } from "./components";
 import { formatTimestamp } from "./formatTimestamp";
+import { agentTextPreview } from "./atoms/render-agent-text";
 
 
 export function forensicsTimeline(entries: ForensicsTimelineEntry[]): string {
@@ -22,7 +23,7 @@ export function forensicsTimeline(entries: ForensicsTimelineEntry[]): string {
                 icon = "&#9888;";
                 label = `Escalation [${escapeHtml(e.escalation_type ?? "")}] ${escapeHtml(e.severity ?? "")} — ${escapeHtml(e.escalation_status ?? "")}`;
                 if (e.question) {
-                    detail = `<div class="muted" style="margin-top:0.2rem">${escapeHtml(e.question.length > 120 ? e.question.slice(0, 120) + "…" : e.question)}</div>`;
+                    detail = `<div class="muted" style="margin-top:0.2rem">${escapeHtml(agentTextPreview(e.question, 120))}</div>`;
                 }
             } else if (e.source === "remediation") {
                 icon = "&#9881;";

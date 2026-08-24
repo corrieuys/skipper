@@ -20,6 +20,27 @@
   var flushIntervalId = null;
   var recordingTaskId = null;
 
+  // Single-writer recording lock. A stable per-tab clientId lets us recognise
+  // ourselves as the lock owner; audioLockedByOther disables our Record button
+  // when a different client (another tab, iOS, or a connect consumer) is
+  // recording into this task. pendingStart holds the params while we wait for
+  // the server to grant the lock (ack) before we begin capturing.
+  var clientId = (function () {
+    try {
+      var k = sessionStorage.getItem('rt-client-id');
+      if (!k) {
+        k = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (String(Date.now()) + '-' + Math.random().toString(36).slice(2));
+        sessionStorage.setItem('rt-client-id', k);
+      }
+      return k;
+    } catch (e) {
+      return String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+    }
+  })();
+  var mySource = 'web:' + clientId;
+  var audioLockedByOther = false;
+  var pendingStart = null;
+
   // Overlap state: retain the last N 1-second chunks from each flush so the
   // next blob includes overlapping audio, preventing words from being cut at
   // chunk boundaries.
@@ -55,9 +76,15 @@
       return;
     }
 
-    if (startBtn) startBtn.style.display = '';
+    if (startBtn) {
+      startBtn.style.display = '';
+      // Disable Record while another client holds the recording lock.
+      startBtn.disabled = audioLockedByOther;
+      startBtn.title = audioLockedByOther ? 'Recording is in use by another client' : '';
+    }
     if (stopBtn) stopBtn.style.display = 'none';
     if (vizWrap) vizWrap.style.display = 'none';
+    if (audioLockedByOther) updateStatus('Recording in use by another client');
   }
 
   function connectWs(taskId) {
@@ -71,14 +98,47 @@
     ws.onopen = function() {
       console.log('[realtime-audio] WebSocket connected:', wsUrl);
       updateStatus('Connected');
+      // If the user pressed Record before the socket opened, claim the lock now.
+      if (pendingStart) requestRecordingLock();
     };
     ws.onclose = function() { ws = null; window._realtimeWs = null; };
     ws.onerror = function() { updateStatus('Connection error'); };
     ws.onmessage = function(e) {
-      try {
-        var msg = JSON.parse(e.data);
-        if (msg.type === 'error') updateStatus('Error: ' + msg.message);
-      } catch (err) {}
+      var msg;
+      try { msg = JSON.parse(e.data); } catch (err) { return; }
+
+      // Recording lock granted → begin capturing the pending request.
+      if (msg.type === 'ack' && msg.ref === 'recording.start') {
+        if (pendingStart && recordingTaskId === pendingStart.taskId) {
+          var ps = pendingStart;
+          pendingStart = null;
+          beginCapture(ps.taskId, ps.cadenceSeconds, ps.overlapSeconds);
+        }
+        return;
+      }
+
+      if (msg.type === 'error') {
+        if (msg.code === 'RECORDING_IN_USE') {
+          updateStatus('Recording in use' + (msg.owner_label ? ' by ' + msg.owner_label : ''));
+          audioLockedByOther = true;
+        } else {
+          updateStatus('Error: ' + msg.message);
+        }
+        // Any error while starting aborts the pending start so the user can retry.
+        if (pendingStart) {
+          pendingStart = null;
+          recordingTaskId = null;
+          syncUi();
+        }
+        return;
+      }
+
+      // Lock state changed elsewhere → enable/disable our Record button.
+      if (msg.type === 'audio.lock') {
+        audioLockedByOther = !!msg.locked && msg.owner !== mySource;
+        syncUi();
+        return;
+      }
     };
   }
 
@@ -158,32 +218,24 @@
     });
   }
 
-  function ensureWhisper() {
-    updateStatus('Starting whisper...');
-    return fetch('/api/whisper/start', { method: 'POST' })
-      .then(function(res) { return res.json(); })
-      .then(function(data) {
-        if (data.error) throw new Error(data.error);
-        console.log('[realtime-audio] Whisper ready:', data.endpoint || 'ok');
-      });
-  }
-
-  function stopWhisper() {
-    return fetch('/api/whisper/stop', { method: 'POST' }).catch(function() {});
+  // Ask the server to grant this client the single-writer recording lock. The
+  // server starts the shared transcriber and replies with an ack (→ beginCapture)
+  // or an error (RECORDING_IN_USE). Whisper is no longer started from the client.
+  function requestRecordingLock() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'recording.start', clientId: clientId, label: 'web' }));
+    }
   }
 
   function startRecording(taskId, cadenceSeconds, overlapSeconds) {
-    if (isRecording) return;
+    if (isRecording || pendingStart) return;
+    if (audioLockedByOther) { updateStatus('Recording in use by another client'); return; }
     recordingTaskId = taskId;
-
-    // Start whisper first, then begin recording
-    ensureWhisper().then(function() {
-      if (recordingTaskId !== taskId) return; // user cancelled during startup
-      beginCapture(taskId, cadenceSeconds, overlapSeconds);
-    }).catch(function(err) {
-      updateStatus('Whisper failed: ' + err.message);
-      recordingTaskId = null;
-    });
+    pendingStart = { taskId: taskId, cadenceSeconds: cadenceSeconds, overlapSeconds: overlapSeconds };
+    updateStatus('Acquiring…');
+    connectWs(taskId);
+    // If the socket is already open, request immediately; else ws.onopen will.
+    if (ws && ws.readyState === WebSocket.OPEN) requestRecordingLock();
   }
 
   function beginCapture(taskId, cadenceSeconds, overlapSeconds) {
@@ -238,7 +290,10 @@
     }).catch(function(err) {
       updateStatus('Mic access denied: ' + err.message);
       recordingTaskId = null;
-      stopWhisper();
+      isRecording = false;
+      // We hold the lock but can't capture — release it so others can record.
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'recording.stop' }));
+      syncUi();
     });
   }
 

@@ -141,6 +141,23 @@ export class TaskScheduler {
     return this.getTask(id)!;
   }
 
+  /**
+   * Update just the task title. Used by the async title generator that runs after
+   * create when the title was left blank. Emits a same-status `task:state_changed`
+   * so the UI title fragments refresh and Connect ships a fat task projection
+   * carrying the new title, without the workspace teardown a real status change
+   * would trigger (ui-push only re-runs the heavy refresh when the status
+   * actually changes).
+   */
+  updateTitle(id: string, title: string): void {
+    const task = this.getTask(id);
+    if (!task) return;
+    this.db
+      .prepare("UPDATE tasks SET title = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(title, id);
+    eventBus.emit("task:state_changed", { taskId: id, previousStatus: task.status, newStatus: task.status });
+  }
+
   getTask(id: string): Task | null {
     const row = this.db
       .prepare("SELECT * FROM tasks WHERE id = ?")

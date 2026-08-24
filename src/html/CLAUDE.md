@@ -19,7 +19,11 @@ old classic dock sidebar/task-view were removed (there is no `isV2UI` flag). The
 views share the same shell.
 
 - **Sidebar** (`renderSidebarListBody`) is one scrolling list sectioned by
-  liveness, not tabs: **Needs you** (tasks with `has_attention`, always visible,
+  liveness, not tabs. Each Teams and Agents row (`renderTeamGroup`) reveals a
+  hover **"+"** (`.tc-team__add`) linking to `/tasks/new?team=<id>` — the create
+  form pre-selects that team/agent (the `/fragments/task-form/team` picker honours
+  `selectedTeamId` for real teams and `sa:`/`ca:` solo agents alike). Sections:
+  **Needs you** (tasks with `has_attention`, always visible,
   never collapsible) → **Active** (running/approved/paused/draft, any kind) →
   **Recurring** (one series row per recurring task: name opens the detail view,
   last 5 runs as status squares via `vm.scheduledRuns` /

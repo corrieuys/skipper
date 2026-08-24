@@ -41,6 +41,8 @@ export interface RecurringRunItem {
 export interface RecurringSeriesItem {
   id: string;
   title: string;
+  description: string | null;
+  teamId: string | null;
   teamName: string | null;
   scheduleUnit: string | null;
   scheduleAmount: number | null;
@@ -109,6 +111,9 @@ export interface StateSnapshot {
   escalations: EscalationItem[];
   reviews: TaskListItem[];
   counts: { openEscalations: number; pendingReviews: number };
+  /** True when a task-title generator agent is configured, so a remote client
+   *  may create a task with a blank title (the daemon fills it in async). */
+  titleGeneratorConfigured: boolean;
 }
 
 /** One coalesced agent-output line inside an output_batch frame. */

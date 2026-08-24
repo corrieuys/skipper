@@ -380,6 +380,9 @@ export interface PipelineStatus {
   last_analyst_fed_version: number;
   queued_summary_versions: string;
   cadence_timer_active: number;
+  recording_owner: string | null;
+  recording_owner_label: string | null;
+  recording_activity_at: string | null;
   updated_at: string;
   total_segments?: number;
   pending_transcription?: number;

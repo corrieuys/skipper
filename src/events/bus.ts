@@ -147,6 +147,15 @@ export interface RealtimeTimelineUpdatedEvent {
   entryType: string;
 }
 
+// Cross-client single-writer recording lock changed. Fanned out to every client
+// (web UI, iOS, connect consumers) so they enable/disable their Record control.
+export interface RealtimeAudioLockEvent {
+  taskId: string;
+  locked: boolean;
+  owner?: string;        // opaque source id, e.g. "web:<id>" / "connect:<id>"
+  ownerLabel?: string;   // human label, e.g. "web" / "ios"
+}
+
 export interface ConsensusPhaseAdvanceEvent {
   taskId: string;
   entrypointAgentId: string;
@@ -182,6 +191,7 @@ export interface EventMap {
   "realtime:trigger_fired": [RealtimeTriggerFiredEvent];
   "realtime:session_state": [RealtimeSessionStateEvent];
   "realtime:timeline_updated": [RealtimeTimelineUpdatedEvent];
+  "realtime:audio_lock": [RealtimeAudioLockEvent];
   "consensus:phase_advance": [ConsensusPhaseAdvanceEvent];
   "task:needs_review_changed": [TaskNeedsReviewChangedEvent];
 }

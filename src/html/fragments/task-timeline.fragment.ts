@@ -4,7 +4,7 @@ import { formatTimestamp } from "../atoms/format-timestamp";
 import { renderInlineMarkdown } from "../atoms/render-inline-markdown";
 import { renderMessageBody } from "../atoms/render-message-body";
 import { terminalJsonSummary, stripThinking, classifyPlainTerminalLine } from "../terminalJsonSummary";
-import { looksLikeHtml } from "../atoms/sniff-html";
+import { renderAgentText } from "../atoms/render-agent-text";
 import { escalationCardPanel, type EscalationCardData } from "../panels/escalation-card.panel";
 
 /**
@@ -172,13 +172,9 @@ function sysGroupHtml(buf: SysBuffer): string {
   </details>`;
 }
 
-// Agents sometimes author escalation text as HTML; mirror escalation-card's
-// trust model (sniff-html) so it renders instead of showing raw tags.
-function agentText(text: string): string {
-  return looksLikeHtml(text)
-    ? `<div class="sk-md">${text}</div>`
-    : `<div class="sk-md" data-artifact-md>${escapeHtml(text)}</div>`;
-}
+// Escalation text may be raw or entity-encoded HTML; renderAgentText decodes
+// then sniffs so it renders instead of leaking raw tags (shared with the card).
+const agentText = renderAgentText;
 
 /** Resolved escalations collapse to one quiet line; expanding shows the
  *  question and the response given. Open ones keep the full resolvable card. */

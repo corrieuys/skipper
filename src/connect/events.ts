@@ -21,6 +21,9 @@ const FORWARDED_EVENTS: readonly EventName[] = [
   "delegation_group:progress",
   "realtime:trigger_fired",
   "realtime:session_state",
+  "realtime:audio_lock",
+  "realtime:window_ready",
+  "realtime:timeline_updated",
 ] as const;
 
 // Events whose payload carries a taskId and gets a `task` projection attached.

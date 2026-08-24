@@ -23,6 +23,11 @@ export class WhisperManager {
   private port: number;
   private modelPath: string;
   private binaryPath: string;
+  // Ref-count of active recording owners (e.g. "web:<id>", "connect:<id>").
+  // Whisper is a single shared server; it starts on the first owner and stops
+  // only when the last one releases, so one client stopping cannot kill the
+  // transcriber out from under another concurrent recorder.
+  private recordingOwners = new Set<string>();
 
   constructor(options: WhisperManagerOptions = {}) {
     this.host = options.host ?? DEFAULT_HOST;
@@ -33,6 +38,27 @@ export class WhisperManager {
     // Kill any orphaned whisper-server on this port when the process exits
     // unexpectedly (e.g. uncaught exception, SIGKILL to parent).
     process.on("exit", () => this.stop());
+  }
+
+  /**
+   * Ref-counted start. Whisper starts on the first owner and stays up while any
+   * owner holds it. Idempotent per owner. `start()` sets `this.proc` synchronously
+   * before its first await, so a concurrent second acquire sees it running and
+   * does not double-spawn.
+   */
+  async acquire(ownerKey: string, db?: Database): Promise<void> {
+    this.recordingOwners.add(ownerKey);
+    if (!this.isRunning()) {
+      await this.start(db);
+    }
+  }
+
+  /** Ref-counted stop. Whisper stops only when the last owner releases. */
+  release(ownerKey: string, db?: Database): void {
+    this.recordingOwners.delete(ownerKey);
+    if (this.recordingOwners.size === 0 && this.isRunning()) {
+      this.stop(db);
+    }
   }
 
   async start(db?: Database): Promise<void> {

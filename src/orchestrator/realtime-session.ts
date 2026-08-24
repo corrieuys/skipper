@@ -30,6 +30,19 @@ interface ActiveSession {
   stopped: boolean;
   tickInProgress: boolean;
   ingestInProgress: number;
+  // Single-writer audio recording lock. Only the owner may stream audio; other
+  // clients see their Record control disabled. Refreshed on each audio chunk;
+  // released on stop, disconnect, or lease expiry (see sweepStaleLocks).
+  recordingOwner: string | null;
+  recordingOwnerLabel: string | null;
+  recordingActivityAt: number | null;
+}
+
+// Injected controller for the shared whisper transcriber (ref-counted so the
+// first recorder starts it and the last to release stops it).
+interface WhisperControls {
+  acquire(ownerKey: string, db?: Database): Promise<void>;
+  release(ownerKey: string, db?: Database): void;
 }
 
 interface SummarizerRun {
@@ -45,6 +58,8 @@ export class RealtimeSessionManager {
   private sessions: Map<string, ActiveSession> = new Map();
   private activeSummarizerRuns: Map<string, SummarizerRun> = new Map();
   private disposed = false;
+  private whisper: WhisperControls | null = null;
+  private lockSweepTimer: ReturnType<typeof setInterval> | null = null;
   private readonly onAgentSignal = (event: import("../events/bus").AgentSignalEvent): void => {
     this.handleSummarizerSignal(event);
   };
@@ -118,6 +133,14 @@ export class RealtimeSessionManager {
     // Listen for summarizer agent signals and exits
     eventBus.on("agent:signal", this.onAgentSignal);
     eventBus.on("agent:exit", this.onAgentExit);
+
+    // Release recording locks whose owner has gone silent (disconnected client).
+    this.lockSweepTimer = setInterval(() => this.sweepStaleLocks(), 10_000);
+  }
+
+  /** Wire the shared whisper transcriber controller (called once at boot). */
+  setWhisperControls(controls: WhisperControls): void {
+    this.whisper = controls;
   }
 
   /**
@@ -160,6 +183,9 @@ export class RealtimeSessionManager {
       stopped: false,
       tickInProgress: false,
       ingestInProgress: 0,
+      recordingOwner: null,
+      recordingOwnerLabel: null,
+      recordingActivityAt: null,
     };
     this.sessions.set(taskId, session);
 
@@ -175,10 +201,137 @@ export class RealtimeSessionManager {
     return { session_id: taskId, state: "active" };
   }
 
-  async ingestInput(taskId: string, input: InputChunk): Promise<void> {
+  // ── Single-writer audio recording lock ────────────────────────────────────
+  // Only one audio source may record into a task at a time. Acquire claims the
+  // lock (starting the session + shared transcriber), release/lease-expiry frees
+  // it, and every change fans out as a realtime:audio_lock event so all clients
+  // enable/disable their Record control.
+
+  /**
+   * Claim the recording lock for `source`. Ensures a session exists and starts
+   * the shared transcriber. Re-acquiring as the same owner (or when the previous
+   * owner's lease has expired) succeeds; a fresh conflicting owner is rejected.
+   */
+  async acquireRecording(
+    taskId: string,
+    source: { id: string; label: string },
+  ): Promise<{ ok: true; state: string } | { ok: false; error: string; ownerLabel?: string }> {
+    // Recording is only allowed on an approved (or already-running) real_time
+    // task — never a draft. Mirrors the start-session gate in routes/realtime.ts.
+    const task = this.db
+      .prepare("SELECT task_type, status FROM tasks WHERE id = ?")
+      .get(taskId) as { task_type: string; status: string } | null;
+    if (!task || task.task_type !== "real_time") {
+      return { ok: false, error: "Not found" };
+    }
+    if (task.status !== "approved" && task.status !== "running") {
+      return { ok: false, error: "TASK_NOT_APPROVED" };
+    }
+
+    if (!this.isSessionActive(taskId)) {
+      try { this.startSession(taskId); } catch { /* raced with another start */ }
+    }
+    const session = this.sessions.get(taskId);
+    if (!session) return { ok: false, error: "SESSION_UNAVAILABLE" };
+
+    const now = Date.now();
+    if (session.recordingOwner && session.recordingOwner !== source.id && !this.isLockStale(session, now)) {
+      return { ok: false, error: "RECORDING_IN_USE", ownerLabel: session.recordingOwnerLabel ?? "another client" };
+    }
+
+    session.recordingOwner = source.id;
+    session.recordingOwnerLabel = source.label;
+    session.recordingActivityAt = now;
+    this.persistRecordingOwner(taskId, source.id, source.label, now);
+
+    try {
+      await this.whisper?.acquire(source.id, this.db);
+    } catch (err) {
+      logError(this.db, "realtime.whisper_acquire", { taskId, owner: source.id }, err);
+    }
+
+    this.emitAudioLock(taskId, true, source.id, source.label);
+    return { ok: true, state: "active" };
+  }
+
+  /** Release the recording lock if `sourceId` currently holds it. */
+  async releaseRecording(taskId: string, sourceId: string): Promise<void> {
+    const session = this.sessions.get(taskId);
+    if (!session || session.recordingOwner !== sourceId) return;
+    await this.clearRecordingOwner(taskId, session, sourceId);
+  }
+
+  /** Current lock owner id, or null. Used by WS/SSE open handlers and render. */
+  getRecordingOwner(taskId: string): { owner: string; ownerLabel: string } | null {
+    const session = this.sessions.get(taskId);
+    if (!session || !session.recordingOwner) return null;
+    return { owner: session.recordingOwner, ownerLabel: session.recordingOwnerLabel ?? "another client" };
+  }
+
+  private async clearRecordingOwner(taskId: string, session: ActiveSession, ownerId: string): Promise<void> {
+    session.recordingOwner = null;
+    session.recordingOwnerLabel = null;
+    session.recordingActivityAt = null;
+    this.persistRecordingOwner(taskId, null, null, null);
+    this.emitAudioLock(taskId, false);
+    // Flush the owner's pending audio, then release the shared transcriber.
+    try { await this.drainAndTranscribe(taskId); } catch (err) { logError(this.db, "realtime.release_drain", { taskId }, err); }
+    try { this.whisper?.release(ownerId, this.db); } catch { /* best effort */ }
+  }
+
+  private isLockStale(session: ActiveSession, now: number): boolean {
+    if (!session.recordingOwner || session.recordingActivityAt == null) return true;
+    const cadenceMs = getRealtimeConfig(this.db).cadence_seconds * 1000;
+    const ttl = Math.max(30_000, 2 * cadenceMs);
+    return now - session.recordingActivityAt > ttl;
+  }
+
+  private sweepStaleLocks(): void {
+    const now = Date.now();
+    for (const [taskId, session] of this.sessions) {
+      if (session.recordingOwner && this.isLockStale(session, now)) {
+        const ownerId = session.recordingOwner;
+        console.log(`[realtime-session] recording lease expired: task=${taskId} owner=${ownerId} — releasing`);
+        this.clearRecordingOwner(taskId, session, ownerId).catch((err) =>
+          logError(this.db, "realtime.lock_sweep", { taskId }, err),
+        );
+      }
+    }
+  }
+
+  private persistRecordingOwner(
+    taskId: string,
+    owner: string | null,
+    label: string | null,
+    activityAt: number | null,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE realtime_pipeline_state
+         SET recording_owner = ?, recording_owner_label = ?, recording_activity_at = ?, updated_at = datetime('now')
+         WHERE task_id = ?`,
+      )
+      .run(owner, label, activityAt != null ? new Date(activityAt).toISOString() : null, taskId);
+  }
+
+  private emitAudioLock(taskId: string, locked: boolean, owner?: string, ownerLabel?: string): void {
+    eventBus.emit("realtime:audio_lock", { taskId, locked, owner, ownerLabel });
+  }
+
+  async ingestInput(taskId: string, input: InputChunk, source?: string): Promise<void> {
     const session = this.sessions.get(taskId);
     if (!session || session.stopped) {
       throw new Error("No active session for this task");
+    }
+
+    // Single-writer enforcement: audio may only come from the current lock owner.
+    // (Text input is never gated.) A caller that omits `source` is a legacy/local
+    // path and is allowed through unchanged.
+    if (input.sourceType === "audio" && session.recordingOwner && source) {
+      if (source !== session.recordingOwner) {
+        throw new Error("NOT_RECORDING_OWNER");
+      }
+      session.recordingActivityAt = Date.now(); // refresh the lease
     }
 
     session.ingestInProgress++;
@@ -1249,6 +1402,9 @@ export class RealtimeSessionManager {
       stopped: false,
       tickInProgress: false,
       ingestInProgress: 0,
+      recordingOwner: null,
+      recordingOwnerLabel: null,
+      recordingActivityAt: null,
     };
     this.sessions.set(taskId, session);
 
@@ -1300,6 +1456,7 @@ export class RealtimeSessionManager {
 
   dispose(): void {
     if (this.disposed) return;
+    if (this.lockSweepTimer) { clearInterval(this.lockSweepTimer); this.lockSweepTimer = null; }
     this.closeAllSessions();
     eventBus.off("agent:signal", this.onAgentSignal);
     eventBus.off("agent:exit", this.onAgentExit);
@@ -1318,6 +1475,12 @@ export class RealtimeSessionManager {
 
   private autoResumeSessions(): void {
     try {
+      // A restart drops every client socket, so no audio source can still hold a
+      // recording lock. Clear any persisted owner before resuming.
+      this.db
+        .prepare("UPDATE realtime_pipeline_state SET recording_owner = NULL, recording_owner_label = NULL, recording_activity_at = NULL")
+        .run();
+
       // Only resume sessions that were actively recording (cadence_timer_active = 1).
       // Paused sessions have cadence_timer_active = 0 and should stay paused.
       const runningTasks = this.db

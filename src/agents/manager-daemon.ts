@@ -13,6 +13,8 @@ import type { AgentExitEvent, AgentSignalEvent } from "../events/bus";
 import { logError } from "../logging";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "./types";
 import { isCustomAgentType } from "../custom-agents/store";
+import { isTaskTitleGeneratorConfigured } from "../config/model-settings";
+import { ensureTaskTitle } from "../tasks/title-generator";
 
 import { ReconciliationLoop } from "../orchestrator/tick-loop";
 import { TaskRunner } from "../orchestrator/task-runner";
@@ -787,10 +789,15 @@ export class ManagerDaemon {
     }
 
     const timestamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+    const seriesTitle = scheduled.title?.trim();
+    const generatorOn = isTaskTitleGeneratorConfigured(this.db);
+    // Cron firing carries no per-run input; use the series title stamped with the
+    // run time, else generate from the description (or timestamp when no generator).
+    const initialTitle = seriesTitle ? `${seriesTitle} (${timestamp})` : generatorOn ? "" : timestamp;
     // The global-store contract rides in the run's task_config so the prompt
     // builder can inject it (same merge as runTaskNow).
     const task = this.taskScheduler.createTask({
-      title: `${scheduled.title} (${timestamp})`,
+      title: initialTitle,
       description: scheduled.description ?? undefined,
       teamId: scheduled.team_id ?? undefined,
       workingDirectory: scheduled.working_directory,
@@ -803,6 +810,10 @@ export class ManagerDaemon {
     this.db
       .prepare("UPDATE tasks SET source_scheduled_task_id = ? WHERE id = ?")
       .run(scheduled.id, task.id);
+
+    if (!initialTitle) {
+      void ensureTaskTitle(this.db, this.taskScheduler, task.id);
+    }
 
     this.taskScheduler.approveTask(task.id);
     this.scheduledTaskScheduler.recordRun(scheduled.id);

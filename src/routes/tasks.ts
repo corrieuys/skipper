@@ -15,6 +15,8 @@ import { getRealtimeTeamId } from "../config/teams";
 import { parsePhaseOverridesFromForm } from "./phase-overrides";
 import { parseScheduleFields } from "./scheduled-tasks";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
+import { isTaskTitleGeneratorConfigured } from "../config/model-settings";
+import { ensureTaskTitle } from "../tasks/title-generator";
 
 function connectStatusFragment(status: ConnectionStatus): string {
   return `<span class="sk-connect__status" data-status="${status}" hx-get="/api/settings/skipper-connect/status" hx-trigger="every 5s" hx-swap="outerHTML"></span>`;
@@ -139,7 +141,11 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     const autoApproveRaw = formData.get("autoApprove");
     const shouldAutoApprove = autoApproveRaw === "1" || autoApproveRaw === "true";
 
-    if (!title || typeof title !== "string" || !title.trim()) {
+    // Title is optional ONLY when a title-generator provider is configured; the
+    // daemon then generates one from the description. Without a generator the
+    // title stays required.
+    const titleStr = typeof title === "string" ? title.trim() : "";
+    if (!titleStr && !isTaskTitleGeneratorConfigured(getDb())) {
       return taskCreationPageResponse("title is required", daemon?.getStatus());
     }
 
@@ -158,7 +164,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       const globalStoreInstructionsRaw = formData.get("globalStoreInstructions");
       const scheduledScheduler = new ScheduledTaskScheduler();
       const scheduled = scheduledScheduler.createScheduledTask({
-        title: title.trim(),
+        title: titleStr,
         description: typeof description === "string" && description.trim() ? description.trim() : undefined,
         teamId: resolvedTeamId,
         workingDirectory: typeof workingDirectoryRaw === "string" && workingDirectoryRaw.trim() ? workingDirectoryRaw.trim() : process.cwd(),
@@ -215,13 +221,19 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       const finalDescription = typeof description === "string" && description.trim() ? description.trim() : undefined;
 
       let created = scheduler.createTask({
-        title: title.trim(),
+        title: titleStr,
         description: finalDescription,
         teamId: resolvedTeamId,
         workingDirectory,
         taskType,
         taskConfig,
       });
+
+      // Blank title: generate one from the description asynchronously so the
+      // create returns immediately; the title lands via updateTitle's event.
+      if (!titleStr) {
+        void ensureTaskTitle(db, scheduler, created.id);
+      }
 
       // Collect per-task phase overrides (prompt / review gate / consensus) from
       // the task-create form fields. See src/routes/phase-overrides.ts.
@@ -893,10 +905,17 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
           }
         };
 
+        const audioLockHandler = (event: { taskId: string; locked: boolean; owner?: string; ownerLabel?: string }) => {
+          if (event.taskId === params.id) {
+            sendEvent("audio.lock", { locked: event.locked, owner: event.owner, owner_label: event.ownerLabel });
+          }
+        };
+
         eventBus.on("realtime:window_ready", windowHandler);
         eventBus.on("realtime:trigger_fired", triggerHandler);
         eventBus.on("realtime:session_state", sessionHandler);
         eventBus.on("realtime:timeline_updated", timelineHandler);
+        eventBus.on("realtime:audio_lock", audioLockHandler);
 
         // Send initial state
         sendEvent("session.state", { state: task.status === "running" ? "active" : "stopped" });
@@ -907,6 +926,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
           eventBus.off("realtime:trigger_fired", triggerHandler);
           eventBus.off("realtime:session_state", sessionHandler);
           eventBus.off("realtime:timeline_updated", timelineHandler);
+          eventBus.off("realtime:audio_lock", audioLockHandler);
           try { controller.close(); } catch { /* already closed */ }
         });
       },

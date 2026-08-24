@@ -366,6 +366,9 @@ CREATE TABLE IF NOT EXISTS realtime_pipeline_state (
   last_analyst_fed_version INTEGER NOT NULL DEFAULT 0,
   queued_summary_versions TEXT NOT NULL DEFAULT '[]',
   cadence_timer_active INTEGER NOT NULL DEFAULT 0,
+  recording_owner TEXT,
+  recording_owner_label TEXT,
+  recording_activity_at TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

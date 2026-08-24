@@ -93,6 +93,33 @@ export function teamCenterStyles(): string {
       color: var(--sk-accent-primary); background: var(--sk-accent-primary-dim);
       border-radius: 9px; padding: 1px 7px; flex: none;
     }
+    /* Quick-create "+", revealed on row hover (matches the stylesheet's
+       hover-reveal idiom). Opens the create form pre-selected for this team. */
+    .tc-team__add {
+      flex: none; opacity: 0; text-decoration: none;
+      width: 18px; height: 18px; line-height: 16px; text-align: center;
+      border-radius: var(--sk-radius-sm); color: var(--sk-text-subtle);
+      font-size: 15px; font-weight: 600;
+    }
+    .tc-team__head:hover .tc-team__add { opacity: 1; }
+    .tc-team__add:hover { color: var(--sk-accent-primary); background: var(--sk-surface-3); }
+    /* Shimmer placeholder shown in a sidebar row while the daemon generates the
+       task title. Replaced by the real title on the next task:state_changed push. */
+    .tc-title-skel { flex: 1; min-width: 0; display: flex; align-items: center; }
+    .tc-title-skel__bar {
+      display: block; height: 0.72em; width: 68%; border-radius: 4px;
+      background: linear-gradient(90deg,
+        var(--sk-surface-3) 25%, var(--sk-surface-4) 37%, var(--sk-surface-3) 63%);
+      background-size: 200% 100%;
+      animation: tc-title-shimmer 1.2s ease-in-out infinite;
+    }
+    @keyframes tc-title-shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .tc-title-skel__bar { animation: none; }
+    }
     .tc-team__tasks { padding: 0 0 0.3rem; }
     .tc-team__tasks .mc-sidebar__item { padding-left: 3rem; }
     .tc-team__empty {

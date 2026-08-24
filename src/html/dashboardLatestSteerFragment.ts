@@ -40,10 +40,9 @@ export function groupSteerOptionsToTiles(options: SteeringOption[]): AgentTile[]
 
 /**
  * Zen-style team roster for the dashboard. Renders every team member using the
- * same `.zen-orb` markup as zen mode, so `zen-orbs-3d.js` upgrades them to the
- * faceted 3D gems (active = lit, idle = dimmed). Orbs are flagged
- * `data-zen-no-drag` so the 3D drag handler is suppressed and a click opens the
- * instance modal (see `agentInstancesModalFragment`) where steering happens.
+ * same `.zen-orb` markup as zen mode; `zen-cube-2d.js` spins the active ones as
+ * flat 2D cubes (active = lit + spinning, idle = dimmed + still). A click opens
+ * the instance modal (see `agentInstancesModalFragment`) where steering happens.
  * Idle members render as non-interactive orbs.
  */
 export function dashboardSteerListFragment(

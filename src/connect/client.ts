@@ -5,6 +5,7 @@ import type { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import type { EscalationManager } from "../escalations/manager";
 import type { ArtifactManager } from "../orchestrator/artifact-manager";
 import type { PhaseManager } from "../orchestrator/phase-manager";
+import type { RealtimeSessionManager } from "../orchestrator/realtime-session";
 import type { ClientMessage, ServerMessage, ConnectTool } from "./protocol";
 import { executeCommand } from "./commands";
 import { handleResourceRequest, type ResourceDeps } from "./resources";
@@ -29,6 +30,7 @@ export class ConnectClient {
   private escalationManager: EscalationManager;
   private artifactManager: ArtifactManager;
   private phaseManager: PhaseManager;
+  private realtimeSessionManager: RealtimeSessionManager;
 
   constructor(
     taskScheduler: TaskScheduler,
@@ -36,12 +38,14 @@ export class ConnectClient {
     escalationManager: EscalationManager,
     artifactManager: ArtifactManager,
     phaseManager: PhaseManager,
+    realtimeSessionManager: RealtimeSessionManager,
   ) {
     this.taskScheduler = taskScheduler;
     this.scheduledTaskScheduler = scheduledTaskScheduler;
     this.escalationManager = escalationManager;
     this.artifactManager = artifactManager;
     this.phaseManager = phaseManager;
+    this.realtimeSessionManager = realtimeSessionManager;
   }
 
   start(): void {
@@ -77,6 +81,7 @@ export class ConnectClient {
       escalationManager: this.escalationManager,
       artifactManager: this.artifactManager,
       phaseManager: this.phaseManager,
+      realtimeSessionManager: this.realtimeSessionManager,
     };
   }
 
@@ -229,8 +234,9 @@ export function initConnectClient(
   escalationManager: EscalationManager,
   artifactManager: ArtifactManager,
   phaseManager: PhaseManager,
+  realtimeSessionManager: RealtimeSessionManager,
 ): ConnectClient {
-  _connectClient = new ConnectClient(taskScheduler, scheduledTaskScheduler, escalationManager, artifactManager, phaseManager);
+  _connectClient = new ConnectClient(taskScheduler, scheduledTaskScheduler, escalationManager, artifactManager, phaseManager, realtimeSessionManager);
   return _connectClient;
 }
 
