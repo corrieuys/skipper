@@ -595,6 +595,9 @@ CREATE TABLE IF NOT EXISTS custom_agents (
   enabled_custom_tools TEXT NOT NULL DEFAULT '[]',
   max_steps INTEGER NOT NULL DEFAULT 40,
   temperature REAL,
+  -- Chosen identity: color (hex) tints the orb + timeline; character is a creature id.
+  color TEXT,
+  character TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

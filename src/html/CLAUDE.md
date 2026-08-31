@@ -6,7 +6,7 @@ Server-side HTML rendering. No framework — string templates from TS.
 
 | dir | use |
 |---|---|
-| `atoms/` | Smallest helpers: `escape-html`, `render-inline-markdown` (safe inline md → HTML for the activity feed: escapes first, then a fixed `<strong>`/`<em>`/`<code>` allowlist; unrecognised/unbalanced markers stay plain text), `render-message-body` (operator-message body by stored format: text=escaped, markdown=`data-artifact-md`, html=trusted inline w/ scripts stripped; shared by timeline + Messages dock), `format-timestamp`, `format-tokens`, `sniff-html` |
+| `atoms/` | Smallest helpers: `escape-html`, `render-inline-markdown` (safe inline md → HTML for the activity feed: escapes first, then a fixed `<strong>`/`<em>`/`<code>` allowlist; unrecognised/unbalanced markers stay plain text), `render-message-body` (operator-message body by stored format: text=escaped, markdown=`data-artifact-md`, html=trusted inline w/ scripts stripped; shared by timeline + Messages dock), `format-timestamp`, `format-tokens`, `sniff-html`, `creature` (the six agent creature characters + color palette — `creatureSvg`, `CREATURE_IDS`, `AGENT_COLORS`, `sanitizeColor`; tints via `--agent-color`/`--agent-ink` CSS vars), `agent-identity-picker` (`agentIdentityPicker`/`identityPanel` HTML + `agentIdentityPickerScript` client wiring, exposing `window.SkipperIdentity.read/set`; shared by all three agent editors) |
 | `fragments/` | Single-element snippets (badge, metric, task-row, tree-node, phase-step…). Also the v2-UI composite fragments: `task-timeline.fragment.ts` (unified timeline: agent prose + operator messages as cards, tool frames grouped into `<details>`, escalations inline via `escalationCardPanel`; drops duplicate `result` frames) and `artifact-list.fragment.ts` (per-name rows, main link opens latest, expandable version sub-list) — both shared by the fragment routes and `ws/ui-push.ts` |
 | `panels/` | Larger composite cards (steer panel, active mission, task queue, phase stepper, escalation bar/card, iterate, metrics bar, artifacts, notes) |
 | `pages/` | Full-page renderers (command-center, task-list, task-create, config, logs, grug, agent-terminal, teams, team-map). Recurring tasks use the same task-create form (Task Type = Recurring) |
@@ -18,14 +18,21 @@ old classic dock sidebar/task-view were removed (there is no `isV2UI` flag). The
 `tc-` ("team-center") layout below is what renders; realtime, draft and scheduled
 views share the same shell.
 
-- **Sidebar** (`renderSidebarListBody`) is one scrolling list sectioned by
-  liveness, not tabs. Each Teams and Agents row (`renderTeamGroup`) reveals a
+- **Sidebar** (`renderSidebarListBody`) is a segmented **tab bar** (`.tc-tabs`,
+  mirroring the iOS `Board` picker) over four boards: **Latest** / **Recurring**
+  / **Teams** / **Agents**. Only one `.tc-board` panel shows at a time; the
+  server always renders Latest active and the client re-applies the persisted
+  board (`sidebarBoard`, `tcSetBoard`/`tcRestoreBoard` in `skipper.js`) after
+  every WS re-render. Tabs switch via a `[data-tc-board]` click delegate. Each
+  Teams and Agents row (`renderTeamGroup`) reveals a
   hover **"+"** (`.tc-team__add`) linking to `/tasks/new?team=<id>` — the create
   form pre-selects that team/agent (the `/fragments/task-form/team` picker honours
-  `selectedTeamId` for real teams and `sa:`/`ca:` solo agents alike). Sections:
-  **Needs you** (tasks with `has_attention`, always visible,
+  `selectedTeamId` for real teams and `sa:`/`ca:` solo agents alike). Boards:
+  **Latest** stacks **Needs you** (tasks with `has_attention`, always visible,
   never collapsible) → **Active** (running/approved/paused/draft, any kind) →
-  **Recurring** (one series row per recurring task: name opens the detail view,
+  **Recent** (the 5 latest tasks not already in Needs you / Active — mostly
+  completed/failed history, `allTasks` is created_at DESC so a post-exclusion
+  slice is chronological). **Recurring** (one series row per recurring task: name opens the detail view,
   last 5 runs as status squares via `vm.scheduledRuns` /
   `data/command-center.ts:fetchRecentScheduledRuns`, expanding lists those runs
   as direct links into each run's task view + "All runs") → **Teams** (each team
@@ -34,7 +41,11 @@ views share the same shell.
   history" link to `/tasks`. Section and series collapse state persists through
   the same `data-tc-team` toggle store in `skipper.js` (keys `sec:<name>` /
   `rec:<id>`) because WS pushes re-render the list blind. `/?team=<id>` opens a
-  team's landing task.
+  team's landing task. When pinned open on desktop, the sidebar is
+  drag-resizable via a right-edge handle (`.mc-sidebar__resize`
+  `[data-sk-sidebar-resize]`): the drag sets `--mc-sidebar-w` on `.mc-workspace`
+  (the pinned grid column + hover-overlay width both read that var) and persists
+  it as `mcSidebarW` (`Skipper.sidebar.restoreWidth` re-applies on load).
 - **Task view** (`taskMainContent`): full-width task header (stepper, orbs,
   lifecycle actions), attention slot (review/recovery/iterate/result), then
   `.tc-work` = timeline column + draggable divider (`data-tc-divider`; rail
@@ -48,7 +59,32 @@ views share the same shell.
 - **Artifacts** rail uses `fragments/artifact-list.fragment.ts`; the detail
   opens fullscreen via the existing `#sk-artifact-detail-window` ids restyled as
   `.tc-artifact-overlay`.
-- Styles in `styles/team-center.ts` (`tc-` prefix), theme-token based.
+- **Agent identity** — each agent may carry a chosen `color` + creature
+  `character` (`atoms/creature.ts`, seven creatures incl. `captain`, the Skipper's
+  cap). The active-agent orb banner (`dashboardLatestSteerFragment`) renders the
+  creature when set (tinted by the color): an active creature **hops** (never
+  spins) — `zen-cube-2d.js` fires a burst of a random 1–3 `zen-hop-once` hops then
+  rests a random 0.8–4.2s, per creature, so the amount and interval read as random;
+  eyes **blink** every few seconds (CSS); an **inactive** creature sleeps — eyes
+  shut (no Zs). An agent with several running
+  instances renders a small overlapping **crowd** (`creatureStack`, `.zen-orb__stack`,
+  max 3 on screen, back copies smaller + dimmer, each hopping on its own
+  `--hop-delay`) beside the real count badge. With no character the orb
+  keeps the 2D cube (`zen-cube-2d.js` skips creature orbs, tints a cube from
+  `data-zen-color`). Editors pre-fill a **random** color+creature for a new agent
+  when experimental (`randomIdentity`, excludes `captain`); the character picker
+  section itself is experimental-gated (color always shown). The Skipper's own
+  identity is set on the config page's experimental **Skipper Character** panel
+  (`agents/skipper.ts:getSkipperIdentity`/`saveSkipperIdentity`, defaults to the
+  captain, applied onto the `skipper` `agents` row at boot). The
+  same color tints that agent's timeline name + avatar (`task-timeline.fragment.ts`
+  `proseEntry`/`messageCard`/`sysGroupHtml` and the realtime `parseRealtimeActivity`
+  feed); both read it via `json_extract(agents.config,'$.color')`, falling back to
+  the `avatarIndex` name-hash bucket when unset. Identity is stored per agent kind
+  and projected into `agents.config` — see the store CLAUDE.md files.
+- Styles in `styles/team-center.ts` (`tc-` prefix), theme-token based;
+  identity picker in `styles/identity.ts`, creature/orb animation in
+  `styles/animations.ts`.
 | `shell/` | Layout + navbar wrappers |
 | `view-models/` | Data shape feeding renderers (e.g. `command-center.vm.ts`). Pure assemblers — SQL lives in `src/data` (`command-center.ts`), never here |
 | `styles/` | CSS strings |

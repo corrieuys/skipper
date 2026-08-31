@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "crypto";
 import { clearAgentTypeCache, CUSTOM_TYPE_PREFIX, isCustomAgentType } from "../agents/types";
+import { isCreatureId, sanitizeColor } from "../html/atoms/creature";
 import {
   CUSTOM_AGENT_SOLO_PREFIX,
   soloProjectedId,
@@ -30,6 +31,8 @@ function toSoloSpec(agent: CustomAgent): SoloAgentSpec {
     model: agent.modelId,
     instruction: "",
     capabilities: [],
+    color: agent.color ?? null,
+    character: agent.character ?? null,
   };
 }
 
@@ -98,6 +101,10 @@ export interface CustomAgent {
   enabledSkills: string[];
   maxSteps: number;
   temperature: number | null;
+  /** Chosen identity color (hex) — tints the orb + this agent's timeline output. */
+  color: string | null;
+  /** Chosen creature character id (null = cube fallback). */
+  character: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -138,6 +145,8 @@ interface CustomAgentRow {
   enabled_skills: string;
   max_steps: number;
   temperature: number | null;
+  color: string | null;
+  character: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -169,6 +178,8 @@ function rowToAgent(row: CustomAgentRow): CustomAgent {
     enabledSkills: parseJson<string[]>(row.enabled_skills, []),
     maxSteps: row.max_steps,
     temperature: row.temperature,
+    color: row.color ?? null,
+    character: row.character ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -265,6 +276,8 @@ export function normalizeCustomAgentInput(input: CustomAgentInput): CustomAgentI
     enabledSkills: strings(input.enabledSkills),
     maxSteps,
     temperature,
+    color: input.color ? sanitizeColor(input.color) : null,
+    character: isCreatureId(input.character) ? input.character : null,
   };
 }
 
@@ -275,8 +288,8 @@ export function createCustomAgent(db: Database, input: CustomAgentInput): Custom
     `INSERT INTO custom_agents (
        id, name, description, base_url, model_id, api_key, headers, query_params, system_prompt,
        enabled_tools, enabled_mcp_tools, enabled_server_tools, enabled_custom_tools,
-       enabled_skills, max_steps, temperature
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       enabled_skills, max_steps, temperature, color, character
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     normalized.name,
@@ -294,6 +307,8 @@ export function createCustomAgent(db: Database, input: CustomAgentInput): Custom
     JSON.stringify(normalized.enabledSkills),
     normalized.maxSteps,
     normalized.temperature,
+    normalized.color,
+    normalized.character,
   );
   registerCustomAgentTypes(db);
   refreshCustomAgentSolo(db, id);
@@ -320,7 +335,7 @@ export function updateCustomAgent(db: Database, id: string, input: CustomAgentIn
        name = ?, description = ?, base_url = ?, model_id = ?, api_key = ?, headers = ?,
        query_params = ?, system_prompt = ?, enabled_tools = ?, enabled_mcp_tools = ?,
        enabled_server_tools = ?, enabled_custom_tools = ?, enabled_skills = ?,
-       max_steps = ?, temperature = ?, updated_at = datetime('now')
+       max_steps = ?, temperature = ?, color = ?, character = ?, updated_at = datetime('now')
      WHERE id = ?`,
   ).run(
     normalized.name,
@@ -338,6 +353,8 @@ export function updateCustomAgent(db: Database, id: string, input: CustomAgentIn
     JSON.stringify(normalized.enabledSkills),
     normalized.maxSteps,
     normalized.temperature,
+    normalized.color,
+    normalized.character,
     id,
   );
   registerCustomAgentTypes(db);

@@ -1012,12 +1012,22 @@ export class ManagerDaemon {
         const typeDef = agent ? getAgentTypeDefinition(agent.type, this.db) : null;
         const isStreaming = typeDef?.supports_stdin ?? false;
         if (!isStreaming && !this.hasCompletedTurnOutput(event.agentId)) {
-          logError(this.db, "agent_exit_bail", { agentId: event.agentId, taskId, reason: "no_completed_turn_output", method: "handleAgentExit" }, new Error("bail"));
-          try {
-            this.taskScheduler.failTask(taskId, "Agent exited without completed turn output (missing result/turn.completed/step_finish)");
-          } catch (err) {
-            logError(this.db, "agent_exit_no_turn_output_fail_task", { agentId: event.agentId, taskId }, err);
-          }
+          // Clean exit (code 0) but no completed-turn marker: the run's
+          // tool/MCP session dropped or the turn aborted before emitting
+          // result / turn.completed / step_finish. This is a TRANSIENT fault,
+          // not a terminal one, so do NOT failTask here — that used to throw
+          // away long-running multi-phase work on a single dropped turn.
+          //
+          // Leave the task 'running' with no live instance and let the
+          // tick-loop orphan recovery (recoverAllStaleTasks) treat it exactly
+          // like a crashed/orphaned root agent: it respawns the entrypoint
+          // (15s grace, session/context preserved) and, if that retry makes
+          // no forward progress, pauses the task for human Resume with notes,
+          // artifacts, escalations, and checkpoints intact — rather than a
+          // silent hard failure. The `if (!respawned)` block below marks this
+          // instance finished + clears current_task_id, which is what makes
+          // the task look orphaned to the recovery loop.
+          logError(this.db, "agent_exit_bail", { agentId: event.agentId, taskId, reason: "no_completed_turn_output_recoverable", method: "handleAgentExit" }, new Error("bail"));
         } else {
           // Phase advancement is Skipper-explicit only. A clean exit with no
           // outstanding delegation / escalation simply means Skipper's turn
@@ -1053,7 +1063,25 @@ export class ManagerDaemon {
         this.db
           .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
           .run(templateId);
-        updateInstanceStatus(this.db, event.agentId, event.code === 0 ? "completed" : "failed");
+        const finalStatus = event.code === 0 ? "completed" : "failed";
+        updateInstanceStatus(this.db, event.agentId, finalStatus);
+        // Announce the settled status so the UI clears this agent's "active"
+        // orb. updateInstanceStatus is a bare UPDATE that emits nothing, and the
+        // ui-push agent:exit handler already ran synchronously BEFORE this line —
+        // it read the instance as still 'running' and rebuilt the steer panel
+        // with the orb lit. Without this follow-up event nothing re-pushes once
+        // the status flips, so the orb stayed active until a manual refresh.
+        const rel = this.db
+          .prepare("SELECT parent_instance_id, root_instance_id FROM agent_instances WHERE id = ?")
+          .get(event.agentId) as { parent_instance_id: string | null; root_instance_id: string | null } | null;
+        eventBus.emit("instance:state_changed", {
+          instanceId: event.agentId,
+          templateAgentId: templateId,
+          taskId,
+          parentInstanceId: rel?.parent_instance_id ?? null,
+          rootInstanceId: rel?.root_instance_id ?? null,
+          status: finalStatus,
+        });
       }
     } catch (err) {
       logError(this.db, "agent_exit_handler", { agentId: event.agentId, method: "handleAgentExit" }, err);

@@ -88,6 +88,18 @@ describe("local teams persistence + flatten", () => {
     expect(Object.keys(devMember)).not.toContain("parent_agent_id");
   });
 
+  it("an inline agent's chosen identity round-trips onto the projected agent", () => {
+    createLocalTeam(db, {
+      ...baseInput(),
+      agents: [
+        { id: "dev", name: "Dev", type: pickAgentType(), model: "default", instruction: "x", color: "#5ccadb", character: "sprout" },
+      ],
+    });
+    const dev = getAgent(namespacedAgentId("alpha", "dev"))!;
+    expect(dev.color).toBe("#5ccadb");
+    expect(dev.character).toBe("sprout");
+  });
+
   it("flatten reaches the config tables (delegation legality query returns a row)", () => {
     createLocalTeam(db, baseInput());
     const devId = namespacedAgentId("alpha", "dev");

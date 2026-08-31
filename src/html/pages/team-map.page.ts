@@ -2,6 +2,8 @@ import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
 import { isExperimental } from "../../config/feature-flags";
+import { agentIdentityPicker, agentIdentityPickerScript } from "../atoms/agent-identity-picker";
+import { AGENT_COLORS, CREATURE_IDS } from "../atoms/creature";
 import type { LocalTeam } from "../../teams/local-teams";
 
 /**
@@ -184,6 +186,14 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       // section is not rendered its apply path must LEAVE the stored value alone
       // rather than read a missing field as "cleared".
       var EXPERIMENTAL = ${isExperimental() ? "true" : "false"};
+      var AGENT_COLORS = ${JSON.stringify(AGENT_COLORS)};
+      var CREATURE_CHOICES = ${JSON.stringify(CREATURE_IDS.filter((c) => c !== "captain"))};
+      function randomIdentity(){
+        return {
+          color: AGENT_COLORS[Math.floor(Math.random()*AGENT_COLORS.length)],
+          character: CREATURE_CHOICES[Math.floor(Math.random()*CREATURE_CHOICES.length)]
+        };
+      }
 
       var flowEl = document.getElementById('tm-flow');
       var crewEl = document.getElementById('tm-crew');
@@ -479,7 +489,10 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       function addAgent(){
         var type = (AGENT_TYPES[0] && AGENT_TYPES[0].name) || 'claude-code';
         var id = uniqueAgentId('agent');
-        TEAM.agents.push({ id: id, name: 'New Agent', type: type, model: 'default', instruction: '', customTools: [] });
+        var agent = { id: id, name: 'New Agent', type: type, model: 'default', instruction: '', customTools: [] };
+        // Experimental: give a fresh agent a random color + creature by default.
+        if (EXPERIMENTAL){ var ri = randomIdentity(); agent.color = ri.color; agent.character = ri.character; }
+        TEAM.agents.push(agent);
         markDirty(); render();
         openAgentModal(id);
       }
@@ -748,18 +761,32 @@ export function teamMapPage(vm: TeamMapViewModel): string {
           '</div>' +
           '<div class="tm-field"><label class="sk-label">Instruction</label>' +
             '<textarea class="sk-textarea tm-field__prompt" data-f="instruction" placeholder="System instruction for this agent...">' + esc(a.instruction || '') + '</textarea></div>' +
+          '<div class="tm-field"><label class="sk-label">Color &amp; character</label>' +
+            '<div data-identity-slot></div></div>' +
           customToolsField(a.customTools);
 
         openModal('Agent', body, doneFooter(), function(){
           var typeSel = modalBody.querySelector('[data-f="type"]');
           var modelInput = modalBody.querySelector('[data-f="model"]');
+          // Clone the identity picker template into the slot and seed it.
+          var slot = modalBody.querySelector('[data-identity-slot]');
+          var tpl = document.getElementById('tm-identity-tpl');
+          if (slot && tpl) {
+            slot.appendChild(tpl.content.cloneNode(true));
+            var idRoot = slot.querySelector('[data-agent-identity]');
+            if (idRoot && window.SkipperIdentity) window.SkipperIdentity.set(idRoot, a.color || '', a.character || '');
+          }
           wireFooter(function(){
             var name = modalBody.querySelector('[data-f="name"]').value.trim();
             if (!name) { flashError('An agent needs a name.'); return false; }
+            var idRoot2 = modalBody.querySelector('[data-agent-identity]');
+            var ident = (idRoot2 && window.SkipperIdentity) ? window.SkipperIdentity.read(idRoot2) : { color: a.color, character: a.character };
             a.name = name;
             a.type = typeSel.value;
             a.model = modelInput.value.trim() || 'default';
             a.instruction = modalBody.querySelector('[data-f="instruction"]').value;
+            a.color = ident.color;
+            a.character = ident.character;
             var role = modalBody.querySelector('[data-f="role"]').value.trim();
             if (role) a.role = role; else delete a.role;
             // Only read the tool checkboxes when the section was rendered; with
@@ -950,5 +977,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       if (IS_NEW) openSettingsModal();
     })();
     </script>
+    <template id="tm-identity-tpl">${agentIdentityPicker({ experimental: isExperimental() })}</template>
+    ${agentIdentityPickerScript()}
   `, "/teams");
 }

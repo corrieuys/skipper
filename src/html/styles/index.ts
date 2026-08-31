@@ -16,6 +16,7 @@ import { missionControlStyles } from "./mission-control";
 import { teamCenterStyles } from "./team-center";
 import { teamMapStyles } from "./team-map";
 import { toastStyles } from "./toast";
+import { identityStyles } from "./identity";
 
 /** New design system styles (sk- prefixed). Used by v2 pages. */
 export function skStyles(): string {
@@ -34,6 +35,7 @@ export function skStyles(): string {
     teamCenterStyles(),
     teamMapStyles(),
     toastStyles(),
+    identityStyles(),
   ].join("\n");
 }
 

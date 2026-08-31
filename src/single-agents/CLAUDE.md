@@ -67,6 +67,11 @@ that override to the `skipper` template id).
 Persisted in the runtime DB (`single_agents`, migration `0022`), never the shared
 committed config tables - same rule as `local_teams`/`custom_agents`.
 
+Identity (`color` + creature `character`) lives in the `SingleAgentConfig` JSON
+blob (no migration) — `serializeConfig` + route `coerceConfig` whitelist it, and
+`toSpec` threads it through the solo projection into `agents.config` so the orb +
+timeline read it. Edited on the single-agent form's Identity panel.
+
 UI: single agents are browsed in the **combined agent library** at
 `/agent-library` (nav "Agents"; `/single-agents` 302s there) - see
 [../html/CLAUDE.md](../html/CLAUDE.md). Editor at `/single-agents/:id` +

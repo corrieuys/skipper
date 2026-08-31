@@ -60,6 +60,10 @@ export interface SoloAgentSpec {
   model: string;
   instruction?: string;
   capabilities?: string[];
+  /** Chosen identity color (hex). */
+  color?: string | null;
+  /** Chosen creature character id. */
+  character?: string | null;
 }
 
 function toSharedAgent(spec: SoloAgentSpec): AgentDefinition {
@@ -70,6 +74,8 @@ function toSharedAgent(spec: SoloAgentSpec): AgentDefinition {
     model: spec.model || "default",
     instruction: spec.instruction ?? "",
     capabilities: spec.capabilities ?? [],
+    color: spec.color ?? null,
+    character: spec.character ?? null,
   };
 }
 
@@ -122,7 +128,7 @@ export function upsertSoloIntoSharedTables(db: Database, spec: SoloAgentSpec): v
     sharedAgent.name,
     sharedAgent.type,
     sharedAgent.model,
-    JSON.stringify({ instruction: sharedAgent.instruction }),
+    JSON.stringify({ instruction: sharedAgent.instruction, color: sharedAgent.color, character: sharedAgent.character }),
     JSON.stringify(sharedAgent.capabilities),
     ts,
     ts,

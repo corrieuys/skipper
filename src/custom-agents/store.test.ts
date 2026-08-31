@@ -76,6 +76,20 @@ describe("validation", () => {
     expect(out.apiKey).toBe("");
   });
 
+  it("normalizes + persists a chosen identity; junk color/character are dropped", () => {
+    const out = normalizeCustomAgentInput(input({ color: "#7BD88F", character: "pod" }));
+    expect(out.color).toBe("#7bd88f");
+    expect(out.character).toBe("pod");
+    const bad = normalizeCustomAgentInput(input({ color: "red", character: "dragon" }));
+    expect(bad.color).toBe("#6ea8fe"); // sanitized to default
+    expect(bad.character).toBeNull();
+
+    const created = createCustomAgent(db, input({ color: "#c988f0", character: "mite" }));
+    const fetched = getCustomAgentByType(db, customAgentTypeName(created.id))!;
+    expect(fetched.color).toBe("#c988f0");
+    expect(fetched.character).toBe("mite");
+  });
+
   it("strips a trailing slash so the SDK does not build a double slash", () => {
     expect(normalizeCustomAgentInput(input({ baseUrl: "http://localhost:8080/v1/" })).baseUrl)
       .toBe("http://localhost:8080/v1");

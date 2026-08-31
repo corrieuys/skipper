@@ -22,6 +22,10 @@ export interface TaskListItem {
   needs_review: boolean;
   created_at: string;
   updated_at: string | null;
+  /** When the task most recently entered `running` (null until it first runs).
+   * Clients anchor a running task's elapsed time to this, not updated_at, which
+   * ticks on every progress write. */
+  started_at: string | null;
   /** Set when this task is a run of a recurring task; null for standalone tasks.
    * Lets clients present recurring runs separately (like the main UI, which
    * keeps non-active recurring runs out of the Active/Teams lists). */

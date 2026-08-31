@@ -19,6 +19,15 @@ const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB
 // ~100KB prompt limit — leaves headroom for system prompt and conversation context
 const MAX_PROMPT_BYTES = 100_000;
 const TRUNCATION_MARKER = "\n\n[PROMPT TRUNCATED — original exceeded size limit. Work with the information above.]\n";
+// Cap the STORED size of a single terminal_outputs frame. A few tasks emitting
+// giant tool-output dumps (file reads, build logs) grew terminal_outputs to
+// ~200MB on one task, which made the timeline query (fetches the raw `data` for
+// up to 2400 rows) take multiple seconds. Only the persisted copy is capped —
+// the full text still reaches the realtime event + the signal-scan buffer, so
+// marker detection and live push are unaffected. Frames <=32KB (all normal
+// chatter and every completion/summary frame) are stored verbatim.
+const MAX_TERMINAL_OUTPUT_BYTES = 32_768;
+const TERMINAL_OUTPUT_TRUNCATION_MARKER = "\n[…frame truncated at 32KB for storage…]";
 
 // Proactive compaction threshold for resume messages
 const RESUME_COMPACT_CHARS = 200_000;
@@ -955,11 +964,16 @@ export class AgentManager {
     const seq = runningAgent.outputSequence;
     try {
       if (!this.closed) {
+        // Store a size-capped copy only; the full `text` still flows to the
+        // realtime event + signal-scan buffer below.
+        const stored = Buffer.byteLength(text, "utf-8") > MAX_TERMINAL_OUTPUT_BYTES
+          ? truncateToByteLimit(text, MAX_TERMINAL_OUTPUT_BYTES) + TERMINAL_OUTPUT_TRUNCATION_MARKER
+          : text;
         this.db
           .prepare(
             "INSERT INTO terminal_outputs (agent_id, session_id, stream, data, sequence) VALUES (?, ?, ?, ?, ?)",
           )
-          .run(runningAgent.id, runningAgent.spawnSessionId, streamType, text, seq);
+          .run(runningAgent.id, runningAgent.spawnSessionId, streamType, stored, seq);
       }
     } catch (err) {
       if (!this.closed) logError(this.db, "agent.store_output", { agentId: runningAgent.id, streamType, seq }, err);

@@ -10,9 +10,18 @@ import { isExperimental } from "../../config/feature-flags";
 import { isSoloTeamId } from "../../agents/solo";
 import { parseScheduleMatrix } from "../../tasks/scheduled-scheduler";
 import { renderScheduleMatrixEditor, renderScheduleMatrixView, countMatrixHours } from "../atoms/schedule-matrix";
+import { sanitizeColor } from "../atoms/creature";
 import type { CommandCenterViewModel, TaskSummary, ScheduledTaskSummary } from "../view-models/command-center.vm";
 import type { ScheduledRunRow } from "../../data/command-center";
 import type { AgentTreeNode } from "../fragments/tree-node.fragment";
+
+// Task-header title: cap at 40 chars, ellipsis if longer; full text on hover.
+function headerTitle(title: string): string {
+  const t = title ?? "";
+  const short = t.length > 40 ? t.slice(0, 40) + "…" : t;
+  const attr = t.length > 40 ? ` title="${escapeHtml(t)}"` : "";
+  return `<span class="mc-task-header__title"${attr}>${escapeHtml(short)}</span>`;
+}
 
 interface ScheduledTaskOverride {
   scheduledTask: ScheduledTaskSummary & { working_directory?: string; description?: string | null };
@@ -56,11 +65,13 @@ function renderSidebar(vm: CommandCenterViewModel, activeId: string | null): str
   return `<aside class="mc-sidebar">
     <div class="mc-sidebar__header">
       <a href="/tasks/new" class="mc-sidebar__create">+ New Task</a>
+      <button class="mc-sidebar__collapse-teams" data-sk-collapse-teams title="Collapse all folders" aria-label="Collapse all folders">&#x2212;</button>
       <button class="mc-sidebar__collapse-btn" data-sk-sidebar-toggle title="Pin sidebar open">&#x25C0;</button>
     </div>
     <div class="mc-sidebar__list" id="mc-sidebar-list">
       ${renderSidebarListBody(vm, activeId)}
     </div>
+    <div class="mc-sidebar__resize" data-sk-sidebar-resize title="Drag to resize" aria-hidden="true"></div>
   </aside>`;
 }
 
@@ -117,15 +128,50 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
       ${attention.map(t => sidebarItem(t, activeId)).join("")}
     </div>` : "";
 
-  return `<div class="tc-side">
-    ${attnHtml}
+  // Recent = the 5 latest tasks not already surfaced in Needs you or Active.
+  // allTasks is created_at DESC, so a slice after the exclusion is chronological.
+  const shownIds = new Set<string>([...attnIds, ...active.map(t => t.id)]);
+  const recent = vm.allTasks.filter(t => !shownIds.has(t.id)).slice(0, 5);
+
+  // Tabbed boards (mirrors the iOS segmented control: Latest / Recurring /
+  // Teams / Agents). Latest stacks Needs you + Active + Recent; each other tab
+  // shows one list. The active board is a client-side toggle persisted as
+  // `sidebarBoard` and re-applied after WS re-renders (see skipper.js), so the
+  // server always renders Latest active and the client corrects it.
+  const latestBody = `${attnHtml}
     ${section("active", "Active", active.length,
       active.length > 0 ? active.map(t => sidebarItem(t, activeId)).join("") : `<div class="tc-team__empty">Nothing running</div>`)}
-    ${vm.scheduledTasks.length > 0 ? section("recurring", "Recurring", vm.scheduledTasks.length, recurring) : ""}
-    ${section("teams", "Teams", regularTeams.length, `${groups}${other}` || `<div class="tc-team__empty">No teams yet</div>`)}
-    ${soloTeams.length > 0 ? section("agents", "Agents", soloTeams.length, soloGroups) : ""}
+    ${recent.length > 0 ? section("recent", "Recent", recent.length,
+      recent.map(t => sidebarItem(t, activeId)).join("")) : ""}`;
+  const recurringBody = vm.scheduledTasks.length > 0
+    ? recurring : `<div class="tc-team__empty">No recurring tasks</div>`;
+  const teamsBody = (`${groups}${other}`) || `<div class="tc-team__empty">No teams yet</div>`;
+  const agentsBody = soloTeams.length > 0
+    ? soloGroups : `<div class="tc-team__empty">No agents yet</div>`;
+
+  return `<div class="tc-side">
+    <div class="tc-tabs" role="tablist">
+      ${tab("latest", "Latest", 0, true)}
+      ${tab("recurring", "Recurring", vm.scheduledTasks.length, false)}
+      ${tab("teams", "Teams", regularTeams.length, false)}
+      ${tab("agents", "Agents", soloTeams.length, false)}
+    </div>
+    ${board("latest", latestBody, true)}
+    ${board("recurring", recurringBody, false)}
+    ${board("teams", teamsBody, false)}
+    ${board("agents", agentsBody, false)}
     <a class="tc-history" href="/tasks">Task history &rarr;</a>
   </div>`;
+}
+
+function tab(key: string, label: string, count: number, active: boolean): string {
+  return `<button type="button" class="tc-tab${active ? " tc-tab--active" : ""}" data-tc-board="${key}" role="tab" aria-selected="${active}">
+    <span class="tc-tab__label">${escapeHtml(label)}</span>${count > 0 ? `<span class="tc-tab__count">${count}</span>` : ""}
+  </button>`;
+}
+
+function board(key: string, bodyHtml: string, active: boolean): string {
+  return `<div class="tc-board" data-tc-board-panel="${key}"${active ? "" : " hidden"}>${bodyHtml}</div>`;
 }
 
 function section(key: string, label: string, count: number, bodyHtml: string): string {
@@ -194,7 +240,10 @@ function renderTeamGroup(team: { id: string; name: string }, tasks: TaskSummary[
   const hasRunning = tasks.some(t => t.status === "running");
   const attention = tasks.filter(t => t.has_attention).length;
   const landing = pickTeamLandingTask(tasks);
-  const isOpen = hasActive || hasRunning;
+  // Collapsed by default on startup; only the group holding the currently
+  // viewed task stays open so the selection is never hidden. Client-side
+  // persistence (tcTeamOpen) still remembers the user's own toggles.
+  const isOpen = hasActive;
 
   const nameHtml = landing
     ? `<a href="/?task=${escapeHtml(landing.id)}" class="tc-team__name"
@@ -329,7 +378,7 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
   return `
     <div class="mc-task-header">
       <span class="mc-node__indicator mc-node__indicator--pending"></span>
-      <span class="mc-task-header__title">${escapeHtml(task.title)}</span>
+      ${headerTitle(task.title)}
       <span class="sk-badge sk-badge--draft">draft</span>
       <div class="mc-task-header__actions">
         <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/approve" hx-swap="none">Approve</button>
@@ -452,7 +501,7 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
     <!-- Task bar — phase stepper + agent orbs inlined (shared chrome) -->
     <div class="mc-task-header mc-task-header--with-phases${isRunning ? " mc-task-header--running" : ""}">
       <span class="mc-node__indicator mc-node__indicator--${isPaused ? "paused" : task.status}"></span>
-      <span class="mc-task-header__title">${escapeHtml(task.title)}</span>
+      ${headerTitle(task.title)}
       <div class="mc-task-header__scroll">
         ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
         ${isRunning ? `<div class="mc-task-header__orbs">
@@ -611,7 +660,8 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
     <!-- Task header: full width above timeline + rail -->
     <div class="mc-task-header mc-task-header--with-phases${isRunning ? " mc-task-header--running" : ""}">
       <span class="mc-node__indicator mc-node__indicator--${task.status === "waiting_delegation" ? "waiting" : task.status}"></span>
-      <span class="mc-task-header__title">${escapeHtml(task.title)}</span>
+      ${headerTitle(task.title)}
+      ${escalationHeaderSlot(task.id, task.open_escalation_count)}
       <div class="mc-task-header__scroll">
         ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
         ${isRunning || task.status === "completed" ? `<div class="mc-task-header__orbs">
@@ -746,6 +796,21 @@ function renderActions(task: TaskSummary, needsReview?: boolean): string {
 // Warning-tinted status pill matching the escalation card's badge slot.
 const warnBadge = (label: string) =>
   `<span class="sk-badge" style="background: color-mix(in srgb, var(--sk-accent-warning) 22%, transparent); color: var(--sk-accent-warning);">${label}</span>`;
+
+// Task-header label shown when the task has open escalation(s). Warning-tinted
+// badge with an alert glyph; the escalation detail itself lives in the timeline.
+// Rendered inside a stable-id slot that is ALWAYS present (empty at count 0) so
+// ui-push can OOB-swap it live when an escalation is raised or resolved while the
+// task is open — see ws/ui-push.ts pushV2TaskHeaderEscalation.
+export function escalationHeaderSlot(taskId: string, count: number): string {
+  const eid = escapeHtml(taskId);
+  const inner = count > 0
+    ? `<span class="mc-task-header__escalation sk-badge" title="Open escalation needs your input"
+        style="background: color-mix(in srgb, var(--sk-accent-warning) 22%, transparent); color: var(--sk-accent-warning); display: inline-flex; align-items: center; gap: 4px;">
+        <span aria-hidden="true" style="font-weight: 700;">&#9888;</span>${escapeHtml(count === 1 ? "1 escalation" : `${count} escalations`)}</span>`
+    : "";
+  return `<span id="mc-task-escalation-${eid}" class="mc-task-header__escalation-slot">${inner}</span>`;
+}
 
 function renderRecoveryPausedBanner(task: TaskSummary): string {
   const eid = escapeHtml(task.id);
@@ -951,6 +1016,7 @@ export interface RealtimeActivityRow {
   stream?: string;
   data?: string;
   agent_name?: string;
+  agent_color?: string | null;
   process_pid?: number | null;
   // shared
   created_at: string;
@@ -1032,7 +1098,8 @@ export function parseRealtimeActivity(rows: RealtimeActivityRow[]): string {
     if (!summary) return "";
 
     const kindLabel = kind === "tool" ? "tool" : kind === "message" ? "msg" : "sys";
-    const agentLabel = row.agent_name ? `<span class="mc-activity__agent">${escapeHtml(row.agent_name)}</span>` : "";
+    const agentColorStyle = row.agent_color ? ` style="color:${sanitizeColor(row.agent_color)}"` : "";
+    const agentLabel = row.agent_name ? `<span class="mc-activity__agent"${agentColorStyle}>${escapeHtml(row.agent_name)}</span>` : "";
     const pidLabel = row.process_pid != null
       ? `<span class="mc-activity__pid" title="Process ID">PID ${row.process_pid}</span>`
       : "";
@@ -1069,7 +1136,7 @@ export function renderScheduledTaskDetail(
   return `
     <div class="mc-task-header">
       <span class="mc-node__indicator mc-node__indicator--running"></span>
-      <span class="mc-task-header__title">${escapeHtml(st.title)}</span>
+      ${headerTitle(st.title)}
       <span class="sk-badge sk-badge--running">approved</span>
       <span class="sk-badge sk-badge--waiting" style="font-size:9px;padding:1px 5px;">${badge}</span>
       ${st.team_name ? `<span class="sk-muted sk-text-xs">${escapeHtml(st.team_name)}</span>` : ""}
@@ -1214,7 +1281,7 @@ function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: s
   return `
     <div class="mc-task-header">
       <span class="mc-node__indicator mc-node__indicator--pending"></span>
-      <span class="mc-task-header__title">${escapeHtml(st.title)}</span>
+      ${headerTitle(st.title)}
       <span class="sk-badge sk-badge--draft">draft</span>
       <span class="sk-badge sk-badge--waiting" style="font-size:9px;padding:1px 5px;">${badge}</span>
       ${st.team_name ? `<span class="sk-muted sk-text-xs">${escapeHtml(st.team_name)}</span>` : ""}

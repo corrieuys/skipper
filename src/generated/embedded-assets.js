@@ -29,43 +29,44 @@ import a24 from "../db/migrations/0020_artifact_format.sql" with { type: "file" 
 import a25 from "../db/migrations/0021_task_message_format.sql" with { type: "file" };
 import a26 from "../db/migrations/0022_single_agents.sql" with { type: "file" };
 import a27 from "../db/migrations/0023_realtime_recording_lock.sql" with { type: "file" };
-import a28 from "../db/migrations/003_api_keys.sql" with { type: "file" };
-import a29 from "../db/schema.config.sql" with { type: "file" };
-import a30 from "../db/schema.runtime.sql" with { type: "file" };
-import a31 from "../db/schema.sql" with { type: "file" };
-import a32 from "../../prompts/artifact-html.md" with { type: "file" };
-import a33 from "../../prompts/commands-always.md" with { type: "file" };
-import a34 from "../../prompts/commands-delegation.md" with { type: "file" };
-import a35 from "../../prompts/commands-messages.md" with { type: "file" };
-import a36 from "../../prompts/execution-context.md" with { type: "file" };
-import a37 from "../../prompts/greg.md" with { type: "file" };
-import a38 from "../../prompts/mcp-tools-delegate.md" with { type: "file" };
-import a39 from "../../prompts/mcp-tools-single.md" with { type: "file" };
-import a40 from "../../prompts/mcp-tools-skipper.md" with { type: "file" };
-import a41 from "../../prompts/notary.md" with { type: "file" };
-import a42 from "../../prompts/phase-complete-phase.md" with { type: "file" };
-import a43 from "../../prompts/phase-complete-task.md" with { type: "file" };
-import a44 from "../../prompts/phase-regression.md" with { type: "file" };
-import a45 from "../../prompts/single-agent.md" with { type: "file" };
-import a46 from "../../prompts/skipper.md" with { type: "file" };
-import a47 from "../html/public/asteroids.js" with { type: "file" };
-import a48 from "../html/public/dictation.js" with { type: "file" };
-import a49 from "../html/public/favicon.ico" with { type: "file" };
-import a50 from "../html/public/icon2.png" with { type: "file" };
-import a51 from "../html/public/index.html" with { type: "file" };
-import a52 from "../html/public/monkey.js" with { type: "file" };
-import a53 from "../html/public/realtime-audio.js" with { type: "file" };
-import a54 from "../html/public/realtime.js" with { type: "file" };
-import a55 from "../html/public/schedule-matrix.js" with { type: "file" };
-import a56 from "../html/public/skipper.js" with { type: "file" };
-import a57 from "../html/public/sounds/skipper_boop.mp3" with { type: "file" };
-import a58 from "../html/public/sounds/skipper_chime.mp3" with { type: "file" };
-import a59 from "../html/public/wallpaper-rotate.js" with { type: "file" };
-import a60 from "../html/public/wallpapers/defaults/artemis1.jpg" with { type: "file" };
-import a61 from "../html/public/wallpapers/defaults/artemis2.jpeg" with { type: "file" };
-import a62 from "../html/public/wallpapers/defaults/artemis3.jpg" with { type: "file" };
-import a63 from "../html/public/ws-subscribe.js" with { type: "file" };
-import a64 from "../html/public/zen-cube-2d.js" with { type: "file" };
+import a28 from "../db/migrations/0024_custom_agent_identity.sql" with { type: "file" };
+import a29 from "../db/migrations/003_api_keys.sql" with { type: "file" };
+import a30 from "../db/schema.config.sql" with { type: "file" };
+import a31 from "../db/schema.runtime.sql" with { type: "file" };
+import a32 from "../db/schema.sql" with { type: "file" };
+import a33 from "../../prompts/artifact-html.md" with { type: "file" };
+import a34 from "../../prompts/commands-always.md" with { type: "file" };
+import a35 from "../../prompts/commands-delegation.md" with { type: "file" };
+import a36 from "../../prompts/commands-messages.md" with { type: "file" };
+import a37 from "../../prompts/execution-context.md" with { type: "file" };
+import a38 from "../../prompts/greg.md" with { type: "file" };
+import a39 from "../../prompts/mcp-tools-delegate.md" with { type: "file" };
+import a40 from "../../prompts/mcp-tools-single.md" with { type: "file" };
+import a41 from "../../prompts/mcp-tools-skipper.md" with { type: "file" };
+import a42 from "../../prompts/notary.md" with { type: "file" };
+import a43 from "../../prompts/phase-complete-phase.md" with { type: "file" };
+import a44 from "../../prompts/phase-complete-task.md" with { type: "file" };
+import a45 from "../../prompts/phase-regression.md" with { type: "file" };
+import a46 from "../../prompts/single-agent.md" with { type: "file" };
+import a47 from "../../prompts/skipper.md" with { type: "file" };
+import a48 from "../html/public/asteroids.js" with { type: "file" };
+import a49 from "../html/public/dictation.js" with { type: "file" };
+import a50 from "../html/public/favicon.ico" with { type: "file" };
+import a51 from "../html/public/icon2.png" with { type: "file" };
+import a52 from "../html/public/index.html" with { type: "file" };
+import a53 from "../html/public/monkey.js" with { type: "file" };
+import a54 from "../html/public/realtime-audio.js" with { type: "file" };
+import a55 from "../html/public/realtime.js" with { type: "file" };
+import a56 from "../html/public/schedule-matrix.js" with { type: "file" };
+import a57 from "../html/public/skipper.js" with { type: "file" };
+import a58 from "../html/public/sounds/skipper_boop.mp3" with { type: "file" };
+import a59 from "../html/public/sounds/skipper_chime.mp3" with { type: "file" };
+import a60 from "../html/public/wallpaper-rotate.js" with { type: "file" };
+import a61 from "../html/public/wallpapers/defaults/artemis1.jpg" with { type: "file" };
+import a62 from "../html/public/wallpapers/defaults/artemis2.jpeg" with { type: "file" };
+import a63 from "../html/public/wallpapers/defaults/artemis3.jpg" with { type: "file" };
+import a64 from "../html/public/ws-subscribe.js" with { type: "file" };
+import a65 from "../html/public/zen-cube-2d.js" with { type: "file" };
 
 export const EMBEDDED_ASSETS = {
   "config/_agents.json": a0,
@@ -96,41 +97,42 @@ export const EMBEDDED_ASSETS = {
   "db/migrations/0021_task_message_format.sql": a25,
   "db/migrations/0022_single_agents.sql": a26,
   "db/migrations/0023_realtime_recording_lock.sql": a27,
-  "db/migrations/003_api_keys.sql": a28,
-  "db/schema.config.sql": a29,
-  "db/schema.runtime.sql": a30,
-  "db/schema.sql": a31,
-  "prompts/artifact-html.md": a32,
-  "prompts/commands-always.md": a33,
-  "prompts/commands-delegation.md": a34,
-  "prompts/commands-messages.md": a35,
-  "prompts/execution-context.md": a36,
-  "prompts/greg.md": a37,
-  "prompts/mcp-tools-delegate.md": a38,
-  "prompts/mcp-tools-single.md": a39,
-  "prompts/mcp-tools-skipper.md": a40,
-  "prompts/notary.md": a41,
-  "prompts/phase-complete-phase.md": a42,
-  "prompts/phase-complete-task.md": a43,
-  "prompts/phase-regression.md": a44,
-  "prompts/single-agent.md": a45,
-  "prompts/skipper.md": a46,
-  "public/asteroids.js": a47,
-  "public/dictation.js": a48,
-  "public/favicon.ico": a49,
-  "public/icon2.png": a50,
-  "public/index.html": a51,
-  "public/monkey.js": a52,
-  "public/realtime-audio.js": a53,
-  "public/realtime.js": a54,
-  "public/schedule-matrix.js": a55,
-  "public/skipper.js": a56,
-  "public/sounds/skipper_boop.mp3": a57,
-  "public/sounds/skipper_chime.mp3": a58,
-  "public/wallpaper-rotate.js": a59,
-  "public/wallpapers/defaults/artemis1.jpg": a60,
-  "public/wallpapers/defaults/artemis2.jpeg": a61,
-  "public/wallpapers/defaults/artemis3.jpg": a62,
-  "public/ws-subscribe.js": a63,
-  "public/zen-cube-2d.js": a64,
+  "db/migrations/0024_custom_agent_identity.sql": a28,
+  "db/migrations/003_api_keys.sql": a29,
+  "db/schema.config.sql": a30,
+  "db/schema.runtime.sql": a31,
+  "db/schema.sql": a32,
+  "prompts/artifact-html.md": a33,
+  "prompts/commands-always.md": a34,
+  "prompts/commands-delegation.md": a35,
+  "prompts/commands-messages.md": a36,
+  "prompts/execution-context.md": a37,
+  "prompts/greg.md": a38,
+  "prompts/mcp-tools-delegate.md": a39,
+  "prompts/mcp-tools-single.md": a40,
+  "prompts/mcp-tools-skipper.md": a41,
+  "prompts/notary.md": a42,
+  "prompts/phase-complete-phase.md": a43,
+  "prompts/phase-complete-task.md": a44,
+  "prompts/phase-regression.md": a45,
+  "prompts/single-agent.md": a46,
+  "prompts/skipper.md": a47,
+  "public/asteroids.js": a48,
+  "public/dictation.js": a49,
+  "public/favicon.ico": a50,
+  "public/icon2.png": a51,
+  "public/index.html": a52,
+  "public/monkey.js": a53,
+  "public/realtime-audio.js": a54,
+  "public/realtime.js": a55,
+  "public/schedule-matrix.js": a56,
+  "public/skipper.js": a57,
+  "public/sounds/skipper_boop.mp3": a58,
+  "public/sounds/skipper_chime.mp3": a59,
+  "public/wallpaper-rotate.js": a60,
+  "public/wallpapers/defaults/artemis1.jpg": a61,
+  "public/wallpapers/defaults/artemis2.jpeg": a62,
+  "public/wallpapers/defaults/artemis3.jpg": a63,
+  "public/ws-subscribe.js": a64,
+  "public/zen-cube-2d.js": a65,
 };

@@ -12,7 +12,7 @@ import {
   fetchRunningDelegationGroupCounts,
   fetchTeamPhasesById,
   fetchStandardTaskTeams,
-  fetchOpenEscalationTaskIds,
+  fetchOpenEscalationCountsByTask,
   hasDaemonOwner,
   fetchTokenTotalsByTask,
   fetchScheduledTaskRows,
@@ -44,6 +44,8 @@ export interface TaskSummary {
   source_scheduled_task_id: string | null;
   /** True when the task has an open escalation or a pending phase review — drives the sidebar attention dot. */
   has_attention: boolean;
+  /** Number of open escalations on the task — drives the task-header escalation label. */
+  open_escalation_count: number;
   tokens: {
     input: number;
     output: number;
@@ -186,7 +188,7 @@ export function buildCommandCenterViewModel(
 
   // Escalation count + per-task open-escalation set (drives the sidebar
   // attention dot alongside pending phase reviews).
-  const openEscalationTaskIds = fetchOpenEscalationTaskIds(db);
+  const openEscalationCounts = fetchOpenEscalationCountsByTask(db);
   const escalationCount = getOpenEscalationCount(db);
 
   // Daemon
@@ -219,7 +221,8 @@ export function buildCommandCenterViewModel(
       result_summary: resultSummary,
       needs_review: t.needs_review ?? 0,
       source_scheduled_task_id: t.source_scheduled_task_id ?? null,
-      has_attention: t.needs_review === 1 || openEscalationTaskIds.has(t.id),
+      has_attention: t.needs_review === 1 || (openEscalationCounts.get(t.id) ?? 0) > 0,
+      open_escalation_count: openEscalationCounts.get(t.id) ?? 0,
       tokens: tokensByTask[t.id] ?? { input: 0, output: 0, cache_creation: 0, cache_read: 0 },
     };
   });

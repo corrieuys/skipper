@@ -16,6 +16,12 @@ export const SETTING_SKIPPER_CONNECT_URL = "skipper_connect_url";
 // shared by dev + binary), unlike the gallery which is config (appearance.json).
 export const SETTING_ACTIVE_WALLPAPER = "active_wallpaper";
 
+// Skipper's own agent identity (color + creature character) shown in the
+// active-agent orb. Machine-scoped; applied onto the config `agents` row at boot
+// and on save (see agents/skipper.ts:applySkipperIdentity).
+export const SETTING_SKIPPER_AGENT_COLOR = "skipper_agent_color";
+export const SETTING_SKIPPER_AGENT_CHARACTER = "skipper_agent_character";
+
 type SettingType = "boolean" | "number" | "string" | "json";
 
 interface SettingRow {

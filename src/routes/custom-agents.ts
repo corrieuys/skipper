@@ -167,6 +167,8 @@ export function registerCustomAgentRoutes(): void {
         enabledSkills: [],
         maxSteps: 1,
         temperature: null,
+        color: null,
+        character: null,
         createdAt: "",
         updatedAt: "",
       });
@@ -276,5 +278,7 @@ function coerceInput(body: Record<string, unknown>): CustomAgentInput {
       body.temperature === null || body.temperature === undefined || body.temperature === ""
         ? null
         : Number(body.temperature),
+    color: typeof body.color === "string" ? body.color : null,
+    character: typeof body.character === "string" ? body.character : null,
   };
 }

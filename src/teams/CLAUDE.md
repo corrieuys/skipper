@@ -18,6 +18,14 @@ Membership is flat. `team_agents` carries `role` + `level` only — there is no
 reporting hierarchy, and the delegate roster an agent is given
 (`agents/prompt-builder.ts:getTeamRoster`) lists every member of the task's team.
 
+Each inline member may also carry a chosen identity — `color` (hex) + creature
+`character` (`html/atoms/creature.ts`) — stored on `LocalTeamAgent` (rides the
+`local_teams.agents` JSON array, no migration), whitelisted in
+`team-input.ts:coerceAgent`, and projected into `agents.config` via `toSharedAgent`
+so the orb + timeline read it. A library-reference member (`single:`/`custom:`)
+inherits the referenced record's identity at flatten time (`resolveTeamAgentRefs`).
+Edited on the team map's agent modal (a cloned identity-picker template).
+
 UI: the team map at `/teams` — see [../html/CLAUDE.md](../html/CLAUDE.md). It
 writes the `/api/teams` endpoints, which also accept form and import bodies. The
 provider dropdown offers **raw CLIs only**. Saved agents (headless CLI + custom)

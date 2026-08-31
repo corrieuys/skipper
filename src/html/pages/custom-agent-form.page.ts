@@ -1,6 +1,9 @@
 import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
+import { agentIdentityPicker, agentIdentityPickerScript } from "../atoms/agent-identity-picker";
+import { isExperimental } from "../../config/feature-flags";
+import { randomIdentity } from "../atoms/creature";
 import { LOCAL_TOOLS } from "../../custom-agents/tools/registry";
 import { MCP_TOOL_GROUPS } from "../../custom-agents/mcp-catalogue";
 import type { CustomAgent } from "../../custom-agents/store";
@@ -53,6 +56,8 @@ const BLANK = {
   enabledSkills: [] as string[],
   maxSteps: 40,
   temperature: null as number | null,
+  color: null as string | null,
+  character: null as string | null,
 };
 
 /**
@@ -167,6 +172,18 @@ export function customAgentFormPage(vm: CustomAgentFormViewModel): string {
                 <input class="sk-input" id="ca-name" type="text" placeholder="e.g. Research Assistant"></div>
               <div class="ca-field"><label class="sk-label" for="ca-desc">Description</label>
                 <input class="sk-input" id="ca-desc" type="text" placeholder="What this agent is for (optional)"></div>
+            </div>
+            <div class="ca-field" style="margin-top:var(--sk-space-3);">
+              <label class="sk-label">Color &amp; character</label>
+              ${agentIdentityPicker((() => {
+                // A fresh agent gets a random color + creature by default (experimental).
+                const def = (isNew && isExperimental()) ? randomIdentity() : null;
+                return {
+                  color: agent.color ?? def?.color,
+                  character: agent.character ?? def?.character,
+                  experimental: isExperimental(),
+                };
+              })())}
             </div>
           </div>
         </div>
@@ -374,6 +391,8 @@ export function customAgentFormPage(vm: CustomAgentFormViewModel): string {
       // ── Collect ───────────────────────────────────────────────────────
       function collect(){
         var temp = $('ca-temp').value.trim();
+        var idRoot = document.querySelector('.ca-form [data-agent-identity]');
+        var ident = (idRoot && window.SkipperIdentity) ? window.SkipperIdentity.read(idRoot) : { color: AGENT.color, character: AGENT.character };
         return {
           id: AGENT.id || undefined,
           name: $('ca-name').value.trim(),
@@ -390,7 +409,9 @@ export function customAgentFormPage(vm: CustomAgentFormViewModel): string {
           enabledCustomTools: readChecks('custom'),
           enabledSkills: readChecks('skill'),
           maxSteps: Number($('ca-steps').value || 40),
-          temperature: temp === '' ? null : Number(temp)
+          temperature: temp === '' ? null : Number(temp),
+          color: ident.color,
+          character: ident.character || null
         };
       }
 
@@ -449,7 +470,8 @@ export function customAgentFormPage(vm: CustomAgentFormViewModel): string {
       });
       window.addEventListener('beforeunload', function(e){ if (!dirty) return; e.preventDefault(); e.returnValue = ''; });
     })();
-    </script>`;
+    </script>
+    ${agentIdentityPickerScript()}`;
 
   return v2layout(isNew ? "New custom agent" : agent.name, content, "/agent-library");
 }

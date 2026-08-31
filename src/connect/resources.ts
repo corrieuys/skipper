@@ -468,6 +468,8 @@ export async function handleResourceRequest(
                 temperature: params.temperature != null && params.temperature !== ""
                   ? Number(params.temperature)
                   : null,
+                color: params.color != null ? String(params.color) : null,
+                character: params.character != null ? String(params.character) : null,
               };
               return { ok: true, data: connectCustomAgentRow(createCustomAgent(db, input)) };
             }
@@ -520,6 +522,8 @@ export async function handleResourceRequest(
                 temperature: params.temperature !== undefined
                   ? (params.temperature === null || params.temperature === "" ? null : Number(params.temperature))
                   : existing.temperature,
+                color: params.color !== undefined ? (params.color != null ? String(params.color) : null) : existing.color,
+                character: params.character !== undefined ? (params.character != null ? String(params.character) : null) : existing.character,
               };
               return { ok: true, data: connectCustomAgentRow(updateCustomAgent(db, id, input)) };
             }

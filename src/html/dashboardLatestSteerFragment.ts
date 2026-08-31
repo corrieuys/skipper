@@ -1,5 +1,6 @@
 import { escapeHtml } from "./atoms/escape-html";
 import { thinkingWaveHtml } from "./atoms/thinking-wave";
+import { creatureSvg, isCreatureId, sanitizeColor } from "./atoms/creature";
 
 export interface SteeringOption {
   template_agent_id: string;
@@ -59,24 +60,21 @@ export function dashboardSteerListFragment(
     const tid = escapeHtml(t.template_agent_id);
     const name = escapeHtml(t.agent_name);
     const stateCls = t.is_active ? "zen-orb--active" : "zen-orb--inactive";
+    const id = orbIdentity(t);
 
     if (!t.is_active) {
       // On a completed task (allowIdleSpawn) idle orbs are still clickable so the
       // operator can resume that agent for a one-off run outside the workflow.
       if (opts?.allowIdleSpawn) {
         return `<div class="zen-view__orb-wrapper mc-agent-orb-wrapper">
-          <div class="zen-orb ${stateCls} mc-agent-orb--clickable" data-zen-agent="${name}" data-zen-no-drag="1"
+          <div class="zen-orb ${stateCls} mc-agent-orb--clickable" data-zen-agent="${name}" data-zen-no-drag="1"${id.attrs}
                data-mc-agent-tile data-template-id="${tid}" data-agent-name="${name}"${taskAttr}
-               role="button" tabindex="0" title="Run one-off ${name}">
-            <div class="zen-orb__shine"></div>
-          </div>
+               role="button" tabindex="0" title="Run one-off ${name}">${id.inner}</div>
           <span class="zen-view__orb-label">${name}</span>
         </div>`;
       }
       return `<div class="zen-view__orb-wrapper mc-agent-orb-wrapper">
-        <div class="zen-orb ${stateCls}" data-zen-agent="${name}" data-zen-no-drag="1" title="${name} (idle)">
-          <div class="zen-orb__shine"></div>
-        </div>
+        <div class="zen-orb ${stateCls}" data-zen-agent="${name}" data-zen-no-drag="1"${id.attrs} title="${name} (idle)">${id.inner}</div>
         <span class="zen-view__orb-label">${name}</span>
       </div>`;
     }
@@ -86,16 +84,61 @@ export function dashboardSteerListFragment(
       : "";
     return `<div class="zen-view__orb-wrapper mc-agent-orb-wrapper">
       ${countBadge}
-      <div class="zen-orb ${stateCls} mc-agent-orb--clickable" data-zen-agent="${name}" data-zen-no-drag="1"
+      <div class="zen-orb ${stateCls} mc-agent-orb--clickable" data-zen-agent="${name}" data-zen-no-drag="1"${id.attrs}
            data-mc-agent-tile data-template-id="${tid}" data-agent-name="${name}"${taskAttr}
-           role="button" tabindex="0" title="Steer ${name}">
-        <div class="zen-orb__shine"></div>
-      </div>
+           role="button" tabindex="0" title="Steer ${name}">${id.inner}</div>
       <span class="zen-view__orb-label">${name}</span>
     </div>`;
   }).join("");
 
   return `<div class="zen-view__orbs mc-agent-orbs">${items}</div>`;
+}
+
+/**
+ * The orb's inner content + data-attributes for one tile. When the agent picked a
+ * creature, the orb shows that creature (tinted by its color) and zen-cube-2d.js
+ * skips the cube for it; otherwise the empty orb keeps the cube, tinted by the
+ * agent's color when set (`data-zen-color`).
+ */
+// Overlapping "crowd" of creatures for an agent with several running instances:
+// max 3 on screen, heavily overlapped (a hint of more behind, never a row), the
+// back ones smaller + dimmer, each hopping on its own beat. The count badge still
+// shows the true number.
+function creatureStack(character: string, color: string | null, count: number): string {
+  const n = Math.min(3, count);
+  // Back → front; the front copy is full size/centred. Take the last n so the
+  // front is always present when n < 3.
+  const depths = [
+    { sx: "-28%", sy: "-6%", ss: 0.70, o: 0.5, z: 1 },
+    { sx: "18%", sy: "-3%", ss: 0.84, o: 0.72, z: 2 },
+    { sx: "0%", sy: "0%", ss: 1, o: 1, z: 3 },
+  ].slice(3 - n);
+  const items = depths.map((d) =>
+    `<span class="zen-orb__stack-item" style="--sx:${d.sx};--sy:${d.sy};--ss:${d.ss};--o:${d.o};z-index:${d.z}">${creatureSvg(character as any, color ?? undefined)}</span>`,
+  ).join("");
+  return `<span class="zen-orb__stack">${items}</span>`;
+}
+
+function orbIdentity(t: AgentTile): { inner: string; attrs: string } {
+  const color = t.color ? sanitizeColor(t.color) : null;
+  if (isCreatureId(t.character)) {
+    // Several running instances → a small overlapping crowd (max 3), each hopping.
+    if (t.is_active && t.instance_count > 1) {
+      return {
+        inner: creatureStack(t.character, color, t.instance_count),
+        attrs: ` data-zen-character="${escapeHtml(t.character)}"`,
+      };
+    }
+    // Inactive creature sleeps: eyes shut (CSS), no floating Zs.
+    return {
+      inner: creatureSvg(t.character, color ?? undefined),
+      attrs: ` data-zen-character="${escapeHtml(t.character)}"`,
+    };
+  }
+  return {
+    inner: `<div class="zen-orb__shine"></div>`,
+    attrs: color ? ` data-zen-color="${escapeHtml(color)}"` : "",
+  };
 }
 
 /**

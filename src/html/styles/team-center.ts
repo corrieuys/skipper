@@ -5,12 +5,45 @@
  */
 export function teamCenterStyles(): string {
   return `
-    /* ── Sidebar: liveness sections (Needs you / Active / Recurring / Teams) ──
-       Indentation scale, so carets and text align down the tree:
-       level 0 = section heads at 0.75rem (labels land at ~1.75rem);
-       level 1 = rows + team/series heads at 1.75rem (their carets under the labels);
-       level 2 = tasks/runs inside a group at 3rem. */
+    /* ── Sidebar: tabbed boards (Latest / Recurring / Teams / Agents) ──
+       One indentation scale across every board, so carets and text align:
+       level 0 = section heads AND top-level team/series heads at 0.75rem;
+       level 1 = their rows (Active/Recent items, team tasks, series runs) at 1.75rem. */
     .tc-side { padding: 0.4rem 0 0.7rem; }
+
+    /* ── Board tabs (segmented): Latest / Recurring / Teams / Agents ──
+       Mirrors the iOS segmented picker. Only one .tc-board panel shows at a
+       time; the active tab is a client toggle (data-tc-board / skipper.js). */
+    .tc-tabs {
+      display: flex; gap: 2px;
+      margin: 0.15rem 0.4rem 0.55rem;
+      padding: 2px;
+      background: var(--sk-surface-2);
+      border-radius: var(--sk-radius-sm);
+    }
+    .tc-tab {
+      flex: 1; min-width: 0;
+      display: flex; align-items: center; justify-content: center; gap: 3px;
+      padding: 4px 1px;
+      background: none; border: none; cursor: pointer;
+      border-radius: calc(var(--sk-radius-sm) - 1px);
+      color: var(--sk-text-subtle);
+      font-size: 9.5px; letter-spacing: 0.01em; font-weight: 600;
+      transition: background 0.12s, color 0.12s;
+    }
+    .tc-tab:hover { color: var(--sk-text-muted); }
+    .tc-tab--active {
+      background: var(--sk-surface-0);
+      color: var(--sk-text);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+    }
+    .tc-tab__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tc-tab__count {
+      font-family: var(--sk-font-mono); font-size: 9px; flex-shrink: 0;
+      color: var(--sk-text-subtle);
+    }
+    .tc-tab--active .tc-tab__count { color: var(--sk-text-muted); }
+    .tc-board[hidden] { display: none; }
     .tc-sec > summary { list-style: none; }
     .tc-sec > summary::-webkit-details-marker { display: none; }
     .tc-sec__head {
@@ -52,7 +85,7 @@ export function teamCenterStyles(): string {
       color: var(--sk-text-subtle);
     }
     .tc-rec__all {
-      display: block; padding: 0.25rem 0.9rem 0.25rem 3rem;
+      display: block; padding: 0.25rem 0.9rem 0.25rem 1.75rem;
       font-size: var(--sk-text-xs); color: var(--sk-text-subtle); text-decoration: none;
     }
     .tc-rec__all:hover { color: var(--sk-text); }
@@ -66,9 +99,12 @@ export function teamCenterStyles(): string {
     /* ── Sidebar: expandable team groups ── */
     details.tc-team > summary { list-style: none; }
     details.tc-team > summary::-webkit-details-marker { display: none; }
+    /* Team/recurring groups are top-level within their board (no enclosing
+       section head), so they align to the Latest board's section-head column
+       (0.75rem), with their rows one level in at 1.75rem. */
     .tc-team__head {
       display: flex; align-items: center; gap: 0.5rem;
-      padding: 0.35rem 0.9rem 0.35rem 1.75rem; cursor: pointer;
+      padding: 0.35rem 0.9rem 0.35rem 0.75rem; cursor: pointer;
       color: var(--sk-text-muted); font-size: var(--sk-text-sm);
       border-radius: var(--sk-radius-sm);
     }
@@ -121,9 +157,9 @@ export function teamCenterStyles(): string {
       .tc-title-skel__bar { animation: none; }
     }
     .tc-team__tasks { padding: 0 0 0.3rem; }
-    .tc-team__tasks .mc-sidebar__item { padding-left: 3rem; }
+    .tc-team__tasks .mc-sidebar__item { padding-left: 1.75rem; }
     .tc-team__empty {
-      padding: 0.2rem 0.9rem 0.2rem 3rem;
+      padding: 0.2rem 0.9rem 0.2rem 1.75rem;
       font-size: var(--sk-text-xs); color: var(--sk-text-subtle);
     }
     /* Denser rows in the v2 sidebar; classic dock keeps its own spacing. */
@@ -179,9 +215,16 @@ export function teamCenterStyles(): string {
     /* Agent prose: quiet uncolored entry, sits with the tool groups.
        Name, time and text run inline and wrap as one block. */
     .tc-prose {
-      margin: 0 0 0.6rem 0; cursor: pointer;
+      position: relative; margin: 0 0 0.6rem 0; cursor: pointer;
       font-size: var(--sk-text-sm); color: var(--sk-text-muted);
       overflow-wrap: break-word; line-height: 1.55;
+    }
+    /* A leaf dot in the gutter marks a message; tool groups use the expand caret
+       instead. Sits on the first line, left of the name (which stays column-aligned
+       with the tool-group name). */
+    .tc-prose::before {
+      content: "\\2022"; position: absolute; left: -0.82rem; top: 0.78em;
+      transform: translateY(-50%); font-size: 9px; color: var(--sk-text-subtle);
     }
     .tc-prose__who {
       font-family: var(--sk-font-mono); font-size: var(--sk-text-xs);
@@ -192,15 +235,22 @@ export function teamCenterStyles(): string {
 
     /* Collapsed tool/system groups */
     .tc-sys { margin: 0 0 0.6rem 0; }
+    /* The name lines up with the prose rows' name (same left column); the
+       disclosure caret hangs in the left gutter so it never shifts the name. */
     .tc-sys > summary {
-      list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 0.45rem;
+      list-style: none; cursor: pointer; position: relative;
+      display: inline-flex; align-items: center; gap: 0.4rem;
       font-family: var(--sk-font-mono); font-size: var(--sk-text-xs); color: var(--sk-text-subtle);
       padding: 0.1rem 0;
     }
     .tc-sys > summary::-webkit-details-marker { display: none; }
-    .tc-sys > summary::before { content: "\\25B8"; font-size: 8px; }
+    .tc-sys > summary::before {
+      content: "\\25B8"; font-size: 8px;
+      position: absolute; left: -0.85rem; top: 50%; transform: translateY(-50%);
+    }
     .tc-sys[open] > summary::before { content: "\\25BE"; }
     .tc-sys > summary:hover { color: var(--sk-text-muted); }
+    .tc-sys__who { font-weight: 600; }
     .tc-sys__rows {
       margin-top: 0.35rem; padding: 0.45rem 0.75rem;
       background: var(--sk-surface-1); border-radius: var(--sk-radius-md);
@@ -245,19 +295,52 @@ export function teamCenterStyles(): string {
        instead of the heavy classic-panel chrome (sharp corners, header divider,
        accent gradient) that clashed. It reads as "needs you" through the "!" bang
        and OPEN badge in its header, not through any border accent. */
-    .tc-escwrap { margin: 0 0 0.65rem 0; }
-    .tc-escwrap .sk-panel {
+    /* An open escalation is a compact banner. It stays visible while its natural
+       position is off screen by sticking to whichever edge (top OR bottom) it is
+       being pushed past. Reads as "needs you" through the "!" bang, not a border
+       accent stripe. Clicking opens the full card in a modal. */
+    .tc-esc-banner-wrap {
+      position: sticky; top: 0.35rem; bottom: 0.35rem; z-index: 6;
+      margin: 0 0 0.65rem 0;
+    }
+    .tc-esc-banner {
+      display: flex; align-items: center; gap: 0.5rem; width: 100%;
+      padding: 0.5rem 0.8rem; text-align: left; cursor: pointer;
       border: 1px solid var(--sk-border);
       border-radius: var(--sk-radius-lg);
       background: var(--sk-surface-2);
+      box-shadow: var(--sk-shadow-1, 0 2px 8px rgba(0,0,0,0.18));
+      font: inherit; color: var(--sk-text);
     }
-    .tc-escwrap .sk-panel__header {
-      border-bottom: none; min-height: 0;
-      padding: 0.55rem 0.85rem 0.1rem;
+    /* Pin colors on hover: a global button:hover sets color:var(--on-primary),
+       which reads dark-on-dark here. Keep the banner's own theme text color. */
+    .tc-esc-banner:hover { background: var(--sk-surface-3, var(--sk-surface-2)); border-color: var(--sk-border-strong, var(--sk-border)); color: var(--sk-text); box-shadow: none; }
+    .tc-esc-banner:hover .tc-esc-banner__who { color: var(--sk-text); }
+    .tc-esc-banner:hover .tc-esc-banner__msg { color: var(--sk-text-muted); }
+    .tc-esc-banner:hover .tc-esc-banner__time { color: var(--sk-text-subtle); }
+    .tc-esc-banner__bang {
+      flex: none; display: inline-flex; align-items: center; justify-content: center;
+      width: 1.15rem; height: 1.15rem; border-radius: 50%;
+      background: var(--sk-accent-danger); color: #fff;
+      font-weight: 700; font-size: 0.8rem; line-height: 1;
     }
-    .tc-escwrap .sk-panel__body { padding: 0.35rem 0.85rem 0.7rem; }
-    .tc-escwrap .esc-previous { display: contents; }
-    .tc-escwrap .esc-previous > summary { display: none; }
+    .tc-esc-banner__who { font-weight: 600; }
+    .tc-esc-banner__msg { color: var(--sk-text-muted); }
+    .tc-esc-banner__time { margin-left: auto; font-size: var(--sk-text-xs); color: var(--sk-text-subtle); }
+    /* Reclaim vertical space so the whole escalation fits without scrolling: thin
+       outer padding on the overlay, modal near full-height, a small fixed response
+       box, tight inner padding. No flex, no inner scrollbox. Only genuinely huge
+       copy makes the whole modal scroll as one surface (max-height cap). */
+    #mc-esc-modal { padding: var(--sk-space-3); }
+    #mc-esc-modal .sk-modal__content { max-width: 1100px; width: 94vw; max-height: 96vh; }
+    #mc-esc-modal .sk-modal__body { padding: 0; }
+    #mc-esc-modal .sk-panel__body { padding-top: var(--sk-space-2); padding-bottom: var(--sk-space-2); }
+    /* The classic escalations panel caps the question body at 22em with its own
+       scrollbar (baseStyles). In the modal the question must flow — the modal is
+       the single scroll surface — so lift that cap. THIS was the inner scroll. */
+    #mc-esc-modal .esc-q__body { max-height: none; overflow: visible; }
+    #mc-esc-modal .sk-textarea { height: 4rem; min-height: 4rem; resize: vertical; }
+    #mc-esc-modal .sk-panel { border: none; background: transparent; margin: 0; }
 
     /* ── Draggable divider between timeline and rail ── */
     .tc-divider {

@@ -5,7 +5,7 @@ daemon process** instead of spawning a vendor CLI.
 
 | file | use |
 |---|---|
-| `store.ts` | CRUD over the runtime `custom_agents` table. `resolveSecret`/`resolveHeaders` (`${ENV_VAR}`), `registerCustomAgentTypes(db)`, `customAgentTypeName`, `getCustomAgentByType` |
+| `store.ts` | CRUD over the runtime `custom_agents` table. `resolveSecret`/`resolveHeaders` (`${ENV_VAR}`), `registerCustomAgentTypes(db)`, `customAgentTypeName`, `getCustomAgentByType`. Identity (`color` + creature `character`) are first-class columns (migration `0024`, this table has no JSON blob), whitelisted in `normalizeCustomAgentInput` and threaded through `toSoloSpec` into `agents.config` for the orb + timeline. Edited on the custom-agent form's Identity panel |
 | `runner.ts` | `runCustomAgent()` — one `generateText` call per spawn. `InProcessHandle` (the process stand-in), `NOOP_STDIN`, `buildSystemPrompt`, message load/save for resume |
 | `model.ts` | definition → AI SDK model (`createOpenAICompatible`). `probeEndpoint()` for the agent editor's Test button |
 | `mcp-tools.ts` | Loopback MCP client → AI SDK tool map, filtered to the enabled list. `wrapMcpTools()` is shared with the server bridge |

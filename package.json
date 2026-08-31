@@ -20,6 +20,7 @@
   },
   "scripts": {
     "start": "bun run index.ts",
+    "dashboard": "bun run bin/cli.ts dashboard",
     "gen:assets": "bun run scripts/gen-assets.ts",
     "build": "bun run scripts/build-binary.ts",
     "release": "bun run scripts/release.ts",

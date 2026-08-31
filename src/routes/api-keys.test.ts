@@ -83,6 +83,7 @@ describe("configPage API keys section", () => {
       parallelExecution: true,
       modelSettings: { skipper: {}, greg: {}, dictation: {}, options: [] },
       autoUpdate: { enabled: false, currentVersion: "dev", availableVersion: null },
+      skipperIdentity: { color: "#6ea8fe", character: "captain" },
     } as never;
 
     expect(configPage(vm)).not.toContain("sk-api-keys-panel");

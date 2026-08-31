@@ -10,7 +10,7 @@ Agent process runtime. Spawn external CLI, parse stdout, route signals.
 | `state-tracker.ts` | Heartbeat + fingerprint for stuck detect / nudge / escalation |
 | `types.ts` | Agent-type lookup + cache. `clearAgentTypeCache()` for tests |
 | `oneshot.ts` | `runOneShotText()` — provider-generic one-shot text call built from `agent_types` arg templates. Used by Greg's brain + the dictation rewriter; no instance rows/MCP/signals |
-| `skipper.ts` | `SKIPPER_AGENT_ID` constant + skipper config read/update |
+| `skipper.ts` | `SKIPPER_AGENT_ID` constant + skipper config read/update. Also the Skipper's own orb identity: `getSkipperIdentity`/`saveSkipperIdentity` (machine-scoped `app_settings`, default character `captain`) + `applySkipperIdentity` which patches the config `agents` row for `skipper` (called at boot in `db/connection.ts` and on save from the config page's experimental Skipper Character panel) |
 | `mcp-spawn-helper.ts` | Build MCP server config injection at spawn time. Skipped for in-process agents |
 | `instance-status.ts` | Shared `agent_instances.status` writers: `updateInstanceStatus()`, `finalizeActiveInstancesForTask()` |
 | `signal-utils.ts` | `signalTextSnippet()` — dedup-fingerprint normalization shared with `mcp/signal-bridge.ts` |

@@ -33,7 +33,7 @@ export function animationStyles(): string {
        bright hairline border, matching the iOS SpinningCube; both read theme
        accent vars, so the theme picker recolors live. Idle = dimmed + still. */
     .zen-orb {
-      width: 58px; height: 58px;
+      width: 58px; height: 58px; position: relative;
       display: flex; align-items: center; justify-content: center;
       background: transparent; border: none; overflow: visible;
     }
@@ -55,5 +55,63 @@ export function animationStyles(): string {
     }
     /* Legacy shine highlight node is unused by the 2D cube. */
     .zen-orb__shine { display: none; }
+
+    /* Per-agent creature character. Replaces the cube when an agent picked one
+       (zen-cube-2d.js skips cube injection for orbs with data-zen-character). Tint
+       comes from --agent-color/--agent-ink set inline on the SVG (baked from the
+       agent's color). The creature does NOT spin: idle it sits still (dimmed), busy
+       (its agent is active) it hops — but the hops are driven by zen-cube-2d.js,
+       which fires a burst of a RANDOM number of zen-hop-once hops then waits a
+       RANDOM interval before the next burst (per creature, so no two share a
+       rhythm). Its eyes blink every few seconds in both states. The SVG art sits
+       well inside the 100x100 viewBox, so a hop never clips. */
+    .zen-orb__creature {
+      width: 100%; height: 100%; overflow: visible;
+      transform-origin: 50% 80%;
+      filter: drop-shadow(0 0 6px color-mix(in srgb, var(--agent-color, #6ea8fe), transparent 55%));
+    }
+    .zen-orb--inactive .zen-orb__creature { opacity: 0.55; filter: none; }
+    /* One hop; zen-cube-2d.js adds .zen-hop and sets --hop-reps for a burst. */
+    .zen-orb__creature.zen-hop {
+      animation: zen-hop-once 0.42s ease-in-out var(--hop-reps, 1);
+    }
+    .zen-eye {
+      transform-box: fill-box; transform-origin: center;
+      animation: zen-blink 4.6s ease-in-out infinite;
+    }
+    /* Asleep: an inactive creature keeps its eyes shut (no blink). */
+    .zen-orb--inactive .zen-eye { animation: none; transform: scaleY(0.12); }
+    /* One small hop with a light squash on landing — "not too much". */
+    @keyframes zen-hop-once {
+      0% { transform: translateY(0) scaleY(1); }
+      35% { transform: translateY(-13%) scaleY(1.04); }
+      70% { transform: translateY(0) scaleY(0.97); }
+      100% { transform: translateY(0) scaleY(1); }
+    }
+    /* Two quick blinks at uneven points of a ~4.6s cycle. */
+    @keyframes zen-blink {
+      0%, 45% { transform: scaleY(1); }
+      47%, 48% { transform: scaleY(0.1); }
+      50%, 88% { transform: scaleY(1); }
+      90%, 91% { transform: scaleY(0.1); }
+      93%, 100% { transform: scaleY(1); }
+    }
+    /* Desync neighbours' blinks (hops are JS-driven + already random per creature). */
+    .zen-view__orb-wrapper:nth-child(2) .zen-eye { animation-delay: -2.7s; }
+    .zen-view__orb-wrapper:nth-child(3) .zen-eye { animation-delay: -1.1s; }
+    .zen-view__orb-wrapper:nth-child(4) .zen-eye { animation-delay: -3.6s; }
+    .zen-view__orb-wrapper:nth-child(5) .zen-eye { animation-delay: -4.0s; }
+    /* Multi-instance crowd: overlapping copies. Each copy's creature is its own
+       element, so zen-cube-2d.js hops each on its own random schedule. */
+    .zen-orb__stack { position: absolute; inset: 0; }
+    .zen-orb__stack-item {
+      position: absolute; inset: 0;
+      transform: translate(var(--sx, 0), var(--sy, 0)) scale(var(--ss, 1));
+      opacity: var(--o, 1);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .zen-orb__creature.zen-hop,
+      .zen-eye { animation: none; }
+    }
   `;
 }

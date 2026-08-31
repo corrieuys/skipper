@@ -5,6 +5,7 @@ import { loadConfigSnapshotIntoDb, loadRealtimeDefaultsIntoDb, readConfigSnapsho
 import { flattenLocalTeamsIntoStore } from "../teams/local-teams";
 import { flattenSingleAgentsIntoStore } from "../single-agents/store";
 import { ensureCustomAgentTypeStubs, registerCustomAgentTypes, flattenCustomAgentsAsSoloTeams } from "../custom-agents/store";
+import { applySkipperIdentity } from "../agents/skipper";
 import { getRuntimeDbPath, migrateLegacyDbIfNeeded } from "../paths";
 import { migrateLegacySchema, tableExists } from "./legacy-migrations";
 import { assetTextSync, listAssets } from "../assets";
@@ -182,6 +183,7 @@ function initializeSplitDatabases(runtimeDb: Database): void {
   flattenCustomAgentsAsSoloTeams(runtimeDb);
   loadConfigSnapshotIntoDb(runtimeDb, "shared");
   loadRealtimeDefaultsIntoDb(runtimeDb);
+  applySkipperIdentity(runtimeDb);
   installSplitSqlRouting(runtimeDb);
 }
 
@@ -202,6 +204,7 @@ function initializeSingleDatabase(database: Database): void {
   flattenCustomAgentsAsSoloTeams(database);
   loadConfigSnapshotIntoDb(database, "main");
   loadRealtimeDefaultsIntoDb(database);
+  applySkipperIdentity(database);
 }
 
 /**

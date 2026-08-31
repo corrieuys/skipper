@@ -3,6 +3,7 @@ import type { Database } from "bun:sqlite";
 import { getAgentType } from "../config/store";
 import { isCustomAgentType } from "../agents/types";
 import { normalizeSlashCommand } from "../slack/slash-command";
+import { isCreatureId, sanitizeColor } from "../html/atoms/creature";
 import {
   SINGLE_AGENT_PREFIX,
   soloProjectedId,
@@ -97,6 +98,10 @@ export interface SingleAgentConfig {
   slashCommand?: string;
   /** Operator-defined tool names (src/custom-tools) granted to this agent. */
   customTools?: string[];
+  /** Chosen identity color (hex) — tints the orb + this agent's timeline output. */
+  color?: string | null;
+  /** Chosen creature character id ("" / null = cube fallback). */
+  character?: string | null;
 }
 
 export interface SingleAgent {
@@ -185,6 +190,8 @@ function toSpec(sa: SingleAgent): SoloAgentSpec {
     model: sa.model,
     instruction: sa.instruction,
     capabilities: sa.capabilities,
+    color: sa.config.color ?? null,
+    character: sa.config.character ?? null,
   };
 }
 
@@ -266,6 +273,8 @@ function serializeConfig(config: SingleAgentConfig | undefined): string {
   const c: SingleAgentConfig = { slackEnabled: config?.slackEnabled ?? false };
   if (config?.slashCommand) c.slashCommand = normalizeSlashCommand(config.slashCommand);
   if (config?.customTools && config.customTools.length > 0) c.customTools = config.customTools;
+  if (config?.color) c.color = sanitizeColor(config.color);
+  if (isCreatureId(config?.character)) c.character = config.character;
   return JSON.stringify(c);
 }
 

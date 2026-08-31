@@ -988,17 +988,18 @@ function registerV2PageRoutes(): void {
     ).all(params.id) as Array<{ entry_type: string; content: string; priority: string; created_at: string }>;
 
     const terminalRows = db.prepare(
-      `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name, t.created_at
+      `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name,
+              json_extract(a.config, '$.color') AS agent_color, t.created_at
        FROM terminal_outputs t
        JOIN agent_instances ai ON ai.id = t.agent_id
        LEFT JOIN agents a ON a.id = ai.template_agent_id
        WHERE ai.task_id = ?
        ORDER BY t.id DESC LIMIT 200`
-    ).all(params.id) as Array<{ stream: string; data: string; agent_name: string; created_at: string }>;
+    ).all(params.id) as Array<{ stream: string; data: string; agent_name: string; agent_color: string | null; created_at: string }>;
 
     const merged: Row[] = [
       ...timelineRows.map(r => ({ source: "timeline" as const, entry_type: r.entry_type, content: r.content, priority: r.priority, created_at: r.created_at })),
-      ...terminalRows.map(r => ({ source: "terminal" as const, stream: r.stream, data: r.data, agent_name: r.agent_name, created_at: r.created_at })),
+      ...terminalRows.map(r => ({ source: "terminal" as const, stream: r.stream, data: r.data, agent_name: r.agent_name, agent_color: r.agent_color, created_at: r.created_at })),
     ];
     merged.sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
     const limited = merged.slice(0, 300);
@@ -1263,6 +1264,7 @@ function registerV2PageRoutes(): void {
     const { getModelSettingsView } = require("../config/model-settings");
     const { isExperimental } = require("../config/feature-flags");
     const { getSlackConfigView } = require("../config/slack-settings");
+    const { getSkipperIdentity } = require("../agents/skipper");
     return html(configPage({
       notificationPreferences: listPreferences(db),
       logRetentionHours: getNumberSetting(db, SETTING_LOG_RETENTION_HOURS, 24),
@@ -1282,7 +1284,18 @@ function registerV2PageRoutes(): void {
         currentVersion: APP_VERSION,
         availableVersion: getStringSetting(db, SETTING_UPDATE_AVAILABLE_VERSION, "") || null,
       },
+      skipperIdentity: getSkipperIdentity(db),
     }));
+  });
+
+  // Persist the Skipper's own orb identity (color + creature). Experimental.
+  addRoute("POST", "/api/config/skipper-identity", async (req) => {
+    const { isExperimental } = require("../config/feature-flags");
+    if (!isExperimental()) return new Response("not found", { status: 404 });
+    const { saveSkipperIdentity } = require("../agents/skipper");
+    const body = await req.json() as { color?: string; character?: string };
+    const saved = saveSkipperIdentity(String(body.color ?? ""), String(body.character ?? ""), db);
+    return Response.json({ ok: true, ...saved });
   });
 
   // Persist a subsystem's provider + model (machine-scoped app_settings).

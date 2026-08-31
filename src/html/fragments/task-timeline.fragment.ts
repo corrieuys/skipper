@@ -6,6 +6,7 @@ import { renderMessageBody } from "../atoms/render-message-body";
 import { terminalJsonSummary, stripThinking, classifyPlainTerminalLine } from "../terminalJsonSummary";
 import { renderAgentText } from "../atoms/render-agent-text";
 import { escalationCardPanel, type EscalationCardData } from "../panels/escalation-card.panel";
+import { sanitizeColor } from "../atoms/creature";
 
 /**
  * Unified task timeline for the v2 UI: operator messages (task_messages) render
@@ -23,6 +24,7 @@ interface TerminalRow {
   stream: string;
   data: string;
   agent_name: string;
+  agent_color: string | null;
   created_at: string;
 }
 
@@ -30,6 +32,7 @@ interface OpMessageRow {
   id: string;
   agent_id: string;
   agent_name: string | null;
+  agent_color: string | null;
   content: string;
   format: string | null;
   created_at: string;
@@ -116,23 +119,33 @@ function activityDataAttrs(row: { data: string; agent_name?: string; created_at?
     data-sk-activity-kind="${kind}"`;
 }
 
-/** Agent prose from terminal frames: quiet inline entry, no avatar, no accent
- *  color — visually adjacent to the tool groups. Operator messages
+/** Inline `color:` style for an agent's chosen color, or "" to fall back to the
+ *  default (prose) / name-hash bucket (card). */
+function whoColorStyle(color: string | null | undefined): string {
+  return color ? ` style="color:${sanitizeColor(color)}"` : "";
+}
+
+/** Agent prose from terminal frames: quiet inline entry. The agent's chosen color
+ *  tints its name; body text stays default for readability. Operator messages
  *  (task_messages) keep the full card via messageCard. */
-function proseEntry(agent: string, time: string, bodyHtml: string, attrs = ""): string {
+function proseEntry(agent: string, time: string, bodyHtml: string, attrs = "", color: string | null = null): string {
   return `<div class="tc-prose" ${attrs}>
-    <span class="tc-prose__who">${escapeHtml(agent)}</span>
+    <span class="tc-prose__who"${whoColorStyle(color)}>${escapeHtml(agent)}</span>
     <time class="tc-prose__time">${formatTimestamp(time)}</time>
     <span class="tc-prose__body">${bodyHtml}</span>
   </div>`;
 }
 
-function messageCard(agent: string, kindLabel: string, time: string, bodyHtml: string, attrs = ""): string {
+function messageCard(agent: string, kindLabel: string, time: string, bodyHtml: string, attrs = "", color: string | null = null): string {
   const idx = avatarIndex(agent);
+  // Chosen color tints the avatar + name; otherwise fall back to the name-hash bucket.
+  const c = color ? sanitizeColor(color) : null;
+  const avAttr = c ? ` class="tc-av" style="background:${c}"` : ` class="tc-av tc-av--${idx}"`;
+  const whoAttr = c ? ` class="tc-entry__who" style="color:${c}"` : ` class="tc-entry__who tc-who--${idx}"`;
   return `<div class="tc-entry">
     <div class="tc-entry__meta">
-      <div class="tc-av tc-av--${idx}">${escapeHtml(initials(agent))}</div>
-      <span class="tc-entry__who tc-who--${idx}">${escapeHtml(agent)}</span>
+      <div${avAttr}>${escapeHtml(initials(agent))}</div>
+      <span${whoAttr}>${escapeHtml(agent)}</span>
       ${kindLabel ? `<span class="tc-entry__kind">${escapeHtml(kindLabel)}</span>` : ""}
       <time class="tc-entry__time">${formatTimestamp(time)}</time>
     </div>
@@ -142,6 +155,7 @@ function messageCard(agent: string, kindLabel: string, time: string, bodyHtml: s
 
 interface SysBuffer {
   agent: string;
+  color: string | null;
   count: number;
   toolCount: number;
   rows: Array<{ summary: string; data: string; time: string }>;
@@ -167,7 +181,7 @@ function sysGroupHtml(buf: SysBuffer): string {
   if (sysCount > 0) parts.push(sysCount === 1 ? "1 system event" : `${sysCount} system events`);
   const label = parts.join(", ") || `${buf.count} events`;
   return `<details class="tc-sys" data-tc-keep="sys:${escapeHtml(buf.agent)}:${escapeHtml(buf.firstTime)}">
-    <summary>${label} &middot; ${escapeHtml(buf.agent)}</summary>
+    <summary><span class="tc-sys__who"${whoColorStyle(buf.color)}>${escapeHtml(buf.agent)}</span><span class="tc-sys__label">${label}</span></summary>
     <div class="tc-sys__rows">${overflow}${rowsHtml}</div>
   </details>`;
 }
@@ -198,19 +212,47 @@ function resolvedEscalationHtml(e: EscalationCardData): string {
   </details>`;
 }
 
+/** An open escalation shows only a compact banner in the timeline (sticky to the
+ *  top or bottom edge while its position is off screen); clicking it opens the
+ *  full resolvable card in a modal. The card markup rides along in an inert
+ *  <template> so no duplicate #escalation-<id> id sits in the live DOM. */
+function escalationBanner(e: EscalationCardData): string {
+  const agentLabel = e.agent_name ?? e.agent_id.slice(0, 12);
+  return `<div class="tc-esc-banner-wrap">
+    <button type="button" class="tc-esc-banner" data-esc-open="${escapeHtml(e.id)}">
+      <span class="tc-esc-banner__bang">!</span>
+      <span class="tc-esc-banner__who">${escapeHtml(agentLabel)}</span>
+      <span class="tc-esc-banner__msg">needs your response</span>
+      <time class="tc-esc-banner__time">${formatTimestamp(e.created_at)}</time>
+    </button>
+    <template data-esc-tpl="${escapeHtml(e.id)}">${escalationCardPanel(e)}</template>
+  </div>`;
+}
+
 export function taskTimelineFragment(db: Database, taskId: string): string {
+  // `substr(t.data,1,32768)` caps per-row transfer + render cost. Some legacy
+  // rows hold up to 256KB frames (a few tasks emitted giant tool-output dumps,
+  // bloating terminal_outputs to ~200MB on one task); reading the full blobs for
+  // the whole window took multiple seconds. New frames are already capped at
+  // ingest (manager.ts:MAX_TERMINAL_OUTPUT_BYTES); the substr also bounds the
+  // pre-existing oversized rows without deleting them. The activity feed already
+  // tolerates a truncated/unparseable frame (it drops rows it can't summarise).
+  // LIMIT lowered 2400→1000: 1000 entries already exceeds what a human scrolls,
+  // and fewer rows means fewer DOM nodes to build client-side.
   const terminalDesc = db.prepare(
-    `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name, t.created_at
+    `SELECT t.stream, substr(t.data, 1, 32768) AS data, COALESCE(a.name, ai.template_agent_id) AS agent_name,
+            json_extract(a.config, '$.color') AS agent_color, t.created_at
      FROM terminal_outputs t
      JOIN agent_instances ai ON ai.id = t.agent_id
      LEFT JOIN agents a ON a.id = ai.template_agent_id
      WHERE ai.task_id = ?
-     ORDER BY t.id DESC LIMIT 2400`,
+     ORDER BY t.id DESC LIMIT 1000`,
   ).all(taskId) as TerminalRow[];
   const terminal = terminalDesc.reverse();
 
   const opMessages = db.prepare(
-    `SELECT m.id, m.agent_id, m.content, m.format, m.created_at, a.name AS agent_name
+    `SELECT m.id, m.agent_id, m.content, m.format, m.created_at, a.name AS agent_name,
+            json_extract(a.config, '$.color') AS agent_color
      FROM task_messages m
      LEFT JOIN agents a ON a.id = m.agent_id
      WHERE m.task_id = ?
@@ -249,11 +291,11 @@ export function taskTimelineFragment(db: Database, taskId: string): string {
       const body = renderInlineMarkdown(summary);
       items.push({
         t: row.created_at,
-        html: proseEntry(row.agent_name, row.created_at, body, activityDataAttrs(row, "message")),
+        html: proseEntry(row.agent_name, row.created_at, body, activityDataAttrs(row, "message"), row.agent_color),
       });
     } else {
       if (sysBuf && sysBuf.agent !== row.agent_name) flushSys();
-      if (!sysBuf) sysBuf = { agent: row.agent_name, count: 0, toolCount: 0, rows: [], firstTime: row.created_at, lastTime: row.created_at };
+      if (!sysBuf) sysBuf = { agent: row.agent_name, color: row.agent_color, count: 0, toolCount: 0, rows: [], firstTime: row.created_at, lastTime: row.created_at };
       sysBuf.count++;
       if (kind === "tool") sysBuf.toolCount++;
       sysBuf.lastTime = row.created_at;
@@ -269,7 +311,7 @@ export function taskTimelineFragment(db: Database, taskId: string): string {
     const agent = m.agent_name ?? m.agent_id;
     items.push({
       t: m.created_at,
-      html: messageCard(agent, "message", m.created_at, renderMessageBody(m.content, m.format)),
+      html: messageCard(agent, "message", m.created_at, renderMessageBody(m.content, m.format), "", m.agent_color),
     });
   }
 
@@ -278,7 +320,7 @@ export function taskTimelineFragment(db: Database, taskId: string): string {
   const escalationHtml = new Map<string, string>();
   for (const e of escalations) {
     const html = e.status === "open"
-      ? `<div class="tc-escwrap">${escalationCardPanel(e)}</div>`
+      ? escalationBanner(e)
       : resolvedEscalationHtml(e);
     escalationHtml.set(e.id, html);
     items.push({ t: e.created_at, html });
@@ -291,11 +333,12 @@ export function taskTimelineFragment(db: Database, taskId: string): string {
   items.sort((a, b) => a.t.localeCompare(b.t));
   let final = items.slice(-MAX_ITEMS);
 
-  // An open escalation must never fall out of the window.
+  // An open escalation must never fall out of the window. If it did, pin its
+  // banner to the top so the sticky banner still docks to an edge.
   for (const e of escalations) {
     if (e.status !== "open") continue;
     const html = escalationHtml.get(e.id)!;
-    if (!final.some((i) => i.html === html)) final.push({ t: e.created_at, html });
+    if (!final.some((i) => i.html === html)) final.unshift({ t: e.created_at, html });
   }
 
   return final.map((i) => i.html).join("");

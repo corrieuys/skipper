@@ -95,6 +95,29 @@
     return cube;
   }
 
+  // Tint the cube from the agent color once (a CSS gradient from the color to a
+  // darker shade). Only for cube orbs; creature orbs are colored in their SVG.
+  function tintCube(el, cube) {
+    var color = el.getAttribute("data-zen-color");
+    if (el.__zenTint === color) return;
+    el.__zenTint = color;
+    if (color) {
+      cube.style.background = "linear-gradient(135deg, " + color + ", " + shade(color, -45) + ")";
+    } else {
+      cube.style.background = "";
+    }
+  }
+  function shade(hex, amt) {
+    var s = (hex || "").trim();
+    if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(s)) return hex;
+    var h = s.slice(1);
+    if (h.length === 3) h = h.split("").map(function (c) { return c + c; }).join("");
+    var n = parseInt(h, 16);
+    function cl(v) { return Math.max(0, Math.min(255, v)); }
+    var r = cl((n >> 16) + amt), g = cl(((n >> 8) & 255) + amt), b = cl((n & 255) + amt);
+    return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+  }
+
   function frame() {
     if (!loopRunning) return;
     var t = performance.now() / 1000;
@@ -102,7 +125,11 @@
     var anyActive = false;
     for (var i = 0; i < orbs.length; i++) {
       var el = orbs[i];
+      // Creature orbs draw their own (CSS-animated) character SVG — no cube, and
+      // no rAF work, so they don't keep the loop alive.
+      if (el.hasAttribute("data-zen-character")) continue;
       var cube = cubeFor(el);
+      tintCube(el, cube);
       var active = el.classList.contains("zen-orb--active");
       if (active && !reduceMotion) {
         cube.style.transform = "rotate(" + spinAngle(spinFor(el), t) + "rad)";
@@ -123,6 +150,43 @@
     requestAnimationFrame(frame);
   }
 
+  // ── Creature hops ──
+  // Creatures don't spin; an active one hops. To read as RANDOM (not a fixed
+  // looping pattern) each creature fires a BURST of a random number of hops, then
+  // rests a random interval, then bursts again — scheduled per element, so no two
+  // creatures share a rhythm. A creature is any `.zen-orb__creature`, including the
+  // overlapping copies of a multi-instance crowd (each its own element).
+  function creatureActive(el) {
+    if (!el.isConnected) return false;
+    var orb = el.closest && el.closest(".zen-orb");
+    return !!(orb && orb.classList.contains("zen-orb--active"));
+  }
+  function hopBurst(el) {
+    if (reduceMotion || !creatureActive(el)) { el.__hopOn = false; return; }
+    var reps = 1 + Math.floor(Math.random() * 3); // 1..3 hops this burst
+    el.style.setProperty("--hop-reps", reps);
+    el.classList.remove("zen-hop");
+    void el.offsetWidth;                            // reflow so the animation restarts
+    el.classList.add("zen-hop");
+    setTimeout(function () {
+      el.classList.remove("zen-hop");
+      if (!creatureActive(el)) { el.__hopOn = false; return; }
+      var pause = 800 + Math.random() * 3400;       // 0.8–4.2s rest before the next burst
+      setTimeout(function () { hopBurst(el); }, pause);
+    }, 420 * reps + 30);
+  }
+  function scanCreatures() {
+    if (reduceMotion) return;
+    var list = document.querySelectorAll(".zen-orb--active .zen-orb__creature");
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      if (el.__hopOn) continue;
+      el.__hopOn = true;
+      // Random initial stagger so a freshly-swapped group doesn't burst in unison.
+      (function (e) { setTimeout(function () { hopBurst(e); }, Math.random() * 900); })(el);
+    }
+  }
+
   // Orbs are injected via HTMX after load and re-swapped on state changes; a
   // class flip (active↔inactive) or a node swap should wake the loop so the new
   // state animates (or settles) on the next frame.
@@ -130,10 +194,10 @@
     for (var i = 0; i < records.length; i++) {
       var r = records[i];
       if (r.type === "attributes") {
-        if (r.target.classList && r.target.classList.contains("zen-orb")) { wake(); return; }
+        if (r.target.classList && r.target.classList.contains("zen-orb")) { wake(); scanCreatures(); return; }
         continue;
       }
-      if (touches(r.addedNodes) || touches(r.removedNodes)) { wake(); return; }
+      if (touches(r.addedNodes) || touches(r.removedNodes)) { wake(); scanCreatures(); return; }
     }
   });
   function touches(nodes) {
@@ -151,6 +215,7 @@
       childList: true, subtree: true, attributes: true, attributeFilter: ["class"],
     });
     wake();
+    scanCreatures();
   }
 
   if (document.readyState === "loading") {

@@ -4,6 +4,7 @@ WebSocket push from server → browser. Used by dashboard polling-replacement + 
 
 | file | use |
 |---|---|
-| `ui-push.ts` | `UIWebSocketManager` — broadcast fragment refreshes + notifications. Dual-format socket: `/ws/ui` (htmx OOB HTML) and `/ws/ui?format=json` (`broadcastJson` envelope `{event, resource, id, data, timestamp}` for machine clients). Both formats honor topic subscriptions |
+| `ui-push.ts` | `UIWebSocketManager` — broadcast fragment refreshes + notifications. Dual-format socket: `/ws/ui` (htmx OOB HTML) and `/ws/ui?format=json` (`broadcastJson` envelope `{event, resource, id, data, timestamp}` for machine clients). Both formats honor topic subscriptions. **JSON clients get a one-shot `dashboard:snapshot` on connect** (`buildDashboardSnapshotMessage`: tasks/instances/metrics/phase_indicator/activity) so they hydrate without a REST read — the terminal dashboard (`src/tui`) relies on this. Live JSON push `dashboard:activity` (parsed output feed incl. notes, debounced on `agent:output` + on `task:note_added`); `dashboard:phase-indicator` already carries `{task}` |
+| `dashboard-activity.ts` | `buildDashboardActivity` — recent agent stdout parsed to `{agent, kind:message\|tool\|event, text}` via `terminalJsonSummary`, **merged with `task_notes` as `kind:"note"`** (interleaved by time), JSON-shaped for the TUI output feed. Web feed's classify logic minus HTML; drops noise (rate_limit / system-hook / unparseable) instead of dumping raw JSON |
 | `fragment-registry.ts` | Map fragment keys → render fn for diff push |
 | `types.ts` | Shared event payload types |

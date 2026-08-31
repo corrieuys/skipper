@@ -724,6 +724,28 @@ describe("handleAgentExit", () => {
     expect(idleRow).not.toBeNull();
   });
 
+  it("emits instance:state_changed on clean exit so the UI clears the active orb", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+
+    await daemon.processTaskQueue();
+
+    const seen: Array<{ taskId: string; status: string }> = [];
+    const handler = (e: { taskId: string; status: string }) => seen.push({ taskId: e.taskId, status: e.status });
+    eventBus.on("instance:state_changed", handler);
+
+    eventBus.emit("agent:exit", { agentId: "skipper", code: 0, isRespawn: false, hasDelegation: false });
+    eventBus.emit("agent:streams_drained", { agentId: "skipper" });
+    await new Promise((r) => setTimeout(r, 100));
+
+    eventBus.off("instance:state_changed", handler);
+
+    // The settled-status announcement is what re-pushes the steer panel; without
+    // it the orb stayed "active" until a manual refresh.
+    expect(seen.some((e) => e.taskId === taskId && e.status === "completed")).toBe(true);
+  });
+
   it("finalizes a one-off instance on exit without touching the completed task", async () => {
     setupAgentType("os-exit-resumable", true, true);
     const agentId = createAgent("OS Exit Agent", "os-exit-resumable");
@@ -956,7 +978,7 @@ describe("handleAgentExit", () => {
     expect(task?.status).toBe("running");
   });
 
-  it("fails non-streaming successful exit when no completed-turn output exists", async () => {
+  it("keeps task running (recovery-eligible) on non-streaming successful exit with no completed-turn output", async () => {
     setupAgentType("exec-agent", false);
     db.prepare("UPDATE agents SET type = 'exec-agent' WHERE id = 'skipper'").run();
     clearAgentTypeCache();
@@ -978,10 +1000,18 @@ describe("handleAgentExit", () => {
     eventBus.emit("agent:streams_drained", { agentId: exitEvent.agentId });
     await new Promise((r) => setTimeout(r, 100));
 
+    // A clean exit with no completed-turn marker is a TRANSIENT tool/turn drop,
+    // not a terminal failure: the task must stay 'running' so the tick-loop
+    // orphan recovery can respawn the entrypoint (bounded; then pauses for
+    // human Resume). It must NOT be hard-failed here.
     const task = scheduler.getTask(taskId);
-    expect(task?.status).toBe("failed");
+    expect(task?.status).toBe("running");
     const row = db.prepare("SELECT result FROM tasks WHERE id = ?").get(taskId) as { result: string | null } | null;
-    expect(row?.result ?? "").toContain("missing result/turn.completed/step_finish");
+    expect(row?.result ?? "").not.toContain("missing result/turn.completed/step_finish");
+    const bail = db
+      .prepare("SELECT context FROM error_log WHERE category = 'agent_exit_bail' ORDER BY id DESC LIMIT 1")
+      .get() as { context: string | null } | null;
+    expect(bail?.context ?? "").toContain("no_completed_turn_output_recoverable");
   });
 
   it("accepts non-streaming successful exit when completed-turn output exists in instance window", async () => {

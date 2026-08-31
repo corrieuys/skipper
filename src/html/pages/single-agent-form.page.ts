@@ -2,6 +2,8 @@ import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
 import { isExperimental } from "../../config/feature-flags";
+import { agentIdentityPickerScript, identityPanel } from "../atoms/agent-identity-picker";
+import { randomIdentity } from "../atoms/creature";
 import type { SingleAgent } from "../../single-agents/store";
 
 export interface SingleAgentFormViewModel {
@@ -137,6 +139,16 @@ export function singleAgentFormPage(vm: SingleAgentFormViewModel): string {
           </div>
         </div>
 
+        ${identityPanel((() => {
+          // A fresh agent gets a random color + creature by default (experimental).
+          const def = (isNew && experimental) ? randomIdentity() : null;
+          return {
+            color: agent.config?.color ?? def?.color,
+            character: agent.config?.character ?? def?.character,
+            experimental,
+          };
+        })())}
+
         <div class="sk-panel">
           <div class="sk-panel__header"><span class="sk-panel__title">Instruction</span></div>
           <div class="sk-panel__body">
@@ -150,6 +162,7 @@ export function singleAgentFormPage(vm: SingleAgentFormViewModel): string {
         ${customToolsPanel}
       </div>
     </div>
+    ${agentIdentityPickerScript()}
 
     <script>
     (function(){
@@ -215,6 +228,10 @@ export function singleAgentFormPage(vm: SingleAgentFormViewModel): string {
           if ($('sa-slash')) cfg.slashCommand = $('sa-slash').value.trim();
         }
         if (CUSTOM_TOOLS.length) cfg.customTools = readCts();
+        var idRoot = document.querySelector('#sa-form [data-agent-identity]');
+        var ident = (idRoot && window.SkipperIdentity) ? window.SkipperIdentity.read(idRoot) : { color: stored.color, character: stored.character };
+        cfg.color = ident.color;
+        cfg.character = ident.character || null;
         return {
           name: $('sa-name').value.trim(),
           agent_type: $('sa-provider').value,

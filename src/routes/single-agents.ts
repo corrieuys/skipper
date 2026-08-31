@@ -5,6 +5,7 @@ import { getDb } from "../db/connection";
 import { isExperimental } from "../config/feature-flags";
 import { normalizeSlashCommand } from "../slack/slash-command";
 import { findSlashCommandConflict } from "../slack/bindings";
+import { isCreatureId, sanitizeColor } from "../html/atoms/creature";
 import {
   type SingleAgent,
   type SingleAgentInput,
@@ -33,6 +34,8 @@ function coerceConfig(raw: unknown): SingleAgentConfig {
     const tools = (c.customTools as unknown[]).filter((t): t is string => typeof t === "string");
     if (tools.length > 0) config.customTools = tools;
   }
+  if (typeof c.color === "string") config.color = sanitizeColor(c.color);
+  if (typeof c.character === "string") config.character = isCreatureId(c.character) ? c.character : null;
   return config;
 }
 

@@ -9,6 +9,10 @@ export function missionControlStyles(): string {
        sidebar overlays the main area (see the min-width media block below)
        so the dashboard always gets maximum width. Mobile overrides to 1fr. */
     .mc-workspace {
+      /* Expanded (hover overlay + pinned) sidebar width. Drag-resizable when
+         pinned; the drag handler overrides this var on the workspace and
+         persists it (mcSidebarW in skipper.js). */
+      --mc-sidebar-w: 260px;
       display: grid;
       grid-template-columns: 40px 1fr;
       grid-template-rows: 1fr;
@@ -34,20 +38,35 @@ export function missionControlStyles(): string {
       gap: var(--sk-space-2);
     }
     .mc-sidebar__create {
-      flex: 1;
-      padding: 6px 10px;
-      background: var(--sk-accent-primary);
-      color: var(--on-primary);
-      border: none;
+      padding: 4px 9px;
+      background: var(--sk-surface-2);
+      color: var(--sk-text-muted);
+      border: 1px solid var(--sk-border);
       border-radius: var(--sk-radius-sm);
-      font-weight: 700;
+      font-weight: 600;
       font-size: var(--sk-text-xs);
       cursor: pointer;
-      text-align: center;
+      text-align: left;
       text-decoration: none;
-      display: block;
+      display: inline-block;
     }
-    .mc-sidebar__create:hover { opacity: 0.9; color: var(--on-primary); }
+    .mc-sidebar__create:hover { background: var(--sk-surface-3); color: var(--sk-text); }
+
+    /* Collapse-all-folders button, sits with the pin arrow on the header's
+       right. margin-left:auto pushes this + the arrow away from New Task. */
+    .mc-sidebar__collapse-teams {
+      margin-left: auto;
+      background: none;
+      border: none;
+      color: var(--sk-text-subtle);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 2px 6px;
+      flex-shrink: 0;
+      transition: color 0.15s;
+    }
+    .mc-sidebar__collapse-teams:hover { color: var(--sk-text); }
 
     .mc-sidebar__filters {
       display: flex;
@@ -1322,7 +1341,7 @@ export function missionControlStyles(): string {
       }
       .mc-sidebar:hover,
       .mc-workspace--sidebar-pinned .mc-sidebar {
-        width: 260px;
+        width: var(--mc-sidebar-w);
       }
       /* Hover (unpinned) is the temporary overlay: shadow signals floating. */
       .mc-workspace:not(.mc-workspace--sidebar-pinned) .mc-sidebar:hover {
@@ -1330,10 +1349,11 @@ export function missionControlStyles(): string {
       }
       /* Pinned: widen the grid column so the sidebar is part of the layout. */
       .mc-workspace--sidebar-pinned {
-        grid-template-columns: 260px 1fr;
+        grid-template-columns: var(--mc-sidebar-w) 1fr;
       }
       /* Closed rail: content hidden, arrow centered. */
       .mc-sidebar__create,
+      .mc-sidebar__collapse-teams,
       .mc-sidebar__list {
         display: none;
       }
@@ -1344,7 +1364,9 @@ export function missionControlStyles(): string {
       /* Open (hovered or pinned): full content at its final 260px width so
          text doesn't reflow while the panel is still sliding. */
       .mc-sidebar:hover .mc-sidebar__create,
-      .mc-workspace--sidebar-pinned .mc-sidebar__create { display: block; }
+      .mc-workspace--sidebar-pinned .mc-sidebar__create { display: inline-block; }
+      .mc-sidebar:hover .mc-sidebar__collapse-teams,
+      .mc-workspace--sidebar-pinned .mc-sidebar__collapse-teams { display: block; }
       .mc-sidebar:hover .mc-sidebar__list,
       .mc-workspace--sidebar-pinned .mc-sidebar__list { display: block; }
       .mc-sidebar:hover .mc-sidebar__header,
@@ -1357,7 +1379,7 @@ export function missionControlStyles(): string {
       .mc-sidebar:hover .mc-sidebar__list,
       .mc-workspace--sidebar-pinned .mc-sidebar__header,
       .mc-workspace--sidebar-pinned .mc-sidebar__list {
-        min-width: 260px;
+        min-width: var(--mc-sidebar-w);
       }
       /* Arrow points right (open me) when unpinned, left (unpin) when pinned. */
       .mc-sidebar__collapse-btn { transform: rotate(180deg); }
@@ -1375,6 +1397,31 @@ export function missionControlStyles(): string {
       flex-shrink: 0;
     }
     .mc-sidebar__collapse-btn:hover { color: var(--sk-text); }
+
+    /* Drag-to-resize handle on the sidebar's right edge. Only live when the
+       sidebar is pinned on desktop — the hover overlay is transient, so
+       resizing it would snap back on mouse-out. */
+    .mc-sidebar__resize { display: none; }
+    @media (min-width: 769px) {
+      .mc-workspace--sidebar-pinned .mc-sidebar__resize {
+        display: block;
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 6px;
+        height: 100%;
+        cursor: col-resize;
+        z-index: 120;
+        background: transparent;
+        transition: background 0.15s;
+      }
+      .mc-workspace--sidebar-pinned .mc-sidebar__resize:hover,
+      .mc-sidebar__resize--drag {
+        background: var(--sk-accent-primary);
+        opacity: 0.45;
+      }
+    }
+    body.mc-sidebar-resizing { cursor: col-resize; user-select: none; }
 
     /* ── Outputs 3-column layout ── */
     .mc-outputs {

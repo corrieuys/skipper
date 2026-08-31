@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import type { TeamPhase } from "../config/store";
 import type { LocalTeamAgent, LocalTeamConfig, LocalTeamInput } from "./local-teams";
 import { normalizeSlashCommand } from "../slack/slash-command";
+import { isCreatureId, sanitizeColor } from "../html/atoms/creature";
 
 function slugify(s: string): string {
   return s
@@ -76,6 +77,9 @@ function coerceAgent(raw: unknown, usedIds: Set<string>): LocalTeamAgent | null 
   if (Array.isArray(a.customTools)) {
     agent.customTools = (a.customTools as unknown[]).filter((c): c is string => typeof c === "string");
   }
+  // Chosen identity (color + creature character). Sanitized/defaulted at render.
+  if (typeof a.color === "string") agent.color = sanitizeColor(a.color);
+  if (typeof a.character === "string") agent.character = isCreatureId(a.character) ? a.character : null;
   return agent;
 }
 

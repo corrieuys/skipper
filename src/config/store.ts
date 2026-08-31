@@ -17,6 +17,10 @@ export interface AgentDefinition {
   environment?: Record<string, string>;
   constraints?: Record<string, string>;
   capabilities: string[];
+  /** Chosen identity color (hex) — tints the orb + this agent's timeline output. */
+  color?: string | null;
+  /** Chosen creature character id — shown in the orb instead of the cube. */
+  character?: string | null;
 }
 
 export interface TeamMember {
@@ -448,6 +452,8 @@ export function readConfigSnapshot(): ConfigSnapshot {
         instruction: a.instruction,
         environment: a.environment,
         constraints: a.constraints,
+        color: a.color,
+        character: a.character,
       }),
       capabilities: JSON.stringify(a.capabilities),
       status: "idle",

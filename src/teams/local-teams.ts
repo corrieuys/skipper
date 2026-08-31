@@ -13,6 +13,7 @@ import {
   getTeam,
 } from "../config/store";
 import { isCustomAgentType } from "../agents/types";
+import { getCustomAgentByType } from "../custom-agents/store";
 import { registerVisibleLocalTeam, unregisterVisibleLocalTeam } from "../config/feature-flags";
 import { normalizeSlashCommand } from "../slack/slash-command";
 import { getSingleAgent, isSingleAgentRefType, singleAgentIdFromRefType } from "../single-agents/store";
@@ -48,6 +49,10 @@ export interface LocalTeamAgent {
    * a session receives the union.
    */
   customTools?: string[];
+  /** Chosen identity color (hex). Reference members inherit the record's color. */
+  color?: string | null;
+  /** Chosen creature character id ("" / null = cube fallback). */
+  character?: string | null;
 }
 
 /**
@@ -203,6 +208,8 @@ function toSharedAgent(teamId: string, a: LocalTeamAgent): AgentDefinition {
     model: a.model,
     instruction: a.instruction,
     capabilities: Array.isArray(a.capabilities) ? a.capabilities : [],
+    color: a.color ?? null,
+    character: a.character ?? null,
   };
 }
 
@@ -250,10 +257,20 @@ function resolveTeamAgentRefs(db: Database, team: LocalTeam): LocalTeam {
         instruction: rec.instruction,
         capabilities: rec.capabilities,
         customTools: rec.config.customTools ?? [],
+        // A library reference wears the record's chosen identity.
+        color: rec.config.color ?? null,
+        character: rec.config.character ?? null,
       };
     }
     if (isCustomAgentType(a.type)) {
-      return { ...a, model: a.model || "default", instruction: a.instruction ?? "" };
+      const rec = getCustomAgentByType(db, a.type);
+      return {
+        ...a,
+        model: a.model || "default",
+        instruction: a.instruction ?? "",
+        color: rec?.color ?? null,
+        character: rec?.character ?? null,
+      };
     }
     return a;
   });
@@ -331,7 +348,7 @@ function upsertTeamIntoSharedTables(db: Database, team: LocalTeam): void {
       shared.name,
       shared.type,
       shared.model,
-      JSON.stringify({ instruction: shared.instruction, environment: shared.environment, constraints: shared.constraints }),
+      JSON.stringify({ instruction: shared.instruction, environment: shared.environment, constraints: shared.constraints, color: shared.color, character: shared.character }),
       JSON.stringify(shared.capabilities),
       ts,
       ts,

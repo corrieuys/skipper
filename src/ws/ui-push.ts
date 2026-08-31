@@ -44,7 +44,7 @@ import { taskTimelineFragment } from "../html/fragments/task-timeline.fragment";
 import { artifactListFragment } from "../html/fragments/artifact-list.fragment";
 import { MessageManager } from "../messages/manager";
 import type { TaskNoteData } from "../html/components";
-import { renderPhaseStripFragment, parseTerminalActivity, parseRealtimeActivity } from "../html/pages/command-center.page";
+import { renderPhaseStripFragment, parseTerminalActivity, parseRealtimeActivity, escalationHeaderSlot } from "../html/pages/command-center.page";
 import type { RealtimeActivityRow } from "../html/pages/command-center.page";
 import {
   fetchTasksWithTeams,
@@ -58,6 +58,7 @@ import {
 import { fetchRealtimeTimeline, fetchRealtimeTaskAgents } from "../data/realtime";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 import { topicMatches } from "./fragment-registry";
+import { buildDashboardActivity } from "./dashboard-activity";
 
 import { terminalJsonSummary } from "../html/terminalJsonSummary";
 
@@ -141,6 +142,17 @@ export class UIWebSocketManager {
   readonly wsHandlers = {
     open: (ws: ServerWebSocket<WSData>) => {
       this.clients.add(ws);
+      // JSON machine clients (e.g. the terminal dashboard) get a one-shot full
+      // snapshot on connect, so they render immediately instead of waiting for
+      // the next event. HTML clients seed from the server-rendered page.
+      const data = ws.data as UiPushWSData;
+      if (data.type === "ui-push" && data.format === "json") {
+        try {
+          ws.send(this.buildDashboardSnapshotMessage());
+        } catch {
+          /* client vanished between upgrade and open */
+        }
+      }
     },
     message: (ws: ServerWebSocket<WSData>, message: string | Buffer) => {
       // Handle subscription messages from clients
@@ -298,6 +310,7 @@ export class UIWebSocketManager {
     eventBus.on("agent:output", (event) => {
       this.debounced("recent-activity", () => this.pushRecentActivity());
       this.debounced("log-entries", () => this.pushLogEntries());
+      this.debounced("dashboard-activity", () => this.pushDashboardActivity());
       const chunk = renderTerminalOutputChunk(event.stream, event.data);
       this.broadcastRaw(
         `<div id="terminal-lines" hx-swap-oob="beforeend">${chunk}</div>`,
@@ -382,6 +395,8 @@ export class UIWebSocketManager {
     eventBus.on("task:note_added", (event) => {
       this.pushRtNotes(event.taskId);
       this.pushV2Notes(event.taskId);
+      // Notes are interleaved into the terminal dashboard's output feed.
+      this.pushDashboardActivity();
     });
 
     // --- Operator message posted (experimental) ---
@@ -424,6 +439,7 @@ export class UIWebSocketManager {
       this.pushDashboardEscalations();
       this.pushCommandCenterSidebar();
       if (event.taskId) this.pushV2TaskEscalations(event.taskId);
+      if (event.taskId) this.pushV2TaskHeaderEscalation(event.taskId);
       if (event.taskId) this.pushV2Timeline(event.taskId);
     });
     eventBus.on("escalation:resolved", (event) => {
@@ -434,6 +450,7 @@ export class UIWebSocketManager {
       // dashboard count reflects the latest state and the user isn't misled into a second resolve.
       this.pushDashboardInstances();
       if (event.taskId) this.pushV2TaskEscalations(event.taskId);
+      if (event.taskId) this.pushV2TaskHeaderEscalation(event.taskId);
       if (event.taskId) this.pushV2Timeline(event.taskId);
     });
   }
@@ -475,6 +492,48 @@ export class UIWebSocketManager {
       <div class="cmd-metric"><span class="cmd-metric-value ${failed > 0 ? "cmd-metric-value-error" : "cmd-metric-value-muted"}">${failed}</span><span class="cmd-metric-label">Failed</span></div>
     </div>`, ["dashboard"]);
     this.broadcastJson("updated", "dashboard:metrics", null, { running, queued, completed, failed, activeAgentCount }, ["dashboard"]);
+  }
+
+  /**
+   * One-shot dashboard snapshot for a freshly-connected JSON client. Same
+   * resource shapes the live `dashboard:*` JSON pushes use, bundled under a
+   * single `dashboard:snapshot` frame so the client hydrates in one message.
+   */
+  private buildDashboardSnapshotMessage(): string {
+    const dashboardTasks = this.db.prepare(
+      "SELECT id, title, status, task_type, created_at FROM tasks WHERE status IN ('running', 'approved', 'completed') ORDER BY created_at DESC",
+    ).all() as { id: string; title: string; status: string; task_type?: string; created_at?: string }[];
+    const focusTasks = selectDashboardFocusTasks(dashboardTasks);
+    const runningInstances = fetchDashboardRunningInstances(this.db);
+    return JSON.stringify({
+      event: "snapshot",
+      resource: "dashboard:snapshot",
+      id: null,
+      data: {
+        tasks: focusTasks,
+        running_instances: runningInstances,
+        metrics: this.dashboardCounts(),
+        phase_indicator: fetchDashboardPhaseIndicatorTask(this.db),
+        activity: buildDashboardActivity(this.db, DASHBOARD_ACTIVITY_LIMIT),
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  private pushDashboardActivity(): void {
+    this.broadcastJson("updated", "dashboard:activity", null, { activity: buildDashboardActivity(this.db, DASHBOARD_ACTIVITY_LIMIT) }, ["dashboard"]);
+  }
+
+  /** Task/agent counts shown in the dashboard header (matches pushDashboardMetrics). */
+  private dashboardCounts(): { running: number; queued: number; completed: number; failed: number; activeAgentCount: number } {
+    const allTasks = this.db.prepare("SELECT status FROM tasks").all() as { status: string }[];
+    return {
+      running: allTasks.filter((t) => t.status === "running").length,
+      queued: allTasks.filter((t) => t.status === "approved").length,
+      completed: allTasks.filter((t) => t.status === "completed").length,
+      failed: allTasks.filter((t) => t.status === "failed").length,
+      activeAgentCount: fetchDashboardRunningInstances(this.db).length,
+    };
   }
 
   private pushDashboardDelegations(): void {
@@ -732,6 +791,16 @@ export class UIWebSocketManager {
     this.broadcast(`<div id="mc-task-escalations-${esc(taskId)}">${content}</div>`, [`dashboard`, `task:${taskId}`]);
   }
 
+  // OOB-swap the task-header escalation label so it appears/clears live when an
+  // escalation is raised or resolved while the task is open (the header itself
+  // is not otherwise re-pushed on escalation events).
+  private pushV2TaskHeaderEscalation(taskId: string): void {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM escalations WHERE task_id = ? AND status = 'open'")
+      .get(taskId) as { n: number } | null;
+    this.broadcast(escalationHeaderSlot(taskId, row?.n ?? 0), [`dashboard`, `task:${taskId}`]);
+  }
+
   private pushV2SteerPanel(taskId: string): void {
     const instances = this.db.prepare(
       `SELECT ai.id AS runtime_id, ai.template_agent_id,
@@ -837,17 +906,18 @@ export class UIWebSocketManager {
     ).all(taskId) as Array<{ entry_type: string; content: string; priority: string; created_at: string }>;
 
     const terminalRows = this.db.prepare(
-      `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name, t.created_at
+      `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name,
+              json_extract(a.config, '$.color') AS agent_color, t.created_at
        FROM terminal_outputs t
        JOIN agent_instances ai ON ai.id = t.agent_id
        LEFT JOIN agents a ON a.id = ai.template_agent_id
        WHERE ai.task_id = ?
        ORDER BY t.id DESC LIMIT 200`,
-    ).all(taskId) as Array<{ stream: string; data: string; agent_name: string; created_at: string }>;
+    ).all(taskId) as Array<{ stream: string; data: string; agent_name: string; agent_color: string | null; created_at: string }>;
 
     const merged: RealtimeActivityRow[] = [
       ...timelineRows.map(r => ({ source: "timeline" as const, entry_type: r.entry_type, content: r.content, priority: r.priority, created_at: r.created_at })),
-      ...terminalRows.map(r => ({ source: "terminal" as const, stream: r.stream, data: r.data, agent_name: r.agent_name, created_at: r.created_at })),
+      ...terminalRows.map(r => ({ source: "terminal" as const, stream: r.stream, data: r.data, agent_name: r.agent_name, agent_color: r.agent_color, created_at: r.created_at })),
     ];
     merged.sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
     const limited = merged.slice(0, 300);

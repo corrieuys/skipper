@@ -4,6 +4,7 @@ import { escapeHtml } from "../atoms/escape-html";
 import { themePickerFragment } from "../styles/themes";
 import { NOTIFICATION_EVENTS } from "../../notifications/types";
 import { isExperimental } from "../../config/feature-flags";
+import { agentIdentityPicker, agentIdentityPickerScript } from "../atoms/agent-identity-picker";
 import type { NotificationPreference } from "../../notifications/store";
 import type { ModelChoice, AgentTypeOption } from "../../config/model-settings";
 import type { SlackConfigView } from "../../config/slack-settings";
@@ -33,6 +34,8 @@ export interface ConfigPageViewModel {
     currentVersion: string;
     availableVersion: string | null;
   };
+  /** Skipper's own orb identity (experimental config section). */
+  skipperIdentity: { color: string; character: string };
 }
 
 /** One provider (agent type) + model row for a subsystem. Model list is filtered
@@ -94,6 +97,39 @@ function modelSettingsPanel(ms: ConfigPageViewModel["modelSettings"]): string {
   </div>`;
 }
 
+
+/** Experimental: pick the Skipper's own color + creature for the active-agent orb. */
+function skipperCharacterPanel(identity: { color: string; character: string } = { color: "", character: "" }): string {
+  return `<div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
+    <div class="sk-panel__header">
+      <span class="sk-panel__title">Skipper Character</span>
+    </div>
+    <div class="sk-panel__body">
+      <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
+        The Skipper's color and creature in the active-agent orb. Stored on this machine only.
+      </p>
+      ${agentIdentityPicker({ color: identity.color, character: identity.character, experimental: true })}
+      <div style="margin-top:var(--sk-space-3);display:flex;align-items:center;gap:var(--sk-space-2);">
+        <button type="button" id="sk-skipper-identity-save" class="sk-btn sk-btn--sm sk-btn--primary">Save</button>
+        <span id="sk-skipper-identity-status" class="sk-muted sk-text-xs"></span>
+      </div>
+    </div>
+    <script>(function(){
+      var btn=document.getElementById('sk-skipper-identity-save');
+      if(!btn)return;
+      btn.addEventListener('click',function(){
+        var root=document.querySelector('#sk-skipper-identity-save').closest('.sk-panel__body').querySelector('[data-agent-identity]');
+        var id=(root&&window.SkipperIdentity)?window.SkipperIdentity.read(root):{color:'',character:''};
+        var status=document.getElementById('sk-skipper-identity-status');
+        fetch('/api/config/skipper-identity',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(id)})
+          .then(function(r){return r.json();})
+          .then(function(res){status.textContent=res.ok?'Saved':(res.error||'Failed');setTimeout(function(){status.textContent='';},1500);})
+          .catch(function(e){status.textContent=String(e);});
+      });
+    })();</script>
+  </div>
+  ${agentIdentityPickerScript()}`;
+}
 
 function notificationRows(prefs: NotificationPreference[]): string {
   return prefs.map((pref) => {
@@ -178,6 +214,8 @@ export function configPage(vm: ConfigPageViewModel): string {
       </div>
 
       ${modelSettingsPanel(vm.modelSettings)}
+
+      ${isExperimental() ? skipperCharacterPanel(vm.skipperIdentity) : ""}
 
       <!-- Sound Notifications Section -->
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">

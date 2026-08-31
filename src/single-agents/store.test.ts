@@ -71,6 +71,17 @@ describe("single agents persistence + projection", () => {
     expect(agent!.instruction).toBe("You research topics thoroughly.");
   });
 
+  it("round-trips a chosen identity and projects it onto the solo agent", () => {
+    createSingleAgent(db, { ...baseInput(), config: { color: "#e0a458", character: "slug" } });
+    const sa = getSingleAgent(db, "researcher")!;
+    expect(sa.config.color).toBe("#e0a458");
+    expect(sa.config.character).toBe("slug");
+    // The projected shared agent carries the identity in its config blob.
+    const agent = getAgent(singleAgentAgentId("researcher"))!;
+    expect(agent.color).toBe("#e0a458");
+    expect(agent.character).toBe("slug");
+  });
+
   it("resolves through getTeamForExecution as a runnable team", () => {
     createSingleAgent(db, baseInput());
     const exec = new TeamManager(db).getTeamForExecution(singleAgentTeamId("researcher"));

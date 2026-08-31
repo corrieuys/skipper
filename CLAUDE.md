@@ -123,6 +123,7 @@ repo's GitHub Releases.
 | JSON config store, feature flags, app settings | [src/config/CLAUDE.md](src/config/CLAUDE.md) |
 | HTTP route handlers | [src/routes/CLAUDE.md](src/routes/CLAUDE.md) |
 | server-rendered HTML (pages, panels, fragments) | [src/html/CLAUDE.md](src/html/CLAUDE.md) |
+| terminal dashboard TUI (`skipper dashboard`, attaches to a running daemon) | [src/tui/CLAUDE.md](src/tui/CLAUDE.md) |
 | event bus | [src/events/CLAUDE.md](src/events/CLAUDE.md) |
 | WS push to UI | [src/ws/CLAUDE.md](src/ws/CLAUDE.md) |
 | task CRUD + lifecycle | [src/tasks/CLAUDE.md](src/tasks/CLAUDE.md) |

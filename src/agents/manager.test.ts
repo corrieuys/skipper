@@ -315,6 +315,33 @@ describe("spawnAgent", () => {
     expect(events[0].stream).toBe("stdout");
   });
 
+  it("caps an oversized frame in terminal_outputs but emits the full text", async () => {
+    const { agentId } = createTestEchoAgent("sleep 0.5");
+    const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+
+    const full = "X".repeat(40000); // 40KB > 32KB cap
+    const events: AgentOutputEvent[] = [];
+    const handler = (e: AgentOutputEvent) => { if (e.agentId === running.id) events.push(e); };
+    eventBus.on("agent:output", handler);
+
+    manager.ingestSyntheticStdout(running.id, full);
+
+    eventBus.off("agent:output", handler);
+
+    const stored = db
+      .prepare("SELECT data FROM terminal_outputs WHERE agent_id = ? AND stream = 'stdout' ORDER BY sequence DESC LIMIT 1")
+      .get(running.id) as { data: string } | null;
+    // Stored copy is capped (32KB + a short marker), NOT the full 40KB.
+    expect(Buffer.byteLength(stored?.data ?? "", "utf-8")).toBeLessThan(40000);
+    expect(stored?.data ?? "").toContain("frame truncated");
+    // The realtime event still carried the full, untruncated text.
+    expect(events.some((e) => e.data.length === 40000)).toBe(true);
+
+    manager.killAgent(running.id);
+    await running.process.exited.catch(() => {});
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
   it("captures stderr in terminal_outputs", async () => {
     const { agentId } = createTestEchoAgent('echo "error output" >&2');
     const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });

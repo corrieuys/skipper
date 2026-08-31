@@ -99,6 +99,10 @@ export interface AgentTile {
   is_active: boolean;
   /** Number of active instances (drives the count badge). */
   instance_count: number;
+  /** Chosen identity color (hex) — tints the orb + this agent's timeline output. */
+  color?: string | null;
+  /** Chosen creature character id — shown in the orb instead of the cube. */
+  character?: string | null;
 }
 
 // --- Teams ---

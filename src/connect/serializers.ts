@@ -24,6 +24,7 @@ function projectTask(row: TaskData, phaseCount: number | null): TaskListItem {
     needs_review: !!row.needs_review,
     created_at: row.created_at,
     updated_at: (row as unknown as { updated_at?: string | null }).updated_at ?? null,
+    started_at: (row as unknown as { started_at?: string | null }).started_at ?? null,
     source_scheduled_task_id:
       (row as unknown as { source_scheduled_task_id?: string | null }).source_scheduled_task_id ?? null,
   };

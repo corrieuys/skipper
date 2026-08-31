@@ -168,6 +168,14 @@ export function fetchOpenEscalationTaskIds(db: Database): Set<string> {
   );
 }
 
+/** Per-task count of open escalations. Drives the task-header escalation label. */
+export function fetchOpenEscalationCountsByTask(db: Database): Map<string, number> {
+  const rows = db
+    .prepare("SELECT task_id, COUNT(*) AS n FROM escalations WHERE status = 'open' GROUP BY task_id")
+    .all() as Array<{ task_id: string; n: number }>;
+  return new Map(rows.map((r) => [r.task_id, r.n]));
+}
+
 export function hasDaemonOwner(db: Database): boolean {
   return db.prepare("SELECT value FROM daemon_state WHERE key = 'owner_pid'").get() != null;
 }

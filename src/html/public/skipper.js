@@ -174,6 +174,44 @@
     },
   };
 
+  // ── Escalation modal ──
+  // Singleton modal at body level. The timeline renders an open escalation as a
+  // compact banner; its full resolvable card rides in an inert <template> beside
+  // the banner. Opening clones that template into the modal (so the only live
+  // #escalation-<id> — and its htmx resolve/dismiss form — is the modal copy).
+  Skipper.escModal = {
+    ensure: function () {
+      var m = document.getElementById("mc-esc-modal");
+      if (m) return m;
+      m = document.createElement("div");
+      m.id = "mc-esc-modal";
+      m.className = "sk-modal";
+      m.setAttribute("data-sk-modal-backdrop", "");
+      m.innerHTML =
+        '<div class="sk-modal__content mc-esc-modal__content">' +
+        '<div class="sk-modal__header">' +
+        '<span id="mc-esc-modal-title">Escalation</span>' +
+        '<button class="sk-btn sk-btn--sm" data-sk-modal-close="mc-esc-modal">Close</button>' +
+        "</div>" +
+        '<div class="sk-modal__body" id="mc-esc-modal-body"></div>' +
+        "</div>";
+      document.body.appendChild(m);
+      return m;
+    },
+    open: function (escId) {
+      if (!escId) return;
+      var tpl = document.querySelector('template[data-esc-tpl="' + (window.CSS && CSS.escape ? CSS.escape(escId) : escId) + '"]');
+      if (!tpl) return;
+      this.ensure();
+      var body = document.getElementById("mc-esc-modal-body");
+      if (!body) return;
+      body.innerHTML = "";
+      body.appendChild(tpl.content.cloneNode(true));
+      if (window.htmx) window.htmx.process(body);
+      Skipper.modal.open("mc-esc-modal");
+    },
+  };
+
   // ── Terminal Auto-Scroll ──
   Skipper.terminal = {
     observers: {},
@@ -682,6 +720,13 @@
       return;
     }
 
+    // Escalation banner → escalation modal
+    var escBanner = e.target.closest("[data-esc-open]");
+    if (escBanner) {
+      Skipper.escModal.open(escBanner.getAttribute("data-esc-open"));
+      return;
+    }
+
     // Agent tile → instance modal
     var agentTile = e.target.closest("[data-mc-agent-tile]");
     if (agentTile) {
@@ -775,6 +820,26 @@
     var sidebarToggle = e.target.closest("[data-sk-sidebar-toggle]");
     if (sidebarToggle) {
       Skipper.sidebar.toggle();
+      return;
+    }
+
+    // Collapse every folder (teams, agents, recurring series) in one click.
+    // Setting .open = false fires each details' toggle event, which the
+    // tcTeamOpen listener persists, so the collapse survives WS re-renders.
+    var collapseTeams = e.target.closest("[data-sk-collapse-teams]");
+    if (collapseTeams) {
+      document.querySelectorAll("details.tc-team[data-tc-team]").forEach(function (d) {
+        if (d.open) d.open = false;
+      });
+      return;
+    }
+
+    // Sidebar board tabs (Latest / Recurring / Teams / Agents).
+    var boardTab = e.target.closest("[data-tc-board]");
+    if (boardTab) {
+      var boardKey = boardTab.getAttribute("data-tc-board");
+      Skipper.prefs.set("sidebarBoard", boardKey);
+      tcSetBoard(boardKey);
       return;
     }
 
@@ -1099,6 +1164,28 @@
     st[d.getAttribute("data-tc-team")] = d.open;
     Skipper.prefs.set("tcTeamOpen", JSON.stringify(st));
   }, true);
+  // ── Sidebar board tabs ──
+  // One .tc-board panel is visible at a time; the server always renders "latest"
+  // active, and the client re-applies the persisted board after every WS
+  // re-render (the list is swapped blind).
+  function tcSetBoard(key) {
+    var tabs = document.querySelectorAll("[data-tc-board]");
+    if (!tabs.length) return;
+    tabs.forEach(function (t) {
+      var on = t.getAttribute("data-tc-board") === key;
+      t.classList.toggle("tc-tab--active", on);
+      t.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    document.querySelectorAll("[data-tc-board-panel]").forEach(function (p) {
+      p.hidden = p.getAttribute("data-tc-board-panel") !== key;
+    });
+  }
+  function tcRestoreBoard() {
+    if (!document.querySelector("[data-tc-board]")) return;
+    var key = Skipper.prefs.get("sidebarBoard", "latest");
+    if (!document.querySelector('[data-tc-board="' + key + '"]')) key = "latest";
+    tcSetBoard(key);
+  }
   function tcRestoreTeamState(root) {
     var scope = root && root.querySelectorAll ? root : document;
     var groups = scope.querySelectorAll ? scope.querySelectorAll("details[data-tc-team]") : [];
@@ -1112,10 +1199,27 @@
   document.addEventListener("htmx:afterSwap", function (evt) {
     tcRestoreTeamState(evt.detail && evt.detail.target);
     tcRestoreRailWidth(evt.detail && evt.detail.target);
+    tcRestoreBoard();
+  });
+  // Escalation modal: close it once a Respond/Dismiss submitted from inside the
+  // modal succeeds. Recorded at beforeRequest (the form/button is still attached
+  // to the DOM) because the outerHTML swap detaches it before afterRequest fires.
+  var escModalPending = false;
+  document.addEventListener("htmx:beforeRequest", function (evt) {
+    var modal = document.getElementById("mc-esc-modal");
+    var elt = evt.detail && evt.detail.elt;
+    escModalPending = !!(modal && modal.classList.contains("sk-modal--open") && elt && modal.contains(elt));
+  });
+  document.addEventListener("htmx:afterRequest", function (evt) {
+    if (!escModalPending) return;
+    escModalPending = false;
+    if (evt.detail && evt.detail.successful === false) return;
+    Skipper.modal.close("mc-esc-modal");
   });
   document.addEventListener("DOMContentLoaded", function () {
     tcRestoreTeamState(document);
     tcRestoreRailWidth(document);
+    tcRestoreBoard();
   });
 
   // ── v2 timeline/rail draggable split ──
@@ -1156,6 +1260,53 @@
       Skipper.prefs.set("tcRailWidthPct", pct.toFixed(1));
       drag.div.classList.remove("tc-divider--drag");
       document.body.classList.remove("tc-resizing");
+      drag = null;
+    });
+  })();
+
+  // ── Sidebar drag-to-resize ──
+  // Pinned sidebar only (desktop). Width is a CSS var on the workspace, mirrored
+  // to localStorage and re-applied on load. Clamped so it can't swallow the main
+  // area or shrink below a usable width.
+  var SIDEBAR_MIN = 200, SIDEBAR_MAX = 620;
+  function sidebarClampWidth(px) {
+    var cap = Math.min(SIDEBAR_MAX, Math.round(window.innerWidth * 0.6));
+    return Math.max(SIDEBAR_MIN, Math.min(cap, px));
+  }
+  function sidebarApplyWidth(px) {
+    var ws = document.getElementById("mc-workspace");
+    if (ws) ws.style.setProperty("--mc-sidebar-w", px + "px");
+  }
+  Skipper.sidebar.restoreWidth = function () {
+    var w = parseFloat(Skipper.prefs.get("mcSidebarW", ""));
+    if (!isNaN(w)) sidebarApplyWidth(sidebarClampWidth(w));
+  };
+  (function () {
+    var drag = null;
+    document.addEventListener("mousedown", function (e) {
+      var handle = e.target.closest && e.target.closest("[data-sk-sidebar-resize]");
+      if (!handle) return;
+      var ws = document.getElementById("mc-workspace");
+      // Resize is a pinned-desktop affordance; ignore otherwise.
+      if (!ws || !ws.classList.contains("mc-workspace--sidebar-pinned")) return;
+      if (Skipper.sidebar.isMobile()) return;
+      e.preventDefault();
+      drag = { ws: ws, handle: handle };
+      handle.classList.add("mc-sidebar__resize--drag");
+      document.body.classList.add("mc-sidebar-resizing");
+    });
+    document.addEventListener("mousemove", function (e) {
+      if (!drag) return;
+      var left = drag.ws.getBoundingClientRect().left;
+      sidebarApplyWidth(sidebarClampWidth(e.clientX - left));
+    });
+    document.addEventListener("mouseup", function () {
+      if (!drag) return;
+      var cur = getComputedStyle(drag.ws).getPropertyValue("--mc-sidebar-w").trim();
+      var px = parseFloat(cur);
+      if (!isNaN(px)) Skipper.prefs.set("mcSidebarW", Math.round(px).toString());
+      drag.handle.classList.remove("mc-sidebar__resize--drag");
+      document.body.classList.remove("mc-sidebar-resizing");
       drag = null;
     });
   })();
@@ -1213,6 +1364,7 @@
       var ws = document.getElementById("mc-workspace");
       if (ws) ws.classList.add("mc-workspace--sidebar-pinned");
     }
+    Skipper.sidebar.restoreWidth();
 
     // Initialize the panel dock on first (server-rendered) load — afterSwap
     // handles subsequent sidebar-click task swaps.

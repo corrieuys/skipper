@@ -39,6 +39,8 @@ export function buildTeamAgentTiles(db: Database, taskId: string): AgentTile[] {
   const rows = db.prepare(
     `SELECT a.id AS template_agent_id,
             COALESCE(a.name, a.id) AS agent_name,
+            json_extract(a.config, '$.color') AS color,
+            json_extract(a.config, '$.character') AS character,
             (SELECT COUNT(*) FROM agent_instances ai
               WHERE ai.template_agent_id = ta.agent_id AND ai.task_id = ?
                 AND ai.status IN ('running', 'waiting_delegation')) AS instance_count
@@ -46,10 +48,12 @@ export function buildTeamAgentTiles(db: Database, taskId: string): AgentTile[] {
      JOIN agents a ON a.id = ta.agent_id
      WHERE ta.team_id = ?
      ORDER BY ta.level, ta.created_at`,
-  ).all(taskId, task.team_id) as Array<{ template_agent_id: string; agent_name: string; instance_count: number }>;
+  ).all(taskId, task.team_id) as Array<{ template_agent_id: string; agent_name: string; color: string | null; character: string | null; instance_count: number }>;
   return rows.map((r) => ({
     template_agent_id: r.template_agent_id,
     agent_name: r.agent_name,
+    color: r.color,
+    character: r.character,
     instance_count: r.instance_count,
     is_active: r.instance_count > 0,
   }));
@@ -532,30 +536,46 @@ export function fetchRecentActivity(
   db: ReturnType<typeof getDb>,
   limit: number,
 ): RecentLogEntry[] {
+  // Bound the candidate set to the newest rows via the id PK index BEFORE the
+  // window function. The previous version ranked the ENTIRE terminal_outputs
+  // table with `PARTITION BY … to2.data …` — partitioning on the full frame
+  // blob meant sorting hundreds of MB, which grew to ~5s as the table filled
+  // and, because this runs on every dashboard render AND (debounced) on every
+  // agent:output, dragged the whole UI down. A "recent activity" feed only needs
+  // the newest rows, so dedup within a small recent window is equivalent.
+  // Partition on a short prefix + length instead of the whole blob (exact-dupe
+  // proxy: same agent/stream/second + same length + same first 300 chars).
+  const candidateWindow = Math.max(limit * 3, limit + 100);
   return db.prepare(
-    `WITH ranked AS (
-       SELECT to2.id,
-              to2.agent_id,
-              COALESCE(a.name, ta.name, ai.template_agent_id, to2.agent_id) AS agent_name,
-              to2.stream,
-              to2.data,
-              to2.created_at,
+    `WITH recent AS (
+       SELECT id, agent_id, stream, data, created_at
+       FROM terminal_outputs
+       ORDER BY id DESC
+       LIMIT ?
+     ),
+     ranked AS (
+       SELECT recent.id,
+              recent.agent_id,
+              COALESCE(a.name, ta.name, ai.template_agent_id, recent.agent_id) AS agent_name,
+              recent.stream,
+              recent.data,
+              recent.created_at,
               ROW_NUMBER() OVER (
-                PARTITION BY to2.agent_id, to2.stream, to2.data, to2.created_at
-                ORDER BY to2.id DESC
+                PARTITION BY recent.agent_id, recent.stream, substr(recent.data, 1, 300), length(recent.data), recent.created_at
+                ORDER BY recent.id DESC
               ) AS rn
-       FROM terminal_outputs to2
-       LEFT JOIN agents a ON to2.agent_id = a.id
-       LEFT JOIN agent_instances ai ON to2.agent_id = ai.id
+       FROM recent
+       LEFT JOIN agents a ON recent.agent_id = a.id
+       LEFT JOIN agent_instances ai ON recent.agent_id = ai.id
        LEFT JOIN agents ta ON ta.id = ai.template_agent_id
-       WHERE NOT (json_valid(to2.data) = 1 AND json_extract(to2.data, '$.type') = 'result')
+       WHERE NOT (json_valid(recent.data) = 1 AND json_extract(recent.data, '$.type') = 'result')
      )
      SELECT agent_id, agent_name, stream, data, created_at
      FROM ranked
      WHERE rn = 1
      ORDER BY id DESC
      LIMIT ?`,
-  ).all(limit) as RecentLogEntry[];
+  ).all(candidateWindow, limit) as RecentLogEntry[];
 }
 
 export interface DashboardMetrics {

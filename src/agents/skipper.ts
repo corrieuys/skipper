@@ -2,6 +2,13 @@ import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
 import { clearAgentTypeCache } from "./types";
 import { assetTextSync } from "../assets";
+import {
+  getStringSetting, setStringSetting,
+  SETTING_SKIPPER_AGENT_COLOR, SETTING_SKIPPER_AGENT_CHARACTER,
+} from "../config/app-settings";
+import { sanitizeColor, isCreatureId, DEFAULT_AGENT_COLOR } from "../html/atoms/creature";
+
+export const SKIPPER_AGENT_ID = "skipper";
 
 function loadPrompt(filename: string): string {
   return assetTextSync(`prompts/${filename}`).trimEnd();
@@ -72,6 +79,61 @@ export function updateSkipperConfig(
   clearAgentTypeCache();
 
   return config;
+}
+
+// ---------------------------------------------------------------------------
+// Skipper's own agent identity (color + creature character) for the orb.
+// Machine-scoped settings, applied onto the config `agents` row for `skipper`.
+// ---------------------------------------------------------------------------
+
+function configSchema(db: Database): string {
+  try {
+    const rows = db.prepare("PRAGMA database_list").all() as { name: string }[];
+    if (rows.some((r) => r.name === "shared")) return "shared";
+  } catch {
+    /* fall through */
+  }
+  return "main";
+}
+
+export interface SkipperIdentity {
+  color: string;
+  /** Creature id, or "" for the cube fallback. Defaults to the captain. */
+  character: string;
+}
+
+export function getSkipperIdentity(db?: Database): SkipperIdentity {
+  const database = db ?? getDb();
+  const color = sanitizeColor(getStringSetting(database, SETTING_SKIPPER_AGENT_COLOR, DEFAULT_AGENT_COLOR));
+  const raw = getStringSetting(database, SETTING_SKIPPER_AGENT_CHARACTER, "captain");
+  // A stored "" is an explicit cube choice; unset (never saved) → the captain.
+  const character = raw === "" ? "" : (isCreatureId(raw) ? raw : "captain");
+  return { color, character };
+}
+
+/** Patch the config `agents` row for `skipper` with the stored identity. */
+export function applySkipperIdentity(db?: Database): void {
+  const database = db ?? getDb();
+  const { color, character } = getSkipperIdentity(database);
+  const schema = configSchema(database);
+  try {
+    database.prepare(
+      `UPDATE ${schema}.agents
+         SET config = json_set(CASE WHEN config IS NULL OR config = '' THEN '{}' ELSE config END,
+                               '$.color', ?, '$.character', ?)
+       WHERE id = ?`,
+    ).run(color, character || null, SKIPPER_AGENT_ID);
+  } catch {
+    // The agents row may not be seeded yet at first call; boot re-applies.
+  }
+}
+
+export function saveSkipperIdentity(color: string, character: string, db?: Database): SkipperIdentity {
+  const database = db ?? getDb();
+  setStringSetting(database, SETTING_SKIPPER_AGENT_COLOR, sanitizeColor(color));
+  setStringSetting(database, SETTING_SKIPPER_AGENT_CHARACTER, isCreatureId(character) ? character : "");
+  applySkipperIdentity(database);
+  return getSkipperIdentity(database);
 }
 
 /** Look up the entrypoint agent ID for a task by reading tasks.team_id → teams.entrypoint_agent_id */
