@@ -26,6 +26,8 @@ afterEach(() => {
   db.close();
   try {
     unlinkSync(TEST_DB);
+    try { unlinkSync(`${TEST_DB}-wal`); } catch {}
+    try { unlinkSync(`${TEST_DB}-shm`); } catch {}
   } catch {}
 });
 

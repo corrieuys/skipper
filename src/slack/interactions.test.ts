@@ -6,7 +6,6 @@ import { handleInteraction, type InteractionDeps } from "./interactions";
 import { MODAL_INPUT_BLOCK, MODAL_INPUT_ACTION } from "./blocks";
 import type { EscalationManager } from "../escalations/manager";
 import type { PhaseManager } from "../orchestrator/phase-manager";
-import type { TaskScheduler } from "../tasks/scheduler";
 import type { SlackClient } from "./client";
 
 const USER = "U-allowed";
@@ -17,7 +16,6 @@ let calls: {
   dismiss: string[];
   approve: Array<{ id: string; note?: string }>;
   reject: Array<{ id: string; msg?: string }>;
-  iterate: Array<{ id: string; input: string }>;
   openView: Array<{ triggerId: string; view: Record<string, unknown> }>;
   update: Array<{ channel: string; ts: string; text: string; blocks?: unknown }>;
 };
@@ -26,15 +24,14 @@ let deps: InteractionDeps;
 // State the buttons point at. Buttons outlive their records — a task swept by
 // retention, an escalation answered in the web UI — so each test sets the world
 // its click lands in. Defaults are the happy path: everything still actionable.
-let taskStatus: string | null;
 let escalationStatus: string;
 let escalationGone: boolean;
 
-/** A task row in the state a review button expects: running, review open. */
+/** A task row in the state a review button expects: active, review open. */
 function seedReviewTask(id: string, opts: { needsReview?: boolean; status?: string } = {}): void {
   db.prepare("INSERT INTO tasks (id, title, status, needs_review) VALUES (?, 'Add webhook', ?, ?)").run(
     id,
-    opts.status ?? "running",
+    opts.status ?? "active",
     opts.needsReview === false ? 0 : 1,
   );
 }
@@ -43,8 +40,7 @@ beforeEach(() => {
   db = new Database(":memory:");
   initializeDatabase(db);
   saveSlackConfig(db, { botToken: "", defaultChannel: "", allowedUsers: [USER] });
-  calls = { resolve: [], dismiss: [], approve: [], reject: [], iterate: [], openView: [], update: [] };
-  taskStatus = "completed";
+  calls = { resolve: [], dismiss: [], approve: [], reject: [], openView: [], update: [] };
   escalationStatus = "open";
   escalationGone = false;
 
@@ -78,15 +74,7 @@ beforeEach(() => {
     },
   } as unknown as SlackClient;
 
-  const taskScheduler = {
-    iterateTask: (id: string, input: string) => {
-      calls.iterate.push({ id, input });
-      return {} as unknown;
-    },
-    getTask: (id: string) => (taskStatus ? { id, status: taskStatus } : null),
-  } as unknown as TaskScheduler;
-
-  deps = { db, client, escalationManager, phaseManager, taskScheduler };
+  deps = { db, client, escalationManager, phaseManager };
 });
 
 afterEach(() => db.close());
@@ -148,12 +136,17 @@ describe("block_actions", () => {
     expect(meta.id).toBe("t1");
   });
 
-  it("iterate opens a modal for the task id", async () => {
+  // Iterate is gone from the unified model; buttons in old completion notices
+  // must self-heal with a pointer to the thread-reply input flow, not open a modal.
+  it("legacy iterate click self-heals instead of opening a modal", async () => {
     const res = handleInteraction(deps, blockAction("task:iterate:t9"));
     await res.run?.();
-    expect(calls.openView).toHaveLength(1);
-    const meta = JSON.parse(calls.openView[0]!.view.private_metadata as string);
-    expect(meta).toEqual({ kind: "task", action: "iterate", id: "t9", channel: "C1", messageTs: "111.22" });
+    expect(calls.openView).toEqual([]);
+    expect(calls.update).toHaveLength(1);
+    expect(calls.update[0]?.channel).toBe("C1");
+    expect(calls.update[0]?.ts).toBe("111.22");
+    expect(calls.update[0]?.text).toContain("Iterate was replaced");
+    expect(calls.update[0]?.text).toContain("Reply in this thread");
   });
 
   it("unauthorized user cannot dismiss", async () => {
@@ -168,21 +161,21 @@ describe("block_actions", () => {
 // Catching that at click time is the whole point: the alternative is the operator
 // typing a full response into a modal and losing it to a throw on submit.
 describe("block_actions — stale items", () => {
-  it("iterate on a deleted task explains itself instead of opening a modal", async () => {
-    taskStatus = null; // swept by task retention
-    const res = handleInteraction(deps, blockAction("task:iterate:t9"));
+  // The legacy-iterate self-heal runs before the stale check, so it works even
+  // when the task behind the button was swept by retention long ago.
+  it("legacy iterate self-heals even when the task no longer exists", async () => {
+    const res = handleInteraction(deps, blockAction("task:iterate:t-gone"));
     await res.run?.();
     expect(calls.openView).toEqual([]);
     // The dead button is replaced so the next reader doesn't hit the same wall.
     expect(calls.update).toHaveLength(1);
-    expect(calls.update[0]?.text).toContain("no longer exists");
+    expect(calls.update[0]?.text).toContain("Iterate was replaced");
   });
 
-  it("iterate on a task that is running again says so", async () => {
-    taskStatus = "running";
-    await handleInteraction(deps, blockAction("task:iterate:t9")).run?.();
+  it("unauthorized user gets no self-heal edit from a legacy iterate click", async () => {
+    await handleInteraction(deps, blockAction("task:iterate:t9", { user: "U-stranger" })).run?.();
     expect(calls.openView).toEqual([]);
-    expect(calls.update[0]?.text).toContain("running");
+    expect(calls.update).toEqual([]);
   });
 
   it("respond on an already-handled escalation does not open a modal", async () => {
@@ -289,12 +282,16 @@ describe("view_submission", () => {
     expect(calls.reject).toEqual([{ id: "t1", msg: "add tests first" }]);
   });
 
-  it("iterate re-runs the completed task with the typed prompt and edits the notice", async () => {
+  // Iterate modals can no longer be opened, but a submission from one that was
+  // already on screen must not blow up — it lands as an unknown action.
+  it("a stray legacy iterate submission performs no action and edits in an unknown-action notice", async () => {
     const meta = { kind: "task", action: "iterate", id: "t9", channel: "C1", messageTs: "111.22" };
     await handleInteraction(deps, viewSubmission(meta, "also handle the empty-input case")).run?.();
-    expect(calls.iterate).toEqual([{ id: "t9", input: "also handle the empty-input case" }]);
+    expect(calls.resolve).toEqual([]);
+    expect(calls.approve).toEqual([]);
+    expect(calls.reject).toEqual([]);
     expect(calls.update).toHaveLength(1);
-    expect(calls.update[0]?.text).toContain("Iteration started");
+    expect(calls.update[0]?.text).toContain("Unknown action");
   });
 
   it("unauthorized submission returns modal errors and performs no action", async () => {

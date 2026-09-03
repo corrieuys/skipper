@@ -111,7 +111,20 @@ export class MessageManager {
    * Two agents can post inside the same millisecond, and ids are random UUIDs, so
    * the tiebreaker is rowid: insertion order, which is the order they happened.
    */
-  listMessages(taskId: string, limit = 50): TaskMessage[] {
+  /** Newest-first. `before` (a created_at from an earlier page) pages older messages. */
+  listMessages(taskId: string, limit = 50, before?: string): TaskMessage[] {
+    if (before) {
+      return this.db
+        .prepare(
+          `SELECT m.*, a.name AS agent_name
+           FROM task_messages m
+           LEFT JOIN agents a ON a.id = m.agent_id
+           WHERE m.task_id = ? AND m.created_at < ?
+           ORDER BY m.created_at DESC, m.rowid DESC
+           LIMIT ?`,
+        )
+        .all(taskId, before, limit) as TaskMessage[];
+    }
     return this.db
       .prepare(
         `SELECT m.*, a.name AS agent_name

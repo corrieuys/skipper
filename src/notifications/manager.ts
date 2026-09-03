@@ -20,10 +20,10 @@ export class NotificationManager {
 
   private subscribe(): void {
     const onTaskState = (e: { previousStatus: string; newStatus: string }) => {
-      if (e.previousStatus === "approved" && e.newStatus === "running") this.fire("task.started");
-      else if (e.newStatus === "completed") this.fire("task.completed");
-      else if (e.newStatus === "failed") this.fire("task.failed");
+      if (e.previousStatus === "draft" && e.newStatus === "active") this.fire("task.started");
     };
+    const onRunCompleted = () => this.fire("task.completed");
+    const onRunFailed = () => this.fire("task.failed");
     const onEscCreated = () => this.fire("escalation.created");
     const onEscResolved = () => this.fire("escalation.resolved");
     const onReview = (e: { needsReview: boolean }) => {
@@ -31,12 +31,16 @@ export class NotificationManager {
     };
 
     eventBus.on("task:state_changed", onTaskState);
+    eventBus.on("task:run_completed", onRunCompleted);
+    eventBus.on("task:run_failed", onRunFailed);
     eventBus.on("escalation:created", onEscCreated);
     eventBus.on("escalation:resolved", onEscResolved);
     eventBus.on("task:needs_review_changed", onReview);
 
     this.offs.push(
       () => eventBus.off("task:state_changed", onTaskState),
+      () => eventBus.off("task:run_completed", onRunCompleted),
+      () => eventBus.off("task:run_failed", onRunFailed),
       () => eventBus.off("escalation:created", onEscCreated),
       () => eventBus.off("escalation:resolved", onEscResolved),
       () => eventBus.off("task:needs_review_changed", onReview),

@@ -179,6 +179,8 @@ function toTasks(v: unknown): TaskRow[] {
       title: String(o.title ?? ""),
       status: String(o.status ?? ""),
       task_type: (o.task_type as string | undefined) ?? null,
+      mode: (o.mode as string | undefined) ?? null,
+      display_status: (o.display_status as string | undefined) ?? null,
       created_at: (o.created_at as string | undefined) ?? null,
     };
   });

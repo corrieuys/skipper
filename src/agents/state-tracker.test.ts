@@ -93,6 +93,8 @@ afterEach(() => {
   db.close();
   try {
     unlinkSync(TEST_DB);
+    try { unlinkSync(`${TEST_DB}-wal`); } catch {}
+    try { unlinkSync(`${TEST_DB}-shm`); } catch {}
   } catch { }
 });
 
@@ -141,7 +143,7 @@ describe("updateHeartbeats", () => {
     const runtimeId = crypto.randomUUID();
     setAgentPid(agentId, 99999);
     db.prepare(
-      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Delegated Task', 'running', datetime('now'))",
+      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Delegated Task', 'active', datetime('now'))",
     ).run(taskId);
     insertAgentInstance(runtimeId, taskId, agentId, "running", 12345);
 
@@ -296,7 +298,7 @@ describe("getStuckCandidates", () => {
     const childAgentId = createAgent("Librarian");
 
     db.prepare(
-      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Task', 'running', datetime('now'))",
+      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Task', 'active', datetime('now'))",
     ).run(taskId);
     db.prepare(
       `INSERT INTO agent_instances (id, task_id, template_agent_id, status, process_pid, attempt)
@@ -362,7 +364,7 @@ describe("analyzeStuckAgent", () => {
     const runtimeId = crypto.randomUUID();
     setAgentPid(agentId, 99999);
     db.prepare(
-      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Delegated Task', 'running', datetime('now'))",
+      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Delegated Task', 'active', datetime('now'))",
     ).run(taskId);
     insertAgentInstance(runtimeId, taskId, agentId, "running", 12345);
     insertTerminalOutput(runtimeId, "runtime output", 1);
@@ -468,7 +470,7 @@ describe("handleStuckAgent", () => {
     const runtimeId = crypto.randomUUID();
     setAgentPid(agentId, 99999);
     db.prepare(
-      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Delegated Task', 'running', datetime('now'))",
+      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Delegated Task', 'active', datetime('now'))",
     ).run(taskId);
     insertAgentInstance(runtimeId, taskId, agentId, "running", 12345);
     insertTerminalOutput(runtimeId, "frozen", 1);
@@ -517,7 +519,7 @@ describe("handleStuckAgent", () => {
     // Give the agent a task
     const taskId = crypto.randomUUID();
     db.prepare(
-      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Task', 'running', datetime('now'))",
+      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Task', 'active', datetime('now'))",
     ).run(taskId);
     db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run(taskId, agentId);
 
@@ -615,7 +617,7 @@ describe("handleStuckAgent", () => {
     const childAgentId = createAgent("Librarian");
 
     db.prepare(
-      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Task', 'running', datetime('now'))",
+      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Task', 'active', datetime('now'))",
     ).run(taskId);
     db.prepare(
       `INSERT INTO agent_instances (id, task_id, template_agent_id, status, process_pid, attempt)
@@ -650,7 +652,7 @@ describe("active child instances guard", () => {
 
     const taskId = crypto.randomUUID();
     db.prepare(
-      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Task', 'running', datetime('now'))",
+      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Task', 'active', datetime('now'))",
     ).run(taskId);
     db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run(taskId, agentId);
 
@@ -680,7 +682,7 @@ describe("active child instances guard", () => {
 
     const taskId = crypto.randomUUID();
     db.prepare(
-      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Task', 'running', datetime('now'))",
+      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Task', 'active', datetime('now'))",
     ).run(taskId);
     db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run(taskId, agentId);
 
@@ -707,7 +709,7 @@ describe("active child instances guard", () => {
 
     const taskId = crypto.randomUUID();
     db.prepare(
-      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Task', 'running', datetime('now'))",
+      "INSERT INTO tasks (id, title, status, started_at) VALUES (?, 'Task', 'active', datetime('now'))",
     ).run(taskId);
     db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run(taskId, agentId);
 

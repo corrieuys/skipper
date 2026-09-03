@@ -741,25 +741,11 @@
     // Activity row → detail modal
     var activityRow = e.target.closest("[data-sk-activity-row]");
     if (activityRow && !e.target.closest("a, button")) {
-      var raw = activityRow.getAttribute("data-sk-activity-data") || "";
+      var outputId = activityRow.getAttribute("data-sk-activity-id") || "";
       var agent = activityRow.getAttribute("data-sk-activity-agent") || "";
       var pid = activityRow.getAttribute("data-sk-activity-pid") || "";
       var time = activityRow.getAttribute("data-sk-activity-time") || "";
       var kind = activityRow.getAttribute("data-sk-activity-kind") || "";
-      var pretty = raw;
-      var trimmed = raw.trim();
-      if (trimmed.charAt(0) === "{" || trimmed.charAt(0) === "[") {
-        var toParse = trimmed;
-        // Handle newline-delimited JSON: parse the first object only
-        if (trimmed.indexOf("\n") !== -1) {
-          var firstLine = trimmed.split("\n").find(function(l) { return l.trim().charAt(0) === "{"; });
-          if (firstLine) toParse = firstLine.trim();
-        }
-        try {
-          var parsed = JSON.parse(toParse);
-          pretty = formatActivityDetail(parsed);
-        } catch (err) { /* leave raw */ }
-      }
       var titleEl = document.getElementById("activity-detail-modal-title");
       if (titleEl) titleEl.textContent = kind ? (kind.charAt(0).toUpperCase() + kind.slice(1)) : "Activity";
       var metaEl = document.getElementById("activity-detail-modal-meta");
@@ -771,8 +757,31 @@
         metaEl.textContent = parts.join("  ·  ");
       }
       var bodyEl = document.getElementById("activity-detail-modal-body");
-      if (bodyEl) bodyEl.textContent = pretty;
+      if (bodyEl) bodyEl.textContent = "Loading…";
       Skipper.modal.open("activity-detail-modal");
+      // Rows carry only the output id; the raw frame is fetched on demand so a
+      // page of rows stays small even when tool results are huge.
+      if (outputId) {
+        fetch("/workspace/activity/" + encodeURIComponent(outputId))
+          .then(function (r) { return r.ok ? r.text() : Promise.reject(new Error("HTTP " + r.status)); })
+          .then(function (raw) {
+            var pretty = raw;
+            var trimmed = raw.trim();
+            if (trimmed.charAt(0) === "{" || trimmed.charAt(0) === "[") {
+              var toParse = trimmed;
+              // Handle newline-delimited JSON: parse the first object only
+              if (trimmed.indexOf("\n") !== -1) {
+                var firstLine = trimmed.split("\n").find(function(l) { return l.trim().charAt(0) === "{"; });
+                if (firstLine) toParse = firstLine.trim();
+              }
+              try { pretty = formatActivityDetail(JSON.parse(toParse)); } catch (err) { /* leave raw */ }
+            }
+            if (bodyEl) bodyEl.textContent = pretty;
+          })
+          .catch(function () { if (bodyEl) bodyEl.textContent = "Could not load this entry."; });
+      } else if (bodyEl) {
+        bodyEl.textContent = "";
+      }
       return;
     }
 
@@ -834,7 +843,7 @@
       return;
     }
 
-    // Sidebar board tabs (Latest / Recurring / Teams / Agents).
+    // Sidebar board tabs (Latest / Teams / Agents).
     var boardTab = e.target.closest("[data-tc-board]");
     if (boardTab) {
       var boardKey = boardTab.getAttribute("data-tc-board");
@@ -1103,6 +1112,46 @@
     tcStickTimeline(tgt);
   });
 
+  // ── v2 activity feed: live prepend via WS poke ──
+  // The server no longer re-renders the activity feed on agent output; it
+  // OOB-swaps a tiny poke element instead. When our poke lands, fetch only the
+  // rows newer than the newest one on screen and prepend them. Older history
+  // pages in below via the intersect sentinel, so nothing is ever wiped.
+  var activityBusy = {};
+  var activityDirty = {};
+  function activityFeedRefresh(taskId) {
+    var feed = document.getElementById("mc-activity-feed-" + taskId);
+    if (!feed || !window.htmx) return;
+    if (activityBusy[taskId]) { activityDirty[taskId] = true; return; }
+    var newest = feed.querySelector("[data-sk-activity-id]");
+    var newestId = newest ? newest.getAttribute("data-sk-activity-id") : "";
+    var url = "/workspace/task/" + encodeURIComponent(taskId) + "/activity";
+    var swap = "innerHTML";
+    if (newestId) { url += "?after=" + encodeURIComponent(newestId); swap = "afterbegin"; }
+    var prevTop = feed.scrollTop;
+    var prevHeight = feed.scrollHeight;
+    activityBusy[taskId] = true;
+    var done = function () {
+      activityBusy[taskId] = false;
+      // Keep the reader's place: prepending pushes content down, so shift the
+      // scroll by the added height unless they were already at the top.
+      if (swap === "afterbegin" && prevTop > 0) {
+        feed.scrollTop = prevTop + (feed.scrollHeight - prevHeight);
+      }
+      if (activityDirty[taskId]) { activityDirty[taskId] = false; activityFeedRefresh(taskId); }
+    };
+    try {
+      var p = window.htmx.ajax("GET", url, { target: feed, swap: swap });
+      if (p && p.then) p.then(done, done); else done();
+    } catch (err) { done(); }
+  }
+  document.addEventListener("htmx:oobAfterSwap", function (evt) {
+    var tgt = evt.detail && evt.detail.target;
+    if (!tgt || !tgt.getAttribute) return;
+    var taskId = tgt.getAttribute("data-sk-activity-poke");
+    if (taskId) activityFeedRefresh(taskId);
+  });
+
   // ── v2 timeline scroll stick ──
   // The unified timeline reads oldest-first, so the interesting edge is the
   // bottom. Keep the view pinned there across swaps unless the user scrolled up
@@ -1171,6 +1220,9 @@
   function tcSetBoard(key) {
     var tabs = document.querySelectorAll("[data-tc-board]");
     if (!tabs.length) return;
+    // The Recurring tab is gone (recurring series live inside the Latest
+    // board); a stale persisted value falls back to Latest.
+    if (!document.querySelector('[data-tc-board="' + key + '"]')) key = "latest";
     tabs.forEach(function (t) {
       var on = t.getAttribute("data-tc-board") === key;
       t.classList.toggle("tc-tab--active", on);
@@ -1183,6 +1235,8 @@
   function tcRestoreBoard() {
     if (!document.querySelector("[data-tc-board]")) return;
     var key = Skipper.prefs.get("sidebarBoard", "latest");
+    // "recurring" is no longer a board; recurring series render inside Latest.
+    if (key === "recurring") key = "latest";
     if (!document.querySelector('[data-tc-board="' + key + '"]')) key = "latest";
     tcSetBoard(key);
   }
@@ -1261,6 +1315,155 @@
       drag.div.classList.remove("tc-divider--drag");
       document.body.classList.remove("tc-resizing");
       drag = null;
+    });
+  })();
+
+  // ── Artifact uploads (pictures + any file) ──
+  // The rail's "Add artifact" form, clipboard image paste and drag-drop on the
+  // task view all post multipart to POST /api/tasks/:id/artifacts/upload. The
+  // rail refreshes via the artifact:created WS push (and the response swap for
+  // the form path). Images over 2048px on the long edge are downscaled on a
+  // canvas to JPEG q0.85 before upload, which also strips EXIF.
+  (function () {
+    var MAX_EDGE = 2048;
+
+    function uploadForm(scope) {
+      var root = scope && scope.querySelector ? scope : document;
+      return root.querySelector("[data-sk-artifact-upload]");
+    }
+    function currentTaskId() {
+      var form = uploadForm(document);
+      return form ? form.getAttribute("data-sk-artifact-upload") : null;
+    }
+    function setStatus(form, text, isError) {
+      var el = form && form.querySelector("[data-sk-upload-status]");
+      if (!el) return;
+      el.textContent = text || "";
+      el.hidden = !text;
+      el.classList.toggle("tc-art-upload__status--error", !!isError);
+    }
+
+    function downscaleImage(file) {
+      // Only raster images the browser can decode; GIFs keep animation as-is.
+      if (!/^image\/(png|jpeg|webp)$/.test(file.type)) return Promise.resolve(file);
+      return new Promise(function (resolve) {
+        var url = URL.createObjectURL(file);
+        var img = new Image();
+        img.onload = function () {
+          URL.revokeObjectURL(url);
+          var w = img.naturalWidth, h = img.naturalHeight;
+          if (!w || !h || Math.max(w, h) <= MAX_EDGE) { resolve(file); return; }
+          var scale = MAX_EDGE / Math.max(w, h);
+          var canvas = document.createElement("canvas");
+          canvas.width = Math.round(w * scale);
+          canvas.height = Math.round(h * scale);
+          var ctx = canvas.getContext("2d");
+          if (!ctx) { resolve(file); return; }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(function (blob) {
+            if (!blob) { resolve(file); return; }
+            var name = (file.name || "image").replace(/\.[a-z0-9]+$/i, "") + ".jpg";
+            resolve(new File([blob], name, { type: "image/jpeg" }));
+          }, "image/jpeg", 0.85);
+        };
+        img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
+        img.src = url;
+      });
+    }
+
+    function uploadFiles(taskId, files, description) {
+      var form = uploadForm(document);
+      var list = Array.prototype.slice.call(files || []).filter(function (f) { return f && f.size > 0; });
+      if (!taskId || list.length === 0) return Promise.resolve();
+      if (form) { form.setAttribute("data-busy", "1"); setStatus(form, "Uploading " + list.length + " file" + (list.length > 1 ? "s" : "") + "..."); }
+      var idx = 0;
+      function next() {
+        if (idx >= list.length) return Promise.resolve();
+        var file = list[idx++];
+        return downscaleImage(file).then(function (prepared) {
+          var fd = new FormData();
+          fd.append("file", prepared, prepared.name || file.name || "upload");
+          if (description) fd.append("description", description);
+          return fetch("/api/tasks/" + encodeURIComponent(taskId) + "/artifacts/upload", { method: "POST", body: fd })
+            .then(function (res) {
+              if (res.ok) return null;
+              return res.json().then(function (j) { throw new Error(j && j.error ? j.error : "Upload failed"); }, function () { throw new Error("Upload failed (" + res.status + ")"); });
+            });
+        }).then(next);
+      }
+      return next().then(function () {
+        if (form) { form.removeAttribute("data-busy"); form.reset(); setStatus(form, ""); var p = form.querySelector("[data-sk-upload-picked]"); if (p) p.textContent = ""; }
+      }, function (err) {
+        if (form) { form.removeAttribute("data-busy"); setStatus(form, err && err.message ? err.message : "Upload failed", true); }
+      });
+    }
+    window.skUploadArtifacts = uploadFiles;
+
+    document.addEventListener("submit", function (e) {
+      var form = e.target && e.target.closest && e.target.closest("[data-sk-artifact-upload]");
+      if (!form) return;
+      e.preventDefault();
+      var input = form.querySelector("input[type=file]");
+      var desc = form.querySelector("input[name=description]");
+      var files = input && input.files ? input.files : [];
+      if (!files.length) { setStatus(form, "Choose a file first", true); return; }
+      uploadFiles(form.getAttribute("data-sk-artifact-upload"), files, desc ? desc.value.trim() : "");
+    });
+    document.addEventListener("change", function (e) {
+      var input = e.target;
+      if (!input || !input.classList || !input.classList.contains("tc-art-upload__file")) return;
+      var form = input.closest("[data-sk-artifact-upload]");
+      var picked = form && form.querySelector("[data-sk-upload-picked]");
+      if (!picked) return;
+      var names = Array.prototype.map.call(input.files || [], function (f) { return f.name; });
+      picked.textContent = names.length > 2 ? names.length + " files" : names.join(", ");
+      setStatus(form, "");
+    });
+
+    // Clipboard image paste anywhere on the task view (not while typing a
+    // caption; the composer still accepts text paste normally).
+    document.addEventListener("paste", function (e) {
+      var taskId = currentTaskId();
+      if (!taskId || !e.clipboardData || !e.clipboardData.items) return;
+      var files = [];
+      for (var i = 0; i < e.clipboardData.items.length; i++) {
+        var it = e.clipboardData.items[i];
+        if (it.kind === "file") { var f = it.getAsFile(); if (f) files.push(f); }
+      }
+      if (!files.length) return;
+      e.preventDefault();
+      uploadFiles(taskId, files, "");
+    });
+
+    // Drag-drop onto the task view (.tc-work).
+    var dragDepth = 0;
+    function workEl(e) { return e.target && e.target.closest ? e.target.closest(".tc-work") : null; }
+    document.addEventListener("dragenter", function (e) {
+      var work = workEl(e);
+      if (!work || !e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") < 0) return;
+      dragDepth++;
+      work.classList.add("tc-work--drop");
+    });
+    document.addEventListener("dragover", function (e) {
+      var work = workEl(e);
+      if (!work || !e.dataTransfer) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    });
+    document.addEventListener("dragleave", function (e) {
+      var work = workEl(e);
+      if (!work) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) work.classList.remove("tc-work--drop");
+    });
+    document.addEventListener("drop", function (e) {
+      var work = workEl(e);
+      if (!work) return;
+      dragDepth = 0;
+      work.classList.remove("tc-work--drop");
+      if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+      e.preventDefault();
+      uploadFiles(currentTaskId(), e.dataTransfer.files, "");
     });
   })();
 

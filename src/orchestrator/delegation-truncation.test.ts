@@ -40,7 +40,7 @@ function seedData(db: Database) {
   ).run();
   db.prepare(
     `INSERT INTO tasks (id, title, status, team_id, current_phase, orchestration_state)
-     VALUES ('task-1', 'test-task', 'running', 'team-1', 0, '{}')`,
+     VALUES ('task-1', 'test-task', 'active', 'team-1', 0, '{}')`,
   ).run();
   db.prepare(
     `UPDATE agents SET current_task_id = 'task-1' WHERE id = 'parent-1'`,

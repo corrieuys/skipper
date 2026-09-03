@@ -1,13 +1,14 @@
 import { addRoute } from "../server";
 import { TaskScheduler } from "../tasks/scheduler";
-import type { TaskType, RealtimeTaskConfig } from "../tasks/scheduler";
+import type { TaskMode, TaskConfig } from "../tasks/scheduler";
 import { getDb } from "../db/connection";
 import { setBoolSetting, SETTING_PARALLEL_TASKS, SETTING_SKIPPER_CONNECT_ENABLED } from "../config/app-settings";
 import { getConnectClient, type ConnectionStatus } from "../connect/client";
 import { finalizeActiveInstancesForTask } from "../agents/instance-status";
 import type { TaskNoteData } from "../html/components";
 import type { ManagerDaemon } from "../agents/manager-daemon";
-import { ArtifactManager } from "../orchestrator/artifact-manager";
+import { ArtifactManager, artifactToJson } from "../orchestrator/artifact-manager";
+import { PRIMARY_ARTIFACT_LIST_VARIANT, artifactListFragment } from "../html/fragments/artifact-list.fragment";
 import { eventBus } from "../events/bus";
 import { htmlResponse, parseRequestBody, hxRedirect } from "./utils";
 import { noteItemFragment } from "../html/dashboardNotesFragment";
@@ -18,15 +19,19 @@ import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { isTaskTitleGeneratorConfigured } from "../config/model-settings";
 import { ensureTaskTitle } from "../tasks/title-generator";
 
+function escapeHtmlText(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function connectStatusFragment(status: ConnectionStatus): string {
   return `<span class="sk-connect__status" data-status="${status}" hx-get="/api/settings/skipper-connect/status" hx-trigger="every 5s" hx-swap="outerHTML"></span>`;
 }
 
-function findDefaultTaskTeamId(db: ReturnType<typeof getDb>, taskType?: TaskType): string | undefined {
-  // Real-time tasks must default to the Real Time team — the realtime session
-  // manager spawns from that team's phases. Standard-team fallback would queue
-  // it through Skipper instead of the realtime pipeline.
-  if (taskType === "real_time") {
+function findDefaultTaskTeamId(db: ReturnType<typeof getDb>, mode?: TaskMode): string | undefined {
+  // Conversational tasks default to the Real Time team — the realtime session
+  // manager spawns from that team's phases. A workflow-team fallback would queue
+  // it through Skipper instead of the input pipeline.
+  if (mode === "conversational") {
     const rtId = getRealtimeTeamId();
     if (rtId) return rtId;
   }
@@ -50,7 +55,7 @@ function taskDetailResponse(id: string, _daemonStatus?: { state: "running" | "pa
   return hxRedirect(`/?task=${id}`);
 }
 
-function killRunningRuntimesForTask(taskId: string, daemon?: Pick<ManagerDaemon, "getAgentManager">): void {
+export function killRunningRuntimesForTask(taskId: string, daemon?: Pick<ManagerDaemon, "getAgentManager">): void {
   if (!daemon) return;
   const agentManager = daemon.getAgentManager();
   const db = getDb();
@@ -100,7 +105,7 @@ function killRunningRuntimesForTask(taskId: string, daemon?: Pick<ManagerDaemon,
   }
 }
 
-export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager" | "getRealtimeSessionManager" | "getPhaseManager" | "getStatus" | "pauseTaskAgents" | "resumeTaskAgents">): void {
+export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager" | "getRealtimeSessionManager" | "getPhaseManager" | "getStatus" | "pauseTaskAgents" | "resumeTaskAgents" | "inputTask" | "getArtifactManager">): void {
   const scheduler = new TaskScheduler();
 
   addRoute("POST", "/api/settings/parallel-tasks", async (req) => {
@@ -136,6 +141,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     const description = formData.get("description");
     const teamId = formData.get("teamId");
     const workingDirectoryRaw = formData.get("workingDirectory");
+    const modeRaw = formData.get("mode");
     const taskTypeRaw = formData.get("taskType");
     const taskConfigRaw = formData.get("taskConfig");
     const autoApproveRaw = formData.get("autoApprove");
@@ -188,35 +194,25 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     // working directory is optional; Skipper will discover it from the task
     // description if blank (see prompts/skipper.md, "WORKING DIRECTORY" section).
 
-    let taskType: TaskType | undefined;
-    if (typeof taskTypeRaw === "string" && (taskTypeRaw === "standard" || taskTypeRaw === "real_time")) {
-      taskType = taskTypeRaw;
+    let mode: TaskMode | undefined;
+    if (typeof modeRaw === "string" && (modeRaw === "workflow" || modeRaw === "conversational")) {
+      mode = modeRaw;
+    } else if (typeof taskTypeRaw === "string") {
+      // Legacy form field: taskType real_time/standard maps onto mode.
+      if (taskTypeRaw === "real_time") mode = "conversational";
+      else if (taskTypeRaw === "standard") mode = "workflow";
     }
 
-    let taskConfig: RealtimeTaskConfig | undefined;
+    let taskConfig: TaskConfig | undefined;
     if (typeof taskConfigRaw === "string" && taskConfigRaw.trim()) {
       try {
         taskConfig = JSON.parse(taskConfigRaw);
       } catch { /* ignore */ }
     }
-    // Build config from individual form fields if not supplied as JSON
-    if (!taskConfig && taskType === "real_time") {
-      taskConfig = {};
-      const ws = formData.get("window_seconds");
-      if (ws) taskConfig.window_seconds = Number(ws);
-      const sc = formData.get("summary_cadence_seconds");
-      if (sc) taskConfig.summary_cadence_seconds = Number(sc);
-      const tc = formData.get("trigger_min_confidence");
-      if (tc) taskConfig.trigger_min_confidence = Number(tc);
-      const mp = formData.get("max_pending_windows");
-      if (mp) taskConfig.max_pending_windows = Number(mp);
-      const cmd = formData.get("transcription_command");
-      if (cmd && typeof cmd === "string" && cmd.trim()) taskConfig.transcription_command = cmd.trim();
-    }
 
     try {
       const db = getDb();
-      let resolvedTeamId = typeof teamId === "string" && teamId.trim() ? teamId.trim() : findDefaultTaskTeamId(db, taskType);
+      let resolvedTeamId = typeof teamId === "string" && teamId.trim() ? teamId.trim() : findDefaultTaskTeamId(db, mode);
 
       const finalDescription = typeof description === "string" && description.trim() ? description.trim() : undefined;
 
@@ -225,7 +221,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         description: finalDescription,
         teamId: resolvedTeamId,
         workingDirectory,
-        taskType,
+        mode,
         taskConfig,
       });
 
@@ -247,15 +243,15 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       }
 
       if (shouldAutoApprove) {
-        // Real-time tasks auto-start + open their session via the daemon's
+        // Conversational tasks auto-start + open their session via the daemon's
         // task:state_changed handler (see manager-daemon.ts).
         created = scheduler.approveTask(created.id);
       }
 
       if (req.headers.get("HX-Request")) {
         const redirectTo = shouldAutoApprove
-          ? (created.task_type === "real_time" ? `/?task=${created.id}` : "/")
-          : (created.task_type === "real_time" ? `/?task=${created.id}` : `/tasks/${created.id}`);
+          ? (created.mode === "conversational" ? `/?task=${created.id}` : "/")
+          : (created.mode === "conversational" ? `/?task=${created.id}` : `/tasks/${created.id}`);
         return hxRedirect(redirectTo);
       }
       return new Response(null, { status: 302, headers: { Location: "/" } });
@@ -289,11 +285,15 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     }
 
     try {
-      let taskType: TaskType | undefined;
-      if (body.taskType === "standard" || body.taskType === "real_time") {
-        taskType = body.taskType;
+      let mode: TaskMode | undefined;
+      if (body.mode === "workflow" || body.mode === "conversational") {
+        mode = body.mode;
+      } else if (body.taskType === "real_time") {
+        mode = "conversational";
+      } else if (body.taskType === "standard") {
+        mode = "workflow";
       }
-      let taskConfig: RealtimeTaskConfig | undefined;
+      let taskConfig: TaskConfig | undefined;
       if (body.taskConfig) {
         try {
           taskConfig = typeof body.taskConfig === "string" ? JSON.parse(body.taskConfig) : body.taskConfig;
@@ -304,7 +304,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         description: body.description,
         teamId: body.teamId,
         workingDirectory: body.workingDirectory,
-        taskType,
+        mode,
         taskConfig,
       });
 
@@ -324,7 +324,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       const db = getDb();
       const task = scheduler.getTask(params.id);
       if (!task) return Response.json({ error: "Task not found" }, { status: 404 });
-      // Allow editing draft, approved, running, completed, and failed tasks
+      // Allow editing tasks in any status (draft, active, settled)
 
       const formData = await req.formData();
       const title = formData.get("title");
@@ -379,7 +379,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
 
       const shouldApprove = formData.get("approve") === "1";
       if (shouldApprove && task.status === "draft") {
-        // Real-time auto-start happens in the daemon's state-changed handler.
+        // Conversational auto-start happens in the daemon's state-changed handler.
         scheduler.approveTask(params.id);
       }
 
@@ -436,7 +436,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         }
       }
       killRunningRuntimesForTask(params.id, daemon);
-      scheduler.completeTask(params.id);
+      scheduler.settleTask(params.id, {});
       if (_req.headers.get("HX-Request")) {
         return hxRedirect(`/?task=${params.id}`);
       }
@@ -457,7 +457,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         }
       }
       killRunningRuntimesForTask(params.id, daemon);
-      scheduler.cancelTask(params.id);
+      scheduler.settleTask(params.id, { error: "Cancelled by user" });
       if (_req.headers.get("HX-Request")) {
         return hxRedirect(`/?task=${params.id}`);
       }
@@ -468,15 +468,30 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     }
   });
 
+  addRoute("POST", "/api/tasks/:id/autopilot", async (req, params) => {
+    try {
+      const task = scheduler.getTask(params.id);
+      if (!task) return Response.json({ error: "Task not found" }, { status: 404 });
+      const body = await parseRequestBody(req);
+      const raw = body.on ?? body.autopilot;
+      const on = raw === true || raw === "true" || raw === "on" || raw === "1";
+      const updated = scheduler.setAutopilot(params.id, on);
+      if (req.headers.get("HX-Request")) {
+        return hxRedirect(`/?task=${params.id}`);
+      }
+      return Response.json({ ok: true, autopilot: updated.autopilot });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      return Response.json({ error: message }, { status: 400 });
+    }
+  });
+
   addRoute("POST", "/api/tasks/:id/pause", async (_req, params) => {
     try {
       const task = scheduler.getTask(params.id);
       if (!task) return Response.json({ error: "Task not found" }, { status: 404 });
-      if (task.task_type === "real_time") {
-        return Response.json({ error: "Realtime tasks cannot be paused" }, { status: 400 });
-      }
-      // Flip to 'paused' first so recovery/health/queue loops immediately stop
-      // treating it as a live running task, THEN stop the agents + their trees.
+      // Flip the paused flag first so recovery/health/queue loops immediately
+      // stop treating it as a live task, THEN stop the agents + their trees.
       scheduler.pauseTask(params.id);
       if (daemon) await daemon.pauseTaskAgents(params.id);
       if (_req.headers.get("HX-Request")) {
@@ -493,11 +508,11 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     try {
       const task = scheduler.getTask(params.id);
       if (!task) return Response.json({ error: "Task not found" }, { status: 404 });
-      if (task.status !== "paused") {
-        return Response.json({ error: `Task is not paused (status: ${task.status})` }, { status: 400 });
+      if (!task.paused) {
+        return Response.json({ error: "Task is not paused" }, { status: 400 });
       }
       // Respawn the agents first (reading snapshots from orchestration_state),
-      // THEN flip to 'running' so the task is only live once agents are back.
+      // THEN clear the paused flag so the task is only live once agents are back.
       if (daemon) await daemon.resumeTaskAgents(params.id);
       scheduler.resumeFromPause(params.id);
       if (_req.headers.get("HX-Request")) {
@@ -510,9 +525,28 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     }
   });
 
-  addRoute("POST", "/api/tasks/:id/retry", (_req, params) => {
+  addRoute("POST", "/api/tasks/:id/retry", () => {
+    return Response.json(
+      { error: "Retry was removed. Send new input via POST /api/tasks/:id/input instead." },
+      { status: 410 },
+    );
+  });
+
+  addRoute("POST", "/api/tasks/:id/resume", async (_req, params) => {
     try {
-      scheduler.retryTask(params.id);
+      const task = scheduler.getTask(params.id);
+      if (!task) return Response.json({ error: "Task not found" }, { status: 404 });
+      if (task.paused) {
+        // Respawn the agents first, THEN clear the paused flag (same ordering
+        // as /resume-from-pause).
+        if (daemon) await daemon.resumeTaskAgents(params.id);
+        scheduler.resumeFromPause(params.id);
+      } else if (task.status === "settled") {
+        scheduler.reviveTask(params.id);
+        scheduler.requestWake(params.id);
+      } else {
+        return Response.json({ error: "Task is not paused or settled" }, { status: 409 });
+      }
       if (_req.headers.get("HX-Request")) {
         return hxRedirect(`/?task=${params.id}`);
       }
@@ -523,46 +557,78 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     }
   });
 
-  addRoute("POST", "/api/tasks/:id/resume", (_req, params) => {
+  // Unified input entry point: draft appends, settled revives + wakes,
+  // active queues or accumulates. Replaces the old iterate endpoint.
+  const handleInput = async (req: Request, params: { id: string }): Promise<Response> => {
     try {
-      scheduler.resumeTask(params.id);
-      if (_req.headers.get("HX-Request")) {
-        return hxRedirect(`/?task=${params.id}`);
-      }
-      return Response.json({ ok: true });
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Internal error";
-      return Response.json({ error: message }, { status: 400 });
-    }
-  });
-
-  addRoute("POST", "/api/tasks/:id/iterate", async (req, params) => {
-    try {
+      if (!daemon) return Response.json({ error: "Daemon not available" }, { status: 503 });
       const body = await parseRequestBody<Record<string, string>>(req);
-      const additionalInput = body.additionalInput || body.additional_input;
-      if (!additionalInput) {
-        return Response.json({ error: "additionalInput is required" }, { status: 400 });
+      const text = body.text || body.additionalInput || body.additional_input;
+      if (!text || !text.trim()) {
+        return Response.json({ error: "text is required" }, { status: 400 });
       }
-      const updated = scheduler.iterateTask(params.id, additionalInput);
-      if (req.headers.get("HX-Request")) {
-        return hxRedirect(`/?task=${params.id}`);
-      }
-      return Response.json(updated);
+      const result = await daemon.inputTask(params.id, text, "web");
+      // No HX redirect here: the composer posts with hx-swap="none" and the
+      // timeline updates over WS. A full page reload would tear down an active
+      // audio recording mid-session. The one case that changes the chrome
+      // (input reviving a settled task) already triggers a workspace refresh
+      // through the task:state_changed status-transition push.
+      return Response.json({ ok: true, delivered: result.delivered });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Internal error";
-      if (req.headers.get("HX-Request")) {
-        return Response.json({ error: message }, { status: 400 });
-      }
       return Response.json({ error: message }, { status: 400 });
     }
-  });
+  };
+
+  addRoute("POST", "/api/tasks/:id/input", handleInput);
+  // Legacy shim: iterate is now just input.
+  addRoute("POST", "/api/tasks/:id/iterate", handleInput);
+
+  const handleSettle = (_req: Request, params: { id: string }): Response => {
+    try {
+      if (daemon) {
+        const rtMgr = daemon.getRealtimeSessionManager();
+        if (rtMgr.isSessionActive(params.id)) {
+          rtMgr.closeSession(params.id);
+        }
+      }
+      killRunningRuntimesForTask(params.id, daemon);
+      scheduler.settleTask(params.id, {});
+      if (_req.headers.get("HX-Request")) {
+        return hxRedirect(`/?task=${params.id}`);
+      }
+      return Response.json({ ok: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      return Response.json({ error: message }, { status: 400 });
+    }
+  };
+  addRoute("POST", "/api/tasks/:id/settle", handleSettle);
+  // Legacy shim for old clients; settle replaces archive.
+  addRoute("POST", "/api/tasks/:id/archive", handleSettle);
+
+  const handleRevive = (_req: Request, params: { id: string }): Response => {
+    try {
+      scheduler.reviveTask(params.id);
+      if (_req.headers.get("HX-Request")) {
+        return hxRedirect(`/?task=${params.id}`);
+      }
+      return Response.json({ ok: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Internal error";
+      return Response.json({ error: message }, { status: 400 });
+    }
+  };
+  addRoute("POST", "/api/tasks/:id/revive", handleRevive);
+  // Legacy shim for old clients; revive replaces unarchive.
+  addRoute("POST", "/api/tasks/:id/unarchive", handleRevive);
 
   const handleDelete = (req: Request, params: { id: string }): Response => {
     try {
       const task = scheduler.getTask(params.id);
-      if (task && task.status === "running") {
+      if (task && task.status === "active") {
         killRunningRuntimesForTask(params.id, daemon);
-        try { scheduler.failTask(params.id, "Deleted by user"); } catch { /* already failed or transitioned */ }
+        try { finalizeActiveInstancesForTask(getDb(), params.id, "failed"); } catch { /* best-effort */ }
       }
 
       scheduler.deleteTask(params.id);
@@ -734,7 +800,89 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
 
   // --- Artifact REST API ---
 
-  const artifactManager = new ArtifactManager();
+  const artifactManager = daemon?.getArtifactManager?.() ?? new ArtifactManager();
+
+  // Operator file upload (pictures and any file). Multipart: `file` (one or
+  // more, required) + optional `description`. Creates a kind 'upload' file
+  // artifact per file and puts it on the task's input timeline with the same
+  // wake semantics as typed text. htmx callers get the refreshed rail list;
+  // the WS `artifact:created` push updates every other client.
+  addRoute("POST", "/api/tasks/:id/artifacts/upload", async (req, params) => {
+    const isHx = req.headers.get("HX-Request") === "true";
+    const fail = (message: string, status = 400) =>
+      isHx ? htmlResponse(`<p class="tc-art-upload__error">${escapeHtmlText(message)}</p>`, status) : Response.json({ error: message }, { status });
+    const task = scheduler.getTask(params.id);
+    if (!task) return fail("Task not found", 404);
+    let form: FormData;
+    try {
+      form = await req.formData();
+    } catch {
+      return fail("Expected multipart/form-data with a `file` field");
+    }
+    const files = form.getAll("file").filter((f): f is File => typeof f !== "string" && f.size > 0);
+    if (files.length === 0) return fail("file is required");
+    const description = String(form.get("description") ?? "").trim() || undefined;
+
+    const created: Record<string, unknown>[] = [];
+    for (const file of files) {
+      let artifact;
+      try {
+        artifact = artifactManager.createFileArtifact({
+          taskId: params.id,
+          name: file.name || "upload",
+          kind: "upload",
+          mime: file.type || null,
+          bytes: new Uint8Array(await file.arrayBuffer()),
+          description,
+          source: "operator",
+        });
+      } catch (err) {
+        return fail(err instanceof Error ? err.message : "Upload failed");
+      }
+      const rt = daemon?.getRealtimeSessionManager();
+      let delivered: string | undefined;
+      if (rt) {
+        try {
+          delivered = rt.ingestArtifactUpload(params.id, artifact, { caption: description, source: "operator" }).delivered;
+        } catch (err) {
+          return fail(err instanceof Error ? err.message : "Could not attach the upload to the task");
+        }
+      }
+      created.push({ ...artifactToJson(artifact), delivered });
+    }
+
+    if (isHx) {
+      return htmlResponse(artifactListFragment(getDb(), params.id, PRIMARY_ARTIFACT_LIST_VARIANT));
+    }
+    return Response.json(created.length === 1 ? created[0] : { artifacts: created }, { status: 201 });
+  });
+
+  // File artifact bytes. Immutable per id, so clients may cache forever.
+  addRoute("GET", "/api/artifacts/:id/file", (_req, params) => {
+    const file = artifactManager.readArtifactBytes(params.id);
+    if (!file) return Response.json({ error: "Artifact file not found" }, { status: 404 });
+    const { artifact, bytes } = file;
+    const mime = artifact.mime ?? "application/octet-stream";
+    const disposition = mime.startsWith("image/")
+      ? "inline"
+      : `attachment; filename="${artifact.name.replace(/["\\]/g, "_")}"`;
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "Content-Type": mime,
+        "Content-Length": String(bytes.byteLength),
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "Content-Disposition": disposition,
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  });
+
+  addRoute("GET", "/api/artifacts/:id/meta", (_req, params) => {
+    const artifact = artifactManager.getArtifactById(params.id);
+    if (!artifact) return Response.json({ error: "Artifact not found" }, { status: 404 });
+    return Response.json(artifactToJson(artifact));
+  });
 
   addRoute("GET", "/api/tasks/:id/artifacts", (req, params) => {
     const url = new URL(req.url);
@@ -763,7 +911,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
     if (!artifact) {
       return Response.json({ error: "Artifact not found" }, { status: 404 });
     }
-    return Response.json(artifact);
+    return Response.json(artifactToJson(artifact));
   });
 
   addRoute("POST", "/api/tasks/:id/artifacts/:name", async (req, params) => {
@@ -798,22 +946,11 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
   addRoute("POST", "/api/tasks/:id/realtime/session/start", (_req, params) => {
     const task = scheduler.getTask(params.id);
     if (!task) return Response.json({ error: "Task not found" }, { status: 404 });
-    if (task.task_type !== "real_time") {
-      return Response.json({ error: "Task is not a real_time task" }, { status: 400 });
-    }
-    if (task.status !== "running" && task.status !== "approved") {
-      return Response.json({ error: "Task must be approved or running to start a realtime session" }, { status: 400 });
+    if (task.status !== "active") {
+      return Response.json({ error: "Task must be active to start a session" }, { status: 400 });
     }
 
     if (daemon) {
-      if (task.status === "approved") {
-        try {
-          scheduler.startTask(params.id);
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : "Internal error";
-          return Response.json({ error: message }, { status: 400 });
-        }
-      }
       const mgr = daemon.getRealtimeSessionManager();
       try {
         const result = mgr.startSession(params.id);
@@ -830,9 +967,6 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
   addRoute("POST", "/api/tasks/:id/realtime/session/stop", async (_req, params) => {
     const task = scheduler.getTask(params.id);
     if (!task) return Response.json({ error: "Task not found" }, { status: 404 });
-    if (task.task_type !== "real_time") {
-      return Response.json({ error: "Task is not a real_time task" }, { status: 400 });
-    }
 
     if (daemon) {
       const mgr = daemon.getRealtimeSessionManager();
@@ -851,12 +985,10 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
   addRoute("GET", "/api/tasks/:id/realtime/stream", (req, params) => {
     const task = scheduler.getTask(params.id);
     if (!task) return Response.json({ error: "Task not found" }, { status: 404 });
-    if (task.task_type !== "real_time") {
-      return Response.json({ error: "Task is not a real_time task" }, { status: 400 });
-    }
 
-    // SSE endpoint — emit events for transcript/summary windows and triggers
+    // SSE endpoint: emit events for transcript/summary windows and triggers
     const encoder = new TextEncoder();
+    const sessionActive = daemon?.getRealtimeSessionManager().isSessionActive(params.id) ?? false;
 
     const stream = new ReadableStream({
       start(controller) {
@@ -918,7 +1050,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         eventBus.on("realtime:audio_lock", audioLockHandler);
 
         // Send initial state
-        sendEvent("session.state", { state: task.status === "running" ? "active" : "stopped" });
+        sendEvent("session.state", { state: sessionActive ? "active" : "stopped" });
 
         // Cleanup on close
         req.signal.addEventListener("abort", () => {

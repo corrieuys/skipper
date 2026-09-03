@@ -47,12 +47,12 @@ export class EscalationManager {
 
     const { templateAgentId, taskId } = resolved;
 
-    // Verify task is running
+    // Verify task is active
     const task = this.db
       .prepare("SELECT id, status FROM tasks WHERE id = ?")
       .get(taskId) as { id: string; status: string } | null;
 
-    if (!task || task.status !== "running") return null;
+    if (!task || task.status !== "active") return null;
 
     // Store the template agent ID in the escalation so resolution works correctly
     const escalation = this.createEscalation({
@@ -121,11 +121,11 @@ export class EscalationManager {
       .prepare(
         `UPDATE escalations
          SET status = 'resolved',
-             response = COALESCE(response, 'Auto-resolved: task is no longer running.'),
+             response = COALESCE(response, 'Auto-resolved: task is no longer active.'),
              resolved_at = datetime('now')
          WHERE status = 'open'
            AND task_id IN (
-             SELECT id FROM tasks WHERE status != 'running'
+             SELECT id FROM tasks WHERE status != 'active'
            )`,
       )
       .run();
@@ -177,14 +177,14 @@ export class EscalationManager {
       )
       .run(response, escalationId);
 
-    // If the task is no longer running, do not revive any agent — just mark the
+    // If the task is no longer active, do not revive any agent — just mark the
     // escalation resolved. injectResponse has a fallback that spawns a fresh
     // process when no runtime/resume path matches; without this guard, resolving
-    // a stale escalation on a completed/failed/cancelled task would resurrect it.
+    // a stale escalation on a settled task would resurrect it.
     const taskRow = this.db
       .prepare("SELECT status FROM tasks WHERE id = ?")
       .get(escalation.task_id) as { status: string } | null;
-    const taskTerminal = !taskRow || taskRow.status === "completed" || taskRow.status === "failed";
+    const taskTerminal = !taskRow || taskRow.status !== "active";
 
     if (!taskTerminal) {
       // Inject response into agent (try runtime instances first, then template agent)

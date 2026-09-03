@@ -42,7 +42,7 @@ beforeAll(() => {
   registerDataRoutes(db, fakeDaemon);
 
   db.prepare(
-    "INSERT INTO tasks (id, title, status, needs_review, started_at) VALUES ('task-review', 'Review me', 'running', 1, datetime('now'))",
+    "INSERT INTO tasks (id, title, status, needs_review, started_at) VALUES ('task-review', 'Review me', 'active', 1, datetime('now'))",
   ).run();
   // task_notes.agent_id has an FK in monolith schema — notes resolve the
   // team entrypoint agent, so give the plain task a team.
@@ -84,16 +84,21 @@ describe("review endpoints", () => {
       data: { needs_review: boolean; status: string };
     };
     expect(state.data.needs_review).toBe(true);
-    expect(state.data.status).toBe("running");
+    expect(state.data.status).toBe("active");
 
     const res = await fetch(`${baseUrl}/data/tasks/task-review/review/approve`, { method: "POST", headers });
     expect(res.status).toBe(200);
 
-    // No team + no phases → approve completes the task.
+    // No team + no phases: approve settles the run. The review gate clears and
+    // the task presents as Completed; input can revive it.
     const after = await (await fetch(`${baseUrl}/data/tasks/task-review`, { headers })).json() as {
-      data: { status: string; needs_review: number };
+      data: { status: string; needs_review: number; display_status: string };
     };
-    expect(after.data.status).toBe("completed");
+    expect(after.data.status).toBe("settled");
+    expect(!!after.data.needs_review).toBe(false);
+    expect(after.data.display_status).toBe("completed");
+    const row = getDb().prepare("SELECT completed_at FROM tasks WHERE id = 'task-review'").get() as { completed_at: string | null };
+    expect(row.completed_at).not.toBeNull();
   });
 });
 
@@ -163,30 +168,35 @@ describe("artifact create endpoint", () => {
 });
 
 describe("pause / resume-from-pause", () => {
-  it("pauses a running task and resumes it", async () => {
+  it("pauses an active task and resumes it", async () => {
     const db = getDb();
     db.prepare(
-      "INSERT INTO tasks (id, title, status, started_at) VALUES ('task-pause', 'Pause me', 'running', datetime('now'))",
+      "INSERT INTO tasks (id, title, status, started_at) VALUES ('task-pause', 'Pause me', 'active', datetime('now'))",
     ).run();
 
     const pauseRes = await fetch(`${baseUrl}/data/tasks/task-pause/pause`, { method: "POST", headers });
     expect(pauseRes.status).toBe(200);
     const paused = await pauseRes.json();
     expect(paused.ok).toBe(true);
-    expect(paused.data.status).toBe("paused");
-    let row = db.prepare("SELECT status FROM tasks WHERE id = 'task-pause'").get() as { status: string };
-    expect(row.status).toBe("paused");
+    // Paused is a flag on active tasks now, not a status.
+    expect(paused.data.status).toBe("active");
+    expect(paused.data.paused).toBe(true);
+    let row = db.prepare("SELECT status, paused FROM tasks WHERE id = 'task-pause'").get() as { status: string; paused: number };
+    expect(row.status).toBe("active");
+    expect(row.paused).toBe(1);
 
     const resumeRes = await fetch(`${baseUrl}/data/tasks/task-pause/resume-from-pause`, { method: "POST", headers });
     expect(resumeRes.status).toBe(200);
     const resumed = await resumeRes.json();
     expect(resumed.ok).toBe(true);
-    expect(resumed.data.status).toBe("running");
-    row = db.prepare("SELECT status FROM tasks WHERE id = 'task-pause'").get() as { status: string };
-    expect(row.status).toBe("running");
+    expect(resumed.data.status).toBe("active");
+    expect(resumed.data.paused).toBe(false);
+    row = db.prepare("SELECT status, paused FROM tasks WHERE id = 'task-pause'").get() as { status: string; paused: number };
+    expect(row.status).toBe("active");
+    expect(row.paused).toBe(0);
   });
 
-  it("rejects pausing a non-running task", async () => {
+  it("rejects pausing a non-active task", async () => {
     const res = await fetch(`${baseUrl}/data/tasks/task-plain/pause`, { method: "POST", headers });
     expect(res.status).toBe(400);
     const json = await res.json();

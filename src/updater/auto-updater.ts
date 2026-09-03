@@ -78,13 +78,24 @@ function defaultDeps(db: Database): UpdaterDeps {
 }
 
 /**
- * True when every task is in a terminal/idle state — nothing running AND nothing
- * queued (approved) or paused. This is the bar for an auto-restart: we only bounce
- * the daemon once all work has fully drained.
+ * True when no task has work in flight or queued: no live agent instances, no
+ * paused task, no pending wake, no active task awaiting its first start. Idle
+ * active tasks (resting between inputs) do NOT block an auto-restart — sessions
+ * survive a bounce and new input wakes them afterwards.
  */
 function noActiveOrQueuedTasks(db: Database): boolean {
   const row = db
-    .prepare("SELECT COUNT(*) AS c FROM tasks WHERE status IN ('approved', 'running', 'paused')")
+    .prepare(
+      `SELECT COUNT(*) AS c FROM tasks t
+       WHERE t.status = 'active'
+         AND (t.paused = 1
+           OR t.wake_requested_at IS NOT NULL
+           OR t.started_at IS NULL
+           OR EXISTS (
+             SELECT 1 FROM agent_instances ai
+             WHERE ai.task_id = t.id AND ai.status IN ('running', 'waiting_delegation', 'pending')
+           ))`,
+    )
     .get() as { c: number };
   return (row?.c ?? 0) === 0;
 }

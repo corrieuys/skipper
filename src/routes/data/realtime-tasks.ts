@@ -8,6 +8,7 @@ import {
   EMPTY_PIPELINE_COUNTS,
 } from "../../data/realtime";
 import { TaskScheduler } from "../../tasks/scheduler";
+import { finalizeActiveInstancesForTask } from "../../agents/instance-status";
 import { getRealtimeTeamId } from "../../config/teams";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
 import { ok, err } from "./envelope";
@@ -20,6 +21,9 @@ function parseTaskConfig(taskConfigStr: string): Record<string, unknown> {
   }
 }
 
+// Legacy /data/realtime-tasks/* surface kept as thin wrappers over the unified
+// task model so older clients (iOS) keep working. Session, input, and read
+// endpoints work for ANY task; create makes a conversational-mode task.
 export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
   const scheduler = new TaskScheduler();
 
@@ -30,7 +34,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
   addDataRoute("GET", "/data/realtime-tasks", () => {
     const db = getDb();
     const tasks = db
-      .prepare("SELECT * FROM tasks WHERE task_type = 'real_time' ORDER BY created_at DESC")
+      .prepare("SELECT * FROM tasks WHERE mode = 'conversational' ORDER BY created_at DESC")
       .all();
     return ok(tasks);
   });
@@ -43,7 +47,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
                 (SELECT COUNT(*) FROM task_input_streams WHERE task_id = t.id) AS segment_count
          FROM tasks t
          LEFT JOIN teams tm ON tm.id = t.team_id
-         WHERE t.id = ? AND t.task_type = 'real_time'`,
+         WHERE t.id = ?`,
       )
       .get(params.id);
     if (!task) return err("Task not found", 404);
@@ -98,13 +102,12 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
         description: description || undefined,
         teamId: resolvedTeamId,
         workingDirectory: process.cwd(),
-        taskType: "real_time",
+        mode: "conversational",
       });
 
-      // Real-time tasks bypass the standard draft→approved→running pipeline
-      db.prepare(
-        `UPDATE tasks SET status = 'running', approved_at = datetime('now'), started_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
-      ).run(task.id);
+      // Conversational tasks go live immediately: approve (draft to active)
+      // and open the input session.
+      const approved = scheduler.approveTask(task.id);
 
       if (daemon) {
         try {
@@ -112,18 +115,15 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
         } catch { /* non-fatal */ }
       }
 
-      return ok(task, 201);
+      return ok(approved, 201);
     } catch (e: unknown) {
       return err(e instanceof Error ? e.message : "Internal error");
     }
   });
 
   addDataRoute("POST", "/data/realtime-tasks/:id", async (req, params) => {
-    const db = getDb();
-    const task = db
-      .prepare("SELECT id, task_type FROM tasks WHERE id = ?")
-      .get(params.id) as { id: string; task_type: string } | null;
-    if (!task || task.task_type !== "real_time") return err("Task not found", 404);
+    const task = scheduler.getTask(params.id);
+    if (!task) return err("Task not found", 404);
 
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
     const title = typeof body.title === "string" ? body.title.trim() : null;
@@ -131,24 +131,31 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
 
     if (!title) return err("title is required");
 
-    db.prepare(
-      `UPDATE tasks SET title = ?, description = ?, updated_at = datetime('now') WHERE id = ? AND task_type = 'real_time'`,
-    ).run(title, description || null, params.id);
-
-    const updated = db.prepare("SELECT * FROM tasks WHERE id = ?").get(params.id);
-    return ok(updated);
+    try {
+      // Draft-only edit via the unified scheduler; preserve team/config.
+      const updated = scheduler.updateTask(params.id, {
+        title,
+        description: description || undefined,
+        teamId: task.team_id ?? undefined,
+        workingDirectory: task.working_directory,
+        mode: "conversational",
+        taskConfig: task.task_config,
+      });
+      return ok(updated);
+    } catch (e: unknown) {
+      return err(e instanceof Error ? e.message : "Internal error");
+    }
   });
 
   addDataRoute("POST", "/data/realtime-tasks/:id/start", (_req, params) => {
     try {
       const task = scheduler.getTask(params.id);
-      if (!task || task.task_type !== "real_time") return err("Task not found", 404);
-      if (task.status !== "approved" && task.status !== "running") {
-        return err("Task must be approved or running to start");
+      if (!task) return err("Task not found", 404);
+      if (task.status !== "active") {
+        return err("Task must be active to start a session");
       }
       if (!daemon) return err("Daemon not available", 503);
 
-      if (task.status === "approved") scheduler.startTask(params.id);
       daemon.getRealtimeSessionManager().startSession(params.id);
       return ok({ id: params.id, started: true });
     } catch (e: unknown) {
@@ -186,8 +193,8 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
         daemon.getRealtimeSessionManager().closeSession(params.id);
       }
       const task = scheduler.getTask(params.id);
-      if (task && task.status === "running") {
-        scheduler.completeTask(params.id, { stopped_by: "user" });
+      if (task && task.status === "active") {
+        scheduler.settleTask(params.id, { result: { stopped_by: "user" } });
       }
       return ok({ id: params.id, closed: true });
     } catch (e: unknown) {
@@ -200,11 +207,22 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
       const task = scheduler.getTask(params.id);
       if (!task) return err("Task not found", 404);
 
-      if (daemon && task.status === "running") {
-        daemon.getRealtimeSessionManager().closeSession(params.id);
-      }
-      if (task.status === "running") {
-        scheduler.failTask(params.id, "Deleted by user");
+      // Kill first so deleteTask does not reject a task with live agents.
+      if (task.status === "active") {
+        if (daemon) {
+          const rtMgr = daemon.getRealtimeSessionManager();
+          if (rtMgr.isSessionActive(params.id)) {
+            rtMgr.closeSession(params.id);
+          }
+          const agentManager = daemon.getAgentManager();
+          const runtimeIds = Array.from(agentManager.getRunningAgents().values())
+            .filter((runtime) => runtime.taskId === params.id)
+            .map((runtime) => runtime.id);
+          for (const runtimeId of runtimeIds) {
+            try { agentManager.killAgent(runtimeId); } catch { /* best-effort */ }
+          }
+        }
+        try { finalizeActiveInstancesForTask(getDb(), params.id, "failed"); } catch { /* best-effort */ }
       }
       scheduler.deleteTask(params.id);
       return ok({ id: params.id, deleted: true });
@@ -215,16 +233,13 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
 
   addDataRoute("POST", "/data/realtime-tasks/:id/unarchive", (_req, params) => {
     try {
-      const db = getDb();
       const task = scheduler.getTask(params.id);
       if (!task) return err("Task not found", 404);
-      if (task.status !== "completed" && task.status !== "failed") {
-        return err("Only archived or failed tasks can be unarchived");
+      if (task.status !== "settled") {
+        return err("Only settled tasks can be revived");
       }
 
-      db.prepare(
-        "UPDATE tasks SET status = 'running', result = NULL, completed_at = NULL, updated_at = datetime('now') WHERE id = ?",
-      ).run(params.id);
+      scheduler.reviveTask(params.id);
 
       if (daemon) {
         const rtMgr = daemon.getRealtimeSessionManager();
@@ -245,14 +260,9 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     if (!text) return err("text is required");
     if (!daemon) return err("Daemon not available", 503);
 
-    const rtMgr = daemon.getRealtimeSessionManager();
-    if (!rtMgr.isSessionActive(params.id)) {
-      return err("Session is paused. Resume the task first.");
-    }
-
     try {
-      await rtMgr.ingestInput(params.id, { sourceType: "text", contentBody: text });
-      return ok({ id: params.id, ingested: true });
+      const result = await daemon.inputTask(params.id, text, "api");
+      return ok({ id: params.id, ingested: true, delivered: result.delivered });
     } catch (e: unknown) {
       return err(e instanceof Error ? e.message : "Internal error");
     }
@@ -261,7 +271,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
   addDataRoute("POST", "/data/realtime-tasks/:id/config", async (req, params) => {
     const db = getDb();
     const task = db
-      .prepare("SELECT id, task_config FROM tasks WHERE id = ? AND task_type = 'real_time'")
+      .prepare("SELECT id, task_config FROM tasks WHERE id = ?")
       .get(params.id) as { id: string; task_config: string } | null;
     if (!task) return err("Task not found", 404);
 

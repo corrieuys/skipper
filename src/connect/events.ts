@@ -1,13 +1,23 @@
 import { eventBus, type DelegationGroupProgressEvent, type EventName } from "../events/bus";
 import { getDb } from "../db/connection";
-import { CONNECT_PROTOCOL_VERSION } from "./protocol";
-import { fetchArtifactItem, fetchEscalationItem, fetchMessageItem, fetchNoteItem, toTaskListItem } from "./serializers";
+import { CONNECT_PROTOCOL_VERSION, CONNECT_FEATURES } from "./protocol";
+import {
+  fetchArtifactItem,
+  fetchEscalationItem,
+  fetchMessageItem,
+  fetchNoteItem,
+  fetchTimelineEntryItem,
+  toTaskListItem,
+} from "./serializers";
 
 // Events pushed to integrators. Excludes chatty per-line outputs (those go
 // through the subscription-gated output tail instead - see output-tail.ts).
 const FORWARDED_EVENTS: readonly EventName[] = [
   "task:created",
   "task:state_changed",
+  "task:run_completed",
+  "task:run_failed",
+  "task:wake_requested",
   "task:phase_changed",
   "task:note_added",
   "task:message_posted",
@@ -30,6 +40,9 @@ const FORWARDED_EVENTS: readonly EventName[] = [
 const TASK_FAT_EVENTS = new Set<EventName>([
   "task:created",
   "task:state_changed",
+  "task:run_completed",
+  "task:run_failed",
+  "task:wake_requested",
   "task:phase_changed",
   "task:needs_review_changed",
   "consensus:phase_advance",
@@ -43,9 +56,13 @@ const ARTIFACT_FAT_EVENTS = new Set<EventName>([
 
 /**
  * Fat events: forwarded payloads keep their bus shape and additionally carry
- * the changed entity's projection (task / escalation / note / artifact) so the
+ * the changed entity's projection (task / escalation / note / message /
+ * artifact / operator-input timeline entry) so the
  * integrator web app can patch its local store without a relayed refetch.
  * Enrichment is best-effort - on any failure the raw bus payload still ships.
+ * The task projection is `serializers.ts:projectTask`, so fat events carry the
+ * same protocol v3 shape as snapshots (status = draft|active|settled, plus
+ * display_status / mode / paused / needs_review).
  */
 function enrichPayload(eventName: EventName, payload: unknown): unknown {
   const p = payload as Record<string, unknown>;
@@ -62,6 +79,10 @@ function enrichPayload(eventName: EventName, payload: unknown): unknown {
     if (eventName === "task:message_posted" && typeof p.messageId === "string") {
       const message = fetchMessageItem(db, p.messageId);
       return message ? { ...p, message } : p;
+    }
+    if (eventName === "realtime:timeline_updated" && typeof p.entryId === "string") {
+      const entry = fetchTimelineEntryItem(db, p.entryId);
+      return entry ? { ...p, entry } : p;
     }
     if ((eventName === "escalation:created" || eventName === "escalation:resolved") && typeof p.escalationId === "string") {
       const escalation = fetchEscalationItem(db, p.escalationId);
@@ -117,7 +138,7 @@ export function subscribeConnectEvents(sender: EventSender, options: SubscribeCo
   // servers fan it out, old consumers ignore the unknown name.
   send("connect:capabilities", {
     protocolVersion: CONNECT_PROTOCOL_VERSION,
-    features: ["snapshot", "fat_events", "output_tail", "messages"],
+    features: [...CONNECT_FEATURES],
   });
 
   for (const eventName of FORWARDED_EVENTS) {

@@ -1,5 +1,5 @@
 import { startServer, addRoute, setWebSocketUpgradeHandlers, setWebSocketHandlers } from "./src/server";
-import { registerTaskRoutes } from "./src/routes/tasks";
+import { registerTaskRoutes, killRunningRuntimesForTask } from "./src/routes/tasks";
 import { registerTeamRoutes } from "./src/routes/teams";
 import { registerSkipperRoutes } from "./src/routes/skipper";
 import { registerPageRoutes } from "./src/routes/pages";
@@ -61,6 +61,8 @@ const mcpServer = new DaemonMcpServer(getDb(), {
   artifactManager: daemon.getArtifactManager(),
   consensusManager: daemon.getConsensusManager(),
   globalStoreManager: new GlobalStoreManager(getDb()),
+  realtimeSessionManager: daemon.getRealtimeSessionManager(),
+  inputTask: (taskId, text, source) => daemon.inputTask(taskId, text, source),
 });
 const whisperManager = new WhisperManager();
 
@@ -139,6 +141,8 @@ const connectClient = initConnectClient(
   daemon.getArtifactManager(),
   daemon.getPhaseManager(),
   daemon.getRealtimeSessionManager(),
+  (taskId, text, source) => daemon.inputTask(taskId, text, source),
+  (taskId) => killRunningRuntimesForTask(taskId, daemon),
 );
 
 // Slack Socket Mode (experimental): inbound slash commands + interactive
@@ -148,6 +152,7 @@ const slackSocket = initSlackSocket(
   daemon.getScheduledTaskScheduler(),
   daemon.getEscalationManager(),
   daemon.getPhaseManager(),
+  (taskId, text, source) => daemon.inputTask(taskId, text, source),
 );
 
 // Slack push (experimental): post escalations + phase reviews to the channel.

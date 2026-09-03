@@ -18,7 +18,7 @@ function seedRealtimeTask(database: Database, id = "task-rt-1", config: Record<s
   database.prepare("INSERT OR IGNORE INTO teams (id, name) VALUES (?, ?)").run("team-1", "Test Team");
   database
     .prepare(
-      "INSERT INTO tasks (id, title, team_id, status, task_type, task_config) VALUES (?, ?, ?, 'running', 'real_time', ?)",
+      "INSERT INTO tasks (id, title, team_id, status, mode, task_config) VALUES (?, ?, ?, 'active', 'conversational', ?)",
     )
     .run(id, "Realtime Task", "team-1", JSON.stringify(config));
   return id;
@@ -65,10 +65,14 @@ describe("realtimeWsHandlers", () => {
 
       realtimeWsHandlers.open(ws);
 
+      // Open sends the session state plus the current recording-lock state so
+      // late joiners can disable their Record button immediately.
       const messages = parseSent(sent);
-      expect(messages.length).toBe(1);
+      expect(messages.length).toBe(2);
       expect(messages[0].type).toBe("session.state");
       expect(messages[0].state).toBe("paused");
+      expect(messages[1].type).toBe("audio.lock");
+      expect(messages[1].locked).toBe(false);
     });
 
     it("sends active state if session is already active", () => {

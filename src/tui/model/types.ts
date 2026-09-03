@@ -8,8 +8,13 @@
 export interface TaskRow {
   id: string;
   title: string;
-  status: string; // running | approved | completed | failed | ...
+  status: string; // draft | active | settled (older daemons: running | approved | completed | failed | ...)
+  /** @deprecated compat field from older daemons; new daemons derive it from mode. */
   task_type?: string | null;
+  /** workflow | conversational (absent on older daemons). */
+  mode?: string | null;
+  /** draft|queued|working|idle|paused|review|blocked|completed|failed (absent on older daemons). */
+  display_status?: string | null;
   created_at?: string | null;
 }
 

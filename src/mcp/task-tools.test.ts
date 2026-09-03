@@ -120,7 +120,7 @@ describe("create / get / list", () => {
 
   it("list_active_tasks returns only running/queued/paused tasks", async () => {
     const a = await call("create_task", { title: "queued", team_id: "team-1" });
-    await call("approve_task", { task_id: a.id }); // → approved (active)
+    await call("approve_task", { task_id: a.id }); // → active
     await call("create_task", { title: "still draft", team_id: "team-1" }); // draft (not active)
     const active = await call("list_active_tasks", {});
     expect(active.tasks.map((t: any) => t.id)).toEqual([a.id]);
@@ -192,27 +192,32 @@ describe("update_task (draft only)", () => {
 });
 
 describe("lifecycle: pause / resume / cancel / complete", () => {
-  async function runningTask(): Promise<string> {
+  async function activeTask(): Promise<string> {
     const t = await call("create_task", { title: "L", team_id: "team-1" });
     await call("approve_task", { task_id: t.id });
-    db.prepare("UPDATE tasks SET status = 'running' WHERE id = ?").run(t.id); // simulate the daemon starting it
     return t.id;
   }
 
-  it("pauses then resumes a running task", async () => {
-    const id = await runningTask();
-    expect((await call("pause_task", { task_id: id })).status).toBe("paused");
-    expect((await call("resume_task", { task_id: id })).status).toBe("running");
+  it("pauses then resumes an active task", async () => {
+    const id = await activeTask();
+    const paused = await call("pause_task", { task_id: id });
+    expect(paused.status).toBe("active");
+    expect(db.prepare("SELECT paused FROM tasks WHERE id = ?").get(id)).toMatchObject({ paused: 1 });
+    const resumed = await call("resume_task", { task_id: id });
+    expect(resumed.status).toBe("active");
+    expect(db.prepare("SELECT paused FROM tasks WHERE id = ?").get(id)).toMatchObject({ paused: 0 });
   });
 
-  it("completes a running task", async () => {
-    const id = await runningTask();
-    expect((await call("complete_task", { task_id: id, result: "done" })).status).toBe("completed");
+  it("completes (archives) an active task", async () => {
+    const id = await activeTask();
+    expect((await call("complete_task", { task_id: id, result: "done" })).status).toBe("settled");
   });
 
-  it("cancels an active task to failed", async () => {
-    const id = await runningTask();
-    expect((await call("cancel_task", { task_id: id })).status).toBe("failed");
+  it("cancels an active task to archived with an error result", async () => {
+    const id = await activeTask();
+    expect((await call("cancel_task", { task_id: id })).status).toBe("settled");
+    const row = db.prepare("SELECT result FROM tasks WHERE id = ?").get(id) as { result: string };
+    expect(JSON.parse(row.result).error).toContain("Cancelled");
   });
 
   it("resume_task rejects a task that is not paused", async () => {
@@ -220,9 +225,9 @@ describe("lifecycle: pause / resume / cancel / complete", () => {
     expect(await call("resume_task", { task_id: t.id })).toContain("resume a paused task");
   });
 
-  it("pause_task rejects a task that is not running", async () => {
+  it("pause_task rejects a draft task", async () => {
     const t = await call("create_task", { title: "D", team_id: "team-1" });
-    expect(await call("pause_task", { task_id: t.id })).toContain("pause a running task");
+    expect(await call("pause_task", { task_id: t.id })).toContain("pause an active task");
   });
 });
 
@@ -271,7 +276,7 @@ describe("recurring tasks: list + run now", () => {
     };
     expect(row.source_scheduled_task_id).toBe(id);
     expect(row.run_input).toBe("focus on errors");
-    expect(["approved", "running"]).toContain(row.status);
+    expect(row.status).toBe("active");
   });
 
   it("runs without a prompt (run_input null)", async () => {

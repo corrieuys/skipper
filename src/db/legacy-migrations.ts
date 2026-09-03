@@ -30,8 +30,6 @@ export function migrateLegacySchema(database: Database): void {
   ensureColumn(database, "teams", "updated_at", "TEXT DEFAULT ''");
   ensureColumn(database, "teams", "phases", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(database, "teams", "goal", "TEXT");
-  ensureColumn(database, "tasks", "iteration_count", "INTEGER NOT NULL DEFAULT 0");
-  ensureColumn(database, "tasks", "task_type", "TEXT NOT NULL DEFAULT 'standard'");
   ensureColumn(database, "tasks", "task_config", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(database, "tasks", "needs_review", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(database, "task_input_streams", "transcription_status", "TEXT NOT NULL DEFAULT 'pending'");
@@ -52,26 +50,163 @@ export function migrateLegacySchema(database: Database): void {
   ensureColumn(database, "agent_instances", "output_tokens", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(database, "agent_instances", "cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(database, "agent_instances", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0");
+  // File artifacts (operator uploads): metadata columns + the 'upload' kind.
+  ensureColumn(database, "task_artifacts", "storage", "TEXT NOT NULL DEFAULT 'inline'");
+  ensureColumn(database, "task_artifacts", "mime", "TEXT");
+  ensureColumn(database, "task_artifacts", "bytes", "INTEGER");
+  ensureColumn(database, "task_artifacts", "sha256", "TEXT");
+  ensureColumn(database, "task_artifacts", "width", "INTEGER");
+  ensureColumn(database, "task_artifacts", "height", "INTEGER");
+  ensureColumn(database, "task_artifacts", "source", "TEXT");
+  ensureColumn(database, "realtime_timeline", "artifact_id", "TEXT");
   migrateAgentConfigGoalToInstruction(database);
   migrateTeamAgentsDropSkills(database);
   migrateTeamAgentsDropMaxComplexity(database);
   migrateTaskNotesMillisecondTimestamps(database);
   migrateScheduledTasksOptionalInterval(database);
-  migrateTasksAddPausedStatus(database);
+  migrateTasksToUnifiedModel(database);
+  migrateTasksArchivedToSettled(database);
+  migrateTaskArtifactsUploadKind(database);
+  migrateRealtimeTimelineFileEntries(database);
 }
 
-// Add 'paused' to the tasks.status CHECK so a running task can be paused
-// (agents stopped at a point in time, resumable). SQLite can't ALTER a CHECK,
-// so rebuild the table. Runs only when the existing CHECK lacks 'paused';
-// fresh DBs already include it via schema.runtime.sql. FK must be OFF during
-// the rebuild — otherwise DROP TABLE tasks implicitly deletes all rows and
-// cascades to children (checkpoints, instances, events, …).
-function migrateTasksAddPausedStatus(database: Database): void {
-  if (!tableExists(database, "tasks")) return;
+function tableSql(database: Database, tableName: string): string | null {
   const row = database
-    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'")
-    .get() as { sql: string } | null;
-  if (!row || row.sql.includes("'paused'")) return; // already migrated
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(tableName) as { sql: string | null } | null;
+  return row?.sql ?? null;
+}
+
+// File artifacts: the `kind` CHECK gains 'upload'. SQLite can't ALTER a CHECK,
+// so rebuild the table. Guard: the stored CREATE statement lacks 'upload'.
+// Every row and both indexes are carried across; foreign keys are off for the
+// swap so the task_artifact_refs FK never cascades.
+function migrateTaskArtifactsUploadKind(database: Database): void {
+  const sql = tableSql(database, "task_artifacts");
+  if (!sql || sql.includes("'upload'")) return;
+
+  // Older DBs may predate these columns (they arrive via numbered migrations
+  // that run AFTER this pass); the rebuild SELECT reads them.
+  ensureColumn(database, "task_artifacts", "publish_key", "TEXT");
+  ensureColumn(database, "task_artifacts", "published_at", "TEXT");
+  ensureColumn(database, "task_artifacts", "format", "TEXT");
+  ensureColumn(database, "task_artifacts", "deleted_at", "TEXT");
+
+  const columns = [
+    "id", "task_id", "name", "version", "kind", "description", "body", "created_by_agent_id",
+    "created_at", "publish_key", "published_at", "format", "deleted_at",
+    "storage", "mime", "bytes", "sha256", "width", "height", "source",
+  ].join(", ");
+
+  database.exec("PRAGMA foreign_keys = OFF");
+  try {
+    database.exec("BEGIN");
+    try {
+      database.exec(`
+        CREATE TABLE task_artifacts_new (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1,
+          kind TEXT NOT NULL CHECK (kind IN ('transcript', 'summary', 'plan', 'other', 'upload')),
+          description TEXT,
+          body TEXT NOT NULL,
+          created_by_agent_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          publish_key TEXT,
+          published_at TEXT,
+          format TEXT,
+          deleted_at TEXT,
+          storage TEXT NOT NULL DEFAULT 'inline',
+          mime TEXT,
+          bytes INTEGER,
+          sha256 TEXT,
+          width INTEGER,
+          height INTEGER,
+          source TEXT,
+          UNIQUE(task_id, name, version)
+        );
+      `);
+      database.exec(`INSERT INTO task_artifacts_new (${columns}) SELECT ${columns} FROM task_artifacts;`);
+      database.exec("DROP TABLE task_artifacts;");
+      database.exec("ALTER TABLE task_artifacts_new RENAME TO task_artifacts;");
+      database.exec("CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_kind ON task_artifacts(task_id, kind, created_at);");
+      database.exec("CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_name_latest ON task_artifacts(task_id, name, created_at DESC);");
+      database.exec("COMMIT");
+    } catch (err) {
+      database.exec("ROLLBACK");
+      throw err;
+    }
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+// File artifacts in the input timeline: `entry_type` gains 'image' and 'file'
+// (plus the artifact_id column added above). Same rebuild dance as the
+// artifacts table; guard is the stored CREATE statement lacking 'image'.
+function migrateRealtimeTimelineFileEntries(database: Database): void {
+  const sql = tableSql(database, "realtime_timeline");
+  if (!sql || sql.includes("'image'")) return;
+
+  // `priority` normally arrives via migration 0005, which runs after this pass
+  // on a DB that never had it; the rebuild SELECT reads it, so add it first.
+  ensureColumn(database, "realtime_timeline", "priority", "TEXT NOT NULL DEFAULT 'normal'");
+
+  const columns = [
+    "id", "task_id", "entry_type", "content", "source_segment_ids", "fed_to_skipper",
+    "artifact_id", "priority", "created_at",
+  ].join(", ");
+
+  database.exec("PRAGMA foreign_keys = OFF");
+  try {
+    database.exec("BEGIN");
+    try {
+      database.exec(`
+        CREATE TABLE realtime_timeline_new (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          entry_type TEXT NOT NULL CHECK (entry_type IN ('summary', 'text', 'error', 'image', 'file')),
+          content TEXT NOT NULL,
+          source_segment_ids TEXT NOT NULL DEFAULT '[]',
+          fed_to_skipper INTEGER NOT NULL DEFAULT 0,
+          artifact_id TEXT,
+          priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('normal', 'high')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+      database.exec(`INSERT INTO realtime_timeline_new (${columns}) SELECT ${columns} FROM realtime_timeline;`);
+      database.exec("DROP TABLE realtime_timeline;");
+      database.exec("ALTER TABLE realtime_timeline_new RENAME TO realtime_timeline;");
+      database.exec("CREATE INDEX IF NOT EXISTS idx_realtime_timeline_task_fed ON realtime_timeline(task_id, fed_to_skipper, created_at);");
+      database.exec("CREATE INDEX IF NOT EXISTS idx_realtime_timeline_task_time ON realtime_timeline(task_id, created_at);");
+      database.exec("COMMIT");
+    } catch (err) {
+      database.exec("ROLLBACK");
+      throw err;
+    }
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+// Unify standard + realtime tasks into one model:
+//   status: draft | active | settled   (was draft/approved/running/paused/completed/failed)
+//   mode:   workflow | conversational   (replaces task_type standard/real_time)
+//   paused: flag on active tasks        (was a status)
+//   wake_requested_at: pending wake marker (replaces the approved queue state)
+//   settled_at: terminal timestamp
+// iteration_count and task_type are dropped: iterating is now just new input to
+// an idle task, and audio input is available on every task.
+// SQLite can't ALTER a CHECK, so rebuild the table. Runs only when the table
+// still lacks the `mode` column; fresh DBs get the new shape from schema*.sql.
+function migrateTasksToUnifiedModel(database: Database): void {
+  if (!tableExists(database, "tasks")) return;
+  if (hasColumn(database, "tasks", "mode")) return; // already unified
+
+  // Very old DBs may predate these columns; the rebuild SELECT reads them.
+  ensureColumn(database, "tasks", "iteration_count", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(database, "tasks", "task_type", "TEXT NOT NULL DEFAULT 'standard'");
 
   database.exec("PRAGMA foreign_keys = OFF");
   try {
@@ -81,33 +216,109 @@ function migrateTasksAddPausedStatus(database: Database): void {
         title TEXT NOT NULL,
         description TEXT,
         team_id TEXT,
-        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'approved', 'running', 'paused', 'completed', 'failed')),
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'active', 'settled')),
+        mode TEXT NOT NULL DEFAULT 'workflow' CHECK (mode IN ('workflow', 'conversational')),
+        paused INTEGER NOT NULL DEFAULT 0,
         current_phase INTEGER NOT NULL DEFAULT 0,
         result TEXT,
         orchestration_state TEXT NOT NULL DEFAULT '{}',
         regression_count INTEGER NOT NULL DEFAULT 0,
-        iteration_count INTEGER NOT NULL DEFAULT 0,
         needs_review INTEGER NOT NULL DEFAULT 0,
         working_directory TEXT NOT NULL DEFAULT '',
-        task_type TEXT NOT NULL DEFAULT 'standard' CHECK (task_type IN ('standard', 'real_time')),
         task_config TEXT NOT NULL DEFAULT '{}',
         source_scheduled_task_id TEXT,
+        run_input TEXT,
+        wake_requested_at TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         approved_at TEXT,
         started_at TEXT,
         completed_at TEXT,
+        settled_at TEXT,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
     `);
     database.exec(`
-      INSERT INTO tasks_new (id, title, description, team_id, status, current_phase,
-        result, orchestration_state, regression_count, iteration_count, needs_review,
-        working_directory, task_type, task_config, source_scheduled_task_id,
-        created_at, approved_at, started_at, completed_at, updated_at)
-      SELECT id, title, description, team_id, status, current_phase,
-        result, orchestration_state, regression_count, iteration_count, needs_review,
-        working_directory, task_type, task_config, source_scheduled_task_id,
-        created_at, approved_at, started_at, completed_at, updated_at FROM tasks;
+      INSERT INTO tasks_new (id, title, description, team_id, status, mode, paused,
+        current_phase, result, orchestration_state, regression_count, needs_review,
+        working_directory, task_config, source_scheduled_task_id, run_input,
+        wake_requested_at, created_at, approved_at, started_at, completed_at,
+        settled_at, updated_at)
+      SELECT id, title, description, team_id,
+        CASE
+          WHEN status = 'draft' THEN 'draft'
+          WHEN status IN ('completed', 'failed') THEN 'settled'
+          ELSE 'active'
+        END,
+        CASE WHEN task_type = 'real_time' THEN 'conversational' ELSE 'workflow' END,
+        CASE WHEN status = 'paused' THEN 1 ELSE 0 END,
+        current_phase, result, orchestration_state, regression_count, needs_review,
+        working_directory, task_config, source_scheduled_task_id, run_input,
+        CASE WHEN status = 'approved' THEN COALESCE(approved_at, datetime('now')) ELSE NULL END,
+        created_at, approved_at, started_at, completed_at,
+        CASE WHEN status IN ('completed', 'failed') THEN COALESCE(completed_at, datetime('now')) ELSE NULL END,
+        updated_at
+      FROM tasks;
+    `);
+    database.exec("DROP TABLE tasks;");
+    database.exec("ALTER TABLE tasks_new RENAME TO tasks;");
+    database.exec("CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at);");
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+// Rename the settled vocabulary: stored status 'archived' -> 'settled' and
+// column archived_at -> settled_at. Covers DBs that ran an earlier build of the
+// unified migration (which used 'archived'); fresh DBs and DBs unified by the
+// current build already have the settled shape. SQLite can't ALTER a CHECK, so
+// rebuild the table. Guard: the old archived_at column still exists.
+function migrateTasksArchivedToSettled(database: Database): void {
+  if (!tableExists(database, "tasks")) return;
+  if (!hasColumn(database, "tasks", "archived_at")) return; // already settled shape
+
+  database.exec("PRAGMA foreign_keys = OFF");
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS tasks_new (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT,
+        team_id TEXT,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'active', 'settled')),
+        mode TEXT NOT NULL DEFAULT 'workflow' CHECK (mode IN ('workflow', 'conversational')),
+        paused INTEGER NOT NULL DEFAULT 0,
+        current_phase INTEGER NOT NULL DEFAULT 0,
+        result TEXT,
+        orchestration_state TEXT NOT NULL DEFAULT '{}',
+        regression_count INTEGER NOT NULL DEFAULT 0,
+        needs_review INTEGER NOT NULL DEFAULT 0,
+        working_directory TEXT NOT NULL DEFAULT '',
+        task_config TEXT NOT NULL DEFAULT '{}',
+        source_scheduled_task_id TEXT,
+        run_input TEXT,
+        wake_requested_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        approved_at TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        settled_at TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    database.exec(`
+      INSERT INTO tasks_new (id, title, description, team_id, status, mode, paused,
+        current_phase, result, orchestration_state, regression_count, needs_review,
+        working_directory, task_config, source_scheduled_task_id, run_input,
+        wake_requested_at, created_at, approved_at, started_at, completed_at,
+        settled_at, updated_at)
+      SELECT id, title, description, team_id,
+        CASE WHEN status = 'archived' THEN 'settled' ELSE status END,
+        mode, paused,
+        current_phase, result, orchestration_state, regression_count, needs_review,
+        working_directory, task_config, source_scheduled_task_id, run_input,
+        wake_requested_at, created_at, approved_at, started_at, completed_at,
+        archived_at, updated_at
+      FROM tasks;
     `);
     database.exec("DROP TABLE tasks;");
     database.exec("ALTER TABLE tasks_new RENAME TO tasks;");

@@ -2,7 +2,8 @@ import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
 import { formatTimestamp } from "../atoms/format-timestamp";
-import { taskRowFragment, taskDeleteButton, type TaskRowData } from "../fragments/task-row.fragment";
+import { taskRowFragment, taskDeleteButton, taskPhaseCell, type TaskRowData } from "../fragments/task-row.fragment";
+import { statusChip, displayStatusOf } from "../fragments/status-chip.fragment";
 import { escalationBarPanel } from "../panels/escalation-bar.panel";
 
 export interface ScheduledTaskListItem {
@@ -98,12 +99,12 @@ export function taskListPage(vm: TaskListViewModel): string {
             <thead><tr><th>Title</th><th>Status</th><th>Team</th><th>Phase</th><th>Recurring Task</th><th>Created</th><th></th></tr></thead>
             <tbody>${scheduledRuns.map((r) => `<tr>
               <td><a href="/?task=${escapeHtml(r.id)}">${escapeHtml(r.title)}</a></td>
-              <td><span class="sk-badge sk-badge--${escapeHtml(r.status)}">${escapeHtml(r.status)}</span></td>
-              <td>${escapeHtml(r.team_name ?? "—")}</td>
-              <td>${r.task_type === "real_time" ? '<span class="sk-badge sk-badge--waiting">RT</span>' : `Phase ${r.current_phase + 1}`}</td>
-              <td class="sk-muted">${r.source_scheduled_title ? escapeHtml(r.source_scheduled_title) : "—"}</td>
+              <td>${statusChip(displayStatusOf(r), r.result_has_error ?? false)}</td>
+              <td>${escapeHtml(r.team_name ?? "-")}</td>
+              <td>${taskPhaseCell(r)}</td>
+              <td class="sk-muted">${r.source_scheduled_title ? escapeHtml(r.source_scheduled_title) : "-"}</td>
               <td class="sk-muted">${formatTimestamp(r.created_at)}</td>
-              <td style="text-align:right;">${taskDeleteButton(r.id, r.status)}</td>
+              <td style="text-align:right;">${taskDeleteButton(r.id, r.display_status ?? r.status)}</td>
             </tr>`).join("")}</tbody>
           </table>
         </div>

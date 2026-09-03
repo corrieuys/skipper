@@ -31,6 +31,8 @@ export class ConnectClient {
   private artifactManager: ArtifactManager;
   private phaseManager: PhaseManager;
   private realtimeSessionManager: RealtimeSessionManager;
+  private inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>;
+  private killTaskRuntimes?: (taskId: string) => void;
 
   constructor(
     taskScheduler: TaskScheduler,
@@ -39,6 +41,8 @@ export class ConnectClient {
     artifactManager: ArtifactManager,
     phaseManager: PhaseManager,
     realtimeSessionManager: RealtimeSessionManager,
+    inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>,
+    killTaskRuntimes?: (taskId: string) => void,
   ) {
     this.taskScheduler = taskScheduler;
     this.scheduledTaskScheduler = scheduledTaskScheduler;
@@ -46,6 +50,8 @@ export class ConnectClient {
     this.artifactManager = artifactManager;
     this.phaseManager = phaseManager;
     this.realtimeSessionManager = realtimeSessionManager;
+    this.inputTask = inputTask;
+    this.killTaskRuntimes = killTaskRuntimes;
   }
 
   start(): void {
@@ -82,6 +88,8 @@ export class ConnectClient {
       artifactManager: this.artifactManager,
       phaseManager: this.phaseManager,
       realtimeSessionManager: this.realtimeSessionManager,
+      inputTask: this.inputTask,
+      killTaskRuntimes: this.killTaskRuntimes,
     };
   }
 
@@ -235,8 +243,10 @@ export function initConnectClient(
   artifactManager: ArtifactManager,
   phaseManager: PhaseManager,
   realtimeSessionManager: RealtimeSessionManager,
+  inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>,
+  killTaskRuntimes?: (taskId: string) => void,
 ): ConnectClient {
-  _connectClient = new ConnectClient(taskScheduler, scheduledTaskScheduler, escalationManager, artifactManager, phaseManager, realtimeSessionManager);
+  _connectClient = new ConnectClient(taskScheduler, scheduledTaskScheduler, escalationManager, artifactManager, phaseManager, realtimeSessionManager, inputTask, killTaskRuntimes);
   return _connectClient;
 }
 

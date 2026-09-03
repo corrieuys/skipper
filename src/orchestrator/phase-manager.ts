@@ -21,11 +21,11 @@ const MAX_REGRESSIONS = 20;
  */
 export type PhaseCompleteOutcome =
   | "advanced"          // advanceAndRespawn fired; next phase starting
-  | "task_completed"    // last phase finished, task marked completed
+  | "task_completed"    // last phase finished, run completed (task stays active, idle)
   | "review_pending"    // phase has review:true, awaiting operator approval
   | "noop_dedup"        // this phase already handled (dedup hit)
   | "noop_in_flight"    // another handlePhaseComplete is mid-execution
-  | "noop_not_running"  // task isn't running (cancelled, failed, completed)
+  | "noop_not_running"  // task isn't active (draft, settled, or paused)
   | "noop_unresolved";  // couldn't resolve task or team
 
 export class PhaseManager {
@@ -34,7 +34,7 @@ export class PhaseManager {
   // event loop; without this, a second concurrent call would read the
   // just-advanced current_phase (via taskScheduler.advancePhase running inside
   // advanceAndRespawn), see a new dedupKey, pass the dedup check, and on the
-  // last-phase branch falsely call completeTask. The Set lives across the
+  // last-phase branch falsely call completeRun. The Set lives across the
   // entire async run and is cleared in finally{} so failed runs don't lock the
   // task forever.
   private phaseCompleteInFlight: Set<string> = new Set();
@@ -92,13 +92,13 @@ export class PhaseManager {
     const taskId = this.resolveTaskForRuntime(agentId);
     if (!taskId) return "noop_unresolved";
     const task = this.taskScheduler.getTask(taskId);
-    if (!task || task.status !== "running") return "noop_not_running";
+    if (!task || task.status !== "active" || task.paused) return "noop_not_running";
 
     // Race guard: a second concurrent call must NOT proceed past this point.
     // Without it, the first call's `advancePhase` (inside advanceAndRespawn)
     // changes current_phase under us; the second call then reads the new
     // value, gets a different dedupKey, passes the dedup check, and on the
-    // last-phase branch falsely calls completeTask. Per-task scope is fine —
+    // last-phase branch falsely calls completeRun. Per-task scope is fine —
     // distinct tasks are independent.
     if (this.phaseCompleteInFlight.has(taskId)) {
       logError(this.db, "phase_complete_in_flight", { taskId, agentId, currentPhase: task.current_phase, method: "handlePhaseComplete" }, new Error("concurrent call rejected"));
@@ -118,7 +118,7 @@ export class PhaseManager {
 
       if (phases.length === 0 || task.current_phase >= phases.length - 1) {
         try {
-          this.taskScheduler.completeTask(task.id);
+          this.taskScheduler.completeRun(task.id);
           this.phaseCompleteHandled.add(dedupKey);
           return "task_completed";
         } catch (err) {
@@ -158,7 +158,7 @@ export class PhaseManager {
     const taskId = this.resolveTaskForRuntime(agentId);
     if (!taskId) return;
     const task = this.taskScheduler.getTask(taskId);
-    if (!task || task.status !== "running") return;
+    if (!task || task.status !== "active" || task.paused) return;
 
     const targetPhase = targetPhaseOneIndexed - 1;
 
@@ -267,7 +267,7 @@ export class PhaseManager {
     } catch (err) {
       logError(this.db, "regression_respawn", { taskId: task.id, agentId: entrypointAgentId, targetPhase, method: "respawnForRegression" }, err);
       try {
-        this.taskScheduler.failTask(task.id, "Failed to respawn agent for regression");
+        this.taskScheduler.failRun(task.id, "Failed to respawn agent for regression");
       } catch (innerErr) {
         logError(this.db, "regression_respawn_fail_task", { taskId: task.id, method: "respawnForRegression" }, innerErr);
       }
@@ -291,7 +291,7 @@ export class PhaseManager {
     } catch (err) {
       logError(this.db, "regression_send_input", { taskId: task.id, agentId: entrypointAgentId, targetPhase, method: "respawnForRegression" }, err);
       try {
-        this.taskScheduler.failTask(task.id, `Failed to send regression prompt: ${err instanceof Error ? err.message : String(err)}`);
+        this.taskScheduler.failRun(task.id, `Failed to send regression prompt: ${err instanceof Error ? err.message : String(err)}`);
       } catch (innerErr) {
         logError(this.db, "regression_send_input_fail_task", { taskId: task.id, method: "respawnForRegression" }, innerErr);
       }
@@ -385,7 +385,7 @@ export class PhaseManager {
       });
     } catch (err) {
       logError(this.db, "phase_respawn", { taskId: task.id, agentId: entrypointAgentId, method: "advanceAndRespawn" }, err);
-      this.taskScheduler.failTask(task.id, "Failed to respawn agent for next phase");
+      this.taskScheduler.failRun(task.id, "Failed to respawn agent for next phase");
       return;
     }
 
@@ -406,7 +406,7 @@ export class PhaseManager {
     } catch (err) {
       logError(this.db, "advance_respawn_send_input", { taskId: task.id, agentId: entrypointAgentId, phase: nextPhase, method: "advanceAndRespawn" }, err);
       try {
-        this.taskScheduler.failTask(task.id, `Failed to send next phase prompt: ${err instanceof Error ? err.message : String(err)}`);
+        this.taskScheduler.failRun(task.id, `Failed to send next phase prompt: ${err instanceof Error ? err.message : String(err)}`);
       } catch (innerErr) {
         logError(this.db, "advance_respawn_fail_task", { taskId: task.id, method: "advanceAndRespawn" }, innerErr);
       }
@@ -434,7 +434,7 @@ export class PhaseManager {
 
   async approveReview(taskId: string, approvalNote?: string): Promise<void> {
     const task = this.taskScheduler.getTask(taskId);
-    if (!task || task.status !== "running" || !task.needs_review) return;
+    if (!task || task.status !== "active" || !task.needs_review) return;
 
     this.taskScheduler.setNeedsReview(taskId, false);
     this.clearIdleState?.(taskId);
@@ -451,7 +451,7 @@ export class PhaseManager {
 
     if (phases.length === 0 || task.current_phase >= phases.length - 1) {
       try {
-        this.taskScheduler.completeTask(task.id);
+        this.taskScheduler.completeRun(task.id);
       } catch (err) {
         logError(this.db, "review_approve_complete", { taskId, method: "approveReview" }, err);
       }
@@ -462,7 +462,7 @@ export class PhaseManager {
 
   async rejectReview(taskId: string, message?: string): Promise<void> {
     const task = this.taskScheduler.getTask(taskId);
-    if (!task || task.status !== "running" || !task.needs_review) return;
+    if (!task || task.status !== "active" || !task.needs_review) return;
 
     const rejectionReason = message?.trim() || "Phase review rejected by operator";
 
@@ -493,7 +493,7 @@ export class PhaseManager {
       );
     } else {
       try {
-        this.taskScheduler.failTask(taskId, rejectionReason);
+        this.taskScheduler.failRun(taskId, rejectionReason);
       } catch (err) {
         logError(this.db, "review_reject_fail", { taskId, method: "rejectReview" }, err);
       }

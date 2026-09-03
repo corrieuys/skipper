@@ -41,11 +41,10 @@ import { buildTeamAgentTiles } from "../data/queries";
 import { dashboardNotesFragment } from "../html/dashboardNotesFragment";
 import { taskMessagesFragment } from "../html/fragments/task-message.fragment";
 import { taskTimelineFragment } from "../html/fragments/task-timeline.fragment";
-import { artifactListFragment } from "../html/fragments/artifact-list.fragment";
+import { PRIMARY_ARTIFACT_LIST_VARIANT, artifactListFragment } from "../html/fragments/artifact-list.fragment";
 import { MessageManager } from "../messages/manager";
 import type { TaskNoteData } from "../html/components";
-import { renderPhaseStripFragment, parseTerminalActivity, parseRealtimeActivity, escalationHeaderSlot } from "../html/pages/command-center.page";
-import type { RealtimeActivityRow } from "../html/pages/command-center.page";
+import { renderPhaseStripFragment, escalationHeaderSlot } from "../html/pages/command-center.page";
 import {
   fetchTasksWithTeams,
   fetchTaskById,
@@ -56,6 +55,7 @@ import {
   fetchRecentActivity,
 } from "../data/queries";
 import { fetchRealtimeTimeline, fetchRealtimeTaskAgents } from "../data/realtime";
+import { deriveDisplayStatus } from "../tasks/status";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 import { topicMatches } from "./fragment-registry";
 import { buildDashboardActivity } from "./dashboard-activity";
@@ -196,12 +196,28 @@ export class UIWebSocketManager {
     }
   }
 
-  /** Full teardown: heartbeat, pending debounce timers, client set. */
+  /** Full teardown: heartbeat, pending debounce timers, bus handlers, client set. */
   destroy(): void {
     this.stopHeartbeat();
     for (const timer of this.debounceTimers.values()) clearTimeout(timer);
     this.debounceTimers.clear();
+    // Unsubscribe every bus handler registerEventHandlers attached — a destroyed
+    // manager holding a closed DB must not keep reacting to task events (stale
+    // handlers throwing inside emit() break the emitter's synchronous callers).
+    for (const off of this.busOffs) off();
+    this.busOffs = [];
     this.clients.clear();
+  }
+
+  private busOffs: Array<() => void> = [];
+
+  /** eventBus.on with teardown tracking (see destroy). */
+  private trackOn<K extends import("../events/bus").EventName>(
+    event: K,
+    listener: (...args: import("../events/bus").EventMap[K]) => void,
+  ): void {
+    eventBus.on(event, listener);
+    this.busOffs.push(() => eventBus.off(event, listener));
   }
 
   /**
@@ -253,6 +269,22 @@ export class UIWebSocketManager {
     }
   }
 
+  /**
+   * True when at least one socket of `format` would receive a push on
+   * `topics`. The heavy debounced renders (1000-row logs table, dashboard
+   * activity) used to run their queries on every agent:output tick and only
+   * THEN discover nobody was listening.
+   */
+  private hasClients(format: "html" | "json", topics: string[]): boolean {
+    for (const ws of this.clients) {
+      const data = ws.data as UiPushWSData;
+      if (data.format !== format) continue;
+      if (topics.length > 0 && !topicMatches(data.subscriptions, topics)) continue;
+      return true;
+    }
+    return false;
+  }
+
   private debounced(key: string, fn: () => void): void {
     const existing = this.debounceTimers.get(key);
     if (existing) clearTimeout(existing);
@@ -264,7 +296,7 @@ export class UIWebSocketManager {
 
   private registerEventHandlers(): void {
     // --- Task state changed ---
-    eventBus.on("task:state_changed", (event) => {
+    this.trackOn("task:state_changed", (event) => {
       this.pushDashboardTasks();
       this.pushDashboardInstances();
       this.pushDashboardSteering();
@@ -280,34 +312,58 @@ export class UIWebSocketManager {
       // the list body so completed tasks slip out of the "Running" group
       // without a manual refresh.
       this.pushCommandCenterSidebar();
-      // V2 workspace refresh — only on terminal transitions (running/completed/
-      // failed), not on every intermediate state_changed. Replacing #mc-main
-      // wipes scroll position, expanded tree nodes, and re-fires every nested
-      // hx-trigger="revealed" — which caused a request flood when there were
-      // many agents in the tree. Sub-fragments inside taskMainContent already
-      // self-poll every 3-5s for live updates.
-      const terminal = event.newStatus === "completed" || event.newStatus === "failed" || event.newStatus === "running";
-      if (terminal && event.previousStatus !== event.newStatus) {
+      // V2 workspace refresh: only on real status transitions (draft/active/
+      // settled changes), not on every same-status state_changed. Replacing
+      // #mc-main wipes scroll position, expanded tree nodes, and re-fires every
+      // nested hx-trigger="revealed", which caused a request flood when there
+      // were many agents in the tree. Sub-fragments inside taskMainContent
+      // already self-poll every 3-5s for live updates. Run settle refreshes
+      // ride on task:run_completed / task:run_failed below.
+      if (event.previousStatus !== event.newStatus && event.newStatus !== "deleted") {
         this.pushV2WorkspaceRefresh(event.taskId);
       }
     });
 
+    // --- Run settled (task stays active; completion pushes key on these now) ---
+    this.trackOn("task:run_completed", (event) => {
+      this.pushDashboardTasks();
+      this.pushDashboardPhaseIndicator();
+      this.pushTaskList();
+      this.pushTaskDetail(event.taskId);
+      this.pushCommandCenterSidebar();
+      this.pushV2WorkspaceRefresh(event.taskId);
+    });
+    this.trackOn("task:run_failed", (event) => {
+      this.pushDashboardTasks();
+      this.pushDashboardPhaseIndicator();
+      this.pushTaskList();
+      this.pushTaskDetail(event.taskId);
+      this.pushCommandCenterSidebar();
+      this.pushV2WorkspaceRefresh(event.taskId);
+    });
+
     // --- Instance state changed ---
-    eventBus.on("instance:state_changed", (event) => {
+    this.trackOn("instance:state_changed", (event) => {
       this.pushDashboardInstances();
       this.pushDashboardSteering();
       if (event.taskId) this.pushRtRunningAgents(event.taskId);
       if (event.taskId) this.pushV2SteerPanel(event.taskId);
+      // The timeline's transient live-agents indicator tracks instance
+      // liveness; debounced because delegation fan-out bursts these events.
+      if (event.taskId) {
+        const taskId = event.taskId;
+        this.debounced(`v2-timeline-live:${taskId}`, () => this.pushV2Timeline(taskId));
+      }
     });
 
     // --- Agent state changed ---
-    eventBus.on("agent:state_changed", () => {
+    this.trackOn("agent:state_changed", () => {
       this.pushDashboardInstances();
       this.pushDashboardSteering();
     });
 
     // --- Agent output (debounced) ---
-    eventBus.on("agent:output", (event) => {
+    this.trackOn("agent:output", (event) => {
       this.debounced("recent-activity", () => this.pushRecentActivity());
       this.debounced("log-entries", () => this.pushLogEntries());
       this.debounced("dashboard-activity", () => this.pushDashboardActivity());
@@ -316,19 +372,15 @@ export class UIWebSocketManager {
         `<div id="terminal-lines" hx-swap-oob="beforeend">${chunk}</div>`,
         ["dashboard", `agent:${event.agentId}`],
       );
-      const taskRow = this.db.prepare("SELECT task_id, task_type FROM agent_instances ai JOIN tasks t ON t.id = ai.task_id WHERE ai.id = ?").get(event.agentId) as { task_id: string; task_type: string | null } | null;
+      const taskRow = this.db.prepare("SELECT task_id FROM agent_instances WHERE id = ?").get(event.agentId) as { task_id: string } | null;
       if (taskRow?.task_id) {
-        if (taskRow.task_type === "real_time") {
-          this.debounced(`v2-rt-feed-${taskRow.task_id}`, () => this.pushRealtimeUnifiedFeed(taskRow!.task_id));
-        } else {
-          this.debounced(`v2-activity-${taskRow.task_id}`, () => this.pushV2ActivityFeed(taskRow!.task_id));
-        }
+        this.debounced(`v2-activity-${taskRow.task_id}`, () => this.pushV2ActivityPoke(taskRow!.task_id));
         this.debounced(`v2-steer-${taskRow.task_id}`, () => this.pushV2SteerPanel(taskRow!.task_id));
       }
     });
 
     // --- Agent exit ---
-    eventBus.on("agent:exit", (event) => {
+    this.trackOn("agent:exit", (event) => {
       this.pushDashboardTasks();
       this.pushDashboardInstances();
       this.pushDashboardSteering();
@@ -345,7 +397,7 @@ export class UIWebSocketManager {
     });
 
     // --- Streams drained ---
-    eventBus.on("agent:streams_drained", (event) => {
+    this.trackOn("agent:streams_drained", (event) => {
       const session = this.db.prepare(
         "SELECT id FROM agent_sessions WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
       ).get(event.agentId) as { id: string } | null;
@@ -362,7 +414,7 @@ export class UIWebSocketManager {
     });
 
     // --- Agent signal ---
-    eventBus.on("agent:signal", (event) => {
+    this.trackOn("agent:signal", (event) => {
       if (event.signalType === "phase_regression") {
         this.pushDashboardPhaseIndicator();
         if (event.taskId) {
@@ -378,7 +430,7 @@ export class UIWebSocketManager {
     // full workspace refresh so the banner surfaces live. (Same heavy-handed
     // mc-main reload as terminal status transitions — fine here because
     // needs_review toggles are rare.)
-    eventBus.on("task:needs_review_changed", (event) => {
+    this.trackOn("task:needs_review_changed", (event) => {
       this.pushDashboardPhaseIndicator();
       this.pushV2PhaseStrip(event.taskId);
       this.pushTaskDetail(event.taskId);
@@ -386,13 +438,13 @@ export class UIWebSocketManager {
     });
 
     // --- Delegation progress ---
-    eventBus.on("delegation_group:progress", (event) => {
+    this.trackOn("delegation_group:progress", (event) => {
       this.pushTaskDelegations(event.taskId);
       this.pushDashboardDelegations();
     });
 
     // --- Note added ---
-    eventBus.on("task:note_added", (event) => {
+    this.trackOn("task:note_added", (event) => {
       this.pushRtNotes(event.taskId);
       this.pushV2Notes(event.taskId);
       // Notes are interleaved into the terminal dashboard's output feed.
@@ -400,49 +452,48 @@ export class UIWebSocketManager {
     });
 
     // --- Operator message posted (experimental) ---
-    eventBus.on("task:message_posted", (event) => {
+    this.trackOn("task:message_posted", (event) => {
       this.pushV2Messages(event.taskId);
       this.pushV2Timeline(event.taskId);
     });
 
     // --- Artifact created ---
-    eventBus.on("artifact:created", (event) => {
+    this.trackOn("artifact:created", (event) => {
       this.pushArtifactList(event.taskId);
       this.pushV2Artifacts(event.taskId);
     });
 
     // --- Realtime window ready ---
-    eventBus.on("realtime:window_ready", (event) => {
+    this.trackOn("realtime:window_ready", (event) => {
       this.pushRtTimeline(event.taskId);
       this.pushDashboardRealtimeTimeline();
-      this.pushRealtimeUnifiedFeed(event.taskId);
     });
 
-    eventBus.on("realtime:timeline_updated", (event) => {
+    this.trackOn("realtime:timeline_updated", (event) => {
       this.pushRtTimeline(event.taskId);
       this.pushDashboardRealtimeTimeline();
-      this.pushRealtimeUnifiedFeed(event.taskId);
+      // Typed input + transcribed audio render in the v2 timeline.
+      this.pushV2Timeline(event.taskId);
     });
 
     // --- Realtime session state ---
-    eventBus.on("realtime:session_state", (event) => {
+    this.trackOn("realtime:session_state", (event) => {
       this.pushDashboardTasks();
       this.pushDashboardPhaseIndicator();
       this.pushRtRunningAgents(event.taskId);
       this.pushRtTimeline(event.taskId);
       this.pushDashboardRealtimeTimeline();
-      this.pushRealtimeUnifiedFeed(event.taskId);
     });
 
     // --- Escalation ---
-    eventBus.on("escalation:created", (event) => {
+    this.trackOn("escalation:created", (event) => {
       this.pushDashboardEscalations();
       this.pushCommandCenterSidebar();
       if (event.taskId) this.pushV2TaskEscalations(event.taskId);
       if (event.taskId) this.pushV2TaskHeaderEscalation(event.taskId);
       if (event.taskId) this.pushV2Timeline(event.taskId);
     });
-    eventBus.on("escalation:resolved", (event) => {
+    this.trackOn("escalation:resolved", (event) => {
       this.pushDashboardEscalations();
       this.pushCommandCenterSidebar();
       // Resolve may have respawned the parent agent (sendResumeMessage / spawnAgentInstance
@@ -457,13 +508,40 @@ export class UIWebSocketManager {
 
   // --- Fragment renderers (with topic annotations) ---
 
+  /**
+   * Dashboard task rows: active tasks plus cleanly settled ones (settled with
+   * an error result are the old "failed" set and stay out, matching the old
+   * running/approved/completed filter). Each row carries the new mode/paused/
+   * display_status fields plus the deprecated task_type compat mirror.
+   */
+  private fetchDashboardTaskRows(): {
+    id: string; title: string; status: string; task_type?: string; mode?: string;
+    paused?: boolean; display_status?: string; created_at?: string;
+  }[] {
+    const rows = this.db.prepare(
+      `SELECT id, title, status, mode, paused, needs_review, wake_requested_at, started_at, result, created_at
+       FROM tasks
+       WHERE status = 'active'
+          OR (status = 'settled' AND (result IS NULL OR json_valid(result) = 0 OR json_extract(result, '$.error') IS NULL))
+       ORDER BY created_at DESC`,
+    ).all() as { id: string; title: string; status: string; mode: string; paused: number; needs_review: number; wake_requested_at: string | null; started_at: string | null; created_at: string }[];
+    return rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      status: r.status,
+      task_type: r.mode === "conversational" ? "real_time" : "standard",
+      mode: r.mode,
+      paused: !!r.paused,
+      display_status: deriveDisplayStatus(this.db, r),
+      created_at: r.created_at,
+    }));
+  }
+
   private pushDashboardTasks(): void {
-    const dashboardTasks = this.db.prepare(
-      "SELECT id, title, status, task_type, created_at FROM tasks WHERE status IN ('running', 'approved', 'completed') ORDER BY created_at DESC",
-    ).all() as { id: string; title: string; status: string; task_type?: string; created_at?: string }[];
+    const dashboardTasks = this.fetchDashboardTaskRows();
     const focusTasks = selectDashboardFocusTasks(dashboardTasks);
     this.broadcast(`<div id="active-tasks" class="cmd-layout-focus">${dashboardActiveTaskFragment(focusTasks)}</div>`, ["dashboard"]);
-    const queueTasks = dashboardTasks.filter((task) => task.status === "approved");
+    const queueTasks = dashboardTasks.filter((task) => task.display_status === "queued");
     this.broadcast(`<div id="dashboard-queue" class="cmd-panel-body-flush cmd-scroll-compact">${dashboardQueueFragment(queueTasks)}</div>`, ["dashboard"]);
     this.broadcastJson("updated", "dashboard:tasks", null, { tasks: focusTasks }, ["dashboard"]);
     this.pushDashboardMetrics();
@@ -474,15 +552,7 @@ export class UIWebSocketManager {
   }
 
   private pushDashboardMetrics(): void {
-    const allTasks = this.db.prepare(
-      "SELECT status FROM tasks",
-    ).all() as { status: string }[];
-    const running = allTasks.filter((t) => t.status === "running").length;
-    const queued = allTasks.filter((t) => t.status === "approved").length;
-    const completed = allTasks.filter((t) => t.status === "completed").length;
-    const failed = allTasks.filter((t) => t.status === "failed").length;
-
-    const activeAgentCount = fetchDashboardRunningInstances(this.db).length;
+    const { running, queued, completed, failed, activeAgentCount } = this.dashboardCounts();
 
     this.broadcast(`<div id="dashboard-metrics" class="cmd-metrics">
       <div class="cmd-metric"><span class="cmd-metric-value cmd-metric-value-primary">${running}</span><span class="cmd-metric-label">Running</span></div>
@@ -500,9 +570,7 @@ export class UIWebSocketManager {
    * single `dashboard:snapshot` frame so the client hydrates in one message.
    */
   private buildDashboardSnapshotMessage(): string {
-    const dashboardTasks = this.db.prepare(
-      "SELECT id, title, status, task_type, created_at FROM tasks WHERE status IN ('running', 'approved', 'completed') ORDER BY created_at DESC",
-    ).all() as { id: string; title: string; status: string; task_type?: string; created_at?: string }[];
+    const dashboardTasks = this.fetchDashboardTaskRows();
     const focusTasks = selectDashboardFocusTasks(dashboardTasks);
     const runningInstances = fetchDashboardRunningInstances(this.db);
     return JSON.stringify({
@@ -521,17 +589,31 @@ export class UIWebSocketManager {
   }
 
   private pushDashboardActivity(): void {
+    if (!this.hasClients("json", ["dashboard"])) return;
     this.broadcastJson("updated", "dashboard:activity", null, { activity: buildDashboardActivity(this.db, DASHBOARD_ACTIVITY_LIMIT) }, ["dashboard"]);
   }
 
-  /** Task/agent counts shown in the dashboard header (matches pushDashboardMetrics). */
+  /**
+   * Task/agent counts shown in the dashboard header (matches pushDashboardMetrics).
+   * Unified-model mapping: running = active + started, queued = active not yet
+   * started, completed/failed = settled without/with an error result.
+   */
   private dashboardCounts(): { running: number; queued: number; completed: number; failed: number; activeAgentCount: number } {
-    const allTasks = this.db.prepare("SELECT status FROM tasks").all() as { status: string }[];
+    const allTasks = this.db.prepare("SELECT status, started_at, result FROM tasks").all() as { status: string; started_at: string | null; result: string | null }[];
+    const hasError = (result: string | null): boolean => {
+      if (!result) return false;
+      try {
+        const parsed = JSON.parse(result);
+        return !!(parsed && typeof parsed === "object" && "error" in parsed && (parsed as { error?: unknown }).error != null);
+      } catch {
+        return false;
+      }
+    };
     return {
-      running: allTasks.filter((t) => t.status === "running").length,
-      queued: allTasks.filter((t) => t.status === "approved").length,
-      completed: allTasks.filter((t) => t.status === "completed").length,
-      failed: allTasks.filter((t) => t.status === "failed").length,
+      running: allTasks.filter((t) => t.status === "active" && t.started_at != null).length,
+      queued: allTasks.filter((t) => t.status === "active" && t.started_at == null).length,
+      completed: allTasks.filter((t) => t.status === "settled" && !hasError(t.result)).length,
+      failed: allTasks.filter((t) => t.status === "settled" && hasError(t.result)).length,
       activeAgentCount: fetchDashboardRunningInstances(this.db).length,
     };
   }
@@ -573,7 +655,7 @@ export class UIWebSocketManager {
       "SELECT id, name FROM agents ORDER BY created_at",
     ).all() as { id: string; name: string }[];
     const hasRunningTask = (this.db.prepare(
-      "SELECT EXISTS(SELECT 1 FROM tasks WHERE status = 'running') AS has_running_task",
+      "SELECT EXISTS(SELECT 1 FROM tasks WHERE status = 'active') AS has_running_task",
     ).get() as { has_running_task: number }).has_running_task === 1;
     const steeringOptions = agents.flatMap((agent) =>
       this.daemon.listRuntimeSteeringOptions(agent.id).map((option) => ({
@@ -612,8 +694,9 @@ export class UIWebSocketManager {
   }
 
   private pushRecentActivity(): void {
+    if (!this.hasClients("html", ["dashboard"])) return;
     const hasRunningTask = (this.db.prepare(
-      "SELECT EXISTS(SELECT 1 FROM tasks WHERE status = 'running') AS has_running_task",
+      "SELECT EXISTS(SELECT 1 FROM tasks WHERE status = 'active') AS has_running_task",
     ).get() as { has_running_task: number }).has_running_task === 1;
     if (!hasRunningTask) {
       this.broadcast(`<div id="recent-activity" class="cmd-panel-body-flush cmd-scroll-compact">${recentActivityFragment([])}</div>`, ["dashboard"]);
@@ -647,6 +730,7 @@ export class UIWebSocketManager {
   }
 
   private pushLogEntries(): void {
+    if (!this.hasClients("html", ["logs"])) return;
     const entries = this.db.prepare(
       `SELECT t.id, t.agent_id,
               COALESCE(a.name, ta.name, ai.template_agent_id, t.agent_id) as agent_name,
@@ -738,9 +822,9 @@ export class UIWebSocketManager {
   }
 
   private pushV2WorkspaceRefresh(taskId?: string): void {
-    // Find the currently running task to refresh
+    // Find the currently active task to refresh
     const runningTask = taskId || (() => {
-      const row = this.db.prepare("SELECT id FROM tasks WHERE status = 'running' LIMIT 1").get() as { id: string } | null;
+      const row = this.db.prepare("SELECT id FROM tasks WHERE status = 'active' AND started_at IS NOT NULL LIMIT 1").get() as { id: string } | null;
       return row?.id;
     })();
 
@@ -763,10 +847,7 @@ export class UIWebSocketManager {
     }
 
     // Also update the sidebar stats
-    const allTasks = this.db.prepare("SELECT status FROM tasks").all() as { status: string }[];
-    const running = allTasks.filter(t => t.status === "running").length;
-    const completed = allTasks.filter(t => t.status === "completed").length;
-    const failed = allTasks.filter(t => t.status === "failed").length;
+    const { running, completed, failed } = this.dashboardCounts();
     this.broadcastRaw(
       `<div id="mc-nav-stats-live" hx-swap-oob="innerHTML"><span><span class="mc-nav-stat-value${running > 0 ? " mc-nav-stat-value--active" : ""}">${running}</span> running</span><span>${completed} done</span>${failed > 0 ? `<span style="color:var(--sk-accent-danger)">${failed} failed</span>` : ""}</div>`,
       ["dashboard"],
@@ -859,7 +940,7 @@ export class UIWebSocketManager {
     if (!task) return;
     const mission = vm.missionsByTask?.[taskId];
     const phases = mission?.phases ?? [];
-    const isRunning = task.status === "running";
+    const isRunning = task.status === "active" || task.status === "running";
     const fragment = renderPhaseStripFragment(phases, taskId, isRunning);
     this.broadcastRaw(
       fragment.replace(/^(<\w+)/, '$1 hx-swap-oob="outerHTML"'),
@@ -867,7 +948,7 @@ export class UIWebSocketManager {
     );
   }
 
-  /** v2: re-render the unified timeline (agent:output debounce + message/escalation events). */
+  /** v2: re-render the timeline (message/escalation events + instance liveness for the transient indicator). */
   private pushV2Timeline(taskId: string): void {
     const content = taskTimelineFragment(this.db, taskId);
     this.broadcastRaw(
@@ -876,55 +957,19 @@ export class UIWebSocketManager {
     );
   }
 
-  private pushV2ActivityFeed(taskId: string): void {
-    // Refresh the unified timeline, then fall through to the parsed activity
-    // feed that the rail's Activity tab renders.
-    this.pushV2Timeline(taskId);
-    const rows = this.db.prepare(
-      `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name, t.created_at
-       FROM terminal_outputs t
-       JOIN agent_instances ai ON ai.id = t.agent_id
-       LEFT JOIN agents a ON a.id = ai.template_agent_id
-       WHERE ai.task_id = ?
-       ORDER BY t.id DESC LIMIT 800`,
-    ).all(taskId) as Array<{ stream: string; data: string; agent_name: string; created_at: string }>;
-    // Match the initial /activity route's wide pull. parseTerminalActivity keeps
-    // a per-kind budget, so this live OOB refresh must pull just as deep or it
-    // would re-starve the Messages filter every activity tick.
-
-    const content = rows.length === 0
-      ? `<div class="mc-activity__empty">No activity yet</div>`
-      : parseTerminalActivity(rows);
-    this.broadcastRaw(`<div id="mc-activity-feed-${esc(taskId)}" hx-swap-oob="innerHTML">${content}</div>`, [`dashboard`, `task:${taskId}`]);
-  }
-
-  private pushRealtimeUnifiedFeed(taskId: string): void {
-    const timelineRows = this.db.prepare(
-      `SELECT entry_type, content, priority, created_at
-       FROM realtime_timeline WHERE task_id = ?
-       ORDER BY created_at DESC LIMIT 250`,
-    ).all(taskId) as Array<{ entry_type: string; content: string; priority: string; created_at: string }>;
-
-    const terminalRows = this.db.prepare(
-      `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name,
-              json_extract(a.config, '$.color') AS agent_color, t.created_at
-       FROM terminal_outputs t
-       JOIN agent_instances ai ON ai.id = t.agent_id
-       LEFT JOIN agents a ON a.id = ai.template_agent_id
-       WHERE ai.task_id = ?
-       ORDER BY t.id DESC LIMIT 200`,
-    ).all(taskId) as Array<{ stream: string; data: string; agent_name: string; agent_color: string | null; created_at: string }>;
-
-    const merged: RealtimeActivityRow[] = [
-      ...timelineRows.map(r => ({ source: "timeline" as const, entry_type: r.entry_type, content: r.content, priority: r.priority, created_at: r.created_at })),
-      ...terminalRows.map(r => ({ source: "terminal" as const, stream: r.stream, data: r.data, agent_name: r.agent_name, agent_color: r.agent_color, created_at: r.created_at })),
-    ];
-    merged.sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
-    const limited = merged.slice(0, 300);
-
-    const content = parseRealtimeActivity(limited);
+  /**
+   * v2: an agent wrote output. Instead of re-rendering the whole activity feed
+   * for every client (which meant re-reading up to 800 frame bodies and
+   * shipping the rendered page to EVERY dashboard socket per tick — 20 MB a
+   * pop on a task with big tool results), push a tiny poke element. Only the
+   * client that has this task's feed on screen owns the matching id; its
+   * skipper.js handler fetches `/activity?after=<its newest row id>` and
+   * prepends just the new rows.
+   */
+  private pushV2ActivityPoke(taskId: string): void {
+    const eid = esc(taskId);
     this.broadcastRaw(
-      `<div id="mc-rt-feed-${esc(taskId)}" hx-swap-oob="innerHTML">${content}</div>`,
+      `<div id="mc-activity-poke-${eid}" data-sk-activity-poke="${eid}" hidden hx-swap-oob="true"></div>`,
       [`dashboard`, `task:${taskId}`],
     );
   }
@@ -950,12 +995,7 @@ export class UIWebSocketManager {
   }
 
   private pushV2Artifacts(taskId: string): void {
-    const content = artifactListFragment(this.db, taskId, {
-      routePrefix: "/fragments/tasks",
-      openFn: "skOpenArtifactPanel",
-      target: "#sk-artifact-detail",
-      listId: (id) => `mc-artifacts-${id}`,
-    });
+    const content = artifactListFragment(this.db, taskId, PRIMARY_ARTIFACT_LIST_VARIANT);
     this.broadcastRaw(`<div hx-swap-oob="innerHTML:#mc-artifacts-${esc(taskId)}">${content}</div>`, [`dashboard`, `task:${taskId}`]);
   }
 }

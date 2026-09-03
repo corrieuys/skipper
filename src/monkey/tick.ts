@@ -241,7 +241,7 @@ export class MonkeyEngine {
 
     try {
       const tasks = this.db.prepare(
-        "SELECT id, title, status, current_phase FROM tasks WHERE status = 'running' ORDER BY updated_at DESC LIMIT 5",
+        "SELECT id, title, status, current_phase FROM tasks WHERE status = 'active' ORDER BY updated_at DESC LIMIT 5",
       ).all() as { id: string; title: string; status: string; current_phase: number }[];
 
       for (const task of tasks) {

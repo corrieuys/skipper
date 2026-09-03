@@ -24,6 +24,8 @@ afterEach(() => {
   db.close();
   try {
     unlinkSync(TEST_DB);
+    try { unlinkSync(`${TEST_DB}-wal`); } catch {}
+    try { unlinkSync(`${TEST_DB}-shm`); } catch {}
   } catch { }
 });
 
@@ -695,21 +697,20 @@ describe("buildPriorDelegationsSection", () => {
     expect(prompt).not.toContain("PRIOR DELEGATIONS");
   });
 
-  it("includes prior delegations on an iteration even when isResume is false", () => {
-    const taskId = "task-iterate";
-    db.prepare("INSERT INTO tasks (id, title) VALUES (?, ?)").run(taskId, "Iterate");
+  it("includes prior delegations on a resume so the root can delegate_resume", () => {
+    const taskId = "task-wake";
+    db.prepare("INSERT INTO tasks (id, title) VALUES (?, ?)").run(taskId, "Wake");
     const skipperId = createAgent("Skipper", "claude-code");
     const childId = createAgent("Worker", "claude-code");
     seedPriorChild(taskId, skipperId, childId, { sessionId: "sess-iter", status: "completed" });
 
-    // Iterate re-run: root Skipper is a fresh session (isResume=false), but the
-    // resumable-children menu must still surface so it can delegate_resume.
+    // Woken task: the root resumes its session; the resumable-children menu
+    // must surface so it can delegate_resume instead of spawning fresh.
     const prompt = builder.buildInitialPrompt({
       agent: { id: skipperId, name: "Skipper", type: "claude-code" },
-      task: { id: taskId, title: "Iterate" },
+      task: { id: taskId, title: "Wake" },
       isStreaming: true,
-      isResume: false,
-      isIteration: true,
+      isResume: true,
     });
     expect(prompt).toContain("PRIOR DELEGATIONS");
     expect(prompt).toContain("Worker");
@@ -967,9 +968,8 @@ describe("solo agent resume framing", () => {
     db.prepare("INSERT INTO tasks (id, title, team_id) VALUES ('t-res', 'T', ?)").run(id);
     const prompt = builder.buildInitialPrompt({
       agent: { id, name: "Researcher", type: "claude-code", instruction: "Research well" },
-      task: { id: "t-res", title: "T", description: "do it\n\n---\nITERATION 1:\nwhat was the word?" },
+      task: { id: "t-res", title: "T", description: "do it" },
       isResume: true,
-      isIteration: true,
     });
     expect(prompt).toContain("CONTINUING YOUR OWN SESSION");
     // must NOT re-push the cold-start framing or the team-style resume preamble
@@ -978,7 +978,7 @@ describe("solo agent resume framing", () => {
   });
 });
 
-describe("solo iterate sends only the new instruction", () => {
+describe("solo resume does not re-send the description", () => {
   function soloAgent(id = "sa:" + crypto.randomUUID()): string {
     db.prepare("INSERT INTO agents (id, name, type, config, capabilities) VALUES (?, ?, ?, ?, '[]')")
       .run(id, "R", "claude-code", JSON.stringify({ instruction: "Research well" }));
@@ -986,24 +986,18 @@ describe("solo iterate sends only the new instruction", () => {
     return id;
   }
 
-  it("resume sends the latest iteration delta, not the whole accumulated task", () => {
+  it("resume omits the description — new input rides the INPUT_FEED block instead", () => {
     const id = soloAgent();
     db.prepare("INSERT INTO tasks (id, title, team_id) VALUES ('t-it', 'T', ?)").run(id);
-    // The exact separator iterateTask writes.
-    const description =
-      "articulate the original task into a note" +
-      "\n\n---\nITERATION 1 (2026-08-24T09:41:56.676Z):\ndid you get the new instruction?";
     const prompt = builder.buildInitialPrompt({
       agent: { id, name: "R", type: "claude-code", instruction: "Research well" },
-      task: { id: "t-it", title: "T", description },
+      task: { id: "t-it", title: "T", description: "articulate the original task into a note" },
       isResume: true,
-      isIteration: true,
     });
-    expect(prompt).toContain("NEW INSTRUCTION FOR THIS ITERATION:");
-    expect(prompt).toContain("did you get the new instruction?");
-    // The original task line must NOT be re-sent (that is what caused the agent to
-    // re-do the original task on every iterate).
+    // The original task line must NOT be re-sent (the resumed conversation
+    // already carries it; re-sending made the agent re-do the original task).
     expect(prompt).not.toContain("articulate the original task into a note");
+    expect(prompt).toContain("CONTINUING YOUR OWN SESSION");
   });
 
   it("a FRESH run still gets the whole description", () => {

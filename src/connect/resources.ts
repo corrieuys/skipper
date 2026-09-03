@@ -2,7 +2,7 @@ import type { TaskScheduler } from "../tasks/scheduler";
 import type { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { isValidScheduleMatrix, type ScheduleMatrix } from "../tasks/scheduled-scheduler";
 import type { EscalationManager } from "../escalations/manager";
-import type { ArtifactManager } from "../orchestrator/artifact-manager";
+import { artifactToJson, type ArtifactManager, type TaskArtifact } from "../orchestrator/artifact-manager";
 import type { PhaseManager } from "../orchestrator/phase-manager";
 import type { RealtimeSessionManager } from "../orchestrator/realtime-session";
 import { timingSafeEqual } from "crypto";
@@ -10,15 +10,16 @@ import { fetchTaskNotes, fetchTaskArtifacts, buildTeamAgentTiles } from "../data
 import { fetchScheduledTaskRows, fetchRecentScheduledRuns } from "../data/command-center";
 import { MessageManager } from "../messages/manager";
 import { TeamManager } from "../teams/manager";
-import { listTeamsForStandardTasks, listRealtimeTeams } from "../config/teams";
+import { listAssignableTeams } from "../config/teams";
 import { isTaskTitleGeneratorConfigured } from "../config/model-settings";
 import { ensureTaskTitle } from "../tasks/title-generator";
 import { getDb } from "../db/connection";
 import { eventBus } from "../events/bus";
 import { looksLikeHtml } from "../html/atoms/sniff-html";
-import { CONNECT_PROTOCOL_VERSION, type StateSnapshot } from "./protocol";
+import { CONNECT_PROTOCOL_VERSION, type StateSnapshot, CONNECT_FEATURES } from "./protocol";
 import { getPublicArtifactUrl } from "./public-links";
-import { snapshotOpenEscalations, snapshotTasks } from "./serializers";
+import { fetchArtifactItem, fetchTimelineEntryItem, snapshotOpenEscalations, snapshotTasks, snapshotTimelineEntries, toTaskDetailItem } from "./serializers";
+import { fetchTaskOutputPage } from "../data/queries";
 import {
   listLocalTeams,
   getLocalTeam,
@@ -29,6 +30,7 @@ import {
   reflattenTeamsReferencingAgentType,
   type LocalTeam,
   type LocalTeamInput,
+  normalizeTeamMode,
 } from "../teams/local-teams";
 import { toTeamInput } from "../teams/team-input";
 import { isExperimental } from "../config/feature-flags";
@@ -67,7 +69,9 @@ function connectTeamRow(team: LocalTeam) {
   return {
     id: team.id,
     name: team.name,
-    mode: team.config.mode ?? "regular",
+    // Protocol v3: workflow | conversational only. Legacy stored values
+    // ('regular' / 'realtime') are still read, but never emitted.
+    mode: normalizeTeamMode(team.config.mode),
     phaseCount: team.phases.length,
     agentCount: team.agents.length,
     phases: team.phases.map((p) => ({
@@ -119,6 +123,62 @@ function stringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
+/**
+ * Team mode off the wire. Protocol v3 accepts 'workflow' | 'conversational'
+ * only; the legacy names are rejected with the replacement named. Omitted =
+ * workflow (the autopilot default for new tasks on that team).
+ */
+function teamModeFromWire(raw: unknown): "workflow" | "conversational" | { ok: false; error: string } {
+  if (raw == null || raw === "") return "workflow";
+  const mode = String(raw);
+  if (mode === "workflow" || mode === "conversational") return mode;
+  if (mode === "regular" || mode === "realtime") {
+    return {
+      ok: false,
+      error: `Team mode '${mode}' was removed in protocol v3: use '${mode === "realtime" ? "conversational" : "workflow"}'`,
+    };
+  }
+  return { ok: false, error: `Invalid mode: ${mode}` };
+}
+
+/**
+ * Verbs retired in protocol v3, answered with the replacement instead of a
+ * bare "Unknown tasks action" so an out-of-date client says something useful.
+ */
+const RETIRED_TASK_ACTIONS: Record<string, string> = {
+  iterate: "tasks/iterate was removed in protocol v3: use tasks/input with { id, text }",
+  retry: "tasks/retry was removed in protocol v3: use tasks/revive, or tasks/input to revive with new instructions",
+  resume: "tasks/resume was removed in protocol v3: use tasks/resume-from-pause for a paused task, tasks/revive for a finished one",
+  reopen: "tasks/reopen was removed in protocol v3: use tasks/revive",
+  complete: "tasks/complete was removed in protocol v3: use tasks/settle",
+};
+
+/**
+ * Stop a task's live runtime before it settles, matching what the local
+ * settle/cancel routes do: close any open input session so audio is not left
+ * mid-window, then let settleTask finalize the DB rows. Killing OS processes
+ * stays with the daemon (its exit sweep reconciles them).
+ */
+function stopTaskRuntime(taskId: string, deps: ResourceDeps): void {
+  try {
+    if (deps.realtimeSessionManager?.isSessionActive(taskId)) {
+      deps.realtimeSessionManager.closeSession(taskId);
+    }
+  } catch {
+    // best-effort: a missing session must not block the settle
+  }
+  try {
+    deps.killTaskRuntimes?.(taskId);
+  } catch {
+    // best-effort: the daemon's exit sweep reconciles anything left running
+  }
+}
+
+/** Max decoded bytes per `artifacts/upload-chunk` frame. */
+const UPLOAD_CHUNK_MAX = 256 * 1024;
+/** Max bytes per `artifacts/read-bytes` frame. */
+const READ_BYTES_MAX = 512 * 1024;
+
 export interface ResourceDeps {
   taskScheduler: TaskScheduler;
   scheduledTaskScheduler: ScheduledTaskScheduler;
@@ -126,6 +186,10 @@ export interface ResourceDeps {
   artifactManager: ArtifactManager;
   phaseManager: PhaseManager;
   realtimeSessionManager: RealtimeSessionManager;
+  /** Unified input entry (daemon.inputTask): text into any task, waking it if idle. */
+  inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>;
+  /** Kill a task's live agent process trees (settle/cancel parity with the web routes). */
+  killTaskRuntimes?: (taskId: string) => void;
 }
 
 export type ResourceResult = { ok: true; data: unknown } | { ok: false; error: string };
@@ -144,10 +208,11 @@ export async function handleResourceRequest(
       case "tasks": {
         switch (action) {
           case "list":
-            return { ok: true, data: taskScheduler.listTasks() };
+            // Projected list items (protocol v3) - never raw scheduler rows.
+            return { ok: true, data: snapshotTasks(db) };
           case "read": {
             const id = String(params.id ?? "");
-            const task = taskScheduler.getTask(id);
+            const task = toTaskDetailItem(db, id);
             if (!task) return { ok: true, data: null };
             // Attach the team roster with a live active flag so a remote client
             // can show which member is currently working (same source as the
@@ -155,9 +220,22 @@ export async function handleResourceRequest(
             return { ok: true, data: { ...task, agent_tiles: buildTeamAgentTiles(db, id) } };
           }
           case "create": {
-            const taskType = params.taskType != null ? String(params.taskType) : undefined;
-            if (taskType && taskType !== "standard" && taskType !== "real_time" && taskType !== "recurring") {
-              return { ok: false, error: `Invalid taskType: ${taskType}` };
+            // Protocol v3: mode (workflow | conversational) only. taskType is
+            // gone; `recurring` is now its own kind flag.
+            if (params.taskType != null) {
+              return {
+                ok: false,
+                error: "taskType was removed in protocol v3: send mode ('workflow' | 'conversational'), and kind: 'recurring' for a recurring task",
+              };
+            }
+            const rawMode = params.mode != null ? String(params.mode) : undefined;
+            if (rawMode && rawMode !== "workflow" && rawMode !== "conversational") {
+              return { ok: false, error: `Invalid mode: ${rawMode}` };
+            }
+            const mode: "workflow" | "conversational" = rawMode === "conversational" ? "conversational" : "workflow";
+            const kind = params.kind != null ? String(params.kind) : undefined;
+            if (kind && kind !== "task" && kind !== "recurring") {
+              return { ok: false, error: `Invalid kind: ${kind}` };
             }
             const title = String(params.title ?? "").trim();
             const description = params.description != null ? String(params.description) : undefined;
@@ -174,7 +252,7 @@ export async function handleResourceRequest(
             // Interval cadence only (unit + amount); weekly matrix and phase
             // overrides are intentionally not exposed here (keep the remote form
             // simple). Omitting both schedule fields = a manual-only series.
-            if (taskType === "recurring") {
+            if (kind === "recurring") {
               const unit = params.scheduleUnit != null ? String(params.scheduleUnit) : undefined;
               if (unit && unit !== "minutes" && unit !== "hours" && unit !== "days") {
                 return { ok: false, error: `Invalid scheduleUnit: ${unit}` };
@@ -228,10 +306,11 @@ export async function handleResourceRequest(
               return { ok: true, data: created };
             }
 
-            // Real-time may carry an optional numeric config; phase overrides are
-            // deliberately not accepted over Connect.
+            // Input-pipeline numeric config (window seconds etc.) still accepted
+            // from older clients; lands in task_config as before. Phase overrides
+            // are deliberately not accepted over Connect.
             let taskConfig: Record<string, number> | undefined;
-            if (taskType === "real_time" && params.taskConfig && typeof params.taskConfig === "object") {
+            if (params.taskConfig && typeof params.taskConfig === "object") {
               const cfg = params.taskConfig as Record<string, unknown>;
               const out: Record<string, number> = {};
               for (const key of ["window_seconds", "summary_cadence_seconds", "trigger_min_confidence", "max_pending_windows"]) {
@@ -244,7 +323,7 @@ export async function handleResourceRequest(
               title,
               description,
               teamId,
-              taskType: taskType as "standard" | "real_time" | undefined,
+              mode,
               taskConfig,
               workingDirectory,
             });
@@ -281,8 +360,11 @@ export async function handleResourceRequest(
             const teamId = params.teamId != null && String(params.teamId) !== ""
               ? String(params.teamId)
               : existing.team_id ?? undefined;
+            const mode = params.mode === "conversational" || params.mode === "workflow"
+              ? (params.mode as "workflow" | "conversational")
+              : undefined;
             try {
-              return { ok: true, data: taskScheduler.updateTask(id, { title, description, teamId }) };
+              return { ok: true, data: taskScheduler.updateTask(id, { title, description, teamId, mode }) };
             } catch (err) {
               return { ok: false, error: err instanceof Error ? err.message : String(err) };
             }
@@ -293,59 +375,76 @@ export async function handleResourceRequest(
             const runInput = String(params.input ?? "").trim() || undefined;
             return { ok: true, data: scheduledTaskScheduler.runTaskNow(String(params.id ?? ""), taskScheduler, runInput) };
           }
-          case "resume": {
-            // Unlike the HTTP routes, paused->running via this path does NOT respawn agents (daemon not injected).
+          case "input": {
+            // The one way text reaches a task. Draft → appended to the
+            // description; settled → auto-revive + wake; active + review gate →
+            // the review response; active idle → timeline entry + wake; active
+            // busy → accumulated and delivered when the turn ends.
             const id = String(params.id ?? "");
+            const text = String(params.text ?? "");
             if (!id) return { ok: false, error: "id is required" };
-            const task = taskScheduler.getTask(id);
-            if (!task) return { ok: false, error: "Task not found" };
-            if (task.status === "failed") return { ok: true, data: taskScheduler.resumeTask(id) };
-            if (task.status === "paused") return { ok: true, data: taskScheduler.resumeFromPause(id) };
-            return { ok: false, error: `Cannot resume task with status: ${task.status}` };
+            if (!text.trim()) return { ok: false, error: "text is required" };
+            if (!deps.inputTask) return { ok: false, error: "Input is not available on this server" };
+            const delivered = await deps.inputTask(id, text, "connect");
+            return { ok: true, data: { ...delivered, task: toTaskDetailItem(db, id) } };
           }
           case "pause": {
             const id = String(params.id ?? "");
             if (!id) return { ok: false, error: "id is required" };
-            return { ok: true, data: taskScheduler.pauseTask(id) };
+            taskScheduler.pauseTask(id);
+            return { ok: true, data: toTaskDetailItem(db, id) };
           }
-          case "retry": {
-            const id = String(params.id ?? "");
-            if (!id) return { ok: false, error: "id is required" };
-            return { ok: true, data: taskScheduler.retryTask(id) };
-          }
-          case "complete": {
-            // Unlike POST /api/tasks/:id/complete, this cannot kill live agent processes (daemon not injected).
-            const id = String(params.id ?? "");
-            if (!id) return { ok: false, error: "id is required" };
-            return { ok: true, data: taskScheduler.completeTask(id) };
-          }
-          case "iterate": {
-            const id = String(params.id ?? "");
-            const additionalInput = String(params.additionalInput ?? "");
-            if (!id) return { ok: false, error: "id is required" };
-            if (!additionalInput.trim()) return { ok: false, error: "additionalInput is required" };
-            return { ok: true, data: taskScheduler.iterateTask(id, additionalInput) };
-          }
-          case "reopen": {
-            // Real_time tasks are reopened (unarchived), not iterated: move a
-            // completed/failed task back to running and restart its session.
-            // Mirrors POST /api/realtime-tasks/:id/unarchive.
+          case "resume-from-pause": {
+            // Clear the paused flag. Agent respawn is the daemon's job, not
+            // this relay's. A settled task is revived with `revive` instead.
             const id = String(params.id ?? "");
             if (!id) return { ok: false, error: "id is required" };
             const task = taskScheduler.getTask(id);
             if (!task) return { ok: false, error: "Task not found" };
-            if (task.status !== "completed" && task.status !== "failed") {
-              return { ok: false, error: "Only completed or failed tasks can be reopened" };
+            if (task.status !== "active" || !task.paused) {
+              return { ok: false, error: "Task is not paused" };
             }
-            const previousStatus = task.status;
-            db.prepare(
-              "UPDATE tasks SET status = 'running', result = NULL, completed_at = NULL, updated_at = datetime('now') WHERE id = ?",
-            ).run(id);
-            eventBus.emit("task:state_changed", { taskId: id, previousStatus, newStatus: "running" });
-            const rtMgr = deps.realtimeSessionManager;
-            if (!rtMgr.isSessionActive(id)) rtMgr.resumeSession(id);
-            return { ok: true, data: taskScheduler.getTask(id) };
+            taskScheduler.resumeFromPause(id);
+            return { ok: true, data: toTaskDetailItem(db, id) };
           }
+          case "revive": {
+            // Bring a settled task back to active and queue a wake.
+            const id = String(params.id ?? "");
+            if (!id) return { ok: false, error: "id is required" };
+            const task = taskScheduler.getTask(id);
+            if (!task) return { ok: false, error: "Task not found" };
+            if (task.status !== "settled") {
+              return { ok: false, error: `Can only revive a settled task (this one is ${task.status})` };
+            }
+            taskScheduler.reviveTask(id);
+            taskScheduler.requestWake(id);
+            return { ok: true, data: toTaskDetailItem(db, id) };
+          }
+          case "settle": {
+            // Finish a task without an error result (presents as Completed).
+            // Parity with POST /api/tasks/:id/settle: close any live input
+            // session and kill the task's agent processes first.
+            const id = String(params.id ?? "");
+            if (!id) return { ok: false, error: "id is required" };
+            stopTaskRuntime(id, deps);
+            taskScheduler.settleTask(id, {});
+            return { ok: true, data: toTaskDetailItem(db, id) };
+          }
+          case "cancel": {
+            // Cancel = settle with an error result (presents as Failed).
+            // Parity with POST /api/tasks/:id/cancel.
+            const id = String(params.id ?? "");
+            if (!id) return { ok: false, error: "id is required" };
+            stopTaskRuntime(id, deps);
+            taskScheduler.settleTask(id, { error: "Cancelled by user" });
+            return { ok: true, data: toTaskDetailItem(db, id) };
+          }
+          case "iterate":
+          case "retry":
+          case "resume":
+          case "reopen":
+          case "complete":
+            return { ok: false, error: RETIRED_TASK_ACTIONS[action] };
           default:
             return { ok: false, error: `Unknown tasks action: ${action}` };
         }
@@ -353,13 +452,11 @@ export async function handleResourceRequest(
 
       case "teams": {
         // Light projection for remote task creation: pick a team, never its full config.
-        // taskType=real_time returns the real-time team picker; anything else uses
-        // the standard picker (no realtime, no hidden teams), matching the web form.
+        // Unified: every visible team is pickable regardless of the requested
+        // mode/taskType (a team's mode is only the task's autopilot default),
+        // matching the web form.
         if (action === "list") {
-          const forRealtime = String(params.taskType ?? "") === "real_time";
-          const pickable = new Set(
-            (forRealtime ? listRealtimeTeams() : listTeamsForStandardTasks()).map((t) => t.id),
-          );
+          const pickable = new Set(listAssignableTeams().map((t) => t.id));
           const teams = new TeamManager(db).listTeams().filter((t) => pickable.has(t.id));
           return {
             ok: true,
@@ -378,7 +475,8 @@ export async function handleResourceRequest(
           return { ok: true, data: listLocalTeams(db).map(connectTeamRow) };
         }
         if (action === "create") {
-          const mode = params.mode === "realtime" ? "realtime" : "regular";
+          const mode = teamModeFromWire(params.mode);
+          if (typeof mode !== "string") return mode;
           const coerced = toTeamInput({ name: params.name, phases: params.phases, agents: params.agents });
           const input: LocalTeamInput = { ...coerced, config: { ...(coerced.config ?? {}), mode } };
           return { ok: true, data: connectTeamRow(createLocalTeam(db, input)) };
@@ -388,7 +486,8 @@ export async function handleResourceRequest(
           if (!id) return { ok: false, error: "id is required" };
           const existing = getLocalTeam(db, id);
           if (!existing) return { ok: false, error: "Team not found" };
-          const mode = params.mode === "realtime" ? "realtime" : "regular";
+          const mode = teamModeFromWire(params.mode);
+          if (typeof mode !== "string") return mode;
           // State-safety: coerce ONLY name/phases/agents from the wire; carry
           // hooks/skipper_prompt/config forward from the stored team and overlay
           // just the mode, so fields the client never sent are never wiped.
@@ -692,9 +791,10 @@ export async function handleResourceRequest(
       case "reviews": {
         switch (action) {
           case "list":
-            return { ok: true, data: taskScheduler.listTasks().filter((t) => t.needs_review) };
+            // Same projection as tasks/list, filtered to the review gate.
+            return { ok: true, data: snapshotTasks(db).filter((t) => t.needs_review) };
           case "read":
-            return { ok: true, data: taskScheduler.getTask(String(params.id ?? "")) };
+            return { ok: true, data: toTaskDetailItem(db, String(params.id ?? "")) };
           case "approve": {
             // Approve a pending phase review and advance the phase.
             // params: { taskId: string, message?: string }
@@ -812,10 +912,14 @@ export async function handleResourceRequest(
       case "messages": {
         if (action !== "list") return { ok: false, error: `Unknown messages action: ${action}` };
         // Operator messages (agent → human progress updates), newest-first.
+        // params: { taskId, limit? (default 50, cap 500), before? } — `before`
+        // is a `createdAt` from an earlier page and returns older messages.
         // Support both "taskId" and "id" param names for robustness.
         const taskId = String(params.taskId ?? params.id ?? "");
         if (!taskId) return { ok: false, error: "taskId is required" };
-        const rows = new MessageManager(db).listMessages(taskId);
+        const limit = Math.max(1, Math.min(500, Math.floor(Number(params.limit)) || 50));
+        const before = params.before != null ? String(params.before) : undefined;
+        const rows = new MessageManager(db).listMessages(taskId, limit, before);
         return {
           ok: true,
           data: rows.map((m) => ({
@@ -829,31 +933,56 @@ export async function handleResourceRequest(
         };
       }
 
+      case "timeline": {
+        if (action !== "list") return { ok: false, error: `Unknown timeline action: ${action}` };
+        // Operator input entries (typed composer text + transcribed audio
+        // digests + pipeline errors), oldest first. Same rows the web timeline
+        // fragment renders, so a remote client shows the operator's own side of
+        // the conversation instead of an agent-only feed.
+        // Support both "taskId" and "id" param names for robustness.
+        const taskId = String(params.taskId ?? params.id ?? "");
+        if (!taskId) return { ok: false, error: "taskId is required" };
+        const limit = params.limit != null ? Number(params.limit) : 200;
+        // `before` is a `createdAt` from an earlier page: returns the window
+        // of entries older than it (still oldest-first), for "load earlier".
+        const before = params.before != null ? String(params.before) : undefined;
+        // An unknown task simply has no entries, matching notes/messages.
+        return { ok: true, data: snapshotTimelineEntries(db, taskId, Number.isFinite(limit) ? limit : 200, before) };
+      }
+
       case "artifacts": {
+        // Read projection: inline artifacts carry their body; file artifacts
+        // (storage 'file', operator uploads) never do. Bytes come from
+        // `read-bytes` in ranges so a phone can page a large file.
+        const readProjection = (artifact: TaskArtifact) => ({
+          id: artifact.id,
+          taskId: artifact.task_id,
+          name: artifact.name,
+          kind: artifact.kind,
+          version: artifact.version,
+          description: artifact.storage === "file" ? (artifact.body || artifact.description || null) : (artifact.description ?? null),
+          format: artifact.format ?? null,
+          ...(artifact.storage === "file" ? {} : { body: artifact.body }),
+          createdAt: artifact.created_at,
+          publishedAt: artifact.published_at,
+          publicUrl: artifact.published_at ? getPublicArtifactUrl(db, artifact) : null,
+          storage: artifact.storage ?? "inline",
+          mime: artifact.mime ?? null,
+          bytes: artifact.bytes ?? null,
+          width: artifact.width ?? null,
+          height: artifact.height ?? null,
+          sha256: artifact.sha256 ?? null,
+          source: artifact.source ?? null,
+        });
         if (action === "read") {
-          // Fetch one artifact WITH body.
+          // Fetch one artifact (with body when inline).
           // params: { taskId, name, version? } — version omitted → latest.
           // Also accepts { id } to fetch by primary key.
           const { artifactManager } = deps;
           if (params.id) {
             const artifact = artifactManager.getArtifactById(String(params.id));
             if (!artifact) return { ok: false, error: "Artifact not found" };
-            return {
-              ok: true,
-              data: {
-                id: artifact.id,
-                taskId: artifact.task_id,
-                name: artifact.name,
-                kind: artifact.kind,
-                version: artifact.version,
-                description: artifact.description ?? null,
-                format: artifact.format ?? null,
-                body: artifact.body,
-                createdAt: artifact.created_at,
-                publishedAt: artifact.published_at,
-                publicUrl: artifact.published_at ? getPublicArtifactUrl(db, artifact) : null,
-              },
-            };
+            return { ok: true, data: readProjection(artifact) };
           }
           const taskId = String(params.taskId ?? "");
           const name = String(params.name ?? "");
@@ -861,22 +990,116 @@ export async function handleResourceRequest(
           const version = params.version != null ? (Number(params.version) as "latest" | number) : "latest";
           const artifact = artifactManager.getArtifact(taskId, name, version);
           if (!artifact) return { ok: false, error: "Artifact not found" };
+          return { ok: true, data: readProjection(artifact) };
+        }
+        if (action === "read-bytes") {
+          // A byte range of a file artifact, base64. params: { id, offset?, length? };
+          // length is capped at 512 KB so one frame stays small on a phone.
+          const { artifactManager } = deps;
+          const file = artifactManager.readArtifactBytes(String(params.id ?? ""));
+          if (!file) return { ok: false, error: "Artifact file not found" };
+          const total = file.bytes.byteLength;
+          const offset = Math.max(0, Math.floor(Number(params.offset) || 0));
+          if (offset > total) return { ok: false, error: "offset is past the end of the file" };
+          const requested = params.length != null ? Math.floor(Number(params.length)) : READ_BYTES_MAX;
+          if (!Number.isFinite(requested) || requested <= 0) return { ok: false, error: "length must be a positive integer" };
+          const length = Math.min(requested, READ_BYTES_MAX, total - offset);
+          const slice = file.bytes.subarray(offset, offset + length);
           return {
             ok: true,
             data: {
-              id: artifact.id,
-              taskId: artifact.task_id,
-              name: artifact.name,
-              kind: artifact.kind,
-              version: artifact.version,
-              description: artifact.description ?? null,
-              format: artifact.format ?? null,
-              body: artifact.body,
-              createdAt: artifact.created_at,
-              publishedAt: artifact.published_at,
-              publicUrl: artifact.published_at ? getPublicArtifactUrl(db, artifact) : null,
+              id: file.artifact.id,
+              mime: file.artifact.mime ?? "application/octet-stream",
+              bytes: total,
+              offset,
+              length,
+              data: Buffer.from(slice).toString("base64"),
             },
           };
+        }
+        if (action === "upload-begin") {
+          // Chunked upload of a file artifact. params: { taskId, name, mime?,
+          // bytes, sha256, description?, clientId? } → { uploadId }. The size and
+          // mime are checked here; the bytes are verified against sha256 on commit.
+          const { artifactManager } = deps;
+          const taskId = String(params.taskId ?? "");
+          if (!taskId) return { ok: false, error: "taskId is required" };
+          if (!taskScheduler.getTask(taskId)) return { ok: false, error: "Task not found" };
+          const clientId = params.clientId != null ? String(params.clientId) : "";
+          try {
+            const uploadId = artifactManager.beginUpload({
+              taskId,
+              kind: "upload",
+              name: String(params.name ?? ""),
+              mime: params.mime != null ? String(params.mime) : null,
+              bytes: Number(params.bytes),
+              sha256: String(params.sha256 ?? ""),
+              description: params.description != null ? String(params.description) : undefined,
+              source: `connect:${clientId}`,
+            });
+            return { ok: true, data: { uploadId, chunkBytes: UPLOAD_CHUNK_MAX } };
+          } catch (err) {
+            return { ok: false, error: err instanceof Error ? err.message : String(err) };
+          }
+        }
+        if (action === "upload-chunk") {
+          // params: { uploadId, index, data (base64, <=256 KB decoded) } → { received }.
+          const { artifactManager } = deps;
+          const uploadId = String(params.uploadId ?? "");
+          const index = Number(params.index);
+          if (!uploadId) return { ok: false, error: "uploadId is required" };
+          if (!Number.isInteger(index) || index < 0) return { ok: false, error: "index must be a non-negative integer" };
+          if (typeof params.data !== "string" || !params.data) return { ok: false, error: "data (base64) is required" };
+          const chunk = new Uint8Array(Buffer.from(params.data, "base64"));
+          if (chunk.byteLength === 0) return { ok: false, error: "chunk is empty" };
+          if (chunk.byteLength > UPLOAD_CHUNK_MAX) return { ok: false, error: `chunk exceeds ${UPLOAD_CHUNK_MAX} bytes` };
+          try {
+            return { ok: true, data: artifactManager.appendChunk(uploadId, index, chunk) };
+          } catch (err) {
+            return { ok: false, error: err instanceof Error ? err.message : String(err) };
+          }
+        }
+        if (action === "upload-commit") {
+          // Verifies size + sha256, creates the artifact, and puts it on the
+          // task's input timeline with the same wake semantics as typed input.
+          // → { artifact (projection), entry (timeline item) }.
+          const { artifactManager, realtimeSessionManager } = deps;
+          const uploadId = String(params.uploadId ?? "");
+          if (!uploadId) return { ok: false, error: "uploadId is required" };
+          let artifact: TaskArtifact;
+          try {
+            artifact = artifactManager.commitUpload(uploadId);
+          } catch (err) {
+            return { ok: false, error: err instanceof Error ? err.message : String(err) };
+          }
+          let entryId: string | null = null;
+          let delivered: string | null = null;
+          if (realtimeSessionManager) {
+            try {
+              const result = realtimeSessionManager.ingestArtifactUpload(artifact.task_id, artifact, {
+                caption: artifact.body || undefined,
+                source: artifact.source ?? "connect:",
+              });
+              entryId = result.entryId;
+              delivered = result.delivered;
+            } catch (err) {
+              return { ok: false, error: err instanceof Error ? err.message : String(err) };
+            }
+          }
+          return {
+            ok: true,
+            data: {
+              artifact: fetchArtifactItem(db, artifact.id) ?? artifactToJson(artifact),
+              entry: entryId ? fetchTimelineEntryItem(db, entryId) : null,
+              delivered,
+            },
+          };
+        }
+        if (action === "upload-abort") {
+          const { artifactManager } = deps;
+          const uploadId = String(params.uploadId ?? "");
+          if (!uploadId) return { ok: false, error: "uploadId is required" };
+          return { ok: true, data: { aborted: artifactManager.abortUpload(uploadId) } };
         }
         if (action === "publish" || action === "unpublish") {
           // params: { id } or { taskId, name, version? } — version omitted → latest.
@@ -947,6 +1170,13 @@ export async function handleResourceRequest(
             description: a.description ?? null,
             format: a.format ?? null,
             createdAt: a.created_at,
+            storage: a.storage ?? "inline",
+            mime: a.mime ?? null,
+            bytes: a.bytes ?? null,
+            width: a.width ?? null,
+            height: a.height ?? null,
+            sha256: a.sha256 ?? null,
+            source: a.source ?? null,
           })),
         };
       }
@@ -955,22 +1185,14 @@ export async function handleResourceRequest(
         if (action !== "list") return { ok: false, error: `Unknown outputs action: ${action}` };
         // Last N agent output lines for a task, newest-first.
         // Source: terminal_outputs joined through agent_instances (task_id).
-        // params: { taskId, limit? } — limit capped at 100, default 10.
+        // params: { taskId, limit?, beforeId? } — limit capped at 100, default
+        // 10. `beforeId` (a row `id` from an earlier page, or from the
+        // backfill frame's entries) pages older history: rows with id below it.
         const taskId = String(params.taskId ?? params.id ?? "");
         if (!taskId) return { ok: false, error: "taskId is required" };
         const limit = Math.min(Number(params.limit) || 10, 100);
-        type OutputRow = { id: number; agent_name: string | null; stream: string; data: string; created_at: string };
-        const rows = db
-          .prepare(
-            `SELECT tout.id, a.name AS agent_name, tout.stream, tout.data, tout.created_at
-             FROM terminal_outputs tout
-             LEFT JOIN agent_instances ai ON ai.id = tout.agent_id
-             LEFT JOIN agents a ON a.id = ai.template_agent_id
-             WHERE ai.task_id = ?
-             ORDER BY tout.created_at DESC, tout.id DESC
-             LIMIT ?`,
-          )
-          .all(taskId, limit) as OutputRow[];
+        const beforeId = params.beforeId != null && Number.isFinite(Number(params.beforeId)) ? Number(params.beforeId) : null;
+        const rows = fetchTaskOutputPage(db, taskId, { limit, beforeId });
         return {
           ok: true,
           data: rows.map((r) => ({
@@ -1031,6 +1253,7 @@ export async function handleResourceRequest(
         const reviews = tasks.filter((t) => t.needs_review);
         const snapshot: StateSnapshot = {
           protocolVersion: CONNECT_PROTOCOL_VERSION,
+          features: [...CONNECT_FEATURES],
           ts: new Date().toISOString(),
           tasks,
           escalations,
@@ -1043,26 +1266,20 @@ export async function handleResourceRequest(
 
       case "realtime": {
         // Relay target for a Skipper Connect consumer streaming mic audio into a
-        // real_time task. Participates in the same single-writer recording lock as
-        // the local web UI. params: { taskId, clientId, label?, data?, format?, ... }.
+        // task. EVERY task accepts input now; the recording lock is the same
+        // single-writer lock the local web UI uses.
+        // params: { taskId, clientId, label?, data?, format?, ... }.
         const taskId = String(params.taskId ?? params.id ?? "");
         if (!taskId) return { ok: false, error: "taskId is required" };
-        // Only real_time tasks accept audio; opaque "Not found" otherwise.
-        const taskRow = db.prepare("SELECT task_type FROM tasks WHERE id = ?").get(taskId) as { task_type: string } | null;
-        if (!taskRow || taskRow.task_type !== "real_time") return { ok: false, error: "Not found" };
+        const taskRow = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null;
+        if (!taskRow) return { ok: false, error: "Not found" };
 
-        // Reopen a completed/failed real-time task: back to running + resume the
-        // session, mirroring the web's POST /api/realtime-tasks/:id/unarchive.
+        // Reopen a settled task: back to active + resume the session.
         if (action === "reopen") {
-          const statusRow = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null;
-          if (!statusRow) return { ok: false, error: "Not found" };
-          if (statusRow.status !== "completed" && statusRow.status !== "failed") {
-            return { ok: false, error: "Only completed or failed real-time tasks can be reopened" };
+          if (taskRow.status !== "settled") {
+            return { ok: false, error: "Only settled tasks can be reopened" };
           }
-          db.prepare(
-            "UPDATE tasks SET status = 'running', result = NULL, completed_at = NULL, updated_at = datetime('now') WHERE id = ?",
-          ).run(taskId);
-          eventBus.emit("task:state_changed", { taskId, previousStatus: statusRow.status, newStatus: "running" });
+          taskScheduler.reviveTask(taskId);
           if (!deps.realtimeSessionManager.isSessionActive(taskId)) {
             deps.realtimeSessionManager.resumeSession(taskId);
           }
@@ -1070,10 +1287,16 @@ export async function handleResourceRequest(
         }
 
         const clientId = String(params.clientId ?? "");
-        if (!clientId) return { ok: false, error: "clientId is required" };
         const sourceId = `connect:${clientId}`;
         const label = String(params.label ?? "connect");
         const mgr = deps.realtimeSessionManager;
+        // clientId names the owner of the single-writer recording lock, so it
+        // is required only where the lock is taken, held or released. A text
+        // input is sessionless: it needs no lock and no clientId.
+        const isTextIngest = action === "ingest" && String(params.format ?? "webm") === "text";
+        if (!clientId && !isTextIngest) {
+          return { ok: false, error: "clientId is required" };
+        }
 
         switch (action) {
           case "acquire": {

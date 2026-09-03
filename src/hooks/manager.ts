@@ -15,6 +15,8 @@ const HOOK_TIMEOUT_MS = 30_000;
 export class HookManager {
   private db: Database;
   private taskStateHandler: ((event: TaskStateChangedEvent) => void) | null = null;
+  private runCompletedHandler: ((event: { taskId: string }) => void) | null = null;
+  private runFailedHandler: ((event: { taskId: string }) => void) | null = null;
   private escalationCreatedHandler: ((event: EscalationCreatedEvent) => void) | null = null;
   private escalationResolvedHandler: ((event: EscalationResolvedEvent) => void) | null = null;
   private needsReviewHandler: ((event: TaskNeedsReviewChangedEvent) => void) | null = null;
@@ -26,21 +28,25 @@ export class HookManager {
 
   private registerListeners(): void {
     this.taskStateHandler = (event: TaskStateChangedEvent) => {
-      if (event.previousStatus === "approved" && event.newStatus === "running") {
+      if (event.previousStatus === "draft" && event.newStatus === "active") {
         this.fireHooksForTask(event.taskId, "task.started", {
           task_id: event.taskId,
         });
-      } else if (event.newStatus === "completed") {
-        this.fireHooksForTask(event.taskId, "task.completed", {
-          task_id: event.taskId,
-          status: "completed",
-        });
-      } else if (event.newStatus === "failed") {
-        this.fireHooksForTask(event.taskId, "task.failed", {
-          task_id: event.taskId,
-          status: "failed",
-        });
       }
+    };
+
+    this.runCompletedHandler = (event: { taskId: string }) => {
+      this.fireHooksForTask(event.taskId, "task.completed", {
+        task_id: event.taskId,
+        status: "completed",
+      });
+    };
+
+    this.runFailedHandler = (event: { taskId: string }) => {
+      this.fireHooksForTask(event.taskId, "task.failed", {
+        task_id: event.taskId,
+        status: "failed",
+      });
     };
 
     this.escalationCreatedHandler = (event: EscalationCreatedEvent) => {
@@ -72,6 +78,8 @@ export class HookManager {
     };
 
     eventBus.on("task:state_changed", this.taskStateHandler);
+    eventBus.on("task:run_completed", this.runCompletedHandler);
+    eventBus.on("task:run_failed", this.runFailedHandler);
     eventBus.on("escalation:created", this.escalationCreatedHandler);
     eventBus.on("escalation:resolved", this.escalationResolvedHandler);
     eventBus.on("task:needs_review_changed", this.needsReviewHandler);
@@ -189,6 +197,14 @@ export class HookManager {
     if (this.taskStateHandler) {
       eventBus.off("task:state_changed", this.taskStateHandler);
       this.taskStateHandler = null;
+    }
+    if (this.runCompletedHandler) {
+      eventBus.off("task:run_completed", this.runCompletedHandler);
+      this.runCompletedHandler = null;
+    }
+    if (this.runFailedHandler) {
+      eventBus.off("task:run_failed", this.runFailedHandler);
+      this.runFailedHandler = null;
     }
     if (this.escalationCreatedHandler) {
       eventBus.off("escalation:created", this.escalationCreatedHandler);

@@ -193,17 +193,30 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
             </div>
             <div class="sk-form-row">
               <div class="sk-form-group" style="flex:1;">
-                <label class="sk-label">Task Type</label>
-                <select name="taskType" class="sk-select" onchange="toggleScheduleFields(this)">
-                  <option value="standard" selected>Standard</option>
-                  ${isExperimental() ? `<option value="real_time">Real-Time</option>` : ""}
+                <label class="sk-label" style="display:flex;align-items:center;gap:var(--sk-space-2);cursor:pointer;">
+                  <input type="checkbox" id="task-create-autopilot" checked onchange="syncTaskCreateMode(this)">
+                  Autopilot
+                </label>
+                <!-- The team slot and create route read the mode field; the checkbox
+                     mirrors into this hidden input (workflow = autopilot on). -->
+                <input type="hidden" name="mode" id="task-create-mode" value="workflow">
+                <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
+                  On: the team drives the task to the end of its phases. Off: the task waits for your input between turns.
+                </div>
+              </div>
+              <div class="sk-form-group" style="flex:1;">
+                <label class="sk-label">Schedule</label>
+                <select id="task-create-schedule-kind" class="sk-select" onchange="toggleScheduleFields(this)">
+                  <option value="once" selected>Run once</option>
                   <option value="recurring">Recurring</option>
                 </select>
+                <!-- The create route branches on taskType=recurring; the JS below
+                     mirrors the Recurring pick into this hidden field. -->
+                <input type="hidden" name="taskType" id="task-create-task-type" value="">
               </div>
               <div id="task-form-team-slot" style="display:contents;"
-                hx-get="/fragments/task-form/team?taskType=standard&amp;context=full${teamParam}"
-                hx-trigger="load, change from:[name=taskType]"
-                hx-include="[name=taskType]"
+                hx-get="/fragments/task-form/team?context=full${teamParam}"
+                hx-trigger="load"
                 hx-target="this"
                 hx-swap="outerHTML"></div>
             </div>
@@ -269,6 +282,15 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
               function toggleScheduleFields(sel) {
                 var f = document.getElementById('schedule-fields');
                 if (f) f.style.display = sel.value === 'recurring' ? 'block' : 'none';
+                var tt = document.getElementById('task-create-task-type');
+                if (tt) tt.value = sel.value === 'recurring' ? 'recurring' : '';
+              }
+              // Mirror the Autopilot checkbox into the hidden mode field the
+              // create route reads. The team slot is mode-agnostic (unified teams).
+              function syncTaskCreateMode(cb) {
+                var m = document.getElementById('task-create-mode');
+                if (!m) return;
+                m.value = cb.checked ? 'workflow' : 'conversational';
               }
             </script>
             <div style="display:flex; gap:var(--sk-space-3); margin-top:var(--sk-space-4);">

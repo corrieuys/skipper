@@ -21,7 +21,7 @@ beforeAll(() => {
 
   // One running task with one running agent that has emitted an assistant line.
   db.prepare("INSERT INTO agents (id, name, type, model, config, capabilities) VALUES ('a-tmpl','Claude','codex','default','{}','[]')").run();
-  db.prepare("INSERT INTO tasks (id, title, status) VALUES ('task-1','Fix auth','running')").run();
+  db.prepare("INSERT INTO tasks (id, title, status, started_at) VALUES ('task-1','Fix auth','active',datetime('now'))").run();
   db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('inst-1','task-1','a-tmpl','running')").run();
   db.prepare("INSERT INTO terminal_outputs (agent_id, stream, data, sequence) VALUES (?, 'stdout', ?, 1)").run(
     "inst-1",

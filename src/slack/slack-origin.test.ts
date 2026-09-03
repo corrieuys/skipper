@@ -7,7 +7,7 @@ let db: Database;
 
 /** `task_config` is NOT NULL DEFAULT '{}', so an unset config is an empty object. */
 function seedTask(id: string, taskConfig: Record<string, unknown> = {}): void {
-  db.prepare("INSERT INTO tasks (id, title, status, task_config) VALUES (?, 'Nightly report', 'running', ?)").run(
+  db.prepare("INSERT INTO tasks (id, title, status, task_config) VALUES (?, 'Nightly report', 'active', ?)").run(
     id,
     JSON.stringify(taskConfig),
   );

@@ -27,12 +27,23 @@ import type { MetricsData } from "../panels/metrics-bar.panel";
 import type { QueuedTask } from "../panels/task-queue.panel";
 import type { AgentTreeNode } from "../fragments/tree-node.fragment";
 import type { PhaseStepData } from "../fragments/phase-step.fragment";
+import { taskResultHasError } from "../fragments/status-chip.fragment";
 
 export interface TaskSummary {
   id: string;
   title: string;
   description: string | null;
+  /** Stored status: draft | active | settled. */
   status: string;
+  /** Derived presentation status: draft|queued|working|idle|paused|review|blocked|completed|failed. */
+  display_status: string;
+  /** Task mode: workflow | conversational. */
+  mode: string;
+  /** Paused flag on active tasks ('paused' is no longer a status). */
+  paused: boolean;
+  /** True when the task result carries an error (settled-with-error = old "failed"). */
+  result_has_error: boolean;
+  /** @deprecated compat mirror of `mode` ("real_time" when conversational). */
   task_type: string;
   team_id: string | null;
   team_name: string | null;
@@ -111,8 +122,9 @@ function buildMissionForTask(
   if (team?.phases) {
     try {
       const parsed = JSON.parse(team.phases) as Array<{ name: string; review?: boolean }>;
-      const isCompleted = t.status === "completed";
-      const isFailed = t.status === "failed";
+      const hasError = taskResultHasError(t.result);
+      const isCompleted = t.status === "settled" && !hasError;
+      const isFailed = t.status === "settled" && hasError;
       phases = parsed.map((p, i) => ({
         name: p.name,
         index: i,
@@ -144,16 +156,17 @@ export function buildCommandCenterViewModel(
 ): CommandCenterViewModel {
   const allTasks = fetchCommandCenterTasks(db, opts?.includeTaskId);
 
-  const runningTasks = allTasks.filter((t) => t.status === "running");
+  const runningTasks = allTasks.filter((t) => t.display_status === "working");
   const runningTask = runningTasks[0] ?? null;
-  const queuedTasks = allTasks.filter((t) => t.status === "approved");
-  const recentTasks = allTasks.filter((t) => t.status === "completed" || t.status === "failed").slice(0, 5);
+  const queuedTasks = allTasks.filter((t) => t.display_status === "queued");
+  const recentTasks = allTasks.filter((t) => t.status === "settled").slice(0, 5);
 
-  // Metrics
-  const running = allTasks.filter((t) => t.status === "running").length;
+  // Metrics. Archived tasks split into the old completed/failed buckets by
+  // whether the final result carries an error.
+  const running = runningTasks.length;
   const queued = queuedTasks.length;
-  const completed = allTasks.filter((t) => t.status === "completed").length;
-  const failed = allTasks.filter((t) => t.status === "failed").length;
+  const completed = allTasks.filter((t) => t.status === "settled" && !taskResultHasError(t.result)).length;
+  const failed = allTasks.filter((t) => t.status === "settled" && taskResultHasError(t.result)).length;
 
   const runningInstances = fetchActiveInstanceRows(db);
 
@@ -212,6 +225,10 @@ export function buildCommandCenterViewModel(
       title: t.title,
       description: t.description ?? null,
       status: t.status,
+      display_status: t.display_status ?? t.status,
+      mode: t.mode ?? "workflow",
+      paused: !!t.paused,
+      result_has_error: taskResultHasError(t.result),
       task_type: t.task_type,
       team_id: t.team_id,
       team_name: t.team_name,
@@ -230,9 +247,10 @@ export function buildCommandCenterViewModel(
   const scheduledTasks: ScheduledTaskSummary[] = fetchScheduledTaskRows(db);
   const scheduledRuns = fetchRecentScheduledRuns(db);
 
+  // Realtime sessions can exist on any active task now, not just conversational ones.
   const realtimeSessionActive = fetchRealtimeSessionActive(
     db,
-    allTasks.filter((t) => t.task_type === "real_time" && t.status === "running").map((t) => t.id),
+    allTasks.filter((t) => t.status === "active").map((t) => t.id),
   );
 
   return {

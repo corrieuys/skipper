@@ -6,6 +6,7 @@ import {
   type TaskStateChangedEvent,
 } from "../events/bus";
 import type { ClientMessage, OutputBatchEntry } from "./protocol";
+import { fetchTaskOutputPage } from "../data/queries";
 
 export interface OutputTailOptions {
   /** Trailing flush window for buffered output. */
@@ -19,6 +20,12 @@ export interface OutputTailOptions {
    * frame sent on subscribe. 0 disables backfill (live-only, the old behaviour).
    */
   backfillEntries: number;
+  /**
+   * Byte budget for the backfill frame's `data` fields. Rows are taken newest-
+   * first until the budget is spent, so a task whose recent frames are huge
+   * backfills fewer rows rather than pushing a multi-MB frame to a phone.
+   */
+  backfillMaxBytes: number;
 }
 
 const DEFAULT_OPTIONS: OutputTailOptions = {
@@ -26,6 +33,7 @@ const DEFAULT_OPTIONS: OutputTailOptions = {
   maxEntries: 50,
   maxBytes: 32_768,
   backfillEntries: 200,
+  backfillMaxBytes: 1_000_000,
 };
 
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "deleted"]);
@@ -96,24 +104,21 @@ export class OutputTailManager {
    */
   private sendBackfill(taskId: string): void {
     if (this.opts.backfillEntries <= 0) return;
-    const rows = this.db
-      .prepare(
-        `SELECT tout.agent_id, tout.stream, tout.data, tout.created_at, a.name AS agent_name
-         FROM terminal_outputs tout
-         LEFT JOIN agent_instances ai ON ai.id = tout.agent_id
-         LEFT JOIN agents a ON a.id = ai.template_agent_id
-         WHERE ai.task_id = ?
-         ORDER BY tout.id DESC
-         LIMIT ?`,
-      )
-      .all(taskId, this.opts.backfillEntries) as Array<{
-        agent_id: string; stream: string; data: string; created_at: string; agent_name: string | null;
-      }>;
-    if (rows.length === 0) return;
+    const all = fetchTaskOutputPage(this.db, taskId, { limit: this.opts.backfillEntries });
+    if (all.length === 0) return;
 
-    // Query is newest-first (so the LIMIT keeps the most recent N); replay
+    // Newest-first (so the LIMIT keeps the most recent N). Spend the byte
+    // budget from the newest end — always at least one row — then replay
     // oldest-first so the integrator appends in chronological order.
+    const rows: typeof all = [];
+    let bytes = 0;
+    for (const r of all) {
+      bytes += r.data.length;
+      if (rows.length > 0 && bytes > this.opts.backfillMaxBytes) break;
+      rows.push(r);
+    }
     const entries: OutputBatchEntry[] = rows.reverse().map((r) => ({
+      id: r.id,
       agentId: r.agent_id,
       agentName: r.agent_name ?? null,
       stream: r.stream === "stderr" ? "stderr" : "stdout",

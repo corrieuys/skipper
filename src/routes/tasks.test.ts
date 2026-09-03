@@ -92,12 +92,13 @@ describe("POST /api/tasks", () => {
     });
     expect(res.status).toBe(302);
 
-    const row = db.prepare("SELECT team_id, task_type FROM tasks WHERE title = ?").get("Realtime Create Keep Team") as {
+    const row = db.prepare("SELECT team_id, mode FROM tasks WHERE title = ?").get("Realtime Create Keep Team") as {
       team_id: string | null;
-      task_type: string;
+      mode: string;
     } | null;
     expect(row).not.toBeNull();
-    expect(row!.task_type).toBe("real_time");
+    // Legacy taskType=real_time maps onto the unified mode column.
+    expect(row!.mode).toBe("conversational");
     expect(row!.team_id).toBe(teamId);
   });
 
@@ -239,26 +240,19 @@ describe("POST /api/tasks/:id/approve", () => {
 });
 
 describe("POST /api/tasks/:id/cancel", () => {
-  it("returns JSON ok after cancelling a draft task", async () => {
-    const body = new URLSearchParams({ title: "Task to cancel", workingDirectory: "/tmp/test" });
-    await fetch(`${baseUrl}/api/tasks`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-      redirect: "manual",
-    });
-
+  it("archives an active task with a cancellation error", async () => {
     const db = getDb();
-    const tasks = db.prepare("SELECT id FROM tasks WHERE title = ?").all("Task to cancel") as { id: string }[];
-    const taskId = tasks[tasks.length - 1].id;
+    const taskId = crypto.randomUUID();
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, 'active')").run(taskId, "Task to cancel");
 
     const res = await fetch(`${baseUrl}/api/tasks/${taskId}/cancel`, { method: "POST" });
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.ok).toBe(true);
 
-    const row = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null;
-    expect(row?.status).toBe("failed");
+    const row = db.prepare("SELECT status, result FROM tasks WHERE id = ?").get(taskId) as { status: string; result: string | null } | null;
+    expect(row?.status).toBe("settled");
+    expect(JSON.parse(row!.result!).error).toBe("Cancelled by user");
   });
 
   it("returns JSON error for unknown task id", async () => {
@@ -270,48 +264,79 @@ describe("POST /api/tasks/:id/cancel", () => {
 });
 
 describe("POST /api/tasks/:id/retry", () => {
-  it("returns JSON ok after retrying a failed task", async () => {
+  it("returns 410 Gone pointing at the input endpoint", async () => {
     const db = getDb();
     const id = crypto.randomUUID();
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(id, "Task to retry", "failed");
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, 'settled')").run(id, "Task to retry");
 
     const res = await fetch(`${baseUrl}/api/tasks/${id}/retry`, { method: "POST" });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(410);
     const json = await res.json();
-    expect(json.ok).toBe(true);
+    expect(json.error).toContain("input");
 
+    // Retry never mutates the task anymore.
     const row = db.prepare("SELECT status FROM tasks WHERE id = ?").get(id) as { status: string } | null;
-    expect(row?.status).toBe("draft");
+    expect(row?.status).toBe("settled");
   });
 
-  it("returns JSON error for unknown task id", async () => {
+  it("returns 410 for unknown task id too", async () => {
     const res = await fetch(`${baseUrl}/api/tasks/nonexistent/retry`, { method: "POST" });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(410);
     const body = await res.json();
     expect(body.error).toBeDefined();
   });
 });
 
 describe("POST /api/tasks/:id/resume", () => {
-  it("returns JSON ok after resuming a failed task", async () => {
+  it("unarchives an archived task and queues a wake", async () => {
     const db = getDb();
     const id = crypto.randomUUID();
-    db.prepare("INSERT INTO tasks (id, title, status, current_phase) VALUES (?, ?, ?, ?)")
-      .run(id, "Task to resume", "failed", 1);
+    db.prepare("INSERT INTO tasks (id, title, status, current_phase, result) VALUES (?, ?, 'settled', ?, ?)")
+      .run(id, "Task to resume", 1, JSON.stringify({ error: "boom" }));
 
     const res = await fetch(`${baseUrl}/api/tasks/${id}/resume`, { method: "POST" });
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.ok).toBe(true);
 
-    const row = db.prepare("SELECT status, current_phase FROM tasks WHERE id = ?").get(id) as { status: string; current_phase: number } | null;
-    expect(row?.status).toBe("approved");
+    const row = db.prepare("SELECT status, current_phase, wake_requested_at FROM tasks WHERE id = ?").get(id) as {
+      status: string;
+      current_phase: number;
+      wake_requested_at: string | null;
+    } | null;
+    expect(row?.status).toBe("active");
     expect(row?.current_phase).toBe(1);
+    expect(row?.wake_requested_at).not.toBeNull();
   });
 
-  it("returns JSON error for unknown task id", async () => {
+  it("clears the paused flag on a paused task", async () => {
+    const db = getDb();
+    const id = crypto.randomUUID();
+    db.prepare("INSERT INTO tasks (id, title, status, paused, started_at) VALUES (?, ?, 'active', 1, datetime('now'))")
+      .run(id, "Paused task to resume");
+
+    const res = await fetch(`${baseUrl}/api/tasks/${id}/resume`, { method: "POST" });
+    expect(res.status).toBe(200);
+
+    const row = db.prepare("SELECT status, paused FROM tasks WHERE id = ?").get(id) as { status: string; paused: number } | null;
+    expect(row?.status).toBe("active");
+    expect(row?.paused).toBe(0);
+  });
+
+  it("409s for a task that is neither paused nor archived", async () => {
+    const db = getDb();
+    const id = crypto.randomUUID();
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, 'draft')").run(id, "Draft not resumable");
+
+    const res = await fetch(`${baseUrl}/api/tasks/${id}/resume`, { method: "POST" });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBeDefined();
+  });
+
+  it("returns 404 for unknown task id", async () => {
     const res = await fetch(`${baseUrl}/api/tasks/nonexistent/resume`, { method: "POST" });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.error).toBeDefined();
   });
@@ -380,7 +405,7 @@ describe("POST /api/tasks/:id", () => {
   it("returns 400 when trying to edit a non-draft task", async () => {
     const db = getDb();
     const id = crypto.randomUUID();
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(id, "Locked Task", "approved");
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(id, "Locked Task", "active");
 
     const res = await fetch(`${baseUrl}/api/tasks/${id}`, {
       method: "POST",
@@ -401,7 +426,7 @@ describe("Artifact REST API", () => {
   beforeAll(() => {
     const db = getDb();
     taskId = crypto.randomUUID();
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(taskId, "Artifact Test Task", "running");
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(taskId, "Artifact Test Task", "active");
     artifactManager = new ArtifactManager(db);
   });
 
@@ -433,7 +458,7 @@ describe("Artifact REST API", () => {
   it("GET /api/tasks/:id/artifacts filters by name prefix", async () => {
     const tid = crypto.randomUUID();
     const db = getDb();
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(tid, "Name Prefix Task", "running");
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(tid, "Name Prefix Task", "active");
     artifactManager.createArtifact({ taskId: tid, name: "analysis-1", kind: "other", body: "a1" });
     artifactManager.createArtifact({ taskId: tid, name: "analysis-2", kind: "other", body: "a2" });
     artifactManager.createArtifact({ taskId: tid, name: "summary", kind: "summary", body: "s1" });
@@ -447,7 +472,7 @@ describe("Artifact REST API", () => {
   it("GET /api/tasks/:id/artifacts respects limit", async () => {
     const tid = crypto.randomUUID();
     const db = getDb();
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(tid, "Limit Task", "running");
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(tid, "Limit Task", "active");
     for (let i = 0; i < 5; i++) {
       artifactManager.createArtifact({ taskId: tid, name: `item-${i}`, kind: "other", body: `body-${i}` });
     }
@@ -461,7 +486,7 @@ describe("Artifact REST API", () => {
   it("GET /api/tasks/:id/artifacts/:name returns latest version", async () => {
     const tid = crypto.randomUUID();
     const db = getDb();
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(tid, "Version Task", "running");
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(tid, "Version Task", "active");
     artifactManager.createArtifact({ taskId: tid, name: "versioned", kind: "plan", body: "v1-body" });
     artifactManager.createArtifact({ taskId: tid, name: "versioned", kind: "plan", body: "v2-body" });
     artifactManager.createArtifact({ taskId: tid, name: "versioned", kind: "plan", body: "v3-body" });
@@ -476,7 +501,7 @@ describe("Artifact REST API", () => {
   it("GET /api/tasks/:id/artifacts/:name returns specific version", async () => {
     const tid = crypto.randomUUID();
     const db = getDb();
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(tid, "Specific Version Task", "running");
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(tid, "Specific Version Task", "active");
     artifactManager.createArtifact({ taskId: tid, name: "spec-ver", kind: "other", body: "first" });
     artifactManager.createArtifact({ taskId: tid, name: "spec-ver", kind: "other", body: "second" });
     artifactManager.createArtifact({ taskId: tid, name: "spec-ver", kind: "other", body: "third" });
@@ -498,7 +523,7 @@ describe("Artifact REST API", () => {
   it("GET /api/tasks/:id/artifacts/:name/versions returns version list", async () => {
     const tid = crypto.randomUUID();
     const db = getDb();
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(tid, "Versions List Task", "running");
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, ?)").run(tid, "Versions List Task", "active");
     artifactManager.createArtifact({ taskId: tid, name: "multi-ver", kind: "summary", body: "v1" });
     artifactManager.createArtifact({ taskId: tid, name: "multi-ver", kind: "summary", body: "v2" });
     artifactManager.createArtifact({ taskId: tid, name: "multi-ver", kind: "summary", body: "v3" });
@@ -520,44 +545,24 @@ describe("Artifact REST API", () => {
 });
 
 describe("Realtime session endpoints", () => {
-  it("POST .../session/start returns 400 for non-real_time task", async () => {
+  // The task_type guard is gone: sessions are valid for ANY task; only the
+  // active-status rule and daemon availability gate the start.
+
+  it("POST .../session/start returns 400 for a non-active task", async () => {
     const db = getDb();
     const id = crypto.randomUUID();
-    db.prepare("INSERT INTO tasks (id, title, status, task_type) VALUES (?, ?, ?, ?)").run(id, "Standard Running", "running", "standard");
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, 'draft')").run(id, "Draft Task");
 
     const res = await fetch(`${baseUrl}/api/tasks/${id}/realtime/session/start`, { method: "POST" });
     expect(res.status).toBe(400);
     const json = await res.json();
-    expect(json.error).toContain("not a real_time task");
+    expect(json.error).toContain("active");
   });
 
-  it("POST .../session/start returns 400 for non-running task", async () => {
+  it("POST .../session/start accepts a workflow-mode active task (503 without daemon, status untouched)", async () => {
     const db = getDb();
     const id = crypto.randomUUID();
-    db.prepare("INSERT INTO tasks (id, title, status, task_type) VALUES (?, ?, ?, ?)").run(id, "Draft RT Task", "draft", "real_time");
-
-    const res = await fetch(`${baseUrl}/api/tasks/${id}/realtime/session/start`, { method: "POST" });
-    expect(res.status).toBe(400);
-    const json = await res.json();
-    expect(json.error).toContain("approved or running");
-  });
-
-  it("POST .../session/start returns 503 when daemon not available", async () => {
-    const db = getDb();
-    const id = crypto.randomUUID();
-    db.prepare("INSERT INTO tasks (id, title, status, task_type) VALUES (?, ?, ?, ?)").run(id, "RT Running No Daemon", "running", "real_time");
-
-    const res = await fetch(`${baseUrl}/api/tasks/${id}/realtime/session/start`, { method: "POST" });
-    expect(res.status).toBe(503);
-    const json = await res.json();
-    expect(json.error).toContain("Daemon not available");
-  });
-
-  it("POST .../session/start accepts approved real_time task and transitions it to running", async () => {
-    const db = getDb();
-    const id = crypto.randomUUID();
-    db.prepare("INSERT INTO tasks (id, title, status, task_type) VALUES (?, ?, ?, ?)")
-      .run(id, "RT Approved No Daemon", "approved", "real_time");
+    db.prepare("INSERT INTO tasks (id, title, status, mode) VALUES (?, ?, 'active', 'workflow')").run(id, "Workflow Active");
 
     const res = await fetch(`${baseUrl}/api/tasks/${id}/realtime/session/start`, { method: "POST" });
     expect(res.status).toBe(503);
@@ -565,25 +570,24 @@ describe("Realtime session endpoints", () => {
     expect(json.error).toContain("Daemon not available");
 
     const row = db.prepare("SELECT status FROM tasks WHERE id = ?").get(id) as { status: string } | null;
-    expect(row).not.toBeNull();
-    expect(row!.status).toBe("approved");
+    expect(row!.status).toBe("active");
   });
 
-  it("POST .../session/stop returns 400 for non-real_time task", async () => {
+  it("POST .../session/start returns 503 when daemon not available for a conversational task", async () => {
     const db = getDb();
     const id = crypto.randomUUID();
-    db.prepare("INSERT INTO tasks (id, title, status, task_type) VALUES (?, ?, ?, ?)").run(id, "Standard Stop", "running", "standard");
+    db.prepare("INSERT INTO tasks (id, title, status, mode) VALUES (?, ?, 'active', 'conversational')").run(id, "RT Active No Daemon");
 
-    const res = await fetch(`${baseUrl}/api/tasks/${id}/realtime/session/stop`, { method: "POST" });
-    expect(res.status).toBe(400);
+    const res = await fetch(`${baseUrl}/api/tasks/${id}/realtime/session/start`, { method: "POST" });
+    expect(res.status).toBe(503);
     const json = await res.json();
-    expect(json.error).toContain("not a real_time task");
+    expect(json.error).toContain("Daemon not available");
   });
 
-  it("POST .../session/stop returns 503 when daemon not available", async () => {
+  it("POST .../session/stop has no mode guard and returns 503 without daemon", async () => {
     const db = getDb();
     const id = crypto.randomUUID();
-    db.prepare("INSERT INTO tasks (id, title, status, task_type) VALUES (?, ?, ?, ?)").run(id, "RT Stop No Daemon", "running", "real_time");
+    db.prepare("INSERT INTO tasks (id, title, status, mode) VALUES (?, ?, 'active', 'workflow')").run(id, "Workflow Stop");
 
     const res = await fetch(`${baseUrl}/api/tasks/${id}/realtime/session/stop`, { method: "POST" });
     expect(res.status).toBe(503);

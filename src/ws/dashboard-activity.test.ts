@@ -15,7 +15,7 @@ beforeEach(() => {
   db = new Database(":memory:");
   initializeDatabase(db);
   seq = 0;
-  db.prepare("INSERT INTO tasks (id,title,status) VALUES ('t1','T','running')").run();
+  db.prepare("INSERT INTO tasks (id,title,status,started_at) VALUES ('t1','T','active',datetime('now'))").run();
   db.prepare("INSERT INTO agent_instances (id,task_id,template_agent_id,status) VALUES ('inst-1','t1','claude','running')").run();
 });
 

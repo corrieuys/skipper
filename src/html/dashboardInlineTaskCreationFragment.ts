@@ -43,18 +43,18 @@ export function dashboardInlineTaskCreationFragment(
         ></textarea>
       </div>
       <div class="cmd-inline-intake-controls">
-        <label for="dashboard-inline-task-type" class="muted">Task Type</label>
+        <label for="dashboard-inline-autopilot" class="muted">Autopilot</label>
         <label for="dashboard-inline-team" class="muted">Agent Team</label>
         <label for="dashboard-inline-template" class="muted">Template</label>
         <span></span>
-        <select name="taskType" id="dashboard-inline-task-type">
-          <option value="standard">Standard</option>
-          <option value="real_time">Real-Time</option>
-        </select>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="On: the team drives the task to the end of its phases. Off: the task waits for your input between turns.">
+          <input type="checkbox" id="dashboard-inline-autopilot" checked
+            onchange="document.getElementById('dashboard-inline-mode').value=this.checked?'workflow':'conversational';">
+          <input type="hidden" name="mode" id="dashboard-inline-mode" value="workflow">
+        </label>
         <div id="task-form-team-slot" style="display:contents;"
-          hx-get="/fragments/task-form/team?taskType=standard&amp;context=inline"
-          hx-trigger="load, change from:[name=taskType]"
-          hx-include="[name=taskType]"
+          hx-get="/fragments/task-form/team?context=inline"
+          hx-trigger="load"
           hx-swap="outerHTML"></div>
         <button type="submit" class="cmd-inline-intake-submit">Start</button>
       </div>

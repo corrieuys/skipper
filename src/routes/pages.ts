@@ -4,10 +4,14 @@ import { escapeHtml } from "../html/atoms/escape-html";
 import { looksLikeHtml } from "../html/atoms/sniff-html";
 import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { getConnectPublicBase, getPublicArtifactUrl, getWebhookTriggerUrl } from "../connect/public-links";
-import { getRealtimeTeamId, listRealtimeTeams, listTeamsForStandardTasks } from "../config/teams";
+import { listAssignableTeams } from "../config/teams";
 import { isTeamVisible, isExperimental } from "../config/feature-flags";
 import { taskTimelineFragment } from "../html/fragments/task-timeline.fragment";
-import { artifactListFragment } from "../html/fragments/artifact-list.fragment";
+// Activity feed paging: rows per page, and the cap on one live "after" pull.
+const ACTIVITY_PAGE_SIZE = 100;
+const ACTIVITY_LIVE_LIMIT = 500;
+import { artifactListFragment, fileArtifactIcon } from "../html/fragments/artifact-list.fragment";
+import { formatBytes } from "../orchestrator/artifact-files";
 import { listPreferences, setPreference } from "../notifications/store";
 import { NOTIFICATION_EVENTS, type NotificationEventKey } from "../notifications/types";
 import { listKeys } from "./api-keys";
@@ -25,6 +29,8 @@ import {
   fetchDashboardRunningInstances,
   fetchRecentActivity,
   fetchDashboardMetrics,
+  fetchTaskOutputPage,
+  fetchTaskOutputRow,
 } from "../data/queries";
 import {
   taskListPollingFragment,
@@ -75,9 +81,17 @@ import type {
 import type { ManagerDaemon } from "../agents/manager-daemon";
 import { htmlResponse as html, parseRequestBody } from "./utils";
 import { fetchLatestAssistantMessage } from "../ws/ui-push";
+import { deriveDisplayStatus, displayStatusLabel, type TaskDisplayStatus } from "../tasks/status";
+import { taskResultHasError, displayBadgeClass } from "../html/fragments/status-chip.fragment";
 
 const LOGS_PAGE_LIMIT = 1000;
 const DASHBOARD_ACTIVITY_LIMIT = 250;
+
+function hasLiveTaskInstances(db: ReturnType<typeof getDb>, taskId: string): boolean {
+  return !!db.prepare(
+    "SELECT 1 FROM agent_instances WHERE task_id = ? AND status IN ('running', 'waiting_delegation', 'pending') LIMIT 1",
+  ).get(taskId);
+}
 
 function getAgentRuntimeIds(db: ReturnType<typeof getDb>, templateAgentId: string): string[] {
   const runtimeRows = db.prepare(
@@ -557,14 +571,15 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     return html(`<html><body><h1>Audit Events</h1><p>Page stub — needs rebuild</p><pre>${JSON.stringify(events.slice(0, 20), null, 2)}</pre></body></html>`);
   });
 
-  // Dashboard fragment routes (initial load — live updates via WebSocket push)
+  // Dashboard fragment routes (initial load; live updates via WebSocket push)
   addRoute("GET", "/fragments/dashboard/active-tasks", () => {
-    const tasks = db.prepare(
-      `SELECT id, title, status, task_type, created_at
+    const rows = db.prepare(
+      `SELECT id, title, status, mode, paused, needs_review, wake_requested_at, started_at, result, created_at
        FROM tasks
-       WHERE status IN ('running', 'approved', 'completed')
-       ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, created_at DESC`,
-    ).all() as { id: string; title: string; status: string; task_type?: string; created_at?: string }[];
+       WHERE status IN ('active', 'settled')
+       ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, created_at DESC`,
+    ).all() as { id: string; title: string; status: string; mode?: string; paused?: number; needs_review?: number; wake_requested_at?: string | null; started_at?: string | null; created_at?: string }[];
+    const tasks = rows.map((r) => ({ ...r, display_status: deriveDisplayStatus(db, r) as string }));
     return html(dashboardActiveTaskFragment(selectDashboardFocusTasks(tasks)));
   });
 
@@ -625,8 +640,10 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
   });
 
   addRoute("GET", "/fragments/dashboard/recent-activity", () => {
+    // "Working" gate: any live agent instance means a task run is in flight
+    // (idle active tasks are the normal resting state and produce no activity).
     const hasRunningTask = (db.prepare(
-      "SELECT EXISTS(SELECT 1 FROM tasks WHERE status = 'running') AS has_running_task",
+      "SELECT EXISTS(SELECT 1 FROM agent_instances WHERE status IN ('running', 'waiting_delegation', 'pending')) AS has_running_task",
     ).get() as { has_running_task: number }).has_running_task === 1;
     if (!hasRunningTask) {
       return html(recentActivityFragment([]));
@@ -654,10 +671,11 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     const taskId = url.searchParams.get("task");
 
     if (taskId) {
-      // On a completed task, idle orbs stay clickable so the operator can resume
-      // an agent for a one-off run outside the workflow.
+      // On a settled task (idle active or settled), idle orbs stay clickable so
+      // the operator can resume an agent for a one-off run outside the workflow.
       const taskRow = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null;
-      const allowIdleSpawn = taskRow?.status === "completed";
+      const allowIdleSpawn = taskRow?.status === "settled" ||
+        (taskRow?.status === "active" && !hasLiveTaskInstances(db, taskId));
       return html(dashboardSteerListFragment(buildTeamAgentTiles(db, taskId), taskId, { allowIdleSpawn }));
     }
 
@@ -726,12 +744,13 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
       latest_message: fetchLatestAssistantMessage(db, inst.runtime_id),
     }));
 
-    // Completed task: if no live instance, show the one-off resume card instead
-    // of the empty sentinel (which would close the modal). If a one-off is
-    // already running, the steer cards above render so it can be steered.
+    // Settled task (idle active or settled): if no live instance, show the
+    // one-off resume card instead of the empty sentinel (which would close the
+    // modal). If a one-off is already running, the steer cards above render so
+    // it can be steered.
     if (taskId && options.length === 0) {
       const taskRow = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null;
-      if (taskRow?.status === "completed") {
+      if (taskRow?.status === "settled" || taskRow?.status === "active") {
         const latest = db.prepare(
           `SELECT ai.id, ai.session_id, ai.status,
                   COALESCE(a.name, ai.template_agent_id) AS agent_name,
@@ -829,8 +848,8 @@ function registerV2PageRoutes(): void {
     }
     // Public trigger URL for the webhook panel; null until connect is configured.
     st.webhook_url = getWebhookTriggerUrl(db, { id: st.id, webhook_key: st.webhook_key ?? null });
-    // Recurring tasks are always standard — exclude the Real Time team.
-    const teams = listTeamsForStandardTasks();
+    // Unified picker: any visible team can run a recurring task.
+    const teams = listAssignableTeams();
     const runs = db.prepare(
       `SELECT id, title, status, started_at, completed_at, result, created_at FROM tasks WHERE source_scheduled_task_id = ? ORDER BY created_at DESC LIMIT 20`
     ).all(scheduledId) as Array<{ id: string; title: string; status: string; started_at: string | null; completed_at: string | null; result: string | null; created_at: string }>;
@@ -849,7 +868,7 @@ function registerV2PageRoutes(): void {
       if (override) return html(commandCenterPage(vm, undefined, override));
     }
 
-    // /?team=<id> opens the team's most relevant task (running > approved >
+    // /?team=<id> opens the team's most relevant task (working > queued >
     // paused > latest).
     if (teamId && !selectedTask) {
       const { pickTeamLandingTask } = require("../html/pages/command-center.page");
@@ -860,27 +879,24 @@ function registerV2PageRoutes(): void {
     return html(commandCenterPage(vm, selectedTask));
   });
 
-  // Team options fragment for create form dropdown (standard tasks only — Real Time
-  // is the dedicated team for real-time tasks and is selected automatically there).
+  // Team options fragment for create form dropdown (unified: every visible team).
   addRoute("GET", "/fragments/teams/options", (req) => {
     const url = new URL(req.url, "http://localhost");
     const selected = url.searchParams.get("selected") ?? "";
-    const teams = listTeamsForStandardTasks();
+    const teams = listAssignableTeams();
     const options = teams.map(t => `<option value="${t.id}"${t.id === selected ? " selected" : ""}>${escapeHtml(t.name)}</option>`).join("");
     return html(`<option value="">Select team...</option>${options}`);
   });
 
-  // Workspace fragment — sidebar clicks load this into #mc-main
+  // Workspace fragment — sidebar clicks load this into #mc-main. Every
+  // non-draft task renders the same view regardless of mode, so flipping
+  // autopilot never swaps the chrome.
   addRoute("GET", "/workspace/task/:id", (_req, params) => {
     const vm = buildCommandCenterViewModel(db, { includeTaskId: params.id });
     const task = vm.allTasks.find((t: any) => t.id === params.id);
     if (!task) return Response.json({ error: "Not found" }, { status: 404 });
-    const { taskMainContent, renderDraftEdit, realtimeTaskContent } = require("../html/pages/command-center.page");
+    const { taskMainContent, renderDraftEdit } = require("../html/pages/command-center.page");
     if (task.status === "draft") return html(renderDraftEdit(task, vm.teams));
-    if ((task as any).task_type === "real_time") {
-      const isSessionActive = vm.realtimeSessionActive?.[task.id];
-      return html(realtimeTaskContent(vm, task, isSessionActive));
-    }
     return html(taskMainContent(vm, task));
   });
 
@@ -891,9 +907,9 @@ function registerV2PageRoutes(): void {
     if (!task) return html("");
     const mission = params.id ? vm.missionsByTask?.[params.id] : undefined;
     const phases = mission?.phases ?? [];
-    const isRunning = task.status === "running";
+    const isWorking = (task as any).display_status === "working";
     const { renderPhaseStripFragment } = require("../html/pages/command-center.page");
-    return html(renderPhaseStripFragment(phases, params.id, isRunning));
+    return html(renderPhaseStripFragment(phases, params.id, isWorking));
   });
 
   // Agent list fragment — polled by dashboard for running tasks
@@ -930,81 +946,47 @@ function registerV2PageRoutes(): void {
   addRoute("GET", "/workspace/task/:id/timeline", (_req, params) =>
     html(taskTimelineFragment(db, params.id)));
 
-  // Activity feed — parsed terminal output for the activity tab
+  // Activity feed — parsed terminal output for the activity tab, paged.
+  //   (no cursor)   newest page + a load-more sentinel when the page is full
+  //   ?before=<id>  the page of rows older than <id> (sentinel swaps itself for it)
+  //   ?after=<id>   every row newer than <id>, no sentinel — the WS "poke"
+  //                 (ui-push.ts:pushV2ActivityPoke) makes the client fetch this
+  //                 and prepend, so a live task never re-renders the whole feed.
+  // Cursors are terminal_outputs.id (globally monotonic) — never `sequence`,
+  // which is per instance and collides across agents.
   addRoute("GET", "/workspace/task/:id/activity", (req, params) => {
     const url = new URL(req.url, "http://localhost");
-    const instanceId = url.searchParams.get("instance");
+    const num = (v: string | null): number | null => {
+      if (v == null || v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const beforeId = num(url.searchParams.get("before"));
+    const afterId = num(url.searchParams.get("after"));
+    const { parseTerminalActivity, activityLoadMoreSentinel } = require("../html/pages/command-center.page");
 
-    let agentId: string | null = instanceId;
-    if (!agentId) {
-      const instances = db.prepare(
-        `SELECT ai.id FROM agent_instances ai
-         WHERE ai.task_id = ?
-         ORDER BY ai.parent_instance_id IS NULL DESC, ai.created_at ASC
-         LIMIT 1`
-      ).all(params.id) as Array<{ id: string }>;
-      agentId = instances[0]?.id ?? null;
+    if (afterId != null) {
+      const rows = fetchTaskOutputPage(db, params.id, { afterId, limit: ACTIVITY_LIVE_LIMIT });
+      // Nothing new → nothing to prepend (the empty-state div would stack up).
+      return html(rows.length === 0 ? "" : parseTerminalActivity(rows));
     }
 
-    if (!agentId) {
-      return html(`<div class="mc-activity__empty">No activity recorded</div>`);
-    }
-
-    // Get all sessions for this agent in this task context.
-    // Order by t.id (INTEGER PRIMARY KEY AUTOINCREMENT) — globally monotonic
-    // insertion order. Do NOT order by t.sequence: sequence is per-agent-instance
-    // and collides across agents.
-    const rows = db.prepare(
-      `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name, t.created_at
-       FROM terminal_outputs t
-       JOIN agent_instances ai ON ai.id = t.agent_id
-       LEFT JOIN agents a ON a.id = ai.template_agent_id
-       WHERE ai.task_id = ?
-       ORDER BY t.id DESC LIMIT 2400`
-    ).all(params.id) as Array<{ stream: string; data: string; agent_name: string; created_at: string }>;
-    // Wide pull (2400 raw rows): parseTerminalActivity keeps a per-kind budget
-    // (perKindLimit, currently 120), so the window must be deep enough to hold
-    // that many messages even when tool rows dominate the stream. A narrow
-    // window would starve the Messages filter.
-
+    const rows = fetchTaskOutputPage(db, params.id, { beforeId, limit: ACTIVITY_PAGE_SIZE });
     if (rows.length === 0) {
-      return html(`<div class="mc-activity__empty">No activity yet</div>`);
+      return html(beforeId == null ? `<div class="mc-activity__empty">No activity recorded</div>` : "");
     }
-
-    // Keep newest-first order — feed reads top-down with most recent at the top.
-    const { parseTerminalActivity } = require("../html/pages/command-center.page");
-    return html(parseTerminalActivity(rows));
+    const body = parseTerminalActivity(rows);
+    const oldest = rows[rows.length - 1]!.id;
+    const more = rows.length >= ACTIVITY_PAGE_SIZE ? activityLoadMoreSentinel(params.id, oldest) : "";
+    return html(body + more);
   });
 
-  // Unified realtime activity feed: timeline entries + agent terminal outputs merged
-  addRoute("GET", "/workspace/task/:id/realtime-activity", (_req, params) => {
-    const { parseRealtimeActivity } = require("../html/pages/command-center.page");
-    type Row = import("../html/pages/command-center.page").RealtimeActivityRow;
-
-    const timelineRows = db.prepare(
-      `SELECT entry_type, content, priority, created_at
-       FROM realtime_timeline WHERE task_id = ?
-       ORDER BY created_at DESC LIMIT 250`
-    ).all(params.id) as Array<{ entry_type: string; content: string; priority: string; created_at: string }>;
-
-    const terminalRows = db.prepare(
-      `SELECT t.stream, t.data, COALESCE(a.name, ai.template_agent_id) AS agent_name,
-              json_extract(a.config, '$.color') AS agent_color, t.created_at
-       FROM terminal_outputs t
-       JOIN agent_instances ai ON ai.id = t.agent_id
-       LEFT JOIN agents a ON a.id = ai.template_agent_id
-       WHERE ai.task_id = ?
-       ORDER BY t.id DESC LIMIT 200`
-    ).all(params.id) as Array<{ stream: string; data: string; agent_name: string; agent_color: string | null; created_at: string }>;
-
-    const merged: Row[] = [
-      ...timelineRows.map(r => ({ source: "timeline" as const, entry_type: r.entry_type, content: r.content, priority: r.priority, created_at: r.created_at })),
-      ...terminalRows.map(r => ({ source: "terminal" as const, stream: r.stream, data: r.data, agent_name: r.agent_name, agent_color: r.agent_color, created_at: r.created_at })),
-    ];
-    merged.sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""));
-    const limited = merged.slice(0, 300);
-
-    return html(parseRealtimeActivity(limited));
+  // One raw output frame for the activity detail modal (rows no longer embed it).
+  addRoute("GET", "/workspace/activity/:outputId", (_req, params) => {
+    const id = Number(params.outputId);
+    const row = Number.isFinite(id) ? fetchTaskOutputRow(db, id) : null;
+    if (!row) return new Response("Not found", { status: 404 });
+    return new Response(row.data, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
   });
 
   // Terminal output by task ID (finds the root agent instance)
@@ -1060,6 +1042,8 @@ function registerV2PageRoutes(): void {
       `SELECT t.*, tm.name AS team_name FROM tasks t LEFT JOIN teams tm ON tm.id = t.team_id WHERE t.id = ?`
     ).get(params.id) as any;
     if (!task) return html(`<div style="padding:1rem; color:var(--sk-text-subtle);">Task not found</div>`);
+    const taskDetailDisplay = deriveDisplayStatus(db, task) as TaskDisplayStatus;
+    const taskDetailHasError = taskResultHasError(task.result);
 
     // Unified agents + delegations list. Each agent instance is LEFT JOINed to the
     // delegation that spawned it (delegations.child_instance_id = ai.id), so a single
@@ -1134,9 +1118,9 @@ function registerV2PageRoutes(): void {
         <div class="sk-panel__body--flush">
           <table class="sk-table">
             <tr><td class="sk-muted">ID</td><td class="sk-mono sk-text-xs">${esc(task.id)}</td></tr>
-            <tr><td class="sk-muted">Status</td><td><span class="sk-badge sk-badge--${task.status}">${task.status}</span></td></tr>
+            <tr><td class="sk-muted">Status</td><td><span class="sk-badge ${displayBadgeClass(taskDetailDisplay, taskDetailHasError)}">${displayStatusLabel(taskDetailDisplay)}</span></td></tr>
             <tr><td class="sk-muted">Team</td><td>${esc(task.team_name ?? "Unassigned")}</td></tr>
-            <tr><td class="sk-muted">Type</td><td>${esc(task.task_type ?? "standard")}</td></tr>
+            <tr><td class="sk-muted">Mode</td><td>${esc(task.mode ?? "workflow")}</td></tr>
             <tr><td class="sk-muted">Phase</td><td>${task.current_phase + 1}</td></tr>
             <tr><td class="sk-muted">Created</td><td>${formatTimestamp(task.created_at)}</td></tr>
             ${task.completed_at ? `<tr><td class="sk-muted">Completed</td><td>${formatTimestamp(task.completed_at)}</td></tr>` : ""}
@@ -1176,7 +1160,7 @@ function registerV2PageRoutes(): void {
   });
 
   // Task Creation — must be before /tasks/:id to avoid matching "new" as an ID.
-  // Recurring task creation is now merged into /tasks/new (Task Type = Recurring);
+  // Recurring task creation is now merged into /tasks/new (Schedule = Recurring);
   // keep the old path as a redirect for any lingering links/bookmarks.
   addRoute("GET", "/tasks/scheduled/new", () => {
     return new Response(null, { status: 302, headers: { Location: "/tasks/new" } });
@@ -1204,22 +1188,40 @@ function registerV2PageRoutes(): void {
   // main list stops the one-off tasks from being buried under a firehose of
   // scheduled runs.
   addRoute("GET", "/tasks", () => {
-    const tasks = db.prepare(
-      `SELECT t.id, t.title, t.status, t.current_phase, t.task_type, t.created_at,
-              tm.name AS team_name
+    type TaskListRow = {
+      id: string; title: string; status: string; current_phase: number; mode: string;
+      paused?: number; needs_review?: number; wake_requested_at?: string | null;
+      started_at?: string | null; result?: string | null; created_at: string;
+      team_name: string | null; team_phases?: string | null;
+    };
+    const decorate = <T extends TaskListRow>(r: T) => {
+      let hasPhases = false;
+      try { hasPhases = (JSON.parse(r.team_phases ?? "[]") as unknown[]).length > 0; } catch { /* ignore */ }
+      return {
+        ...r,
+        display_status: deriveDisplayStatus(db, r) as string,
+        result_has_error: taskResultHasError(r.result),
+        has_phases: hasPhases,
+      };
+    };
+    const tasks = (db.prepare(
+      `SELECT t.id, t.title, t.status, t.current_phase, t.mode, t.paused, t.needs_review,
+              t.wake_requested_at, t.started_at, t.result, t.created_at,
+              tm.name AS team_name, tm.phases AS team_phases
        FROM tasks t LEFT JOIN teams tm ON tm.id = t.team_id
        WHERE t.source_scheduled_task_id IS NULL
        ORDER BY t.created_at DESC`
-    ).all() as Array<{ id: string; title: string; status: string; current_phase: number; task_type: string; created_at: string; team_name: string | null }>;
-    const scheduledRuns = db.prepare(
-      `SELECT t.id, t.title, t.status, t.current_phase, t.task_type, t.created_at,
-              tm.name AS team_name, st.title AS source_scheduled_title
+    ).all() as TaskListRow[]).map(decorate);
+    const scheduledRuns = (db.prepare(
+      `SELECT t.id, t.title, t.status, t.current_phase, t.mode, t.paused, t.needs_review,
+              t.wake_requested_at, t.started_at, t.result, t.created_at,
+              tm.name AS team_name, tm.phases AS team_phases, st.title AS source_scheduled_title
        FROM tasks t
        LEFT JOIN teams tm ON tm.id = t.team_id
        LEFT JOIN scheduled_tasks st ON st.id = t.source_scheduled_task_id
        WHERE t.source_scheduled_task_id IS NOT NULL
        ORDER BY t.created_at DESC`
-    ).all() as Array<{ id: string; title: string; status: string; current_phase: number; task_type: string; created_at: string; team_name: string | null; source_scheduled_title: string | null }>;
+    ).all() as Array<TaskListRow & { source_scheduled_title: string | null }>).map(decorate);
     const escalationCount = getOpenEscalationCount(db);
     return html(taskListPage({ tasks, scheduledRuns, escalationCount, daemonState: isDaemonPaused(db) ? "paused" : "running", daemonUptime: process.uptime() }));
   });
@@ -1615,63 +1617,25 @@ function registerV2PageRoutes(): void {
     return html(taskPhaseConfigFragment(teamPhases, existingOverrides));
   });
 
-  // Fragment: task-type-aware team selector. Owned by all task creation forms via
-  // <div id="task-form-team-slot" hx-get="...">. Realtime locks to the Real Time
-  // team; standard shows a team dropdown. `context` controls markup style so the
-  // slot fits the host form:
+  // Fragment: team selector. Owned by all task creation forms via
+  // <div id="task-form-team-slot" hx-get="...">. Unified: every visible team is
+  // assignable regardless of the autopilot toggle (a team's mode is only the
+  // autopilot default), so this slot never re-fetches on mode change. `context`
+  // controls markup style so the slot fits the host form:
   //   - "full"    -> sk-* form-group classes (task-create.page, command-center)
   //   - "inline"  -> compact ids/classes matching dashboard inline form
   //   - "compact" -> bare <label> blocks for task-form-grid (taskFormFields)
   addRoute("GET", "/fragments/task-form/team", (req) => {
     const url = new URL(req.url, "http://localhost");
-    const taskType = url.searchParams.get("taskType") === "real_time" ? "real_time" : "standard";
     const context = (url.searchParams.get("context") ?? "full") as "full" | "inline" | "compact";
     const selectedTeamId = url.searchParams.get("selectedTeamId") ?? "";
 
-    const slotAttrs = (ctx: string) =>
-      `id="task-form-team-slot" style="display:contents;" hx-get="/fragments/task-form/team?context=${ctx}" hx-trigger="change from:[name=taskType]" hx-include="[name=taskType]" hx-target="this" hx-swap="outerHTML"`;
+    const slotAttrs = `id="task-form-team-slot" style="display:contents;"`;
 
-    if (taskType === "real_time") {
-      // Real-time tasks pick among operator-defined real-time teams (mode ===
-      // 'realtime') plus the built-in Real Time team. Default to the configured
-      // realtime team, else the first available.
-      const rtTeams = listRealtimeTeams();
-      const preferred = getRealtimeTeamId();
-      const rtDefault =
-        (selectedTeamId && rtTeams.some((t) => t.id === selectedTeamId) && selectedTeamId) ||
-        (preferred && rtTeams.some((t) => t.id === preferred) && preferred) ||
-        (rtTeams[0]?.id ?? preferred ?? "");
-      const source = rtTeams.length
-        ? rtTeams
-        : [{ id: preferred ?? "", name: "Real Time (auto)" }];
-      const rtOptions = source
-        .map((t) => `<option value="${escapeHtml(t.id)}"${t.id === rtDefault ? " selected" : ""}>${escapeHtml(t.name)}</option>`)
-        .join("");
-
-      if (context === "inline") {
-        return html(`<div ${slotAttrs("inline")}>
-          <select name="teamId" id="dashboard-inline-team">${rtOptions}</select>
-        </div>`);
-      }
-      if (context === "compact") {
-        return html(`<div ${slotAttrs("compact")}>
-          <label id="team-field-wrapper"><span>Team</span>
-            <select name="teamId" id="team-field">${rtOptions}</select>
-          </label>
-        </div>`);
-      }
-      return html(`<div ${slotAttrs("full")}>
-        <div class="sk-form-group" style="flex:1;">
-          <label class="sk-label">Real-time team</label>
-          <select name="teamId" class="sk-select">${rtOptions}</select>
-        </div>
-      </div>`);
-    }
-
-    // standard branch - teams plus (experimental) single agents. A single agent
-    // is assigned by setting team_id to its projected `sa:<id>` team id, so the
-    // whole team-keyed pipeline runs it unchanged.
-    const teams = listTeamsForStandardTasks();
+    // Teams plus (experimental) single agents. A single agent is assigned by
+    // setting team_id to its projected `sa:<id>` team id, so the whole
+    // team-keyed pipeline runs it unchanged.
+    const teams = listAssignableTeams();
     const teamOptions = teams.map(t =>
       `<option value="${escapeHtml(t.id)}"${t.id === selectedTeamId ? " selected" : ""}>${escapeHtml(t.name)}</option>`
     ).join("");
@@ -1696,14 +1660,14 @@ function registerV2PageRoutes(): void {
     }
 
     if (context === "inline") {
-      return html(`<div ${slotAttrs("inline")}>
+      return html(`<div ${slotAttrs}>
         <select name="teamId" id="dashboard-inline-team">
           <option value=""${selectedTeamId === "" ? " selected" : ""}>Unassigned</option>${teamOptions}${agentGroups}
         </select>
       </div>`);
     }
     if (context === "compact") {
-      return html(`<div ${slotAttrs("compact")}>
+      return html(`<div ${slotAttrs}>
         <label id="team-field-wrapper"><span>Team</span>
           <select name="teamId" id="team-field">
             <option value=""${selectedTeamId === "" ? " selected" : ""}>Unassigned</option>${teamOptions}${agentGroups}
@@ -1712,7 +1676,7 @@ function registerV2PageRoutes(): void {
       </div>`);
     }
     // full
-    return html(`<div ${slotAttrs("full")}>
+    return html(`<div ${slotAttrs}>
       <div class="sk-form-group" style="flex:1;">
         <label class="sk-label">Team or agent</label>
         <select name="teamId" class="sk-select">
@@ -1801,12 +1765,33 @@ function renderArtifactDetailFragment(
 }
 
 function renderArtifactDetail(
-  artifact: { id: string; name: string; version: number; kind: string; description: string | null; body: string | null; format?: string | null; created_at: string },
+  artifact: { id: string; name: string; version: number; kind: string; description: string | null; body: string | null; format?: string | null; created_at: string; storage?: string | null; mime?: string | null; bytes?: number | null; width?: number | null; height?: number | null },
   taskId: string,
   versionLinks: string,
   variant: ArtifactModalVariant,
   publish: { isPublished: boolean; publicUrl: string | null; connectConfigured: boolean },
 ): string {
+  if (artifact.storage === "file") {
+    // Operator upload: no text body to render or edit. Images show full size,
+    // everything else is a download link. Bytes come from the immutable file route.
+    const fileUrl = `/api/artifacts/${escapeHtml(artifact.id)}/file`;
+    const isImage = !!artifact.mime && artifact.mime.startsWith("image/");
+    const dims = isImage && artifact.width && artifact.height ? ` &middot; ${artifact.width}&times;${artifact.height}` : "";
+    const caption = artifact.body?.trim() ? `<p class="artifact-file__caption">${escapeHtml(artifact.body.trim())}</p>` : "";
+    const media = isImage
+      ? `<a href="${fileUrl}" target="_blank" rel="noopener" title="Open in a new tab"><img class="artifact-file__img" src="${fileUrl}" alt="${escapeHtml(artifact.name)}"></a>`
+      : `<div class="artifact-file__dl"><span aria-hidden="true">${fileArtifactIcon(artifact.mime ?? null)}</span> <a href="${fileUrl}" download="${escapeHtml(artifact.name)}">Download ${escapeHtml(artifact.name)}</a></div>`;
+    return `<div class="artifact-detail artifact-detail--file">
+    <div class="artifact-detail-header">
+      <h3>${escapeHtml(artifact.name)} <span class="badge badge-info">v${artifact.version}</span></h3>
+    </div>
+    <p class="muted">${escapeHtml(artifact.mime ?? "file")} &middot; ${escapeHtml(formatBytes(artifact.bytes))}${dims} &middot; ${formatTimestamp(artifact.created_at)}</p>
+    <div class="artifact-versions">Versions: ${versionLinks}</div>
+    ${caption}
+    <div class="artifact-body artifact-file">${media}</div>
+  </div>`;
+  }
+
   const bodyContent = artifact.body ? escapeHtml(artifact.body) : "(empty)";
   const rawBody = artifact.body ?? "";
   // Prefer the stored format; fall back to the heuristic for legacy rows that

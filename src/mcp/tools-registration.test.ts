@@ -227,7 +227,7 @@ describe("registerDaemonTools — post_message", () => {
 
 const EXTERNAL_TOOLS = [
   "create_task", "get_task", "list_tasks", "list_active_tasks", "update_task",
-  "approve_task", "pause_task", "resume_task", "cancel_task", "complete_task", "list_teams",
+  "approve_task", "pause_task", "resume_task", "cancel_task", "complete_task", "input_task", "list_teams",
   "list_recurring_tasks", "run_recurring_task",
   "create_note", "create_artifact",
 ];
@@ -317,7 +317,7 @@ describe("resolveAgentFromToken — API key auth", () => {
   it("resolves a live-task instance even when its status was raced off 'running'", () => {
     // The core fix: instance status flipped to 'completed' by an exit handler mid-run,
     // but the task is still running, so the token must remain valid.
-    seedInstance("inst-raced", "completed", "running");
+    seedInstance("inst-raced", "completed", "active");
     const identity = resolveAgentFromToken(db, "inst-raced");
     expect(identity).not.toBeNull();
     expect(identity!.type).toBe("internal");
@@ -327,15 +327,15 @@ describe("resolveAgentFromToken — API key auth", () => {
     }
   });
 
-  it("still resolves a running instance whose task is not running (task-less/preserve old path)", () => {
-    seedInstance("inst-running", "running", "completed");
+  it("still resolves a running instance whose task is not active (task-less/preserve old path)", () => {
+    seedInstance("inst-running", "running", "settled");
     const identity = resolveAgentFromToken(db, "inst-running");
     expect(identity).not.toBeNull();
     expect(identity!.type).toBe("internal");
   });
 
   it("rejects a finished instance on a finished task", () => {
-    seedInstance("inst-done", "completed", "completed");
+    seedInstance("inst-done", "completed", "settled");
     expect(resolveAgentFromToken(db, "inst-done")).toBeNull();
   });
 });

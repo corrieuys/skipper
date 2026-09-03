@@ -31,6 +31,14 @@ function createAgent(database: Database, id = "agent-1"): string {
   return id;
 }
 
+function startedTask(teamId?: string): string {
+  const team = teamId ?? createTeam(db);
+  const task = scheduler.createTask({ title: "Started", teamId: team, workingDirectory: "" });
+  scheduler.approveTask(task.id);
+  scheduler.markStarted(task.id);
+  return task.id;
+}
+
 beforeEach(() => {
   db = new Database(TEST_DB);
   db.exec("PRAGMA foreign_keys = ON");
@@ -46,14 +54,23 @@ afterEach(() => {
 });
 
 describe("createTask", () => {
-  it("creates a task with required fields", () => {
-    const task = scheduler.createTask({ title: "Test Task" });
+  it("creates a draft task with defaults", () => {
+    const task = scheduler.createTask({ title: "Test Task", workingDirectory: "" });
     expect(task.id).toBeTruthy();
     expect(task.title).toBe("Test Task");
     expect(task.status).toBe("draft");
+    expect(task.mode).toBe("workflow");
+    expect(task.paused).toBe(false);
     expect(task.current_phase).toBe(0);
     expect(task.result).toBeNull();
     expect(task.orchestration_state).toEqual({});
+    expect(task.wake_requested_at).toBeNull();
+    expect(task.settled_at).toBeNull();
+  });
+
+  it("creates a conversational task", () => {
+    const task = scheduler.createTask({ title: "Chat", workingDirectory: "", mode: "conversational" });
+    expect(task.mode).toBe("conversational");
   });
 
   it("creates a task with all fields", () => {
@@ -62,6 +79,7 @@ describe("createTask", () => {
       title: "Full Task",
       description: "A detailed description",
       teamId,
+      workingDirectory: "",
     });
     expect(task.description).toBe("A detailed description");
     expect(task.team_id).toBe(teamId);
@@ -70,7 +88,7 @@ describe("createTask", () => {
 
 describe("updateTitle", () => {
   it("updates the title and emits a same-status task:state_changed", () => {
-    const task = scheduler.createTask({ title: "" });
+    const task = scheduler.createTask({ title: "", workingDirectory: "" });
     const events: Array<{ taskId: string; previousStatus: string; newStatus: string }> = [];
     const handler = (e: { taskId: string; previousStatus: string; newStatus: string }) => events.push(e);
     eventBus.on("task:state_changed", handler);
@@ -92,24 +110,24 @@ describe("updateTitle", () => {
 });
 
 describe("deleteTask", () => {
-  it("deletes a non-running task", () => {
-    const task = scheduler.createTask({ title: "Task to delete" });
+  it("deletes a task with no live agents", () => {
+    const task = scheduler.createTask({ title: "Task to delete", workingDirectory: "" });
     const deleted = scheduler.deleteTask(task.id);
     expect(deleted).toBe(true);
     expect(scheduler.getTask(task.id)).toBeNull();
   });
 
-  it("throws when deleting a running task", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Running task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    expect(() => scheduler.deleteTask(task.id)).toThrow("Cannot delete a running task");
+  it("throws when the task has live agent instances", () => {
+    const id = startedTask();
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('live-inst', ?, 'default-agent', 'running')",
+    ).run(id);
+    expect(() => scheduler.deleteTask(id)).toThrow("Cannot delete a task with live agents");
   });
 
   it("removes non-cascading dependent rows tied to the task", () => {
     const agentId = createAgent(db);
-    const task = scheduler.createTask({ title: "Task with deps" });
+    const task = scheduler.createTask({ title: "Task with deps", workingDirectory: "" });
 
     db.prepare(
       "INSERT INTO escalations (id, agent_id, task_id, type, question) VALUES (?, ?, ?, 'agent_request', 'help')",
@@ -128,31 +146,31 @@ describe("deleteTask", () => {
 });
 
 describe("approveTask", () => {
-  it("approves a draft task with team", () => {
+  it("approves a draft task with team into active with a pending wake", () => {
     const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
+    const task = scheduler.createTask({ title: "Task", teamId, workingDirectory: "" });
     const approved = scheduler.approveTask(task.id);
-    expect(approved.status).toBe("approved");
+    expect(approved.status).toBe("active");
     expect(approved.approved_at).toBeTruthy();
+    expect(approved.wake_requested_at).toBeTruthy();
   });
 
-  it("throws when task has no team", () => {
-    const task = scheduler.createTask({ title: "No Team" });
+  it("throws when a workflow task has no team", () => {
+    const task = scheduler.createTask({ title: "No Team", workingDirectory: "" });
     expect(() => scheduler.approveTask(task.id)).toThrow(
       "Task must have a team assigned",
     );
   });
 
-  it("approves a real-time draft task without team assignment", () => {
-    const task = scheduler.createTask({ title: "RT No Team", taskType: "real_time" });
+  it("approves a conversational draft task without team assignment", () => {
+    const task = scheduler.createTask({ title: "Chat No Team", workingDirectory: "", mode: "conversational" });
     const approved = scheduler.approveTask(task.id);
-    expect(approved.status).toBe("approved");
-    expect(approved.approved_at).toBeTruthy();
+    expect(approved.status).toBe("active");
   });
 
   it("throws when task is not draft", () => {
     const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
+    const task = scheduler.createTask({ title: "Task", teamId, workingDirectory: "" });
     scheduler.approveTask(task.id);
     expect(() => scheduler.approveTask(task.id)).toThrow(
       "Can only approve draft tasks",
@@ -164,36 +182,84 @@ describe("approveTask", () => {
   });
 });
 
-describe("pauseTask / resumeFromPause", () => {
-  function runningTask(): string {
+describe("unapproveTask", () => {
+  it("moves an unstarted active task back to draft", () => {
     const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Pausable", teamId });
+    const task = scheduler.createTask({ title: "Task", teamId, workingDirectory: "" });
     scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    return task.id;
-  }
-
-  it("flips a running task to paused and back to running", () => {
-    const id = runningTask();
-    const paused = scheduler.pauseTask(id);
-    expect(paused.status).toBe("paused");
-    const resumed = scheduler.resumeFromPause(id);
-    expect(resumed.status).toBe("running");
+    const unapproved = scheduler.unapproveTask(task.id);
+    expect(unapproved.status).toBe("draft");
+    expect(unapproved.approved_at).toBeNull();
+    expect(unapproved.wake_requested_at).toBeNull();
   });
 
-  it("rejects pausing a non-running task", () => {
+  it("throws once the task has started", () => {
+    const id = startedTask();
+    expect(() => scheduler.unapproveTask(id)).toThrow(
+      "Cannot unapprove a task that has already started",
+    );
+  });
+
+  it("allows re-approval after unapprove", () => {
     const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Draft", teamId });
-    expect(() => scheduler.pauseTask(task.id)).toThrow("Can only pause a running task");
+    const task = scheduler.createTask({ title: "Task", teamId, workingDirectory: "" });
+    scheduler.approveTask(task.id);
+    scheduler.unapproveTask(task.id);
+    const reapproved = scheduler.approveTask(task.id);
+    expect(reapproved.status).toBe("active");
+  });
+});
+
+describe("markStarted", () => {
+  it("stamps started_at and consumes the wake marker", () => {
+    const teamId = createTeam(db);
+    const task = scheduler.createTask({ title: "Task", teamId, workingDirectory: "" });
+    scheduler.approveTask(task.id);
+    const started = scheduler.markStarted(task.id);
+    expect(started.status).toBe("active");
+    expect(started.started_at).toBeTruthy();
+    expect(started.wake_requested_at).toBeNull();
   });
 
-  it("rejects resuming a task that is not paused", () => {
-    const id = runningTask();
-    expect(() => scheduler.resumeFromPause(id)).toThrow("Can only resume a paused task");
+  it("keeps the original started_at on later wakes", () => {
+    const id = startedTask();
+    const first = scheduler.getTask(id)!.started_at;
+    scheduler.requestWake(id);
+    scheduler.markStarted(id);
+    expect(scheduler.getTask(id)!.started_at).toBe(first);
+  });
+
+  it("throws for a draft task", () => {
+    const task = scheduler.createTask({ title: "Task", workingDirectory: "" });
+    expect(() => scheduler.markStarted(task.id)).toThrow("Can only start active tasks");
+  });
+});
+
+describe("pauseTask / resumeFromPause", () => {
+  it("flips the paused flag on and off; status stays active", () => {
+    const id = startedTask();
+    const paused = scheduler.pauseTask(id);
+    expect(paused.status).toBe("active");
+    expect(paused.paused).toBe(true);
+    const resumed = scheduler.resumeFromPause(id);
+    expect(resumed.paused).toBe(false);
+  });
+
+  it("rejects pausing a draft task", () => {
+    const teamId = createTeam(db);
+    const task = scheduler.createTask({ title: "Draft", teamId, workingDirectory: "" });
+    expect(() => scheduler.pauseTask(task.id)).toThrow("Can only pause an active task");
+  });
+
+  it("rejects double pause and resuming an unpaused task", () => {
+    const id = startedTask();
+    expect(() => scheduler.resumeFromPause(id)).toThrow("Task is not paused");
+    scheduler.pauseTask(id);
+    expect(() => scheduler.pauseTask(id)).toThrow("Task is already paused");
   });
 
   it("reconciles open delegations to a terminal state on pause", () => {
-    const id = runningTask();
+    const id = startedTask();
     db.prepare(
       "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('inst-root', ?, 'default-agent', 'running')",
     ).run(id);
@@ -212,391 +278,300 @@ describe("pauseTask / resumeFromPause", () => {
     expect(grp.status).toBe("completed");
   });
 
-  it("excludes paused tasks from the approved-task queue", () => {
-    const pausedId = runningTask();
+  it("excludes paused tasks from the startable queue", () => {
+    const pausedId = startedTask();
+    scheduler.requestWake(pausedId);
     scheduler.pauseTask(pausedId);
     const teamId = createTeam(db, "team-2");
-    const approved = scheduler.createTask({ title: "Next", teamId });
-    scheduler.approveTask(approved.id);
+    const queued = scheduler.createTask({ title: "Next", teamId, workingDirectory: "" });
+    scheduler.approveTask(queued.id);
 
-    const next = scheduler.getNextApprovedTask();
-    expect(next?.id).toBe(approved.id);
-  });
-
-  it("counts a paused task toward the running/paused slot count", () => {
-    const id = runningTask();
-    scheduler.pauseTask(id);
-    const count = (db
-      .prepare("SELECT COUNT(*) AS c FROM tasks WHERE status IN ('running','paused') AND task_type != 'real_time'")
-      .get() as { c: number }).c;
-    expect(count).toBe(1);
+    const next = scheduler.getNextStartableTask();
+    expect(next?.id).toBe(queued.id);
   });
 });
 
-describe("unapproveTask", () => {
-  it("moves an approved task back to draft", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    const unapproved = scheduler.unapproveTask(task.id);
-    expect(unapproved.status).toBe("draft");
-    expect(unapproved.approved_at).toBeNull();
-  });
-
-  it("throws when task is not approved", () => {
-    const task = scheduler.createTask({ title: "Task" });
-    expect(() => scheduler.unapproveTask(task.id)).toThrow(
-      "Can only unapprove approved tasks",
-    );
-  });
-
-  it("allows re-approval after unapprove", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.unapproveTask(task.id);
-    const reapproved = scheduler.approveTask(task.id);
-    expect(reapproved.status).toBe("approved");
-  });
-});
-
-describe("startTask", () => {
-  it("starts an approved task", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    const started = scheduler.startTask(task.id);
-    expect(started.status).toBe("running");
-    expect(started.started_at).toBeTruthy();
-  });
-
-  it("throws when task is not approved", () => {
-    const task = scheduler.createTask({ title: "Task" });
-    expect(() => scheduler.startTask(task.id)).toThrow(
-      "Can only start approved tasks",
-    );
-  });
-
-  it("starts an approved real-time task without team assignment", () => {
-    const task = scheduler.createTask({ title: "RT Task", taskType: "real_time" });
-    scheduler.approveTask(task.id);
-    const started = scheduler.startTask(task.id);
-    expect(started.status).toBe("running");
-    expect(started.started_at).toBeTruthy();
-    expect(started.task_type).toBe("real_time");
-  });
-});
-
-describe("completeTask", () => {
-  it("completes a running task", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    const completed = scheduler.completeTask(task.id, { output: "done" });
-    expect(completed.status).toBe("completed");
-    expect(completed.completed_at).toBeTruthy();
-    expect(completed.result).toEqual({ output: "done" });
+describe("completeRun", () => {
+  it("settles the run into the resting state (presents as Completed)", () => {
+    const id = startedTask();
+    const events: string[] = [];
+    const onRun = () => events.push("run_completed");
+    eventBus.on("task:run_completed", onRun);
+    try {
+      const completed = scheduler.completeRun(id, { output: "done" });
+      expect(completed.status).toBe("settled");
+      expect(completed.completed_at).toBeTruthy();
+      expect(completed.result).toEqual({ output: "done" });
+      expect(completed.settled_at).toBeTruthy();
+    } finally {
+      eventBus.off("task:run_completed", onRun);
+    }
+    expect(events).toEqual(["run_completed"]);
   });
 
   it("completes without result", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    const completed = scheduler.completeTask(task.id);
-    expect(completed.status).toBe("completed");
+    const id = startedTask();
+    const completed = scheduler.completeRun(id);
+    expect(completed.status).toBe("settled");
     expect(completed.result).toBeNull();
   });
 
-  it("throws when task is not running", () => {
-    const task = scheduler.createTask({ title: "Task" });
-    expect(() => scheduler.completeTask(task.id)).toThrow(
-      "Can only complete running tasks",
+  it("throws when task is not active", () => {
+    const task = scheduler.createTask({ title: "Task", workingDirectory: "" });
+    expect(() => scheduler.completeRun(task.id)).toThrow(
+      "Can only complete a run on active tasks",
     );
   });
 
   it("auto-resolves open escalations for the task", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
+    const id = startedTask();
     const agentId = createAgent(db);
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-
     db.prepare(
       "INSERT INTO escalations (id, agent_id, task_id, type, question) VALUES (?, ?, ?, 'agent_request', 'Need help')",
-    ).run("esc-1", agentId, task.id);
+    ).run("esc-1", agentId, id);
 
-    scheduler.completeTask(task.id);
+    scheduler.completeRun(id);
 
     const escalation = db.prepare("SELECT status, response FROM escalations WHERE id = 'esc-1'").get() as { status: string; response: string | null };
     expect(escalation.status).toBe("resolved");
-    expect(escalation.response).toContain("task completed");
+    expect(escalation.response).toContain("run completed");
   });
 });
 
-describe("failTask", () => {
-  it("fails a running task", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    const failed = scheduler.failTask(task.id, "Something went wrong");
-    expect(failed.status).toBe("failed");
-    expect(failed.result).toEqual({ error: "Something went wrong" });
+describe("settling with undelivered input (regression: stuck 'queued for agent')", () => {
+  function addUnfedInput(taskId: string, content: string): void {
+    db.prepare(
+      "INSERT INTO realtime_timeline (id, task_id, entry_type, content, priority) VALUES (?, ?, 'text', ?, 'high')",
+    ).run(crypto.randomUUID(), taskId, content);
+  }
+
+  it("completeRun keeps the task active with a pending wake when input is unfed", () => {
+    const id = startedTask();
+    addUnfedInput(id, "just end the task");
+
+    const wakes: string[] = [];
+    const onWake = (e: { taskId: string }) => wakes.push(e.taskId);
+    eventBus.on("task:wake_requested", onWake);
+    try {
+      const settled = scheduler.completeRun(id, { output: "done" });
+      expect(settled.status).toBe("active");
+      expect(settled.wake_requested_at).toBeTruthy();
+      expect(settled.result).toEqual({ output: "done" });
+    } finally {
+      eventBus.off("task:wake_requested", onWake);
+    }
+    expect(wakes).toEqual([id]);
+    // The queue can pick it up and the next run will carry the INPUT_FEED.
+    expect(scheduler.getNextStartableTask()!.id).toBe(id);
   });
 
-  it("fails without error message", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    const failed = scheduler.failTask(task.id);
-    expect(failed.status).toBe("failed");
-    expect(failed.result).toBeNull();
+  it("failRun keeps the task active with a pending wake when input is unfed", () => {
+    const id = startedTask();
+    addUnfedInput(id, "try again with flag X");
+    const settled = scheduler.failRun(id, "boom");
+    expect(settled.status).toBe("active");
+    expect(settled.wake_requested_at).toBeTruthy();
+  });
+
+  it("completeRun archives normally once all input was delivered", () => {
+    const id = startedTask();
+    db.prepare(
+      "INSERT INTO realtime_timeline (id, task_id, entry_type, content, fed_to_skipper) VALUES (?, ?, 'text', 'seen', 1)",
+    ).run(crypto.randomUUID(), id);
+    const settled = scheduler.completeRun(id);
+    expect(settled.status).toBe("settled");
   });
 });
 
-describe("retryTask", () => {
-  it("retries a failed task back to draft", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.failTask(task.id, "error");
-    const retried = scheduler.retryTask(task.id);
-    expect(retried.status).toBe("draft");
-    expect(retried.current_phase).toBe(0);
-    expect(retried.result).toBeNull();
-    expect(retried.regression_count).toBe(0);
-    expect(retried.started_at).toBeNull();
-    expect(retried.completed_at).toBeNull();
-    expect(retried.approved_at).toBeNull();
+describe("failRun", () => {
+  it("records the error, settles the task, and stays revivable via unarchive+wake", () => {
+    const id = startedTask();
+    const events: string[] = [];
+    const onRun = () => events.push("run_failed");
+    eventBus.on("task:run_failed", onRun);
+    try {
+      const failed = scheduler.failRun(id, "Something went wrong");
+      expect(failed.status).toBe("settled");
+      expect(failed.result).toEqual({ error: "Something went wrong" });
+    } finally {
+      eventBus.off("task:run_failed", onRun);
+    }
+    expect(events).toEqual(["run_failed"]);
+
+    // Still revivable: input auto-unarchives + wakes (daemon.inputTask path).
+    scheduler.reviveTask(id);
+    const woken = scheduler.requestWake(id);
+    expect(woken.wake_requested_at).toBeTruthy();
   });
 
-  it("throws when task is not failed", () => {
-    const task = scheduler.createTask({ title: "Task" });
-    expect(() => scheduler.retryTask(task.id)).toThrow(
-      "Can only retry failed tasks",
-    );
-  });
-
-  it("kills and clears stale agent runtime state before resetting", () => {
-    const teamId = createTeam(db);
-    const agentId = createAgent(db, "retry-agent");
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.failTask(task.id, "failed");
-
-    db.prepare("UPDATE agents SET current_task_id = ?, process_pid = 999999, status = 'busy' WHERE id = ?").run(task.id, agentId);
-    db.prepare(
-      `INSERT INTO agent_instances (id, task_id, template_agent_id, status, process_pid, attempt)
-       VALUES (?, ?, ?, 'running', 999999, 1)`,
-    ).run("retry-inst", task.id, agentId);
-
-    scheduler.retryTask(task.id);
-
-    const agent = db.prepare("SELECT current_task_id, process_pid, status FROM agents WHERE id = ?").get(agentId) as {
-      current_task_id: string | null;
-      process_pid: number | null;
-      status: string;
-    };
-    const instance = db.prepare("SELECT status, process_pid FROM agent_instances WHERE id = ?").get("retry-inst") as {
-      status: string;
-      process_pid: number | null;
-    };
-
-    expect(agent.current_task_id).toBeNull();
-    expect(agent.process_pid).toBeNull();
-    expect(agent.status).toBe("idle");
-    // History preserved for restart-resume; status flipped, pid cleared.
-    expect(instance.status).toBe("failed");
-    expect(instance.process_pid).toBeNull();
-  });
-
-  it("preserves delegations and agent_instances history across retry for resume", () => {
-    const teamId = createTeam(db);
-    const parentAgentId = createAgent(db, "parent-agent");
-    const childAgentId = createAgent(db, "child-agent");
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.failTask(task.id, "failed");
-
-    db.prepare(
-      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, session_id, attempt)
-       VALUES (?, ?, ?, NULL, ?, 'failed', 'parent-sess', 1)`,
-    ).run("parent-inst", task.id, parentAgentId, "parent-inst");
-    db.prepare(
-      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, session_id, attempt)
-       VALUES (?, ?, ?, ?, ?, 'completed', 'child-sess', 1)`,
-    ).run("child-inst", task.id, childAgentId, "parent-inst", "parent-inst");
-    db.prepare(
-      `INSERT INTO delegations (id, parent_agent_id, child_agent_id, parent_instance_id, child_instance_id, task_id, prompt, status)
-       VALUES (?, ?, ?, ?, ?, ?, '', 'completed')`,
-    ).run("del-1", parentAgentId, childAgentId, "parent-inst", "child-inst", task.id);
-
-    scheduler.retryTask(task.id);
-
-    const delegations = db.prepare("SELECT COUNT(*) as c FROM delegations WHERE task_id = ?").get(task.id) as { c: number };
-    const parentInstance = db.prepare("SELECT session_id FROM agent_instances WHERE id = ?").get("parent-inst") as { session_id: string | null };
-    const childInstance = db.prepare("SELECT session_id FROM agent_instances WHERE id = ?").get("child-inst") as { session_id: string | null };
-
-    expect(delegations.c).toBe(1);
-    expect(parentInstance.session_id).toBe("parent-sess");
-    expect(childInstance.session_id).toBe("child-sess");
+  it("writes a system note describing the failure", () => {
+    const id = startedTask();
+    scheduler.failRun(id, "boom");
+    const notes = db.prepare("SELECT content, source FROM task_notes WHERE task_id = ?").all(id) as Array<{ content: string; source: string }>;
+    const sys = notes.find((n) => n.content.includes("Run failed: boom"));
+    expect(sys).toBeTruthy();
+    expect(sys!.source).toBe("system");
   });
 });
 
-describe("resumeTask", () => {
-  it("resumes a failed task to approved while preserving phase", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.advancePhase(task.id);
-    scheduler.failTask(task.id, "error");
-
-    const resumed = scheduler.resumeTask(task.id);
-    expect(resumed.status).toBe("approved");
-    expect(resumed.current_phase).toBe(1);
-    expect(resumed.result).toBeNull();
-    expect(resumed.started_at).toBeNull();
-    expect(resumed.completed_at).toBeNull();
-    expect(resumed.approved_at).not.toBeNull();
+describe("settleTask / reviveTask", () => {
+  it("archives an active task", () => {
+    const id = startedTask();
+    const archived = scheduler.settleTask(id, { result: { output: "final" } });
+    expect(archived.status).toBe("settled");
+    expect(archived.settled_at).toBeTruthy();
+    expect(archived.result).toEqual({ output: "final" });
   });
 
-  it("throws when task is not failed", () => {
-    const task = scheduler.createTask({ title: "Task" });
-    expect(() => scheduler.resumeTask(task.id)).toThrow(
-      "Can only resume failed tasks",
-    );
+  it("archives with a cancel-style error result", () => {
+    const id = startedTask();
+    const archived = scheduler.settleTask(id, { error: "Cancelled by user" });
+    expect(archived.status).toBe("settled");
+    expect(archived.result).toEqual({ error: "Cancelled by user" });
   });
 
-  it("clears stale runtime state before resuming but preserves agent_instances history", () => {
-    const teamId = createTeam(db);
-    const agentId = createAgent(db, "resume-agent");
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.failTask(task.id, "failed");
+  it("preserves the prior result when archiving without one", () => {
+    const id = startedTask();
+    db.prepare("UPDATE tasks SET result = ? WHERE id = ?").run(JSON.stringify({ output: "kept" }), id);
+    const archived = scheduler.settleTask(id);
+    expect(archived.result).toEqual({ output: "kept" });
+  });
 
-    db.prepare("UPDATE agents SET current_task_id = ?, process_pid = 999999, status = 'busy' WHERE id = ?").run(task.id, agentId);
+  it("rejects settling a draft task", () => {
+    const task = scheduler.createTask({ title: "Draft", workingDirectory: "" });
+    expect(() => scheduler.settleTask(task.id)).toThrow("Can only settle active tasks");
+  });
+
+  it("unarchives back to active", () => {
+    const id = startedTask();
+    scheduler.settleTask(id);
+    const unarchived = scheduler.reviveTask(id);
+    expect(unarchived.status).toBe("active");
+    expect(unarchived.settled_at).toBeNull();
+  });
+
+  it("auto-resolves open escalations on archive", () => {
+    const id = startedTask();
+    const agentId = createAgent(db);
     db.prepare(
-      `INSERT INTO agent_instances (id, task_id, template_agent_id, status, process_pid, session_id, attempt)
-       VALUES (?, ?, ?, 'waiting_delegation', 999999, 'sess-resume', 1)`,
-    ).run("resume-inst", task.id, agentId);
-
-    scheduler.resumeTask(task.id);
-
-    const agent = db.prepare("SELECT current_task_id, process_pid, status FROM agents WHERE id = ?").get(agentId) as {
-      current_task_id: string | null;
-      process_pid: number | null;
-      status: string;
-    };
-    const instance = db.prepare("SELECT status, process_pid, session_id FROM agent_instances WHERE id = ?").get("resume-inst") as {
-      status: string;
-      process_pid: number | null;
-      session_id: string | null;
-    };
-
-    expect(agent.current_task_id).toBeNull();
-    expect(agent.process_pid).toBeNull();
-    expect(agent.status).toBe("idle");
-    // History preserved with session_id intact so restart can resume.
-    expect(instance.status).toBe("failed");
-    expect(instance.process_pid).toBeNull();
-    expect(instance.session_id).toBe("sess-resume");
+      "INSERT INTO escalations (id, agent_id, task_id, type, question) VALUES ('esc-a', ?, ?, 'agent_request', 'q')",
+    ).run(agentId, id);
+    scheduler.settleTask(id);
+    const esc = db.prepare("SELECT status FROM escalations WHERE id = 'esc-a'").get() as { status: string };
+    expect(esc.status).toBe("resolved");
   });
 });
 
-describe("cancelTask", () => {
-  it("cancels a draft task", () => {
-    const task = scheduler.createTask({ title: "Task" });
-    const cancelled = scheduler.cancelTask(task.id);
-    expect(cancelled.status).toBe("failed");
-    expect(cancelled.result).toEqual({ error: "Cancelled by user" });
+describe("requestWake / getNextStartableTask", () => {
+  it("returns null when nothing is startable", () => {
+    expect(scheduler.getNextStartableTask()).toBeNull();
   });
 
-  it("cancels a running task", () => {
+  it("returns the earliest approved (never-started) task", () => {
     const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    const cancelled = scheduler.cancelTask(task.id);
-    expect(cancelled.status).toBe("failed");
-  });
-
-  it("throws when cancelling completed task", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.completeTask(task.id);
-    expect(() => scheduler.cancelTask(task.id)).toThrow(
-      "Cannot cancel a completed task",
-    );
-  });
-
-  it("throws when cancelling failed task", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.failTask(task.id);
-    expect(() => scheduler.cancelTask(task.id)).toThrow(
-      "Cannot cancel a failed task",
-    );
-  });
-});
-
-describe("getNextApprovedTask", () => {
-  it("returns null when no approved tasks", () => {
-    expect(scheduler.getNextApprovedTask()).toBeNull();
-  });
-
-  it("returns earliest created approved task", () => {
-    const teamId = createTeam(db);
-    const first = scheduler.createTask({ title: "First Task", teamId });
-    const second = scheduler.createTask({ title: "Second Task", teamId });
+    const first = scheduler.createTask({ title: "First Task", teamId, workingDirectory: "" });
+    const second = scheduler.createTask({ title: "Second Task", teamId, workingDirectory: "" });
     scheduler.approveTask(first.id);
     scheduler.approveTask(second.id);
 
-    const next = scheduler.getNextApprovedTask();
+    const next = scheduler.getNextStartableTask();
     expect(next!.id).toBe(first.id);
   });
 
-  it("skips non-approved tasks", () => {
-    const teamId = createTeam(db);
-    scheduler.createTask({ title: "Draft", teamId });
-    const approved = scheduler.createTask({ title: "Approved", teamId });
-    scheduler.approveTask(approved.id);
+  it("does not return an idle started task without a wake", () => {
+    const id = startedTask();
+    expect(scheduler.getNextStartableTask()).toBeNull();
+    scheduler.requestWake(id);
+    expect(scheduler.getNextStartableTask()!.id).toBe(id);
+  });
 
-    const next = scheduler.getNextApprovedTask();
-    expect(next!.id).toBe(approved.id);
+  it("emits task:wake_requested", () => {
+    const id = startedTask();
+    const seen: string[] = [];
+    const onWake = (e: { taskId: string }) => seen.push(e.taskId);
+    eventBus.on("task:wake_requested", onWake);
+    try {
+      scheduler.requestWake(id);
+    } finally {
+      eventBus.off("task:wake_requested", onWake);
+    }
+    expect(seen).toEqual([id]);
+  });
+
+  it("skips tasks with live instances", () => {
+    const id = startedTask();
+    scheduler.requestWake(id);
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('busy-inst', ?, 'default-agent', 'running')",
+    ).run(id);
+    expect(scheduler.getNextStartableTask()).toBeNull();
+  });
+
+  it("skips tasks awaiting review", () => {
+    const id = startedTask();
+    scheduler.requestWake(id);
+    scheduler.setNeedsReview(id, true);
+    expect(scheduler.getNextStartableTask()).toBeNull();
+  });
+
+  it("rejects waking a draft or archived task", () => {
+    const draft = scheduler.createTask({ title: "Draft", workingDirectory: "" });
+    expect(() => scheduler.requestWake(draft.id)).toThrow("Can only wake active tasks");
+    const id = startedTask();
+    scheduler.settleTask(id);
+    expect(() => scheduler.requestWake(id)).toThrow("Can only wake active tasks");
+  });
+});
+
+describe("getRuntimeState", () => {
+  it("derives queued then idle then working", () => {
+    const teamId = createTeam(db);
+    const task = scheduler.createTask({ title: "Task", teamId, workingDirectory: "" });
+    scheduler.approveTask(task.id);
+    expect(scheduler.getRuntimeState(task.id)).toBe("queued");
+
+    scheduler.markStarted(task.id);
+    expect(scheduler.getRuntimeState(task.id)).toBe("idle");
+
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('rs-inst', ?, 'default-agent', 'running')",
+    ).run(task.id);
+    expect(scheduler.getRuntimeState(task.id)).toBe("working");
+  });
+
+  it("derives paused, review, and blocked", () => {
+    const id = startedTask();
+    scheduler.setNeedsReview(id, true);
+    expect(scheduler.getRuntimeState(id)).toBe("review");
+    scheduler.setNeedsReview(id, false);
+
+    const agentId = createAgent(db, "rs-agent");
+    db.prepare(
+      "INSERT INTO escalations (id, agent_id, task_id, type, question) VALUES ('rs-esc', ?, ?, 'agent_request', 'q')",
+    ).run(agentId, id);
+    expect(scheduler.getRuntimeState(id)).toBe("blocked");
+    db.prepare("UPDATE escalations SET status = 'resolved' WHERE id = 'rs-esc'").run();
+
+    scheduler.pauseTask(id);
+    expect(scheduler.getRuntimeState(id)).toBe("paused");
   });
 });
 
 describe("advancePhase", () => {
   it("increments current phase", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    const advanced = scheduler.advancePhase(task.id);
+    const id = startedTask();
+    const advanced = scheduler.advancePhase(id);
     expect(advanced.current_phase).toBe(1);
   });
 
-  it("throws when task is not running", () => {
-    const task = scheduler.createTask({ title: "Task" });
+  it("throws when task is not active", () => {
+    const task = scheduler.createTask({ title: "Task", workingDirectory: "" });
     expect(() => scheduler.advancePhase(task.id)).toThrow(
-      "Can only advance phase on running tasks",
+      "Can only advance phase on active tasks",
     );
   });
 
   it("throws when already at last phase of team config", () => {
-    // Create a team with 2 phases
     const teamId = "team-phases";
     db.prepare(
       "INSERT INTO teams (id, name, phases) VALUES (?, ?, ?)",
@@ -605,44 +580,15 @@ describe("advancePhase", () => {
       { name: "Phase 2", prompt: "p2" },
     ]));
 
-    const task = scheduler.createTask({ title: "Task", teamId });
+    const task = scheduler.createTask({ title: "Task", teamId, workingDirectory: "" });
     scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
+    scheduler.markStarted(task.id);
 
-    // Advance to phase 1 (index 1, last phase for a 2-phase team)
     db.prepare("UPDATE tasks SET current_phase = 1 WHERE id = ?").run(task.id);
 
     expect(() => scheduler.advancePhase(task.id)).toThrow(
       "Cannot advance phase: already at last phase",
     );
-  });
-
-  it("allows advancing when not yet at last phase", () => {
-    const teamId = "team-multi";
-    db.prepare(
-      "INSERT INTO teams (id, name, phases) VALUES (?, ?, ?)",
-    ).run(teamId, "Multi Phase Team", JSON.stringify([
-      { name: "Phase 1", prompt: "p1" },
-      { name: "Phase 2", prompt: "p2" },
-      { name: "Phase 3", prompt: "p3" },
-    ]));
-
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-
-    // Should succeed: phase 0 → 1
-    const advanced = scheduler.advancePhase(task.id);
-    expect(advanced.current_phase).toBe(1);
-  });
-
-  it("does not restrict advancement for tasks without a team", () => {
-    const task = scheduler.createTask({ title: "No Team Task" });
-    // Manually set to running since startTask requires approved
-    db.prepare("UPDATE tasks SET status = 'running' WHERE id = ?").run(task.id);
-
-    const advanced = scheduler.advancePhase(task.id);
-    expect(advanced.current_phase).toBe(1);
   });
 
   it("does not restrict advancement for teams with empty phases", () => {
@@ -651,11 +597,10 @@ describe("advancePhase", () => {
       "INSERT INTO teams (id, name, phases) VALUES (?, ?, '[]')",
     ).run(teamId, "No Phase Team");
 
-    const task = scheduler.createTask({ title: "Task", teamId });
+    const task = scheduler.createTask({ title: "Task", teamId, workingDirectory: "" });
     scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
+    scheduler.markStarted(task.id);
 
-    // No restriction on empty phases array
     const advanced = scheduler.advancePhase(task.id);
     expect(advanced.current_phase).toBe(1);
   });
@@ -663,23 +608,17 @@ describe("advancePhase", () => {
 
 describe("regressPhase", () => {
   it("regresses to target phase", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.advancePhase(task.id);
-    scheduler.advancePhase(task.id);
-    const regressed = scheduler.regressPhase(task.id, 0);
+    const id = startedTask();
+    scheduler.advancePhase(id);
+    scheduler.advancePhase(id);
+    const regressed = scheduler.regressPhase(id, 0);
     expect(regressed.current_phase).toBe(0);
     expect(regressed.regression_count).toBe(1);
   });
 
   it("throws for invalid target phase", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    expect(() => scheduler.regressPhase(task.id, 0)).toThrow(
+    const id = startedTask();
+    expect(() => scheduler.regressPhase(id, 0)).toThrow(
       "Invalid target phase",
     );
   });
@@ -687,7 +626,7 @@ describe("regressPhase", () => {
 
 describe("updateOrchestrationState", () => {
   it("sets and merges orchestration state", () => {
-    const task = scheduler.createTask({ title: "Task" });
+    const task = scheduler.createTask({ title: "Task", workingDirectory: "" });
     scheduler.updateOrchestrationState(task.id, "session_id", "abc123");
     scheduler.updateOrchestrationState(task.id, "attempts", 1);
 
@@ -700,272 +639,80 @@ describe("updateOrchestrationState", () => {
 });
 
 describe("cleanupStaleState", () => {
-  it("fails any running tasks", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
+  it("leaves active tasks untouched (running-with-no-agents is legal now)", () => {
+    const id = startedTask();
+    scheduler.cleanupStaleState();
+    const cleaned = scheduler.getTask(id)!;
+    expect(cleaned.status).toBe("active");
+    expect(cleaned.result).toBeNull();
+  });
+
+  it("sweeps live instance rows to failed", () => {
+    const id = startedTask();
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, status, process_pid) VALUES ('stale-inst', ?, 'default-agent', 'running', 999999)",
+    ).run(id);
 
     scheduler.cleanupStaleState();
 
-    const cleaned = scheduler.getTask(task.id)!;
-    expect(cleaned.status).toBe("failed");
-    expect(cleaned.result).toEqual({ error: "Server restart - task was running" });
+    const inst = db.prepare("SELECT status, process_pid FROM agent_instances WHERE id = 'stale-inst'").get() as { status: string; process_pid: number | null };
+    expect(inst.status).toBe("failed");
+    expect(inst.process_pid).toBeNull();
   });
 
-  it("does not affect non-running tasks", () => {
-    const task = scheduler.createTask({ title: "Draft Task" });
+  it("auto-resolves escalations only on archived tasks", () => {
+    const activeId = startedTask();
+    const agentId = createAgent(db, "cs-agent");
+    db.prepare(
+      "INSERT INTO escalations (id, agent_id, task_id, type, question) VALUES ('cs-open', ?, ?, 'agent_request', 'q')",
+    ).run(agentId, activeId);
+
+    const teamId = createTeam(db, "team-arch");
+    const archTask = scheduler.createTask({ title: "Arch", teamId, workingDirectory: "" });
+    scheduler.approveTask(archTask.id);
+    scheduler.markStarted(archTask.id);
+    db.prepare(
+      "INSERT INTO escalations (id, agent_id, task_id, type, question) VALUES ('cs-arch', ?, ?, 'agent_request', 'q')",
+    ).run(agentId, archTask.id);
+    scheduler.settleTask(archTask.id);
+    // Re-open it to simulate a stale open escalation on an archived task.
+    db.prepare("UPDATE escalations SET status = 'open', response = NULL WHERE id = 'cs-arch'").run();
+
     scheduler.cleanupStaleState();
-    const unchanged = scheduler.getTask(task.id)!;
-    expect(unchanged.status).toBe("draft");
-  });
-});
 
-describe("iterateTask", () => {
-  function completeTaskHelper(taskId: string) {
-    const teamId = createTeam(db, `team-${taskId}`);
-    db.prepare("UPDATE tasks SET team_id = ? WHERE id = ?").run(teamId, taskId);
-    scheduler.approveTask(taskId);
-    scheduler.startTask(taskId);
-    scheduler.completeTask(taskId, { output: "done" });
-  }
-
-  it("iterates a completed task back to approved", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Iter Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.completeTask(task.id, { output: "v1" });
-
-    const iterated = scheduler.iterateTask(task.id, "fix the formatting");
-    expect(iterated.status).toBe("approved");
-    expect(iterated.iteration_count).toBe(1);
-    expect(iterated.current_phase).toBe(0);
-    expect(iterated.result).toBeNull();
-    expect(iterated.regression_count).toBe(0);
-    expect(iterated.started_at).toBeNull();
-    expect(iterated.completed_at).toBeNull();
-    expect(iterated.approved_at).toBeTruthy();
-    expect(iterated.description).toContain("fix the formatting");
-    expect(iterated.description).toContain("ITERATION 1");
-  });
-
-  it("preserves existing notes across iteration", () => {
-    const teamId = createTeam(db);
-    const agentId = createAgent(db, "note-agent");
-    const task = scheduler.createTask({ title: "Note Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-
-    db.prepare(
-      "INSERT INTO task_notes (id, task_id, agent_id, content) VALUES (?, ?, ?, ?)",
-    ).run("note-1", task.id, agentId, "Important finding");
-
-    scheduler.completeTask(task.id, { output: "v1" });
-    scheduler.iterateTask(task.id, "do more");
-
-    const notes = db.prepare("SELECT * FROM task_notes WHERE task_id = ?").all(task.id) as { id: string; content: string }[];
-    const userNote = notes.find((n) => n.id === "note-1");
-    expect(userNote).toBeTruthy();
-    expect(userNote!.content).toBe("Important finding");
-  });
-
-  it("saves previous result as a task note", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Result Note Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.completeTask(task.id, { output: "my-result" });
-
-    scheduler.iterateTask(task.id, "improve it");
-
-    const notes = db.prepare("SELECT content FROM task_notes WHERE task_id = ? ORDER BY created_at").all(task.id) as { content: string }[];
-    const resultNote = notes.find((n) => n.content.includes("[Iteration 0 result]"));
-    expect(resultNote).toBeTruthy();
-    expect(resultNote!.content).toContain("my-result");
-  });
-
-  it("clears checkpoints on iteration", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Checkpoint Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-
-    db.prepare(
-      "INSERT INTO task_checkpoints (task_id, sequence, checkpoint_type, context_snapshot) VALUES (?, 1, 'PHASE_START', '{}')",
-    ).run(task.id);
-
-    scheduler.completeTask(task.id);
-    scheduler.iterateTask(task.id, "redo");
-
-    const cpCount = db.prepare("SELECT COUNT(*) as c FROM task_checkpoints WHERE task_id = ?").get(task.id) as { c: number };
-    expect(cpCount.c).toBe(0);
-  });
-
-  it("clears the root session on iteration but keeps delegated children resumable", () => {
-    const teamId = createTeam(db);
-    const rootAgentId = createAgent(db, "root-agent");
-    const childAgentId = createAgent(db, "worker-agent");
-    const task = scheduler.createTask({ title: "Session Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-
-    // Root Skipper instance (parent_instance_id NULL) + a delegated child, both
-    // with a resumable session id.
-    db.prepare(
-      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, session_id, attempt)
-       VALUES (?, ?, ?, NULL, ?, 'completed', 'root-sess', 1)`,
-    ).run("root-inst", task.id, rootAgentId, "root-inst");
-    db.prepare(
-      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, session_id, attempt)
-       VALUES (?, ?, ?, ?, ?, 'completed', 'child-sess', 1)`,
-    ).run("worker-inst", task.id, childAgentId, "root-inst", "root-inst");
-
-    scheduler.completeTask(task.id, { output: "v1" });
-    scheduler.iterateTask(task.id, "another pass");
-
-    const root = db.prepare("SELECT session_id FROM agent_instances WHERE id = ?").get("root-inst") as { session_id: string | null };
-    const worker = db.prepare("SELECT session_id FROM agent_instances WHERE id = ?").get("worker-inst") as { session_id: string | null };
-
-    // Root restarts fresh; delegated worker stays resumable.
-    expect(root.session_id).toBeNull();
-    expect(worker.session_id).toBe("child-sess");
-  });
-
-  it("keeps a single agent's root session on iteration (it resumes, not re-plans)", () => {
-    // A single-agent task carries the projected `sa:<id>` team id. The single
-    // agent is the sole executor (no phases, no delegation), so it must resume
-    // its own conversation on iterate - its session_id must survive.
-    db.prepare("INSERT OR IGNORE INTO agents (id, name, type, config, capabilities) VALUES ('sa:researcher','Researcher','claude-code','{}','[]')").run();
-    db.prepare("INSERT INTO teams (id, name, entrypoint_agent_id) VALUES ('sa:researcher','Researcher','sa:researcher')").run();
-    const task = scheduler.createTask({ title: "Solo Task", teamId: "sa:researcher" });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    db.prepare(
-      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, session_id, attempt)
-       VALUES ('sa-inst', ?, 'sa:researcher', NULL, 'sa-inst', 'completed', 'sa-sess', 1)`,
-    ).run(task.id);
-
-    scheduler.completeTask(task.id, { output: "v1" });
-    scheduler.iterateTask(task.id, "dig deeper");
-
-    const root = db.prepare("SELECT session_id FROM agent_instances WHERE id = 'sa-inst'").get() as { session_id: string | null };
-    expect(root.session_id).toBe("sa-sess"); // preserved -> task-runner resumes the conversation
-  });
-
-  it("rejects iteration on non-completed tasks", () => {
-    const task = scheduler.createTask({ title: "Draft Task" });
-    expect(() => scheduler.iterateTask(task.id, "input")).toThrow("Can only iterate completed tasks, current status: draft");
-
-    const teamId = createTeam(db);
-    const task2 = scheduler.createTask({ title: "Running Task", teamId });
-    scheduler.approveTask(task2.id);
-    scheduler.startTask(task2.id);
-    expect(() => scheduler.iterateTask(task2.id, "input")).toThrow("Can only iterate completed tasks, current status: running");
-
-    scheduler.failTask(task2.id, "err");
-    expect(() => scheduler.iterateTask(task2.id, "input")).toThrow("Can only iterate completed tasks, current status: failed");
-  });
-
-  it("rejects empty additional input", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.completeTask(task.id);
-    expect(() => scheduler.iterateTask(task.id, "")).toThrow("Additional input is required");
-    expect(() => scheduler.iterateTask(task.id, "   ")).toThrow("Additional input is required");
-  });
-
-  it("rejects double iteration (second call sees approved, not completed)", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.completeTask(task.id);
-
-    scheduler.iterateTask(task.id, "first iteration");
-    expect(() => scheduler.iterateTask(task.id, "second iteration")).toThrow("Can only iterate completed tasks, current status: approved");
-  });
-
-  it("supports multiple iterations with accumulating description", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Multi Iter", description: "Original desc", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.completeTask(task.id, { v: 1 });
-
-    const iter1 = scheduler.iterateTask(task.id, "change A");
-    expect(iter1.iteration_count).toBe(1);
-    expect(iter1.description).toContain("Original desc");
-    expect(iter1.description).toContain("ITERATION 1");
-    expect(iter1.description).toContain("change A");
-
-    // Simulate second run completing
-    scheduler.startTask(task.id);
-    scheduler.completeTask(task.id, { v: 2 });
-
-    const iter2 = scheduler.iterateTask(task.id, "change B");
-    expect(iter2.iteration_count).toBe(2);
-    expect(iter2.description).toContain("ITERATION 1");
-    expect(iter2.description).toContain("change A");
-    expect(iter2.description).toContain("ITERATION 2");
-    expect(iter2.description).toContain("change B");
-  });
-
-  it("clears agent assignments on iteration", () => {
-    const teamId = createTeam(db);
-    const agentId = createAgent(db, "iter-agent");
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-
-    db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run(task.id, agentId);
-
-    scheduler.completeTask(task.id, { done: true });
-    scheduler.iterateTask(task.id, "improve");
-
-    const agent = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as { current_task_id: string | null };
-    expect(agent.current_task_id).toBeNull();
-  });
-
-  it("resets orchestration_state on iteration", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Task", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.updateOrchestrationState(task.id, "session_id", "old-session");
-    scheduler.completeTask(task.id);
-
-    const iterated = scheduler.iterateTask(task.id, "redo");
-    expect(iterated.orchestration_state).toEqual({});
+    const open = db.prepare("SELECT status FROM escalations WHERE id = 'cs-open'").get() as { status: string };
+    const arch = db.prepare("SELECT status FROM escalations WHERE id = 'cs-arch'").get() as { status: string };
+    expect(open.status).toBe("open"); // survives restarts on active tasks
+    expect(arch.status).toBe("resolved");
   });
 });
 
 describe("full lifecycle", () => {
-  it("draft → approved → running → completed", () => {
+  it("draft → active (queued → working) → settled (Completed)", () => {
     const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Full Lifecycle", teamId });
+    const task = scheduler.createTask({ title: "Full Lifecycle", teamId, workingDirectory: "" });
     expect(task.status).toBe("draft");
 
     const approved = scheduler.approveTask(task.id);
-    expect(approved.status).toBe("approved");
+    expect(approved.status).toBe("active");
+    expect(scheduler.getRuntimeState(task.id)).toBe("queued");
 
-    const running = scheduler.startTask(task.id);
-    expect(running.status).toBe("running");
-
-    const completed = scheduler.completeTask(task.id, { success: true });
-    expect(completed.status).toBe("completed");
+    scheduler.markStarted(task.id);
+    const settled = scheduler.completeRun(task.id, { success: true });
+    expect(settled.status).toBe("settled");
+    expect(settled.settled_at).toBeTruthy();
   });
 
-  it("draft → approved → running → failed → retry → draft", () => {
-    const teamId = createTeam(db);
-    const task = scheduler.createTask({ title: "Retry Lifecycle", teamId });
-    scheduler.approveTask(task.id);
-    scheduler.startTask(task.id);
-    scheduler.failTask(task.id, "oops");
-    const retried = scheduler.retryTask(task.id);
-    expect(retried.status).toBe("draft");
+  it("failed run stays revivable: fail → unarchive + wake → start → complete", () => {
+    const id = startedTask();
+    scheduler.failRun(id, "oops");
+    scheduler.reviveTask(id);
+    scheduler.requestWake(id);
+    expect(scheduler.getNextStartableTask()!.id).toBe(id);
+    scheduler.markStarted(id);
+    const done = scheduler.completeRun(id, { fixed: true });
+    expect(done.status).toBe("settled");
+    expect(done.result).toEqual({ fixed: true });
   });
 });
 
@@ -975,7 +722,7 @@ describe("bus events", () => {
     const listener = (e: TaskCreatedEvent) => seen.push(e);
     eventBus.on("task:created", listener);
     try {
-      const task = scheduler.createTask({ title: "Event Task" });
+      const task = scheduler.createTask({ title: "Event Task", workingDirectory: "" });
       expect(seen).toEqual([{ taskId: task.id }]);
     } finally {
       eventBus.off("task:created", listener);
@@ -987,13 +734,10 @@ describe("bus events", () => {
     const listener = (e: TaskPhaseChangedEvent) => seen.push(e);
     eventBus.on("task:phase_changed", listener);
     try {
-      const teamId = createTeam(db);
-      const task = scheduler.createTask({ title: "Task", teamId });
-      scheduler.approveTask(task.id);
-      scheduler.startTask(task.id);
-      scheduler.advancePhase(task.id);
+      const id = startedTask();
+      scheduler.advancePhase(id);
       expect(seen).toEqual([
-        { taskId: task.id, previousPhase: 0, newPhase: 1, direction: "advance" },
+        { taskId: id, previousPhase: 0, newPhase: 1, direction: "advance" },
       ]);
     } finally {
       eventBus.off("task:phase_changed", listener);
@@ -1005,16 +749,13 @@ describe("bus events", () => {
     const listener = (e: TaskPhaseChangedEvent) => seen.push(e);
     eventBus.on("task:phase_changed", listener);
     try {
-      const teamId = createTeam(db);
-      const task = scheduler.createTask({ title: "Task", teamId });
-      scheduler.approveTask(task.id);
-      scheduler.startTask(task.id);
-      scheduler.advancePhase(task.id);
-      scheduler.advancePhase(task.id);
+      const id = startedTask();
+      scheduler.advancePhase(id);
+      scheduler.advancePhase(id);
       seen.length = 0;
-      scheduler.regressPhase(task.id, 0);
+      scheduler.regressPhase(id, 0);
       expect(seen).toEqual([
-        { taskId: task.id, previousPhase: 2, newPhase: 0, direction: "regress" },
+        { taskId: id, previousPhase: 2, newPhase: 0, direction: "regress" },
       ]);
     } finally {
       eventBus.off("task:phase_changed", listener);

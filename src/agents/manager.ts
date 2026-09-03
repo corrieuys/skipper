@@ -14,7 +14,14 @@ import { signalBridge } from "../mcp/signal-bridge";
 import { getStringSetting } from "../config/app-settings";
 import { SETTING_SKIPPER_AGENT_TYPE, SETTING_SKIPPER_MODEL } from "../config/model-settings";
 
-const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB
+// Cap on ONE buffered stdout line. Stdout is stored per complete line (see
+// ingestChunk), so the buffer only ever holds the unterminated tail; a
+// claude-code tool_result carrying a base64 screenshot is a single multi-MB
+// line, so this must be far above the old 1MB or such lines get sliced and
+// both the signal scan and the stored frame see garbage.
+const MAX_BUFFER_SIZE = 16 * 1024 * 1024; // 16MB
+// stderr is kept as a rolling snippet for agent:exit; it never needs the line headroom.
+const MAX_STDERR_BUFFER_SIZE = 1024 * 1024; // 1MB
 
 // ~100KB prompt limit — leaves headroom for system prompt and conversation context
 const MAX_PROMPT_BYTES = 100_000;
@@ -28,6 +35,10 @@ const TRUNCATION_MARKER = "\n\n[PROMPT TRUNCATED — original exceeded size limi
 // chatter and every completion/summary frame) are stored verbatim.
 const MAX_TERMINAL_OUTPUT_BYTES = 32_768;
 const TERMINAL_OUTPUT_TRUNCATION_MARKER = "\n[…frame truncated at 32KB for storage…]";
+// Inside an oversized JSON frame, any string longer than this is cut before
+// storage (see compactFrameForStorage) so the frame stays valid JSON instead of
+// being chopped mid-structure by the byte cap.
+const MAX_STORED_STRING_CHARS = 8_192;
 
 // Proactive compaction threshold for resume messages
 const RESUME_COMPACT_CHARS = 200_000;
@@ -944,6 +955,13 @@ export class AgentManager {
       // Stream closed or errored - expected on process exit
     } finally {
       reader.releaseLock();
+      // A final line with no trailing newline (a crash mid-frame, a plain-text
+      // agent's last prompt) would otherwise never leave the buffer.
+      if (streamType === "stdout" && runningAgent.stdoutBuffer.length > 0) {
+        const tail = runningAgent.stdoutBuffer;
+        runningAgent.stdoutBuffer = "";
+        this.ingestStdoutLine(runningAgent, tail);
+      }
       runningAgent.drainedStreams++;
       if (runningAgent.drainedStreams === 2) {
         eventBus.emit("agent:streams_drained", { agentId: runningAgent.id });
@@ -952,66 +970,86 @@ export class AgentManager {
   }
 
   /**
-   * One chunk of agent output: record it, push it to the UI, and — for stdout —
-   * run the signal scan over whatever complete lines it completed.
+   * One chunk of agent output. stderr is recorded as it arrives. stdout is
+   * buffered and recorded ONE COMPLETE LINE PER ROW: every CLI provider prints
+   * NDJSON, so a row is then always one whole frame — never a 64KB pipe read
+   * that starts mid-string (unrenderable, and until now the bulk of a long
+   * task's terminal_outputs) and never three frames glued together (of which
+   * the feed showed only the first). The realtime `agent:output` event follows
+   * the same unit, so live consumers (WS UI, connect output tail) get parseable
+   * frames too.
    *
    * Split out of `readStream` so an in-process agent (custom agents, which have
    * no stdout to read) reaches exactly this path via `ingestSyntheticStdout`
    * instead of a parallel implementation that would drift.
    */
   private ingestChunk(runningAgent: RunningAgent, text: string, streamType: "stdout" | "stderr"): void {
+    if (streamType === "stderr") {
+      this.recordOutput(runningAgent, text, "stderr");
+      runningAgent.stderrBuffer += text;
+      if (runningAgent.stderrBuffer.length > MAX_STDERR_BUFFER_SIZE) {
+        runningAgent.stderrBuffer = runningAgent.stderrBuffer.slice(-MAX_STDERR_BUFFER_SIZE / 2);
+      }
+      return;
+    }
+
+    runningAgent.stdoutBuffer += text;
+    const lines = this.processStdoutBuffer(runningAgent);
+    for (const line of lines) {
+      this.ingestStdoutLine(runningAgent, line);
+    }
+    // Only an unterminated tail is left. A tail this large is one runaway line
+    // (nothing legitimate is >16MB on one line); drop it rather than let the
+    // buffer grow without bound, and leave a marker row so the feed shows why
+    // there is a hole.
+    if (runningAgent.stdoutBuffer.length > MAX_BUFFER_SIZE) {
+      logError(this.db, "agent.stdout_buffer_overflow", { agentId: runningAgent.id, bufferSize: runningAgent.stdoutBuffer.length }, new Error("stdout line exceeded max size, dropped"));
+      runningAgent.stdoutBuffer = "";
+      this.recordOutput(runningAgent, `[…oversized output line dropped (>${MAX_BUFFER_SIZE / (1024 * 1024)}MB)…]`, "stdout");
+    }
+  }
+
+  /** One complete stdout line: record + push, then signal-scan it. */
+  private ingestStdoutLine(runningAgent: RunningAgent, line: string): void {
+    if (line.trim().length === 0) return;
+    this.recordOutput(runningAgent, line, "stdout");
+    const signal = this.parseAgentOutput(runningAgent.id, line);
+    this.emitSignalIfNeeded(runningAgent.id, signal);
+    const queued = this.queuedSignals.get(runningAgent.id) ?? [];
+    for (const queuedSignal of queued) {
+      this.emitSignalIfNeeded(runningAgent.id, queuedSignal);
+    }
+    if (queued.length > 0) {
+      this.queuedSignals.delete(runningAgent.id);
+    }
+  }
+
+  /**
+   * Persist one output unit (a stdout line or a stderr chunk) and emit the
+   * realtime event. Only the stored copy is compacted/capped; the event carries
+   * the full text so the live push and the signal path are unaffected.
+   */
+  private recordOutput(runningAgent: RunningAgent, text: string, streamType: "stdout" | "stderr"): void {
     runningAgent.outputSequence++;
     const seq = runningAgent.outputSequence;
     try {
       if (!this.closed) {
-        // Store a size-capped copy only; the full `text` still flows to the
-        // realtime event + signal-scan buffer below.
-        const stored = Buffer.byteLength(text, "utf-8") > MAX_TERMINAL_OUTPUT_BYTES
-          ? truncateToByteLimit(text, MAX_TERMINAL_OUTPUT_BYTES) + TERMINAL_OUTPUT_TRUNCATION_MARKER
-          : text;
         this.db
           .prepare(
             "INSERT INTO terminal_outputs (agent_id, session_id, stream, data, sequence) VALUES (?, ?, ?, ?, ?)",
           )
-          .run(runningAgent.id, runningAgent.spawnSessionId, streamType, stored, seq);
+          .run(runningAgent.id, runningAgent.spawnSessionId, streamType, compactFrameForStorage(text), seq);
       }
     } catch (err) {
       if (!this.closed) logError(this.db, "agent.store_output", { agentId: runningAgent.id, streamType, seq }, err);
     }
 
-    // Emit event for real-time UI
     eventBus.emit("agent:output", {
       agentId: runningAgent.id,
       stream: streamType,
       data: text,
       sequence: seq,
     });
-
-    if (streamType === "stdout") {
-      runningAgent.stdoutBuffer += text;
-      if (runningAgent.stdoutBuffer.length > MAX_BUFFER_SIZE) {
-        logError(this.db, "agent.stdout_buffer_overflow", { agentId: runningAgent.id, bufferSize: runningAgent.stdoutBuffer.length }, new Error("stdout buffer exceeded max size, truncating"));
-        runningAgent.stdoutBuffer = runningAgent.stdoutBuffer.slice(-MAX_BUFFER_SIZE / 2);
-      }
-      const lines = this.processStdoutBuffer(runningAgent);
-      for (const line of lines) {
-        const signal = this.parseAgentOutput(runningAgent.id, line);
-        this.emitSignalIfNeeded(runningAgent.id, signal);
-
-        const queued = this.queuedSignals.get(runningAgent.id) ?? [];
-        for (const queuedSignal of queued) {
-          this.emitSignalIfNeeded(runningAgent.id, queuedSignal);
-        }
-        if (queued.length > 0) {
-          this.queuedSignals.delete(runningAgent.id);
-        }
-      }
-    } else {
-      runningAgent.stderrBuffer += text;
-      if (runningAgent.stderrBuffer.length > MAX_BUFFER_SIZE) {
-        runningAgent.stderrBuffer = runningAgent.stderrBuffer.slice(-MAX_BUFFER_SIZE / 2);
-      }
-    }
   }
 
   /**
@@ -1025,7 +1063,9 @@ export class AgentManager {
     const resolvedId = this.resolveRuntimeId(agentId);
     const runningAgent = resolvedId ? this.agents.get(resolvedId) : undefined;
     if (!runningAgent) return;
-    this.ingestChunk(runningAgent, text, "stdout");
+    // A synthetic write is a whole unit; terminate it so it is recorded now
+    // rather than sitting in the line buffer until the next write.
+    this.ingestChunk(runningAgent, text.endsWith("\n") ? text : `${text}\n`, "stdout");
   }
 
   /**
@@ -2318,6 +2358,50 @@ export function detectSignalsInText(agentId: string, text: string): ParsedSignal
  * Truncate a string to fit within a byte limit without splitting multi-byte characters.
  * Cuts at the last newline boundary before the limit to avoid mid-line truncation.
  */
+/**
+ * The copy of a frame that goes into terminal_outputs. Frames within the byte
+ * cap are stored verbatim. An oversized JSON frame is compacted structurally
+ * first — inline base64 payloads (image tool_results, several MB each and the
+ * single biggest thing an agent ever prints) are replaced by a size note, and
+ * long strings (file dumps, build logs) are cut — so what is stored is still a
+ * valid frame that the feed, the modal and the token/turn queries can parse.
+ * Only if it is still too big (or was never JSON) does the hard byte cut apply.
+ */
+export function compactFrameForStorage(text: string, maxBytes: number = MAX_TERMINAL_OUTPUT_BYTES): string {
+  if (Buffer.byteLength(text, "utf-8") <= maxBytes) return text;
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      const compacted = JSON.stringify(compactJsonValue(JSON.parse(trimmed), 0));
+      if (Buffer.byteLength(compacted, "utf-8") <= maxBytes) return compacted;
+      return truncateToByteLimit(compacted, maxBytes) + TERMINAL_OUTPUT_TRUNCATION_MARKER;
+    } catch {
+      // Not parseable — fall through to the plain byte cut.
+    }
+  }
+  return truncateToByteLimit(text, maxBytes) + TERMINAL_OUTPUT_TRUNCATION_MARKER;
+}
+
+function compactJsonValue(value: unknown, depth: number): unknown {
+  if (depth > 48) return value;
+  if (typeof value === "string") {
+    return value.length > MAX_STORED_STRING_CHARS
+      ? `${value.slice(0, MAX_STORED_STRING_CHARS)}…[${value.length - MAX_STORED_STRING_CHARS} more chars omitted for storage]`
+      : value;
+  }
+  if (Array.isArray(value)) return value.map((v) => compactJsonValue(v, depth + 1));
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    if (obj.type === "base64" && typeof obj.data === "string") {
+      return { ...obj, data: `[base64 payload omitted for storage: ${Math.round(obj.data.length / 1024)} KB]` };
+    }
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) out[k] = compactJsonValue(v, depth + 1);
+    return out;
+  }
+  return value;
+}
+
 export function truncateToByteLimit(text: string, maxBytes: number): string {
   if (Buffer.byteLength(text, "utf-8") <= maxBytes) return text;
 

@@ -111,7 +111,8 @@ interface DelegationBatchContext {
   parentTemplateId: string;
   parentInstanceId: string;
   taskId: string;
-  isRealtime: boolean;
+  /** Eligibility by per-task agent assignment instead of team membership (teamless tasks / explicit assignment). */
+  usesAssignedAgents: boolean;
 }
 
 interface EligibleDelegationItem {
@@ -178,11 +179,11 @@ export class DelegationManager {
 
     const eligibleItems = this.filterEligibleDelegationTargets(ctx, normalized);
     if (eligibleItems.length === 0) {
-      if (ctx.isRealtime) {
+      if (ctx.usesAssignedAgents) {
         this.routeResultToParent(
           ctx.parentInstanceId,
           ctx.parentInstanceId,
-          "[DELEGATION_FAILED] No eligible realtime delegation targets. Assign the target agent to this realtime task first.",
+          "[DELEGATION_FAILED] No eligible delegation targets. Assign the target agent to this task first.",
           ctx.taskId,
         );
       }
@@ -220,7 +221,7 @@ export class DelegationManager {
 
     const taskId = parentTask.task_id;
     const task = this.taskScheduler.getTask(taskId);
-    if (!task || task.status !== "running") return null;
+    if (!task || task.status !== "active" || task.paused) return null;
     if (task.needs_review) return null;
 
     const parentAgent = this.agentManager.getAgent(parentTemplateId);
@@ -232,7 +233,7 @@ export class DelegationManager {
 
     if (this.getActiveDelegationGroupForParent(parentInstanceId)) return null;
 
-    return { parentTemplateId, parentInstanceId, taskId, isRealtime: task.task_type === "real_time" };
+    return { parentTemplateId, parentInstanceId, taskId, usesAssignedAgents: this.taskUsesAssignedAgents(task) };
   }
 
   private filterEligibleDelegationTargets(
@@ -244,12 +245,12 @@ export class DelegationManager {
       const childAgent = this.resolveDelegationTarget(item.to);
       if (!childAgent) continue;
       if (!this.isDelegationTargetAllowed(ctx.parentInstanceId, ctx.parentTemplateId, childAgent.id, ctx.taskId)) continue;
-      if (ctx.isRealtime) {
-        if (!this.isRealtimeDelegationTargetAllowed(ctx.taskId, childAgent.id)) {
-          this.emitDelegationEvent("delegation:realtime_target_not_assigned", {
+      if (ctx.usesAssignedAgents) {
+        if (!this.isAssignedDelegationTargetAllowed(ctx.taskId, childAgent.id)) {
+          this.emitDelegationEvent("delegation:target_not_assigned", {
             taskId: ctx.taskId,
             target: childAgent.id,
-            hint: "Assign this agent in realtime task agent assignment before delegating.",
+            hint: "Assign this agent in the task's agent assignment before delegating.",
           });
           continue;
         }
@@ -405,7 +406,7 @@ export class DelegationManager {
     }
 
     const task = this.taskScheduler.getTask(parentTask.task_id);
-    if (!task || task.status !== "running") return null;
+    if (!task || task.status !== "active" || task.paused) return null;
     if (task.needs_review) return null;
 
     const parentAgent = this.agentManager.getAgent(parentTemplateId);
@@ -417,9 +418,9 @@ export class DelegationManager {
 
     if (this.getActiveDelegationGroupForParent(parentInstanceId)) return null;
     if (!this.isDelegationTargetAllowed(parentInstanceId, parentTemplateId, childAgent.id, parentTask.task_id)) return null;
-    if (task.task_type === "real_time" && !this.isRealtimeDelegationTargetAllowed(parentTask.task_id, childAgent.id)) {
-      return null;
-    } else if (task.task_type !== "real_time" && !this.agentsInSameTeam(parentTemplateId, childAgent.id)) {
+    if (this.taskUsesAssignedAgents(task)) {
+      if (!this.isAssignedDelegationTargetAllowed(parentTask.task_id, childAgent.id)) return null;
+    } else if (!this.agentsInSameTeam(parentTemplateId, childAgent.id)) {
       return null;
     }
 
@@ -1134,7 +1135,7 @@ export class DelegationManager {
     }
     if (taskId) {
       try {
-        this.taskScheduler.failTask(taskId, reason);
+        this.taskScheduler.failRun(taskId, reason);
       } catch (failErr) {
         logError(
           this.db,
@@ -1367,7 +1368,17 @@ export class DelegationManager {
     return !!row;
   }
 
-  private isRealtimeDelegationTargetAllowed(taskId: string, childTemplateId: string): boolean {
+  /**
+   * A task delegates by explicit assignment when it has no team or when its
+   * task_config pins assigned_agent_ids; otherwise team membership rules apply.
+   */
+  private taskUsesAssignedAgents(task: import("../tasks/scheduler").Task): boolean {
+    if (!task.team_id) return true;
+    const assigned = task.task_config.assigned_agent_ids;
+    return Array.isArray(assigned) && assigned.length > 0;
+  }
+
+  private isAssignedDelegationTargetAllowed(taskId: string, childTemplateId: string): boolean {
     const row = this.db
       .prepare("SELECT task_config FROM tasks WHERE id = ?")
       .get(taskId) as { task_config: string | null } | null;

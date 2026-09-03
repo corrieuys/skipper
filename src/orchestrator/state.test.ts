@@ -85,7 +85,7 @@ describe("TaskStateMachine", () => {
       ? JSON.stringify({ step })
       : "{}";
     db.prepare(
-      "INSERT INTO tasks (id, title, team_id, status, orchestration_state) VALUES (?, ?, 'team1', 'running', ?)",
+      "INSERT INTO tasks (id, title, team_id, status, orchestration_state) VALUES (?, ?, 'team1', 'active', ?)",
     ).run(id, "Test Task", orchState);
   }
 

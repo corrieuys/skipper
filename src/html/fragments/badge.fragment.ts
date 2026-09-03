@@ -7,6 +7,15 @@ const STATUS_CLASS_MAP: Record<string, string> = {
   approved: "sk-badge--approved",
   draft: "sk-badge--draft",
   pending: "sk-badge--pending",
+  // Unified task model: stored statuses + derived display statuses.
+  active: "sk-badge--running",
+  settled: "sk-badge--draft",
+  archived: "sk-badge--draft", // legacy stored value, pre-rename
+  queued: "sk-badge--approved",
+  working: "sk-badge--running",
+  paused: "sk-badge--waiting",
+  review: "sk-badge--waiting",
+  blocked: "sk-badge--danger",
   idle: "sk-badge--draft",
   busy: "sk-badge--running",
   error: "sk-badge--danger",

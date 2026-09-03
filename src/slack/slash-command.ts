@@ -90,58 +90,31 @@ export function stampTaskSlackOrigin(db: Database, taskId: string, origin: Slack
 }
 
 /**
- * Find the currently-running task whose Slack origin matches this thread
- * (channel + `thread_ts`), or null. Used to attach a human reply in the origin
- * thread as a note on the live task. Restricted to `running` so replies to an old,
- * finished thread don't reopen anything.
+ * Find the task whose Slack origin matches this thread (channel + `thread_ts`),
+ * or null. Active tasks win over settled ones; within each status the newest
+ * matches. Used to feed a human reply in the origin thread to the task through
+ * the unified input path (`daemon.inputTask`), which auto-revives a settled
+ * task and wakes an idle one. `slack_origin` lives on `task_config`, which no
+ * lifecycle transition clears, so the thread stays matchable for the task's
+ * whole life.
  */
-export function findRunningTaskByThread(
+export function findTaskByThread(
   db: Database,
   channel: string,
   threadTs: string,
-): string | null {
+): { id: string; status: string } | null {
   try {
     const row = db
       .prepare(
-        `SELECT id FROM tasks
-         WHERE status = 'running'
+        `SELECT id, status FROM tasks
+         WHERE status IN ('active', 'settled')
            AND json_extract(task_config, '$.slack_origin.channel') = ?
            AND json_extract(task_config, '$.slack_origin.thread_ts') = ?
-         ORDER BY created_at DESC
+         ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, created_at DESC
          LIMIT 1`,
       )
-      .get(channel, threadTs) as { id: string } | null;
-    return row?.id ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Find the most-recent COMPLETED task whose Slack origin matches this thread, or
- * null. Used to turn a reply in a finished task's thread into an iterate prompt:
- * plain replies don't auto-iterate (too expensive/surprising), but knowing the
- * thread belongs to a completed task lets the socket nudge the user toward the
- * Iterate button. `slack_origin` survives `iterateTask` (it lives on `task_config`,
- * which iteration never clears), so the thread stays matchable across iterations.
- */
-export function findCompletedTaskByThread(
-  db: Database,
-  channel: string,
-  threadTs: string,
-): string | null {
-  try {
-    const row = db
-      .prepare(
-        `SELECT id FROM tasks
-         WHERE status = 'completed'
-           AND json_extract(task_config, '$.slack_origin.channel') = ?
-           AND json_extract(task_config, '$.slack_origin.thread_ts') = ?
-         ORDER BY created_at DESC
-         LIMIT 1`,
-      )
-      .get(channel, threadTs) as { id: string } | null;
-    return row?.id ?? null;
+      .get(channel, threadTs) as { id: string; status: string } | null;
+    return row ?? null;
   } catch {
     return null;
   }
@@ -160,19 +133,20 @@ export function normalizeSlashCommand(raw: string | null | undefined): string {
 }
 
 /**
- * The word an inbound Slack thread reply must contain before it is captured as a
- * task note. A task's thread is a normal conversation — most of what gets typed
- * in it is people talking to each other, not to Skipper — so without a gate every
- * aside would land in the agent's prompt as an OPERATOR INSTRUCTION.
+ * The word an inbound Slack thread reply must contain before it is fed to the
+ * task as input. A task's thread is a normal conversation (most of what gets
+ * typed in it is people talking to each other, not to Skipper), so without a
+ * gate every aside would land in the agent's context as an instruction.
  *
  * Deliberately a loose substring test, matched case-insensitively: it is the
  * cheap first pass. Mentioning the word is not the same as addressing Skipper,
- * so notes captured this way are prefixed (`SLACK_NOTE_PREFIX`) and the prompt
- * tells the agent to treat them with suspicion and ignore irrelevant ones.
+ * so captured replies carry a "Slack reply from ..." attribution and the agent
+ * judges relevance itself.
  */
 export const SKIPPER_MENTION = "skipper";
 
-/** Prefix stamped on notes captured from a Slack thread. */
+/** Prefix stamped on legacy notes captured from a Slack thread (prompt-builder
+ * still flags notes carrying it). */
 export const SLACK_NOTE_PREFIX = "[Slack]";
 
 /** Whether an inbound Slack message mentions Skipper (case-insensitive). */

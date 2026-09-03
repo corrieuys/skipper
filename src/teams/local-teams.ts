@@ -56,8 +56,9 @@ export interface LocalTeamAgent {
 }
 
 /**
- * Real-time team config (only meaningful when `mode === 'realtime'`). Drives the
- * transcription-summary step of a real-time session. See src/orchestrator/realtime-session.ts.
+ * Audio-input summary config (only meaningful when the team is conversational).
+ * Drives the transcription-summary step of the input pipeline. See
+ * src/orchestrator/realtime-session.ts.
  */
 export interface RealtimeTeamConfig {
   /**
@@ -74,13 +75,14 @@ export interface RealtimeTeamConfig {
 /** Per-team settings blob (runtime `local_teams.team_config` JSON column). */
 export interface LocalTeamConfig {
   /**
-   * Team mode. 'regular' (default) teams run standard/recurring tasks through the
-   * normal queue and require >=1 phase. 'realtime' teams back real-time tasks
-   * (audio/text + transcription); they carry no phases and expose `realtime`
-   * below. Absent = 'regular' (back-compat for teams saved before this field).
+   * Team mode. 'workflow' (default): the system drives tasks to the end of
+   * their phases (pokes, recovery). 'conversational': the user drives via
+   * input; idle is the normal resting state. Both modes support phases (0..n).
+   * Legacy stored values 'regular'/'realtime' are read as aliases of
+   * 'workflow'/'conversational' (see normalizeTeamMode).
    */
-  mode?: "regular" | "realtime";
-  /** Real-time config; only read when `mode === 'realtime'`. */
+  mode?: "workflow" | "conversational" | "regular" | "realtime";
+  /** Audio-input summary config (conversational teams). */
   realtime?: RealtimeTeamConfig;
   /** When true, this team's tasks expose the Slack MCP tools to their agents. */
   slackEnabled?: boolean;
@@ -98,11 +100,16 @@ export interface LocalTeamConfig {
   skipperCustomTools?: string[];
 }
 
-/** Whether a team is in real-time mode (absent mode defaults to regular). */
-export function isRealtimeTeam(team: Pick<LocalTeam, "config"> | LocalTeamConfig | null | undefined): boolean {
+/** Canonical mode for a raw stored value ('regular'/'realtime' are legacy aliases). */
+export function normalizeTeamMode(raw: string | undefined | null): "workflow" | "conversational" {
+  return raw === "conversational" || raw === "realtime" ? "conversational" : "workflow";
+}
+
+/** Whether a team is conversational (absent mode defaults to workflow). */
+export function isConversationalTeam(team: Pick<LocalTeam, "config"> | LocalTeamConfig | null | undefined): boolean {
   if (!team) return false;
   const config = "config" in team ? team.config : team;
-  return config?.mode === "realtime";
+  return normalizeTeamMode(config?.mode) === "conversational";
 }
 
 export interface LocalTeam {
@@ -444,11 +451,8 @@ function validateInput(db: Database, input: LocalTeamInput): void {
   if (!input.name || !input.name.trim()) {
     throw new Error("team: name is required");
   }
-  // Real-time teams carry no phases (the session drives them, not the phase
-  // loop). Only regular teams require at least one.
-  if (!isRealtimeTeam(input.config) && (!Array.isArray(input.phases) || input.phases.length === 0)) {
-    throw new Error("team: at least one phase is required");
-  }
+  // Phases are optional in both modes: a 0-phase workflow team is a quick run,
+  // and conversational teams may add phase structure freely.
   const agents = input.agents ?? [];
   const seen = new Set<string>();
   for (const a of agents) {

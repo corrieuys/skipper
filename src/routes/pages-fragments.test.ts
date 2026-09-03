@@ -38,7 +38,7 @@ function seedBaseData(): void {
   db.prepare(
     `INSERT INTO tasks (id, title, description, team_id, status, current_phase, result)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run("task-1", "Investigate issue", "Task description", "team-1", "completed", 1, JSON.stringify({ ok: true }));
+  ).run("task-1", "Investigate issue", "Task description", "team-1", "settled", 1, JSON.stringify({ ok: true }));
 
   db.prepare(
     `INSERT INTO delegations (id, parent_agent_id, child_agent_id, task_id, prompt, result, status)
@@ -184,7 +184,7 @@ describe("fragment polling routes", () => {
 
   it("fragment routes return content without polling attributes", async () => {
     const db = getDb();
-    db.prepare("UPDATE tasks SET status = 'running' WHERE id = ?").run("task-1");
+    db.prepare("UPDATE tasks SET status = 'active', started_at = datetime('now') WHERE id = ?").run("task-1");
 
     const res = await fetch(`${baseUrl}/fragments/tasks/list`);
     expect(res.status).toBe(200);
@@ -195,7 +195,7 @@ describe("fragment polling routes", () => {
 
   it("GET /fragments/dashboard/running-instances renders one card per live instance", async () => {
     const db = getDb();
-    db.prepare("UPDATE tasks SET status = 'running' WHERE id = ?").run("task-1");
+    db.prepare("UPDATE tasks SET status = 'active', started_at = datetime('now') WHERE id = ?").run("task-1");
 
     db.prepare(
       `INSERT INTO agent_instances (id, task_id, template_agent_id, status)
@@ -218,8 +218,8 @@ describe("fragment polling routes", () => {
   it("GET /fragments/dashboard/realtime-timeline renders newest-first timeline entries", async () => {
     const db = getDb();
     db.prepare(
-      `INSERT INTO tasks (id, title, description, team_id, status, current_phase, task_type, task_config)
-       VALUES (?, ?, ?, NULL, 'running', 0, 'real_time', '{}')`,
+      `INSERT INTO tasks (id, title, description, team_id, status, current_phase, mode, task_config)
+       VALUES (?, ?, ?, NULL, 'active', 0, 'conversational', '{}')`,
     ).run("task-rt-1", "Realtime Task", "rt");
     db.prepare(
       `INSERT INTO realtime_timeline (id, task_id, entry_type, content, created_at)
@@ -314,5 +314,57 @@ describe("fragment polling routes", () => {
     const html = await (await fetch(`${baseUrl}/fragments/tasks/task-1/artifacts/plan`)).text();
     expect(html).not.toContain(">Publish<");
     expect(html).not.toContain("Unpublish");
+  });
+});
+
+describe("activity feed paging", () => {
+  function seedActivity(count: number): number[] {
+    const db = getDb();
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('inst-act', 'task-1', 'agent-1', 'running')").run();
+    const ins = db.prepare("INSERT INTO terminal_outputs (agent_id, stream, data, sequence) VALUES ('inst-act', 'stdout', ?, ?)");
+    const ids: number[] = [];
+    for (let i = 1; i <= count; i++) {
+      const frame = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: `msg ${i}` }] } });
+      ids.push(Number(ins.run(frame, i).lastInsertRowid));
+    }
+    return ids;
+  }
+
+  it("serves the newest page with a load-more sentinel, then the older page without one", async () => {
+    const ids = seedActivity(130);
+    const first = await (await fetch(`${baseUrl}/workspace/task/task-1/activity`)).text();
+    expect(first).toContain("msg 130");
+    expect(first).toContain("msg 31");
+    expect(first).not.toContain("msg 30<");
+    // Rows carry the output id, never the raw frame.
+    expect(first).toContain(`data-sk-activity-id="${ids[129]}"`);
+    expect(first).not.toContain("data-sk-activity-data");
+    expect(first).toContain(`/workspace/task/task-1/activity?before=${ids[30]}`);
+    expect(first).toContain('hx-trigger="intersect once"');
+
+    const older = await (await fetch(`${baseUrl}/workspace/task/task-1/activity?before=${ids[30]}`)).text();
+    expect(older).toContain("msg 30");
+    expect(older).toContain("msg 1<");
+    expect(older).not.toContain("msg 31");
+    expect(older).not.toContain("data-sk-activity-more");
+  });
+
+  it("returns only rows newer than `after`, and nothing (not the empty state) when there are none", async () => {
+    const ids = seedActivity(5);
+    const newer = await (await fetch(`${baseUrl}/workspace/task/task-1/activity?after=${ids[2]}`)).text();
+    expect(newer).toContain("msg 5");
+    expect(newer).toContain("msg 4");
+    expect(newer).not.toContain("msg 3");
+    expect(newer).not.toContain("data-sk-activity-more");
+    const none = await (await fetch(`${baseUrl}/workspace/task/task-1/activity?after=${ids[4]}`)).text();
+    expect(none).toBe("");
+  });
+
+  it("serves one raw frame by id for the detail modal", async () => {
+    const ids = seedActivity(2);
+    const res = await fetch(`${baseUrl}/workspace/activity/${ids[1]}`);
+    expect(res.status).toBe(200);
+    expect(JSON.parse(await res.text()).message.content[0].text).toBe("msg 2");
+    expect((await fetch(`${baseUrl}/workspace/activity/999999`)).status).toBe(404);
   });
 });

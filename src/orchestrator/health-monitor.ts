@@ -131,7 +131,7 @@ export class HealthMonitor {
           instanceId: inst.id,
           ageMs,
         });
-        this.failTaskIfRootInstanceDied(inst);
+        this.noteRootInstanceDied(inst);
         continue;
       }
 
@@ -160,19 +160,18 @@ export class HealthMonitor {
         pid: inst.process_pid,
       });
 
-      this.failTaskIfRootInstanceDied(inst);
+      this.noteRootInstanceDied(inst);
     }
   }
 
   /**
-   * Fail the owning task only when the ENTRYPOINT (root) instance died — not a
-   * delegated child, and not an instance parked waiting on its children or on an
-   * open escalation. Per-instance task_id is accurate under parallel tasks,
-   * unlike the clobber-prone template row in checkProcessHealth. A dead
-   * delegated child is settled by checkDelegationOrphans (which revives its
-   * waiting parent), so we deliberately do nothing to the task here.
+   * A dead ENTRYPOINT (root) instance is no longer terminal for the task: the
+   * task stays active. Workflow tasks are respawned by stale recovery (the
+   * orphaned_task remediation event below feeds it); conversational tasks rest
+   * idle until new input wakes them. Delegated children are settled by
+   * checkDelegationOrphans (which revives their waiting parent).
    */
-  private failTaskIfRootInstanceDied(inst: {
+  private noteRootInstanceDied(inst: {
     id: string;
     parent_instance_id: string | null;
     task_id: string;
@@ -182,15 +181,14 @@ export class HealthMonitor {
     const task = this.taskScheduler.getTask(inst.task_id);
     if (
       task &&
-      task.status === "running" &&
+      task.status === "active" &&
       !this.hasOpenEscalation(inst.task_id) &&
       !this.getActiveDelegationForChild(inst.id)
     ) {
-      try {
-        this.taskScheduler.failTask(inst.task_id, "Agent process died unexpectedly");
-      } catch (err) {
-        logError(this.db, "health_check_fail_task", { agentId: inst.id, taskId: inst.task_id }, err);
-      }
+      this.emitRemediationEvent("root_instance_died", null, inst.task_id, {
+        instanceId: inst.id,
+        mode: task.mode,
+      });
     }
   }
 
@@ -276,13 +274,23 @@ export class HealthMonitor {
   }
 
   /**
-   * Find tasks in running status with no live runtime anywhere.
+   * Find workflow tasks with in-flight work but no live runtime anywhere.
    * Emits remediation events so recovery can pick them up next tick.
+   * Conversational tasks are excluded: idle-with-no-agents is their normal
+   * resting state, and the input pipeline re-feeds them on exit or new input.
    */
   checkOrphanedTasks(): void {
-    const runningTasks = this.db
-      .prepare("SELECT id, needs_review FROM tasks WHERE status = 'running' AND task_type != 'real_time'")
-      .all() as Array<{ id: string; needs_review: number }>;
+    const runningTasks = (this.db
+      .prepare("SELECT id, needs_review, orchestration_state FROM tasks WHERE status = 'active' AND paused = 0 AND mode = 'workflow'")
+      .all() as Array<{ id: string; needs_review: number; orchestration_state: string }>)
+      .filter((t) => {
+        // A settled run parks the step at IDLE — resting, not orphaned.
+        try {
+          return (JSON.parse(t.orchestration_state) as { step?: string }).step !== "IDLE";
+        } catch {
+          return true;
+        }
+      });
 
     for (const task of runningTasks) {
       // Intentionally parked tasks are not orphans: a task awaiting human review,
@@ -453,8 +461,8 @@ export class HealthMonitor {
     // Build likely reasons
     const likely_reasons: string[] = [];
 
-    if (task.status !== "running") {
-      likely_reasons.push(`Task is in ${task.status} state, not running`);
+    if (task.status !== "active") {
+      likely_reasons.push(`Task is in ${task.status} state, not active`);
     }
 
     if (!assignedAgentRow) {
@@ -487,8 +495,8 @@ export class HealthMonitor {
       }
     }
 
-    if (liveInstances.length === 0 && task.status === "running") {
-      likely_reasons.push("No live instances for this running task");
+    if (liveInstances.length === 0 && task.status === "active") {
+      likely_reasons.push("No live instances for this active task");
     }
 
     if (recentErrors.length > 0) {

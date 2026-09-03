@@ -48,20 +48,6 @@ const SKIPPER_PROMPT_DEFAULT = loadPrompt("skipper.md");
 // task alone: no delegation, no phases, but the full internal-tool surface.
 const SINGLE_AGENT_PROMPT = loadPrompt("single-agent.md");
 
-// `iterateTask` (tasks/scheduler.ts) appends each new operator instruction to the
-// task description under this exact separator. On a solo RESUME the earlier
-// description is already in the agent's own conversation, so re-sending the whole
-// thing makes it re-anchor on the ORIGINAL task and ignore the new ask; we send
-// only the text after the last marker instead. Returns null when the description
-// carries no iteration segment (a fresh task, or a plain recovery resume).
-const ITERATION_MARKER = /\n\n---\nITERATION \d+ \([^)]*\):\n/g;
-function latestIterationInstruction(description: string): string | null {
-  const segments = description.split(ITERATION_MARKER);
-  if (segments.length < 2) return null;
-  const last = segments[segments.length - 1]?.trim();
-  return last ? last : null;
-}
-
 export interface TaskInfo {
   id: string;
   title: string;
@@ -124,7 +110,6 @@ export interface PromptOptions {
    *  starts fresh (isResume=false), but prior delegated children remain
    *  resumable — surface the PRIOR DELEGATIONS menu so Skipper can choose to
    *  continue a worker vs spawn a fresh one. */
-  isIteration?: boolean;
   regressionReason?: string;
   approvalNote?: string;
   /** Optional one-off operator input (e.g. from a recurring task "Run Now"),
@@ -224,7 +209,7 @@ export class PromptBuilder {
         // agents, go read the notes" framing below would wrongly make it treat
         // its own work as someone else's. Tell it plainly this is the same thread.
         parts.push("CONTINUING YOUR OWN SESSION — this is a direct resume of the same conversation you were already running, not a fresh start and not another agent's work. You still have full memory of everything you did and said earlier in this thread.");
-        parts.push("A new instruction for this iteration is shown below. Respond to THAT specific instruction, building on what you already did — do NOT restart the original task from the top or repeat work you have already done, and do not describe your earlier output as belonging to a previous agent. You do not need to re-read notes or artifacts to recall your own prior work (though you may consult them if genuinely useful).");
+        parts.push("Any new operator input for this run is shown below (INPUT_FEED or ADDITIONAL INSTRUCTIONS). Respond to THAT input, building on what you already did — do NOT restart the original task from the top or repeat work you have already done, and do not describe your earlier output as belonging to a previous agent. You do not need to re-read notes or artifacts to recall your own prior work (though you may consult them if genuinely useful).");
         parts.push("");
       } else {
         parts.push("RESUMING TASK — this is NOT a fresh start.");
@@ -240,27 +225,12 @@ export class PromptBuilder {
     }
 
     // Task info. On a solo resume the full description is already in the agent's
-    // resumed conversation; re-sending it makes the agent re-do the ORIGINAL task
-    // instead of the new iteration. So send only the latest iteration instruction
-    // (falling back to the full description if the marker is missing, so an
-    // instruction is never dropped). A fresh run gets the whole description.
+    // resumed conversation; re-sending it makes the agent re-do the ORIGINAL
+    // task instead of the new input. New operator input reaches the prompt as
+    // the appended INPUT_FEED block (task-runner) or ADDITIONAL INSTRUCTIONS.
     parts.push(`TASK: ${options.task.title}`);
-    if (options.task.description) {
-      const soloDelta = solo && options.isResume
-        ? latestIterationInstruction(options.task.description)
-        : null;
-      if (solo && options.isResume) {
-        if (soloDelta) {
-          parts.push("NEW INSTRUCTION FOR THIS ITERATION:");
-          parts.push(soloDelta);
-        } else if (options.isIteration) {
-          // Iteration with no parseable marker — do not drop the ask.
-          parts.push(options.task.description);
-        }
-        // else: plain recovery resume, nothing new — the task is already in context.
-      } else {
-        parts.push(options.task.description);
-      }
+    if (options.task.description && !(solo && options.isResume)) {
+      parts.push(options.task.description);
     }
     // Optional one-off operator input for this run (e.g. recurring "Run Now"),
     // injected directly below the description.
@@ -368,12 +338,25 @@ export class PromptBuilder {
     parts.push(options.phase ? PHASE_COMPLETE_PHASE : PHASE_COMPLETE_TASK);
     parts.push("");
 
+    // Drive mode. Autopilot on (mode workflow): the agent drives the task to
+    // the end of its phases without waiting. Off (mode conversational): the
+    // operator drives; the agent completes the current instruction and rests.
+    // This is what makes the two behaviors real — mechanically the modes only
+    // differ in nudging/recovery, so the prompt must carry the intent.
+    const autopilotOn = this.isAutopilotOn(options.task.id);
+    if (autopilotOn) {
+      parts.push("DRIVE MODE: AUTOPILOT ON. You drive this task forward on your own. When the current phase objective is met, call `complete_phase` immediately and keep going until the whole task is done. Do not stop to wait for operator input unless you are genuinely blocked (then escalate).");
+    } else {
+      parts.push("DRIVE MODE: AUTOPILOT OFF (operator-driven). Complete the current instruction or input, report what you did (create_note / post_message as appropriate), then END your turn and wait. Do NOT call `complete_phase` or `complete_task`, and do NOT start next-phase work, unless the operator explicitly asks you to advance or their instruction clearly belongs to the next phase. Resting between inputs is the normal state of this task, not a failure.");
+    }
+    parts.push("");
+
     parts.push(ARTIFACT_HTML);
     parts.push("");
 
     // Prior delegations summary — when resuming an entrypoint session, or on an
-    // iteration re-run where the root is fresh but prior workers stay resumable.
-    if (options.isResume || options.isIteration) {
+    // wake where the root starts fresh but prior workers stay resumable.
+    if (options.isResume) {
       const priorDelegations = this.buildPriorDelegationsSection(options.task.id);
       if (priorDelegations) {
         parts.push(priorDelegations);
@@ -659,6 +642,18 @@ export class PromptBuilder {
   // Global-store usage contract carried on the run task's task_config
   // (merged in from the recurring task at spawn time). TaskInfo does not
   // carry task_config, so read it by id like getTeamLeadInstructions does.
+  /** Autopilot flag for the drive-mode prompt block (tasks.mode; workflow = on). */
+  private isAutopilotOn(taskId: string): boolean {
+    try {
+      const row = this.db
+        .prepare("SELECT mode FROM tasks WHERE id = ?")
+        .get(taskId) as { mode: string | null } | null;
+      return (row?.mode ?? "workflow") !== "conversational";
+    } catch {
+      return true;
+    }
+  }
+
   private getGlobalStoreInstructions(taskId: string): string | null {
     try {
       const row = this.db

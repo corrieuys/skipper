@@ -6,7 +6,8 @@ import type {
   EscalationCreatedEvent,
   TaskMessagePostedEvent,
   TaskNeedsReviewChangedEvent,
-  TaskStateChangedEvent,
+  TaskRunCompletedEvent,
+  TaskRunFailedEvent,
 } from "../events/bus";
 import {
   isExperimental,
@@ -54,17 +55,20 @@ export class SlackPushManager {
     if (this.cleanup.length > 0) return;
     const onEscalation = (e: EscalationCreatedEvent) => this.onEscalationCreated(e);
     const onReview = (e: TaskNeedsReviewChangedEvent) => this.onNeedsReviewChanged(e);
-    const onState = (e: TaskStateChangedEvent) => this.onTaskStateChanged(e);
+    const onRunCompleted = (e: TaskRunCompletedEvent) => this.onRunSettled(e.taskId, false);
+    const onRunFailed = (e: TaskRunFailedEvent) => this.onRunSettled(e.taskId, true);
     const onMessage = (e: TaskMessagePostedEvent) => this.onMessagePosted(e);
     eventBus.on("escalation:created", onEscalation);
     eventBus.on("task:needs_review_changed", onReview);
-    eventBus.on("task:state_changed", onState);
+    eventBus.on("task:run_completed", onRunCompleted);
+    eventBus.on("task:run_failed", onRunFailed);
     eventBus.on("task:message_posted", onMessage);
     this.cleanup.push(() => eventBus.off("escalation:created", onEscalation));
     this.cleanup.push(() => eventBus.off("task:needs_review_changed", onReview));
-    this.cleanup.push(() => eventBus.off("task:state_changed", onState));
+    this.cleanup.push(() => eventBus.off("task:run_completed", onRunCompleted));
+    this.cleanup.push(() => eventBus.off("task:run_failed", onRunFailed));
     this.cleanup.push(() => eventBus.off("task:message_posted", onMessage));
-    slackLog("push.subscribed", { events: "escalation:created,task:needs_review_changed,task:state_changed,task:message_posted" });
+    slackLog("push.subscribed", { events: "escalation:created,task:needs_review_changed,task:run_completed,task:run_failed,task:message_posted" });
   }
 
   stop(): void {
@@ -184,28 +188,22 @@ export class SlackPushManager {
   }
 
   /**
-   * Daemon default: when a task with a Slack thread finishes (completed or
-   * failed), post a system notice back into that thread so the conversation is
-   * closed off where it happened. Gated by experimental + bot token + the team's
-   * Slack opt-in, and only fires when the origin has a real thread.
-   *
-   * This covers agent-captured origins too, so a recurring run that reports into
-   * Slack now signs off with a notice carrying an Iterate button — the run stays
-   * actionable from the thread it was read in, without a trip to the web UI.
+   * Daemon default: when a run on a task with a Slack thread settles
+   * (task:run_completed / task:run_failed; the task itself stays active in the
+   * unified model), post a system notice back into that thread. The notice tells
+   * the operator that replying in the thread continues the task, since a thread
+   * reply now feeds daemon.inputTask directly. Gated by experimental + bot token
+   * + the team's Slack opt-in, and only fires when the origin has a real thread.
    */
-  private onTaskStateChanged(e: TaskStateChangedEvent): void {
-    if (e.newStatus !== "completed" && e.newStatus !== "failed") return;
-    const target = this.completionTarget(e.taskId, e.newStatus);
+  private onRunSettled(taskId: string, failed: boolean): void {
+    const kind = failed ? "run_failed" : "run_completed";
+    const target = this.completionTarget(taskId, kind);
     if (!target) return;
-    const done = e.newStatus === "completed";
-    const text = done
-      ? `:white_check_mark: Task *${target.task.title}* finished running.`
-      : `:x: Task *${target.task.title}* stopped — it failed before finishing.`;
-    // A completed task can be iterated, so its notice carries an Iterate button
-    // (opens a modal for the next iteration's prompt). A failed task cannot be
-    // iterated — it posts the plain notice only.
-    const blocks = done ? completionMessageBlocks(e.taskId, target.task.title) : undefined;
-    void this.post(target.channel, text, blocks, `task_${e.newStatus}`, target.threadTs);
+    const text = failed
+      ? `:x: Task *${target.task.title}* stopped, its run failed before finishing. Reply in this thread (include the word "Skipper") to continue this task.`
+      : `:white_check_mark: Task *${target.task.title}* finished its run. Reply in this thread (include the word "Skipper") to continue this task.`;
+    const blocks = completionMessageBlocks(target.task.title, failed);
+    void this.post(target.channel, text, blocks, `task_${kind}`, target.threadTs);
   }
 
   /**
@@ -215,7 +213,7 @@ export class SlackPushManager {
    */
   private completionTarget(
     taskId: string,
-    status: string,
+    kind: string,
   ): { channel: string; threadTs: string; task: TaskRow } | null {
     if (!isExperimental() || !isSlackConfigured(this.db)) return null;
     const task = this.db
@@ -224,7 +222,7 @@ export class SlackPushManager {
     if (!task || !task.team_id || !this.slackEnabledForTask(task.team_id)) return null;
     const origin = readTaskSlackOrigin(this.db, taskId);
     if (!origin?.thread_ts) return null; // completion notice only makes sense in a thread
-    slackLog("push.event", { kind: `task_${status}`, taskId });
+    slackLog("push.event", { kind: `task_${kind}`, taskId });
     return { channel: origin.channel, threadTs: origin.thread_ts, task };
   }
 

@@ -827,10 +827,13 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         });
       }
 
-      // ── Team settings modal (name + mode + realtime + Slack) ──────────
+      // ── Team settings modal (name + mode + transcription + Slack) ─────
       function openSettingsModal(){
         var cfg = TEAM.config || {};
         var rt = cfg.realtime || {};
+        // Legacy stored modes read as aliases: 'realtime' = conversational,
+        // 'regular' = workflow.
+        var isConv = cfg.mode === 'conversational' || cfg.mode === 'realtime';
         var providerOpts = MODEL_PROVIDERS.map(function(p){
           return '<option value="' + esc(p) + '"' + (rt.summaryProvider === p ? ' selected' : '') + '>' + esc(p) + '</option>';
         }).join('');
@@ -839,14 +842,14 @@ export function teamMapPage(vm: TeamMapViewModel): string {
             '<input class="sk-input" data-f="name" type="text" value="' + esc(TEAM.name) + '" placeholder="e.g. Feature Strike Team"></div>' +
           (EXPERIMENTAL ?
           '<div class="tm-sub">' +
-            '<div class="tm-field"><label class="sk-label">Team mode</label>' +
+            '<div class="tm-field"><label class="sk-label">Autopilot default</label>' +
               '<select class="sk-select" data-f="team_mode">' +
-                '<option value="regular"' + (cfg.mode === 'realtime' ? '' : ' selected') + '>Regular</option>' +
-                '<option value="realtime"' + (cfg.mode === 'realtime' ? ' selected' : '') + '>Real-time</option>' +
+                '<option value="workflow"' + (isConv ? '' : ' selected') + '>On - tasks drive themselves to the end of their phases</option>' +
+                '<option value="conversational"' + (isConv ? ' selected' : '') + '>Off - tasks wait for your input between turns</option>' +
               '</select>' +
-              '<p class="tm-field__hint">Real-time teams back audio/text tasks and need no phases.</p></div>' +
+              '<p class="tm-field__hint">Only the default for new tasks on this team; autopilot is toggleable per task. Any team can run any task.</p></div>' +
           '</div>' +
-          '<div class="tm-sub" id="tm-rt-config"' + (cfg.mode === 'realtime' ? '' : ' style="display:none"') + '>' +
+          '<div class="tm-sub" id="tm-rt-config">' +
             '<div class="tm-sub__head"><strong class="sk-text-sm">Transcription summary</strong></div>' +
             '<div class="tm-field">' +
               '<label class="sk-checkbox"><input type="checkbox" data-f="rt_summary_enabled"' + (rt.summaryEnabled === false ? '' : ' checked') + '>' +
@@ -876,14 +879,6 @@ export function teamMapPage(vm: TeamMapViewModel): string {
 
         var isCreate = !TEAM.id;
         openModal(isCreate ? 'New team' : 'Team settings', body, doneFooter(isCreate ? 'Create team' : null), function(){
-          // Show the realtime summary controls only while mode is realtime.
-          var modeSel = modalBody.querySelector('[data-f="team_mode"]');
-          var rtBlock = modalBody.querySelector('#tm-rt-config');
-          if (modeSel && rtBlock) {
-            modeSel.addEventListener('change', function(){
-              rtBlock.style.display = modeSel.value === 'realtime' ? '' : 'none';
-            });
-          }
           wireFooter(function(){
             var name = modalBody.querySelector('[data-f="name"]').value.trim();
             if (!name) { flashError('A team needs a name.'); return false; }
@@ -891,7 +886,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
             TEAM.config = TEAM.config || {};
             // Not rendered → leave the stored mode/Slack settings untouched.
             if (!EXPERIMENTAL) return;
-            TEAM.config.mode = modalBody.querySelector('[data-f="team_mode"]').value === 'realtime' ? 'realtime' : 'regular';
+            TEAM.config.mode = modalBody.querySelector('[data-f="team_mode"]').value === 'conversational' ? 'conversational' : 'workflow';
             TEAM.config.realtime = TEAM.config.realtime || {};
             TEAM.config.realtime.summaryEnabled = modalBody.querySelector('[data-f="rt_summary_enabled"]').checked;
             var rtProv = modalBody.querySelector('[data-f="rt_summary_provider"]');
@@ -919,8 +914,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       var saveBtn = document.getElementById('tm-save');
       async function saveTeam(){
         if (!TEAM.name || !TEAM.name.trim()) { openSettingsModal(); flashError('Name the team before saving.'); return; }
-        var isRealtime = TEAM.config && TEAM.config.mode === 'realtime';
-        if (!isRealtime && TEAM.phases.length === 0) { flashError('A team needs at least one phase.'); return; }
+        // Phases are optional in both modes under the unified task model.
         var label = saveBtn.textContent;
         saveBtn.disabled = true;
         saveBtn.textContent = 'Saving...';

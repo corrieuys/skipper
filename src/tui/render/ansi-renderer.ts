@@ -186,6 +186,21 @@ function stripAnsi(s: string): string {
 
 function colorFor(status: string): string {
   switch (status) {
+    // Unified model display statuses (new daemons)
+    case "active":
+    case "working":
+      return ansi.green;
+    case "queued":
+    case "paused":
+    case "review":
+      return ansi.yellow;
+    case "idle":
+      return ansi.cyan;
+    case "blocked":
+      return ansi.red;
+    case "settled":
+      return ansi.gray;
+    // Legacy statuses (remote daemons running old versions)
     case "running":
       return ansi.green;
     case "approved":
@@ -203,8 +218,11 @@ function colorFor(status: string): string {
 export function tasksLines(data: Snapshot, phase: PhaseInfo | null): string[] {
   const lines: string[] = [];
   for (const t of data.tasks) {
-    const c = colorFor(t.status);
-    const label = t.status === "approved" ? "queued" : t.status;
+    // Prefer the derived display status from new daemons; fall back to the
+    // stored status for remote daemons running old versions.
+    const status = t.display_status || t.status;
+    const c = colorFor(status);
+    const label = status === "approved" ? "queued" : status;
     lines.push(`${c}●${ansi.reset} ${ansi.white}${t.title?.trim() || "(untitled)"}${ansi.reset}  ${c}${label}${ansi.reset}`);
     // Phase strip for the focus task, indented under its row.
     if (phase && phase.taskId === t.id && phase.total > 0) {

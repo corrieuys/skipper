@@ -6,6 +6,7 @@ Notes & artifacts (use freely to record and persist your work):
 - `mcp__skipper-daemon__create_note({ content })` - record observations and progress.
 - `mcp__skipper-daemon__list_notes()` - read prior notes (also included inline).
 - `mcp__skipper-daemon__create_artifact({ name, kind, body, format, description? })` - persist plans, reports, transcripts, diffs.
+- `mcp__skipper-daemon__create_file_artifact({ name, path, description? })` - attach a file you generated on disk (screenshot, photo, PDF, archive, any binary) to the task. Pass the absolute `path`; the daemon copies it into the artifact store. Use `create_artifact` for text you can write inline.
 - `mcp__skipper-daemon__list_artifacts({ kind?, name_prefix?, limit? })` - discover artifacts on this task.
 - `mcp__skipper-daemon__get_artifact({ name, version? })` - read a specific artifact.
 

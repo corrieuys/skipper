@@ -58,7 +58,7 @@ describe("Bug 1: hasDelegation flag from DB query", () => {
 
     // Set up required FK references
     db.prepare("INSERT INTO teams (id, name) VALUES (?, ?)").run("team-1", "Test Team");
-    db.prepare("INSERT INTO tasks (id, title, status, team_id) VALUES (?, ?, ?, ?)").run("task-1", "Test Task", "running", "team-1");
+    db.prepare("INSERT INTO tasks (id, title, status, team_id) VALUES (?, ?, ?, ?)").run("task-1", "Test Task", "active", "team-1");
     db.prepare(
       "INSERT INTO agents (id, name, type, model, config, capabilities) VALUES (?, ?, ?, ?, ?, ?)",
     ).run("child-agent", "Child", "test-echo", "default", "{}", "[]");
@@ -141,13 +141,13 @@ describe("Bug 2: fire-and-forget async calls in PhaseManager", () => {
         const row = db.prepare("SELECT current_phase FROM tasks WHERE id = ?").get(id) as { current_phase: number } | null;
         const cp = row?.current_phase ?? 0;
         return {
-          id, title: "Test", status: "running", description: null,
+          id, title: "Test", status: "active", paused: false, description: null,
           current_phase: cp, team_id: "team-1", regression_count: 0,
         };
       },
       advancePhase: mock((id: string) => ({ id, current_phase: 1 })),
-      completeTask: mock(() => {}),
-      failTask: failTaskMock,
+      completeRun: mock(() => {}),
+      failRun: failTaskMock,
       regressPhase: mock(() => {}),
     } as any;
 
@@ -168,7 +168,7 @@ describe("Bug 2: fire-and-forget async calls in PhaseManager", () => {
       ).run("agent-1", "Agent", "claude-code", "default", '{"instruction":"test"}', "[]");
       db.prepare("INSERT INTO teams (id, name) VALUES (?, ?)").run("team-1", "Test Team");
       db.prepare("INSERT INTO team_agents (team_id, agent_id, role) VALUES (?, ?, ?)").run("team-1", "agent-1", "worker");
-      db.prepare("INSERT INTO tasks (id, title, status, team_id) VALUES (?, ?, ?, ?)").run("task-1", "Test", "running", "team-1");
+      db.prepare("INSERT INTO tasks (id, title, status, team_id) VALUES (?, ?, ?, ?)").run("task-1", "Test", "active", "team-1");
       db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run("task-1", "agent-1");
     } catch {}
 

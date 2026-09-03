@@ -23,7 +23,7 @@ function seedTask(): string {
   db.prepare("INSERT INTO teams (id, name, phases) VALUES ('team-1', 'Team', ?)").run(
     JSON.stringify([{ name: "Build", prompt: "b" }, { name: "Review", prompt: "r" }]),
   );
-  db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('task-1', 'Fat Task', 'team-1', 'running')").run();
+  db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('task-1', 'Fat Task', 'team-1', 'active')").run();
   return "task-1";
 }
 
@@ -47,8 +47,8 @@ describe("subscribeConnectEvents", () => {
     expect(frames).toHaveLength(1);
     expect(frames[0]!.event).toBe("connect:capabilities");
     expect(frames[0]!.payload).toEqual({
-      protocolVersion: 2,
-      features: ["snapshot", "fat_events", "output_tail", "messages"],
+      protocolVersion: 3,
+      features: ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files"],
     });
   });
 
@@ -57,22 +57,34 @@ describe("subscribeConnectEvents", () => {
     cleanup = subscribeConnectEvents(capture);
     frames.length = 0;
 
-    eventBus.emit("task:state_changed", { taskId, previousStatus: "approved", newStatus: "running" });
+    eventBus.emit("task:state_changed", { taskId, previousStatus: "draft", newStatus: "active" });
 
     expect(frames).toHaveLength(1);
     const payload = frames[0]!.payload;
-    expect(payload.previousStatus).toBe("approved");
+    expect(payload.previousStatus).toBe("draft");
     const task = payload.task as Record<string, unknown>;
     expect(task).toMatchObject({
       id: taskId,
       title: "Fat Task",
-      status: "running",
+      // Protocol v3: raw unified status plus the derived presentation status.
+      status: "active",
+      display_status: "queued",
+      mode: "workflow",
+      paused: false,
       team_name: "Team",
       current_phase: 0,
       phase_count: 2,
       needs_review: false,
     });
-    expect(task).not.toContainKeys(["result", "orchestration_state", "description", "task_config"]);
+    expect(task).not.toContainKeys([
+      "result",
+      "orchestration_state",
+      "description",
+      "task_config",
+      "task_type",
+      "iteration_count",
+      "unified_status",
+    ]);
   });
 
   it("attaches projections for phase change, note, escalation, and artifact events", () => {
@@ -107,6 +119,28 @@ describe("subscribeConnectEvents", () => {
     expect(frames[3]!.payload.artifact).toMatchObject({ id: "art-1", taskId, name: "doc", version: 1, kind: "plan", publishedAt: null });
     const artifact = frames[3]!.payload.artifact as Record<string, unknown>;
     expect(artifact).not.toContainKey("body");
+  });
+
+  it("attaches the operator input entry to realtime:timeline_updated", () => {
+    const taskId = seedTask();
+    const db = getDb();
+    db.prepare(
+      "INSERT INTO realtime_timeline (id, task_id, entry_type, content, fed_to_skipper) VALUES ('tl-1', 'task-1', 'text', 'typed input', 0)",
+    ).run();
+    cleanup = subscribeConnectEvents(capture);
+    frames.length = 0;
+
+    eventBus.emit("realtime:timeline_updated", { taskId, entryId: "tl-1", entryType: "text" });
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0]!.payload).toMatchObject({ taskId, entryId: "tl-1", entryType: "text" });
+    expect(frames[0]!.payload.entry).toMatchObject({
+      id: "tl-1",
+      taskId,
+      entryType: "text",
+      content: "typed input",
+      fedToSkipper: false,
+    });
   });
 
   it("ships the raw payload when the entity is missing", () => {

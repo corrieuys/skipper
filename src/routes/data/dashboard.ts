@@ -12,13 +12,21 @@ import { ok } from "./envelope";
 export function registerDataDashboardRoutes(db: Database, _daemon?: unknown): void {
 
   // GET /data/dashboard/active-tasks
+  // Active tasks first (started before queued), then settled-without-error
+  // (the old 'completed'); settled-with-error rows are excluded like the old
+  // 'failed' status was.
   addDataRoute("GET", "/data/dashboard/active-tasks", () => {
     const tasks = db.prepare(
-      `SELECT id, title, status, task_type, created_at
+      `SELECT id, title, status, mode, created_at
        FROM tasks
-       WHERE status IN ('running', 'approved', 'completed')
-       ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, created_at DESC`,
-    ).all() as { id: string; title: string; status: string; task_type?: string; created_at?: string }[];
+       WHERE status = 'active'
+          OR (status = 'settled' AND (result IS NULL OR json_extract(result, '$.error') IS NULL))
+       ORDER BY CASE
+         WHEN status = 'active' AND started_at IS NOT NULL THEN 0
+         WHEN status = 'active' THEN 1
+         ELSE 2
+       END, created_at DESC`,
+    ).all() as { id: string; title: string; status: string; mode?: string; created_at?: string }[];
     return ok(tasks);
   });
 

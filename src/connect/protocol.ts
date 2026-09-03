@@ -2,8 +2,14 @@
  * Bumped when the connect protocol gains capabilities. Advertised to the
  * integrator via the `connect:capabilities` event and in state snapshots.
  * v2: fat events (embedded entity projections), state/snapshot resource.
+ * v3: unified task model on the wire, plus the `timeline` resource carrying
+ * operator input entries. `status` is the raw stored status
+ * (draft | active | settled) and `display_status` carries the presentation
+ * state; task_type, iteration_count and unified_status are gone, as are the
+ * legacy verbs (iterate/retry/resume/reopen/complete) and the legacy team
+ * modes (regular/realtime).
  */
-export const CONNECT_PROTOCOL_VERSION = 2;
+export const CONNECT_PROTOCOL_VERSION = 3;
 
 /**
  * Task projection embedded in fat events and snapshots. Keeps the snake_case
@@ -13,8 +19,14 @@ export const CONNECT_PROTOCOL_VERSION = 2;
 export interface TaskListItem {
   id: string;
   title: string;
+  /** Stored unified status: draft | active | settled. */
   status: string;
-  task_type: string;
+  /** Derived presentation status: draft/queued/working/idle/paused/review/blocked/completed/failed. */
+  display_status: string;
+  /** Task mode: workflow | conversational. */
+  mode: string;
+  /** Paused flag on active tasks ('paused' is no longer a stored status). */
+  paused: boolean;
   team_id: string | null;
   team_name: string | null;
   current_phase: number;
@@ -30,6 +42,25 @@ export interface TaskListItem {
    * Lets clients present recurring runs separately (like the main UI, which
    * keeps non-active recurring runs out of the Active/Teams lists). */
   source_scheduled_task_id: string | null;
+}
+
+/**
+ * Task detail projection returned by `tasks/read`. The list shape plus the
+ * fields a task screen needs. Heavy internals (orchestration_state,
+ * task_config) are still never shipped.
+ */
+export interface TaskDetailItem extends TaskListItem {
+  description: string | null;
+  /** Final result JSON of a settled run (carries `.error` on a failed run). */
+  result: unknown | null;
+  working_directory: string | null;
+  /** Per-run input stamped on a recurring/webhook run; null otherwise. */
+  run_input: string | null;
+  completed_at: string | null;
+  settled_at: string | null;
+  regression_count: number;
+  /** The assigned team's phase list, when the task has a team. */
+  phases: { name: string; prompt: string; review?: boolean }[] | null;
 }
 
 /** One run of a recurring task, for the recurring series' run strip. */
@@ -93,6 +124,49 @@ export interface MessageItem {
   createdAt: string;
 }
 
+/**
+ * One operator-input entry from `realtime_timeline`: typed composer text, a
+ * transcribed audio digest, or an input-pipeline error. This is the operator's
+ * own side of a task's conversation, so remote clients need it to render a task
+ * timeline that is not agent-only. Carried by the `timeline/list` resource and
+ * by the `realtime:timeline_updated` fat event.
+ */
+export interface TimelineEntryItem {
+  id: string;
+  taskId: string;
+  /**
+   * 'text' = typed operator input, 'summary' = audio transcript digest,
+   * 'error' = pipeline error, 'image' / 'file' = a file artifact, either an
+   * operator upload or one an agent attached (see `artifact.source` /
+   * `artifact.authorName`; `content` is then the caption, else the filename).
+   */
+  entryType: string;
+  content: string;
+  /** False while the entry is still queued and has not reached the agent. */
+  fedToSkipper: boolean;
+  createdAt: string;
+  /** File artifact behind an 'image' / 'file' entry. Metadata only; bytes via `artifacts/read-bytes`. */
+  artifact?: TimelineArtifactRef;
+}
+
+/** Metadata-only reference to the file artifact behind an upload timeline entry. */
+export interface TimelineArtifactRef {
+  id: string;
+  name: string;
+  version: number;
+  kind: string;
+  storage: string;
+  mime: string | null;
+  bytes: number | null;
+  width: number | null;
+  height: number | null;
+  sha256: string | null;
+  /** 'operator' / 'connect:<clientId>' for an operator upload, else the id of the agent that attached the file. */
+  source: string;
+  /** Display name of the attaching agent; null for operator sources (clients label the card "You"). */
+  authorName: string | null;
+}
+
 /** Artifact projection without the body. */
 export interface ArtifactItem {
   id: string;
@@ -106,10 +180,29 @@ export interface ArtifactItem {
   createdAt: string;
   publishedAt: string | null;
   publicUrl: string | null;
+  /** 'inline' (text body via artifacts/read) or 'file' (bytes via artifacts/read-bytes, never a body). */
+  storage: string;
+  mime: string | null;
+  bytes: number | null;
+  width: number | null;
+  height: number | null;
+  sha256: string | null;
+  /** File artifacts: 'operator' / 'connect:<clientId>' or the attaching agent's id. Null for inline artifacts. */
+  source: string | null;
 }
+
+/**
+ * Push/feature flags this daemon supports. Sent as the `connect:capabilities`
+ * event when the daemon attaches to the integrator AND carried in every
+ * `state/snapshot`, because a consumer that connects later never sees the
+ * one-shot event.
+ */
+export const CONNECT_FEATURES = ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files"] as const;
 
 export interface StateSnapshot {
   protocolVersion: number;
+  /** Same list as `connect:capabilities.features`. */
+  features: string[];
   ts: string;
   tasks: TaskListItem[];
   escalations: EscalationItem[];
@@ -122,6 +215,13 @@ export interface StateSnapshot {
 
 /** One coalesced agent-output line inside an output_batch frame. */
 export interface OutputBatchEntry {
+  /**
+   * terminal_outputs.id — present on backfill entries only. It is the cursor
+   * for `outputs/list` `beforeId`, so a client can page older history below
+   * the backfill window. Live entries carry no id (the row is written before
+   * the event fires, but the tail never reads it back).
+   */
+  id?: number;
   agentId: string;
   agentName: string | null;
   stream: "stdout" | "stderr";

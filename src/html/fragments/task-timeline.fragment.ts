@@ -1,32 +1,29 @@
 import type { Database } from "bun:sqlite";
 import { escapeHtml } from "../atoms/escape-html";
 import { formatTimestamp } from "../atoms/format-timestamp";
-import { renderInlineMarkdown } from "../atoms/render-inline-markdown";
 import { renderMessageBody } from "../atoms/render-message-body";
-import { terminalJsonSummary, stripThinking, classifyPlainTerminalLine } from "../terminalJsonSummary";
 import { renderAgentText } from "../atoms/render-agent-text";
 import { escalationCardPanel, type EscalationCardData } from "../panels/escalation-card.panel";
 import { sanitizeColor } from "../atoms/creature";
+import { formatBytes } from "../../orchestrator/artifact-files";
+import { fileArtifactIcon } from "./artifact-list.fragment";
 
 /**
- * Unified task timeline for the v2 UI: operator messages (task_messages) render
- * as cards, agent prose (assistant text frames from terminal_outputs) renders
- * as quiet uncolored entries alongside the tool groups,
- * consecutive tool/system frames collapse into expandable groups, and
- * escalations sit inline as resolvable cards (the same escalationCardPanel the
- * classic Escalations tab uses, so resolve/dismiss swaps work unchanged).
+ * Task timeline for the v2 UI: the operator-facing channel only.
+ *   - operator INPUT (realtime_timeline: typed composer text as "You" cards,
+ *     transcribed-audio digests as "Audio" cards, pipeline errors as quiet lines)
+ *   - operator messages (task_messages, the `post_message` tool) as cards
+ *   - escalations inline as resolvable cards (same escalationCardPanel the
+ *     classic Escalations tab uses, so resolve/dismiss swaps work unchanged)
+ *   - a transient "live agents" indicator, always the LAST item, showing which
+ *     agents are working right now (re-rendered on instance:state_changed)
+ * Raw agent output (assistant prose, tool calls, system frames) deliberately
+ * does NOT render here — the rail's Activity tab already shows it; keeping it
+ * in both made the timeline redundant noise.
  * Chronological, oldest first; the client sticks the scroll to the bottom.
  *
  * Shared by the /workspace/task/:id/timeline route and the WS live-push.
  */
-
-interface TerminalRow {
-  stream: string;
-  data: string;
-  agent_name: string;
-  agent_color: string | null;
-  created_at: string;
-}
 
 interface OpMessageRow {
   id: string;
@@ -38,13 +35,38 @@ interface OpMessageRow {
   created_at: string;
 }
 
+interface LiveAgentRow {
+  agent_name: string;
+  agent_color: string | null;
+  status: string;
+}
+
+interface InputEntryRow {
+  id: string;
+  entry_type: string;
+  content: string;
+  fed_to_skipper: number;
+  created_at: string;
+  /** File artifact behind an 'image' / 'file' entry (LEFT JOIN task_artifacts). */
+  artifact_id: string | null;
+  artifact_name: string | null;
+  artifact_version: number | null;
+  artifact_mime: string | null;
+  artifact_bytes: number | null;
+  artifact_caption: string | null;
+  /** `task_artifacts.source`: 'operator' / 'connect:<id>' for uploads, else the attaching agent's id. */
+  artifact_source: string | null;
+  /** Display name of the agent behind `artifact_source` (LEFT JOIN agents); null for operator sources. */
+  artifact_agent_name: string | null;
+  artifact_agent_color: string | null;
+}
+
 interface TimelineItem {
   t: string;
   html: string;
 }
 
 const MAX_ITEMS = 300;
-const MAX_GROUP_ROWS = 40;
 
 // Stable small palette index per agent name; colors come from theme tokens.
 function avatarIndex(name: string): number {
@@ -59,84 +81,7 @@ function initials(name: string): string {
   return chars.toUpperCase();
 }
 
-/** Classify one raw terminal frame; mirrors parseTerminalActivity's rules. */
-function classifyRow(stream: string, rawData: string): { kind: "message" | "tool" | "event"; summary: string } {
-  const data = rawData.trim();
-  let kind: "message" | "tool" | "event" = "event";
-  let summary = "";
-
-  if (data.startsWith("{")) {
-    let parsed: Record<string, unknown> | null = null;
-    try {
-      parsed = JSON.parse(data);
-    } catch {
-      const firstLine = data.split("\n").find((l) => l.trim().startsWith("{"));
-      if (firstLine) {
-        try { parsed = JSON.parse(firstLine.trim()); } catch { /* give up */ }
-      }
-    }
-
-    if (parsed) {
-      // Final `result` frames repeat the last assistant text verbatim; showing
-      // both renders every closing message twice. Drop the result frame.
-      if (parsed.type === "result") return { kind: "event", summary: "" };
-      summary = terminalJsonSummary(parsed);
-      const type = typeof parsed.type === "string" ? parsed.type : "";
-      const item = parsed.item && typeof parsed.item === "object" ? parsed.item as Record<string, unknown> : null;
-      const itemType = item && typeof item.type === "string" ? item.type : "";
-      const message = parsed.message && typeof parsed.message === "object" ? parsed.message as Record<string, unknown> : null;
-      const content = message?.content;
-
-      if (itemType === "command_execution" || itemType === "tool_call" || itemType === "tool_result" || itemType === "tool_use" || type.includes("tool")) {
-        kind = "tool";
-      } else if (Array.isArray(content)) {
-        const hasToolBlock = content.some((b: any) => b?.type === "tool_use" || b?.type === "tool_result");
-        kind = hasToolBlock ? "tool" : "message";
-      } else if (type === "assistant" || type === "user" || type === "message" || typeof parsed.result === "string"
-        || ((type === "text" || type === "thought") && typeof parsed.data === "string")
-        || (type === "text" && !!(parsed.part as Record<string, unknown> | undefined)?.text)) {
-        kind = "message";
-      }
-    } else {
-      summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
-      kind = classifyPlainTerminalLine(stream, data);
-    }
-  } else {
-    summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
-    kind = classifyPlainTerminalLine(stream, data);
-  }
-
-  if (kind === "message") summary = stripThinking(summary);
-  return { kind, summary };
-}
-
-function activityDataAttrs(row: { data: string; agent_name?: string; created_at?: string }, kind: string): string {
-  return `data-sk-activity-row
-    data-sk-activity-data="${escapeHtml(row.data)}"
-    data-sk-activity-agent="${escapeHtml(row.agent_name ?? "")}"
-    data-sk-activity-pid=""
-    data-sk-activity-time="${escapeHtml(row.created_at ?? "")}"
-    data-sk-activity-kind="${kind}"`;
-}
-
-/** Inline `color:` style for an agent's chosen color, or "" to fall back to the
- *  default (prose) / name-hash bucket (card). */
-function whoColorStyle(color: string | null | undefined): string {
-  return color ? ` style="color:${sanitizeColor(color)}"` : "";
-}
-
-/** Agent prose from terminal frames: quiet inline entry. The agent's chosen color
- *  tints its name; body text stays default for readability. Operator messages
- *  (task_messages) keep the full card via messageCard. */
-function proseEntry(agent: string, time: string, bodyHtml: string, attrs = "", color: string | null = null): string {
-  return `<div class="tc-prose" ${attrs}>
-    <span class="tc-prose__who"${whoColorStyle(color)}>${escapeHtml(agent)}</span>
-    <time class="tc-prose__time">${formatTimestamp(time)}</time>
-    <span class="tc-prose__body">${bodyHtml}</span>
-  </div>`;
-}
-
-function messageCard(agent: string, kindLabel: string, time: string, bodyHtml: string, attrs = "", color: string | null = null): string {
+function messageCard(agent: string, kindLabel: string, time: string, bodyHtml: string, color: string | null = null): string {
   const idx = avatarIndex(agent);
   // Chosen color tints the avatar + name; otherwise fall back to the name-hash bucket.
   const c = color ? sanitizeColor(color) : null;
@@ -149,41 +94,8 @@ function messageCard(agent: string, kindLabel: string, time: string, bodyHtml: s
       ${kindLabel ? `<span class="tc-entry__kind">${escapeHtml(kindLabel)}</span>` : ""}
       <time class="tc-entry__time">${formatTimestamp(time)}</time>
     </div>
-    <div class="tc-entry__card" ${attrs}>${bodyHtml}</div>
+    <div class="tc-entry__card">${bodyHtml}</div>
   </div>`;
-}
-
-interface SysBuffer {
-  agent: string;
-  color: string | null;
-  count: number;
-  toolCount: number;
-  rows: Array<{ summary: string; data: string; time: string }>;
-  /** Time of the group's first frame — stable while the group accumulates, so
-   *  the client can keep it expanded across live re-renders (data-tc-keep). */
-  firstTime: string;
-  lastTime: string;
-}
-
-function sysGroupHtml(buf: SysBuffer): string {
-  const rowsHtml = buf.rows.map((r) =>
-    `<div class="tc-sys__row" ${activityDataAttrs({ data: r.data, agent_name: buf.agent, created_at: r.time }, "tool")}>
-      <span class="tc-sys__time">${formatTimestamp(r.time)}</span>
-      <span class="tc-sys__text">${escapeHtml(r.summary)}</span>
-    </div>`,
-  ).join("");
-  const overflow = buf.count > buf.rows.length
-    ? `<div class="tc-sys__row tc-sys__row--overflow">and ${buf.count - buf.rows.length} earlier</div>`
-    : "";
-  const sysCount = buf.count - buf.toolCount;
-  const parts: string[] = [];
-  if (buf.toolCount > 0) parts.push(buf.toolCount === 1 ? "1 tool call" : `${buf.toolCount} tool calls`);
-  if (sysCount > 0) parts.push(sysCount === 1 ? "1 system event" : `${sysCount} system events`);
-  const label = parts.join(", ") || `${buf.count} events`;
-  return `<details class="tc-sys" data-tc-keep="sys:${escapeHtml(buf.agent)}:${escapeHtml(buf.firstTime)}">
-    <summary><span class="tc-sys__who"${whoColorStyle(buf.color)}>${escapeHtml(buf.agent)}</span><span class="tc-sys__label">${label}</span></summary>
-    <div class="tc-sys__rows">${overflow}${rowsHtml}</div>
-  </details>`;
 }
 
 // Escalation text may be raw or entity-encoded HTML; renderAgentText decodes
@@ -229,26 +141,129 @@ function escalationBanner(e: EscalationCardData): string {
   </div>`;
 }
 
+/**
+ * Transient live-agents indicator: which agents have a live instance on this
+ * task right now. Not part of the chronological items — always appended as the
+ * LAST element, and simply absent when nothing is running.
+ */
+function liveAgentsIndicator(agents: LiveAgentRow[]): string {
+  if (agents.length === 0) return "";
+  const chips = agents.map((a) => {
+    const c = a.agent_color ? sanitizeColor(a.agent_color) : null;
+    const avAttr = c ? ` class="tc-av tc-live__av" style="background:${c}"` : ` class="tc-av tc-av--${avatarIndex(a.agent_name)} tc-live__av"`;
+    const verb = a.status === "waiting_delegation" ? "waiting on delegation" : "working";
+    return `<span class="tc-live__agent">
+      <span${avAttr}>${escapeHtml(initials(a.agent_name))}</span>
+      <span class="tc-live__who"${c ? ` style="color:${c}"` : ""}>${escapeHtml(a.agent_name)}</span>
+      <span class="tc-live__verb">${verb}</span>
+    </span>`;
+  }).join("");
+  return `<div class="tc-live" data-tc-transient>
+    ${chips}
+    <span class="tc-live__dots"><i></i><i></i><i></i></span>
+  </div>`;
+}
+
+/** Operator input entries: typed text renders as a "You" card; a transcribed
+ *  audio digest renders as an "Audio" card; pipeline errors as a quiet line.
+ *  Undelivered entries carry a "queued" tag until the agent receives them. */
+function inputEntryHtml(e: InputEntryRow): string {
+  const pending = e.fed_to_skipper ? "" : `<span class="tc-input__pending">queued for agent</span>`;
+  if (e.entry_type === "error") {
+    return `<div class="tc-input tc-input--error">
+      <span class="tc-input__who">Input pipeline</span>
+      <time class="tc-input__time">${formatTimestamp(e.created_at)}</time>
+      <span class="tc-input__body">${escapeHtml(e.content)}</span>
+    </div>`;
+  }
+  if ((e.entry_type === "image" || e.entry_type === "file") && e.artifact_id) {
+    return uploadEntryHtml(e, pending);
+  }
+  const who = e.entry_type === "summary" ? "Audio" : "You";
+  const kind = e.entry_type === "summary" ? "transcript" : "input";
+  return `<div class="tc-entry tc-entry--input">
+    <div class="tc-entry__meta">
+      <div class="tc-av tc-av--you">${who === "Audio" ? "&#127908;" : "Y"}</div>
+      <span class="tc-entry__who">${who}</span>
+      <span class="tc-entry__kind">${kind}</span>
+      <time class="tc-entry__time">${formatTimestamp(e.created_at)}</time>
+      ${pending}
+    </div>
+    <div class="tc-entry__card">${escapeHtml(e.content)}</div>
+  </div>`;
+}
+
+/** Whether a file artifact's `source` is the operator (web / connect upload) rather than an agent. */
+function isOperatorSource(source: string | null): boolean {
+  return !source || source === "operator" || source === "user" || source === "web" || source.startsWith("connect:");
+}
+
+/** "You · image" / "You · file" card for an operator upload on the timeline,
+ *  or "<Agent name> · image" / "<Agent name> · file" (avatar tinted like the
+ *  agent's message cards) for a file an agent attached via create_file_artifact.
+ *  Images render a lazy thumbnail that opens full size; files a download row. */
+function uploadEntryHtml(e: InputEntryRow, pending: string): string {
+  const fileUrl = `/api/artifacts/${escapeHtml(e.artifact_id!)}/file`;
+  const name = e.artifact_name ?? e.content;
+  const caption = e.artifact_caption?.trim() ?? "";
+  const isImage = e.entry_type === "image";
+  const body = isImage
+    ? `<a href="${fileUrl}" target="_blank" rel="noopener" class="tc-upload__img-link" title="Open full size">
+        <img class="tc-upload__img" loading="lazy" src="${fileUrl}" alt="${escapeHtml(name)}">
+      </a>${caption ? `<div class="tc-upload__caption">${escapeHtml(caption)}</div>` : ""}`
+    : `<div class="tc-upload__file">
+        <span class="tc-upload__icon" aria-hidden="true">${fileArtifactIcon(e.artifact_mime)}</span>
+        <span class="tc-upload__name">${escapeHtml(name)}</span>
+        <span class="tc-upload__size">${escapeHtml(formatBytes(e.artifact_bytes))}</span>
+        <a href="${fileUrl}" class="tc-upload__dl" download="${escapeHtml(name)}">Download</a>
+      </div>${caption ? `<div class="tc-upload__caption">${escapeHtml(caption)}</div>` : ""}`;
+  const kindLabel = `${isImage ? "image" : "file"}${e.artifact_version != null ? ` v${e.artifact_version}` : ""}`;
+  if (!isOperatorSource(e.artifact_source)) {
+    const agent = e.artifact_agent_name ?? e.artifact_source!;
+    const idx = avatarIndex(agent);
+    const c = e.artifact_agent_color ? sanitizeColor(e.artifact_agent_color) : null;
+    const avAttr = c ? ` class="tc-av" style="background:${c}"` : ` class="tc-av tc-av--${idx}"`;
+    const whoAttr = c ? ` class="tc-entry__who" style="color:${c}"` : ` class="tc-entry__who tc-who--${idx}"`;
+    return `<div class="tc-entry tc-entry--upload tc-entry--agent-upload">
+    <div class="tc-entry__meta">
+      <div${avAttr}>${escapeHtml(initials(agent))}</div>
+      <span${whoAttr}>${escapeHtml(agent)}</span>
+      <span class="tc-entry__kind">${escapeHtml(kindLabel)}</span>
+      <time class="tc-entry__time">${formatTimestamp(e.created_at)}</time>
+    </div>
+    <div class="tc-entry__card tc-upload">${body}</div>
+  </div>`;
+  }
+  return `<div class="tc-entry tc-entry--input tc-entry--upload">
+    <div class="tc-entry__meta">
+      <div class="tc-av tc-av--you">Y</div>
+      <span class="tc-entry__who">You</span>
+      <span class="tc-entry__kind">${escapeHtml(kindLabel)}</span>
+      <time class="tc-entry__time">${formatTimestamp(e.created_at)}</time>
+      ${pending}
+    </div>
+    <div class="tc-entry__card tc-upload">${body}</div>
+  </div>`;
+}
+
 export function taskTimelineFragment(db: Database, taskId: string): string {
-  // `substr(t.data,1,32768)` caps per-row transfer + render cost. Some legacy
-  // rows hold up to 256KB frames (a few tasks emitted giant tool-output dumps,
-  // bloating terminal_outputs to ~200MB on one task); reading the full blobs for
-  // the whole window took multiple seconds. New frames are already capped at
-  // ingest (manager.ts:MAX_TERMINAL_OUTPUT_BYTES); the substr also bounds the
-  // pre-existing oversized rows without deleting them. The activity feed already
-  // tolerates a truncated/unparseable frame (it drops rows it can't summarise).
-  // LIMIT lowered 2400→1000: 1000 entries already exceeds what a human scrolls,
-  // and fewer rows means fewer DOM nodes to build client-side.
-  const terminalDesc = db.prepare(
-    `SELECT t.stream, substr(t.data, 1, 32768) AS data, COALESCE(a.name, ai.template_agent_id) AS agent_name,
-            json_extract(a.config, '$.color') AS agent_color, t.created_at
-     FROM terminal_outputs t
-     JOIN agent_instances ai ON ai.id = t.agent_id
-     LEFT JOIN agents a ON a.id = ai.template_agent_id
-     WHERE ai.task_id = ?
-     ORDER BY t.id DESC LIMIT 1000`,
-  ).all(taskId) as TerminalRow[];
-  const terminal = terminalDesc.reverse();
+  // Operator input + transcribed audio from the input pipeline. These feed the
+  // agent as the INPUT_FEED; showing them here is what makes the timeline a
+  // two-way conversation instead of only the agent's side. Upload entries
+  // join their file artifact for name/size/caption/source, and the agent
+  // behind an agent-sourced artifact for its display name + color.
+  const inputEntries = db.prepare(
+    `SELECT t.id, t.entry_type, t.content, t.fed_to_skipper, t.created_at, t.artifact_id,
+            a.name AS artifact_name, a.version AS artifact_version, a.mime AS artifact_mime,
+            a.bytes AS artifact_bytes, a.body AS artifact_caption, a.source AS artifact_source,
+            ag.name AS artifact_agent_name, json_extract(ag.config, '$.color') AS artifact_agent_color
+     FROM realtime_timeline t
+     LEFT JOIN task_artifacts a ON a.id = t.artifact_id
+     LEFT JOIN agents ag ON ag.id = a.source
+     WHERE t.task_id = ?
+     ORDER BY t.created_at ASC
+     LIMIT 300`,
+  ).all(taskId) as InputEntryRow[];
 
   const opMessages = db.prepare(
     `SELECT m.id, m.agent_id, m.content, m.format, m.created_at, a.name AS agent_name,
@@ -271,39 +286,25 @@ export function taskTimelineFragment(db: Database, taskId: string): string {
      ORDER BY e.created_at ASC`,
   ).all(taskId) as EscalationCardData[];
 
+  // Live agents: one row per distinct agent with a live instance on this task.
+  // Pending instances count as working (mid-spawn); waiting_delegation gets its
+  // own verb so the operator sees why the agent looks quiet.
+  const liveAgents = db.prepare(
+    `SELECT COALESCE(a.name, ai.template_agent_id) AS agent_name,
+            json_extract(a.config, '$.color') AS agent_color,
+            MIN(ai.status) AS status
+     FROM agent_instances ai
+     LEFT JOIN agents a ON a.id = ai.template_agent_id
+     WHERE ai.task_id = ? AND ai.status IN ('running', 'waiting_delegation', 'pending')
+     GROUP BY agent_name, agent_color
+     ORDER BY MIN(ai.created_at) ASC`,
+  ).all(taskId) as LiveAgentRow[];
+
   const items: TimelineItem[] = [];
 
-  // Terminal frames: prose becomes cards, tool/system frames accumulate into
-  // per-agent groups that flush on speaker change or when prose interrupts.
-  let sysBuf: SysBuffer | null = null;
-  const flushSys = () => {
-    if (!sysBuf) return;
-    items.push({ t: sysBuf.lastTime, html: sysGroupHtml(sysBuf) });
-    sysBuf = null;
-  };
-
-  for (const row of terminal) {
-    const { kind, summary } = classifyRow(row.stream, row.data);
-    if (!summary) continue;
-
-    if (kind === "message") {
-      flushSys();
-      const body = renderInlineMarkdown(summary);
-      items.push({
-        t: row.created_at,
-        html: proseEntry(row.agent_name, row.created_at, body, activityDataAttrs(row, "message"), row.agent_color),
-      });
-    } else {
-      if (sysBuf && sysBuf.agent !== row.agent_name) flushSys();
-      if (!sysBuf) sysBuf = { agent: row.agent_name, color: row.agent_color, count: 0, toolCount: 0, rows: [], firstTime: row.created_at, lastTime: row.created_at };
-      sysBuf.count++;
-      if (kind === "tool") sysBuf.toolCount++;
-      sysBuf.lastTime = row.created_at;
-      sysBuf.rows.push({ summary, data: row.data, time: row.created_at });
-      if (sysBuf.rows.length > MAX_GROUP_ROWS) sysBuf.rows.shift();
-    }
+  for (const e of inputEntries) {
+    items.push({ t: e.created_at, html: inputEntryHtml(e) });
   }
-  flushSys();
 
   // Operator messages (task_messages): agent-to-human updates. Rendered by the
   // stored format (plain text by default; markdown/html when the agent chose it).
@@ -311,7 +312,7 @@ export function taskTimelineFragment(db: Database, taskId: string): string {
     const agent = m.agent_name ?? m.agent_id;
     items.push({
       t: m.created_at,
-      html: messageCard(agent, "message", m.created_at, renderMessageBody(m.content, m.format), "", m.agent_color),
+      html: messageCard(agent, "message", m.created_at, renderMessageBody(m.content, m.format), m.agent_color),
     });
   }
 
@@ -326,12 +327,14 @@ export function taskTimelineFragment(db: Database, taskId: string): string {
     items.push({ t: e.created_at, html });
   }
 
+  const live = liveAgentsIndicator(liveAgents);
+
   if (items.length === 0) {
-    return `<div class="tc-empty">No activity yet</div>`;
+    return live || `<div class="tc-empty">No messages yet. Agent activity shows in the Activity tab.</div>`;
   }
 
   items.sort((a, b) => a.t.localeCompare(b.t));
-  let final = items.slice(-MAX_ITEMS);
+  const final = items.slice(-MAX_ITEMS);
 
   // An open escalation must never fall out of the window. If it did, pin its
   // banner to the top so the sticky banner still docks to an edge.
@@ -341,5 +344,6 @@ export function taskTimelineFragment(db: Database, taskId: string): string {
     if (!final.some((i) => i.html === html)) final.unshift({ t: e.created_at, html });
   }
 
-  return final.map((i) => i.html).join("");
+  // The live indicator is transient and always last.
+  return final.map((i) => i.html).join("") + live;
 }

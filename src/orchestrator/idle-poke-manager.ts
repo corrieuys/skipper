@@ -126,8 +126,16 @@ export class IdlePokeManager {
 
   private shouldPoke(taskId: string): boolean {
     const task = this.taskScheduler.getTask(taskId);
-    if (!task || task.status !== "running") return false;
-    if (task.task_type === "real_time") return false;
+    if (!task || task.status !== "active" || task.paused) return false;
+    // Only workflow tasks get forward pressure; conversational tasks rest idle
+    // until the user sends input.
+    if (task.mode !== "workflow") return false;
+    // A settled run (complete_task / run failure) parks the orchestration step
+    // at IDLE — nothing to poke until new input wakes the task.
+    if ((task.orchestration_state as { step?: string }).step === "IDLE") return false;
+    // A pending wake belongs to the queue (task-runner): poking too would spawn
+    // a second root racing the wake's own spawn.
+    if (task.wake_requested_at) return false;
     if (task.needs_review) return false;
     if (!task.team_id) return false;
 

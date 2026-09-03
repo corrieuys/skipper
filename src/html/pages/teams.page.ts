@@ -36,8 +36,8 @@ function miniFlow(team: LocalTeam): string {
 
 function teamCard(team: LocalTeam): string {
   const gates = team.phases.filter((p) => p.review).length;
-  const realtime = team.config?.mode === "realtime"
-    ? `<span class="tm-chip tm-chip--rt">Real-time</span>`
+  const realtime = team.config?.mode === "conversational" || team.config?.mode === "realtime"
+    ? `<span class="tm-chip tm-chip--rt" title="New tasks on this team start with autopilot off">Manual default</span>`
     : "";
   const slack = team.config?.slackEnabled
     ? `<span class="tm-chip tm-chip--slack">Slack</span>`

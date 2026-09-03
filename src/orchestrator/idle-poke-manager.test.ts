@@ -47,7 +47,7 @@ function createRunningTask(
 ): string {
   database
     .prepare(
-      "INSERT INTO tasks (id, title, team_id, status, current_phase) VALUES (?, ?, ?, 'running', 0)",
+      "INSERT INTO tasks (id, title, team_id, status, current_phase) VALUES (?, ?, ?, 'active', 0)",
     )
     .run(taskId, "Test Task", teamId);
   return taskId;
@@ -106,8 +106,10 @@ function buildManager(
         id: row.id as string,
         team_id: row.team_id as string | null,
         status: row.status as string,
+        paused: !!(row.paused ?? 0),
+        mode: (row.mode as string) ?? "workflow",
         needs_review: !!(row.needs_review ?? 0),
-        task_type: (row.task_type as string) ?? "standard",
+        orchestration_state: JSON.parse((row.orchestration_state as string) || "{}"),
         current_phase: row.current_phase as number,
       };
     },

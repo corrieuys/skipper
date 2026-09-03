@@ -75,7 +75,7 @@ describe("handleSlashCommand", () => {
     const row = db
       .prepare("SELECT status, team_id, description FROM tasks")
       .get() as { status: string; team_id: string; description: string };
-    expect(["approved", "running"]).toContain(row.status);
+    expect(row.status).toBe("active");
     expect(row.team_id).toBe("team-1");
     expect(row.description).toBe("add a webhook feature");
   });
@@ -202,7 +202,7 @@ describe("handleSlashCommand", () => {
     const row = db
       .prepare("SELECT status, team_id, description FROM tasks")
       .get() as { status: string; team_id: string; description: string };
-    expect(["approved", "running"]).toContain(row.status);
+    expect(row.status).toBe("active");
     expect(row.team_id).toBe(singleAgentTeamId("researcher"));
     expect(row.description).toBe("summarize the latest report");
   });

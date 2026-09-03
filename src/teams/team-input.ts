@@ -96,12 +96,12 @@ function coerceTeamConfig(body: Record<string, unknown>, existing?: LocalTeamCon
   let slackEnabled = existing?.slackEnabled ?? false;
   let slashCommand: string | undefined = existing?.slashCommand;
   let skipperCustomTools: string[] | undefined = existing?.skipperCustomTools;
-  let mode: "regular" | "realtime" | undefined = existing?.mode;
+  let mode: "workflow" | "conversational" | "regular" | "realtime" | undefined = existing?.mode;
   let realtime = existing?.realtime;
 
   if (body.config && typeof body.config === "object") {
     const c = body.config as Record<string, unknown>;
-    if ("mode" in c) mode = c.mode === "realtime" ? "realtime" : "regular";
+    if ("mode" in c) mode = c.mode === "realtime" || c.mode === "conversational" ? "conversational" : "workflow";
     if ("realtime" in c && c.realtime && typeof c.realtime === "object") {
       const r = c.realtime as Record<string, unknown>;
       realtime = {

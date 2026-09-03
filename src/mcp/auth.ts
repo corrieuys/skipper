@@ -93,7 +93,7 @@ export function resolveAgentFromToken(db: Database, token: string): AgentIdentit
     .prepare(
       `SELECT ai.id, ai.template_agent_id, ai.task_id
        FROM agent_instances ai LEFT JOIN tasks t ON t.id = ai.task_id
-       WHERE ai.id = ? AND (ai.status = 'running' OR t.status = 'running')`,
+       WHERE ai.id = ? AND (ai.status = 'running' OR t.status = 'active')`,
     )
     .get(token) as { id: string; template_agent_id: string; task_id: string | null } | null;
 

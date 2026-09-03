@@ -18,7 +18,7 @@ function seedTeam(slackEnabled: boolean, taskConfig?: Record<string, unknown>): 
   db.prepare(
     "INSERT INTO local_teams (id, name, skipper_prompt, hooks, phases, agents, team_config) VALUES ('team-1','T','','[]','[]','[]',?)",
   ).run(JSON.stringify({ slackEnabled }));
-  db.prepare("INSERT INTO tasks (id, title, team_id, status, task_config) VALUES ('task-1','Add webhook','team-1','running',?)").run(
+  db.prepare("INSERT INTO tasks (id, title, team_id, status, task_config) VALUES ('task-1','Add webhook','team-1','active',?)").run(
     JSON.stringify(taskConfig ?? {}),
   );
 }
@@ -135,36 +135,41 @@ describe("SlackPushManager gating", () => {
     expect(values).toContain("rev:approve:task-1");
   });
 
-  it("posts a completion notice into the origin thread when a Slack-started task completes", async () => {
+  it("posts a run-completed notice into the origin thread, pointing at the thread-reply input flow", async () => {
     seedTeam(true, { slack_origin: { channel: "C-origin", thread_ts: "1700.500" } });
-    eventBus.emit("task:state_changed", { taskId: "task-1", previousStatus: "running", newStatus: "completed" });
+    eventBus.emit("task:run_completed", { taskId: "task-1", result: null });
     await flush();
     expect(posts).toHaveLength(1);
     expect(posts[0]!.body.channel).toBe("C-origin");
     expect(posts[0]!.body.thread_ts).toBe("1700.500");
-    expect(String(posts[0]!.body.text)).toContain("finished running");
+    expect(String(posts[0]!.body.text)).toContain("finished its run");
+    expect(String(posts[0]!.body.text)).toContain("Reply in this thread");
+    // The unified model has no Iterate button — the notice is a plain section.
+    const blocks = posts[0]!.body.blocks as Array<{ type: string }>;
+    expect(blocks.some((b) => b.type === "actions")).toBe(false);
   });
 
-  it("posts a failure notice into the origin thread when a Slack-started task fails", async () => {
+  it("posts a run-failed notice into the origin thread when a run fails", async () => {
     seedTeam(true, { slack_origin: { channel: "C-origin", thread_ts: "1700.500" } });
-    eventBus.emit("task:state_changed", { taskId: "task-1", previousStatus: "running", newStatus: "failed" });
+    eventBus.emit("task:run_failed", { taskId: "task-1", error: "boom" });
     await flush();
     expect(posts).toHaveLength(1);
     expect(posts[0]!.body.thread_ts).toBe("1700.500");
     expect(String(posts[0]!.body.text)).toContain("failed");
+    expect(String(posts[0]!.body.text)).toContain("Reply in this thread");
   });
 
-  it("does not post a completion notice for a task with no Slack thread origin", async () => {
+  it("does not post a run-completed notice for a task with no Slack thread origin", async () => {
     seedTeam(true); // no slack_origin
-    eventBus.emit("task:state_changed", { taskId: "task-1", previousStatus: "running", newStatus: "completed" });
+    eventBus.emit("task:run_completed", { taskId: "task-1", result: null });
     await flush();
     expect(posts).toHaveLength(0);
   });
 
-  it("posts the completion notice with no default channel set (thread-only, daemon default)", async () => {
+  it("posts the run-completed notice with no default channel set (thread-only, daemon default)", async () => {
     seedTeam(true, { slack_origin: { channel: "C-origin", thread_ts: "1700.500" } });
     saveSlackConfig(db, { botToken: "xoxb-x", defaultChannel: "" });
-    eventBus.emit("task:state_changed", { taskId: "task-1", previousStatus: "running", newStatus: "completed" });
+    eventBus.emit("task:run_completed", { taskId: "task-1", result: null });
     await flush();
     expect(posts).toHaveLength(1);
     expect(posts[0]!.body.thread_ts).toBe("1700.500");

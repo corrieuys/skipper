@@ -27,13 +27,21 @@ export interface TaskData {
   id: string;
   title: string;
   description?: string;
+  /** Stored status: draft | active | settled. */
   status: string;
   current_phase: number;
   team_id?: string;
   team_name?: string;
   created_at: string;
   result?: unknown;
+  /** @deprecated compat mirror of `mode` ("real_time" when conversational, else "standard"). */
   task_type?: string;
+  /** Task mode: workflow | conversational. */
+  mode?: string;
+  /** Paused flag on active tasks ('paused' is no longer a status). */
+  paused?: boolean;
+  /** Derived presentation status: draft|queued|working|idle|paused|review|blocked|completed|failed. */
+  display_status?: string;
   task_config?: Record<string, unknown>;
   needs_review?: boolean | number;
   phases?: { name: string; prompt: string; review?: boolean }[];
@@ -258,7 +266,11 @@ export interface DashboardData {
     id: string;
     title: string;
     status: string;
+    /** @deprecated compat mirror of `mode`. */
     task_type?: string;
+    mode?: string;
+    paused?: boolean;
+    display_status?: string;
     description?: string | null;
     created_at?: string;
   }[];
@@ -269,7 +281,11 @@ export interface DashboardData {
     status: string;
     current_phase: number;
     needs_review?: boolean | number;
+    /** @deprecated compat mirror of `mode`. */
     task_type?: string;
+    mode?: string;
+    paused?: boolean;
+    display_status?: string;
     phases?: { name: string; prompt: string; review?: boolean }[] | null;
   } | null;
   pollIntervalSeconds?: PollIntervalSeconds;

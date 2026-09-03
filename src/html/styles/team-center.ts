@@ -5,13 +5,13 @@
  */
 export function teamCenterStyles(): string {
   return `
-    /* ── Sidebar: tabbed boards (Latest / Recurring / Teams / Agents) ──
+    /* ── Sidebar: tabbed boards (Latest / Teams / Agents) ──
        One indentation scale across every board, so carets and text align:
        level 0 = section heads AND top-level team/series heads at 0.75rem;
        level 1 = their rows (Active/Recent items, team tasks, series runs) at 1.75rem. */
     .tc-side { padding: 0.4rem 0 0.7rem; }
 
-    /* ── Board tabs (segmented): Latest / Recurring / Teams / Agents ──
+    /* ── Board tabs (segmented): Latest / Teams / Agents ──
        Mirrors the iOS segmented picker. Only one .tc-board panel shows at a
        time; the active tab is a client toggle (data-tc-board / skipper.js). */
     .tc-tabs {
@@ -96,6 +96,25 @@ export function teamCenterStyles(): string {
     }
     .tc-history:hover { color: var(--sk-text); }
 
+    /* ── Task header: quiet autopilot pill ──
+       Reflects task.mode (workflow = on); clicking flips it via
+       POST /api/tasks/:id/autopilot. */
+    .tc-autopilot {
+      display: inline-flex; align-items: center; gap: 5px;
+      height: var(--sk-btn-height-sm, 24px); padding: 0 9px;
+      border: 1px solid var(--sk-border); border-radius: 999px;
+      background: transparent; cursor: pointer;
+      font-size: var(--sk-text-xs); font-weight: 500;
+      color: var(--sk-text-subtle);
+    }
+    .tc-autopilot:hover { color: var(--sk-text-muted); border-color: var(--sk-border-strong, var(--sk-border)); }
+    .tc-autopilot__dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--sk-surface-4); flex: none;
+    }
+    .tc-autopilot--on { color: var(--sk-text-muted); }
+    .tc-autopilot--on .tc-autopilot__dot { background: var(--sk-accent-tertiary); }
+
     /* ── Sidebar: expandable team groups ── */
     details.tc-team > summary { list-style: none; }
     details.tc-team > summary::-webkit-details-marker { display: none; }
@@ -166,7 +185,7 @@ export function teamCenterStyles(): string {
     .tc-side .mc-sidebar__item { padding-top: 5px; padding-bottom: 5px; }
 
     /* ── Task view: header spans full width, then timeline + rail ── */
-    .tc-work { display: flex; flex: 1; min-height: 0; }
+    .tc-work { display: flex; flex: 1; min-height: 0; position: relative; }
 
     .tc-timeline-col {
       flex: 1; min-width: 0; display: flex; flex-direction: column;
@@ -178,6 +197,44 @@ export function teamCenterStyles(): string {
     }
     .tc-timeline__inner { width: 100%; }
     .tc-empty { color: var(--sk-text-subtle); padding: var(--sk-space-4); }
+
+    /* Operator input entries (typed text / audio transcripts) */
+    .tc-av--you { background: var(--sk-surface-4); color: var(--sk-text); }
+    .tc-entry--input .tc-entry__card { background: var(--sk-surface-2); }
+    .tc-input__pending {
+      font-size: 0.68rem; color: var(--sk-accent-warning);
+      border: 1px solid var(--sk-accent-warning); border-radius: 999px;
+      padding: 0 6px;
+    }
+    .tc-input--error {
+      display: flex; align-items: baseline; gap: 0.5rem;
+      color: var(--sk-accent-danger); font-size: 0.8rem;
+      padding: 0.3rem 0.6rem;
+    }
+    .tc-input--error .tc-input__time { color: var(--sk-text-subtle); }
+
+    /* Transient live-agents indicator: always the last timeline item */
+    .tc-live {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem;
+      padding: 0.45rem 0.6rem; margin-top: 0.4rem;
+      color: var(--sk-text-subtle); font-size: 0.82rem;
+    }
+    .tc-live__agent { display: inline-flex; align-items: center; gap: 0.35rem; }
+    .tc-live__av { width: 18px; height: 18px; font-size: 0.55rem; }
+    .tc-live__who { font-weight: 600; }
+    .tc-live__verb { color: var(--sk-text-subtle); }
+    .tc-live__dots { display: inline-flex; gap: 3px; margin-left: 0.1rem; }
+    .tc-live__dots i {
+      width: 4px; height: 4px; border-radius: 50%;
+      background: var(--sk-text-subtle); opacity: 0.4;
+      animation: tc-live-pulse 1.2s infinite ease-in-out;
+    }
+    .tc-live__dots i:nth-child(2) { animation-delay: 0.2s; }
+    .tc-live__dots i:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes tc-live-pulse {
+      0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+      40% { opacity: 1; transform: translateY(-2px); }
+    }
 
     /* Timeline entries */
     .tc-entry { margin-bottom: 0.65rem; }
@@ -395,6 +452,65 @@ export function teamCenterStyles(): string {
     .tc-rail__more a:hover { color: var(--sk-text-muted); }
 
     /* Artifact list w/ version sub-lists */
+    /* Operator uploads on the timeline (image / file cards) */
+    .tc-upload { padding: 0.45rem 0.55rem; }
+    .tc-upload__img-link { display: inline-block; max-width: 100%; }
+    .tc-upload__img {
+      display: block; max-height: 320px; max-width: 100%; width: auto; height: auto;
+      border-radius: var(--sk-radius-sm); border: 1px solid var(--sk-border-subtle);
+      background: var(--sk-surface-1);
+    }
+    .tc-upload__caption { margin-top: 0.4rem; font-size: var(--sk-text-sm); color: var(--sk-text-muted); white-space: pre-wrap; }
+    .tc-upload__file { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+    .tc-upload__icon { flex: none; }
+    .tc-upload__name { font-family: var(--sk-font-mono); font-size: var(--sk-text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .tc-upload__size { flex: none; font-size: var(--sk-text-xs); color: var(--sk-text-subtle); }
+    .tc-upload__dl { flex: none; margin-left: auto; font-size: var(--sk-text-xs); color: var(--sk-accent-primary); text-decoration: none; }
+    .tc-upload__dl:hover { text-decoration: underline; }
+
+    /* Add artifact (upload) form at the top of the artifacts rail */
+    .tc-art-upload {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;
+      padding: 0.5rem 0.6rem; margin-bottom: 0.6rem;
+      border: 1px dashed var(--sk-border); border-radius: var(--sk-radius-md);
+      background: color-mix(in srgb, var(--sk-surface-2) 60%, transparent);
+    }
+    .tc-art-upload--drop { border-color: var(--sk-accent-primary); background: color-mix(in srgb, var(--sk-accent-primary) 10%, transparent); }
+    .tc-art-upload__pick { display: inline-flex; align-items: center; gap: 0.4rem; min-width: 0; cursor: pointer; font-size: var(--sk-text-xs); }
+    .tc-art-upload__file { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+    .tc-art-upload__pick-label {
+      border: 1px solid var(--sk-border); border-radius: var(--sk-radius-sm);
+      padding: 0.2rem 0.55rem; color: var(--sk-text-muted); white-space: nowrap;
+    }
+    .tc-art-upload__pick:hover .tc-art-upload__pick-label { color: var(--sk-text); border-color: var(--sk-border-strong, var(--sk-border)); }
+    .tc-art-upload__picked { color: var(--sk-text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 12rem; }
+    .tc-art-upload__desc {
+      flex: 1 1 10rem; min-width: 0; font-size: var(--sk-text-xs); padding: 0.25rem 0.45rem;
+      border: 1px solid var(--sk-border-subtle); border-radius: var(--sk-radius-sm);
+      background: color-mix(in srgb, var(--sk-surface-0) 28%, transparent); color: var(--sk-text); outline: none;
+    }
+    .tc-art-upload__btn { flex: none; font-size: var(--sk-text-xs); padding: 0.25rem 0.7rem; }
+    .tc-art-upload__status { flex: 1 0 100%; font-size: var(--sk-text-xs); color: var(--sk-text-subtle); }
+    .tc-art-upload__status--error, .tc-art-upload__error { color: var(--sk-accent-danger); font-size: var(--sk-text-xs); }
+    .tc-art-upload[data-busy] { opacity: 0.7; pointer-events: none; }
+    .tc-work.tc-work--drop::after {
+      content: "Drop to attach"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      font-size: var(--sk-text-lg); color: var(--sk-accent-primary); pointer-events: none;
+      background: color-mix(in srgb, var(--sk-accent-primary) 8%, transparent);
+      border: 2px dashed var(--sk-accent-primary); border-radius: var(--sk-radius-md); z-index: 5;
+    }
+
+    .tc-art__icon { flex: none; font-size: 0.9rem; }
+    .tc-art__thumb { display: block; margin-top: 0.4rem; }
+    .tc-art__thumb img {
+      display: block; max-height: 96px; max-width: 100%; width: auto; height: auto;
+      border-radius: var(--sk-radius-sm); border: 1px solid var(--sk-border-subtle); background: var(--sk-surface-1);
+    }
+    .tc-art__caption { margin-top: 0.3rem; font-size: var(--sk-text-xs); color: var(--sk-text-muted); }
+    .artifact-file__img { max-width: 100%; height: auto; border-radius: var(--sk-radius-sm); border: 1px solid var(--sk-border-subtle); }
+    .artifact-file__dl { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0; }
+    .artifact-file__caption { white-space: pre-wrap; }
+
     .tc-art {
       background: var(--sk-surface-2); border: 1px solid var(--sk-border);
       border-radius: var(--sk-radius-md); padding: 0.55rem 0.7rem; margin-bottom: 0.5rem;

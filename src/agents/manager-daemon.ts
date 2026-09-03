@@ -77,6 +77,8 @@ export class ManagerDaemon {
   private exitHandler: ((event: AgentExitEvent) => void) | null = null;
   private signalHandler: ((event: AgentSignalEvent) => void) | null = null;
   private taskStateHandler: ((event: import("../events/bus").TaskStateChangedEvent) => void) | null = null;
+  private wakeRequestedHandler: ((event: import("../events/bus").TaskWakeRequestedEvent) => void) | null = null;
+  private runSettledHandler: ((event: { taskId: string }) => void) | null = null;
   private pauseInterruptedAgents: Set<string> = new Set();
   private pausedRuntimeSnapshots: PausedRuntimeSnapshot[] = [];
 
@@ -195,7 +197,7 @@ export class ManagerDaemon {
     // Listen for consensus phase advance events
     eventBus.on("consensus:phase_advance", (event) => {
       const task = this.taskScheduler.getTask(event.taskId);
-      if (!task || task.status !== "running") return;
+      if (!task || task.status !== "active" || task.paused) return;
       const teamExec = task.team_id ? this.teamManager.getTeamForExecution(task.team_id) : null;
       if (!teamExec) return;
       const phases = (teamExec.team.phases as { name: string; prompt: string }[]) ?? [];
@@ -215,6 +217,9 @@ export class ManagerDaemon {
       writeCheckpoint,
     );
     this.taskRunner.setConsensusManager(this.consensusManager);
+    // Queued wakes deliver pending input through the pipeline (teamless tasks)
+    // or as an INPUT_FEED block appended to the standard spawn prompt.
+    this.taskRunner.setWakeFeeder(this.realtimeSessionManager);
 
     // Create HealthMonitor
     this.healthMonitor = new HealthMonitor(
@@ -412,6 +417,52 @@ export class ManagerDaemon {
   }
 
   /**
+   * Unified input entry point: text sent to a task from any surface (web
+   * composer, /input routes, Slack thread reply, Connect). Behavior by state:
+   *   draft            → appended to the description (becomes part of the ask)
+   *   settled          → auto-revive, then treated as active
+   *   active + review  → clears the review gate; input is the review response
+   *   active           → timeline entry; wakes the root through the queue when
+   *                      it is idle, or accumulates until its turn ends.
+   */
+  async inputTask(taskId: string, text: string, source: string = "user"): Promise<{ delivered: "draft" | "queued" | "accumulated" }> {
+    const normalized = text.trim();
+    if (!normalized) throw new Error("Input text is required");
+
+    const task = this.taskScheduler.getTask(taskId);
+    if (!task) throw new Error("Task not found");
+
+    if (task.status === "draft") {
+      const description = task.description ? `${task.description}\n\n${normalized}` : normalized;
+      this.taskScheduler.updateTask(taskId, {
+        title: task.title,
+        description,
+        teamId: task.team_id ?? undefined,
+        workingDirectory: task.working_directory,
+        mode: task.mode,
+        taskConfig: task.task_config,
+      });
+      return { delivered: "draft" };
+    }
+
+    // Settled → revive; review gate → cleared (the input IS the review
+    // response). Shared with file uploads (ingestArtifactUpload) so both kinds
+    // of input admit a task the same way.
+    this.realtimeSessionManager.prepareTaskForInput(taskId);
+
+    await this.realtimeSessionManager.ingestInput(taskId, {
+      sourceType: "text",
+      contentBody: normalized,
+      metadata: { source },
+    }, source);
+
+    // ingestInput requests a wake itself when the root is idle; report whether
+    // the input is queued for delivery or accumulating behind a busy root.
+    const busy = this.realtimeSessionManager.isSkipperBusy(taskId);
+    return { delivered: busy ? "accumulated" : "queued" };
+  }
+
+  /**
    * Resume the latest instance of an agent on a COMPLETED task for a one-off,
    * single-turn run outside the normal task workflow. Reuses the steer/resume
    * path (`sendResumeMessage`) so the agent picks up its prior session context.
@@ -435,8 +486,8 @@ export class ManagerDaemon {
       .prepare("SELECT id, status FROM tasks WHERE id = ?")
       .get(taskId) as { id: string; status: string } | null;
     if (!task) throw new Error("Task not found");
-    if (task.status !== "completed") {
-      throw new Error("One-off runs are only allowed on completed tasks");
+    if (task.status !== "settled") {
+      throw new Error("One-off runs are only allowed on settled tasks");
     }
 
     // Latest instance of this agent on this task.
@@ -487,14 +538,14 @@ export class ManagerDaemon {
       )
       .run(instance.id);
 
-    const wrapped = `[SYSTEM] One-off operator run OUTSIDE the normal task workflow. This task is already COMPLETE and stays complete. You CANNOT advance/regress phases or complete the task — those tools are unavailable to you. You MAY read/create notes and artifacts, and delegate to teammates (the orchestrator resumes you when a delegate finishes). When your turn ends, the run simply stops.\n\n${normalized}`;
+    const wrapped = `[SYSTEM] One-off operator run OUTSIDE the normal task workflow. This task is SETTLED and stays settled. You CANNOT advance/regress phases or complete the task — those tools are unavailable to you. You MAY read/create notes and artifacts, and delegate to teammates (the orchestrator resumes you when a delegate finishes). When your turn ends, the run simply stops.\n\n${normalized}`;
     const closeStdin = this.shouldCloseStdinForAgent(instance.id);
     await this.agentManager.sendResumeMessage(instance.id, wrapped, closeStdin);
 
     try {
       this.agentManager.appendSyntheticOutput(
         instance.id,
-        `[SKIPPER] One-off operator run started on completed task: ${normalized}`,
+        `[SKIPPER] One-off operator run started on settled task: ${normalized}`,
       );
     } catch (err) {
       logError(this.db, "oneshot.synthetic_output", { templateAgentId, taskId, instanceId: instance.id }, err);
@@ -725,7 +776,7 @@ export class ManagerDaemon {
 
   private resumeTaskFromEscalationWait(taskId: string): void {
     const task = this.taskScheduler.getTask(taskId);
-    if (!task || task.status !== "running") return;
+    if (!task || task.status !== "active" || task.paused) return;
 
     const previous = this.recoveryManager.getOrchestrationState(taskId);
     this.recoveryManager.updateOrchestrationState(taskId, {
@@ -775,7 +826,7 @@ export class ManagerDaemon {
     // resumes cleanly rather than replaying every missed hour.
     const activeCount = (this.db
       .prepare(
-        "SELECT COUNT(*) as c FROM tasks WHERE source_scheduled_task_id = ? AND status IN ('approved', 'running', 'paused')",
+        "SELECT COUNT(*) as c FROM tasks WHERE source_scheduled_task_id = ? AND status = 'active'",
       )
       .get(scheduled.id) as { c: number }).c;
     if (activeCount > 0) {
@@ -825,58 +876,84 @@ export class ManagerDaemon {
 
   private registerTaskStateHandler(): void {
     this.taskStateHandler = (event: import("../events/bus").TaskStateChangedEvent) => {
-      // Iterate/retry/resume — task is going from a terminal state back into the
-      // active pipeline. Drop the in-memory phase-completion dedup so the new
-      // run's first complete_phase call isn't swallowed by a stale guard.
-      const fromTerminal = event.previousStatus === "completed" || event.previousStatus === "failed";
-      const toActive = event.newStatus === "approved" || event.newStatus === "draft";
-      if (fromTerminal && toActive) {
+      // Revive — the task returns to the active pipeline. Drop the in-memory
+      // phase-completion dedup so a re-run's first complete_phase call isn't
+      // swallowed by a stale guard.
+      if (event.previousStatus === "settled" && event.newStatus === "active") {
         this.phaseManager.clearTaskState(event.taskId);
       }
 
-      if (event.newStatus === "approved") {
-        // Real-time tasks auto-start on approval so the session is ready
-        // immediately — centralised here so every approve surface (HTML,
-        // /data, MCP, connect, Slack) behaves identically.
-        if (event.previousStatus === "draft") {
-          try {
-            const task = this.taskScheduler.getTask(event.taskId);
-            if (task?.task_type === "real_time") {
-              this.taskScheduler.startTask(event.taskId);
-              this.realtimeSessionManager.startSession(event.taskId);
-            }
-          } catch (err) {
-            // Session start failure is non-fatal; the task is still approved/running.
-            logError(this.db, "realtime_auto_start", { taskId: event.taskId }, err);
-          }
-        }
+      if (event.newStatus === "active" && event.previousStatus === "draft") {
+        // Approval queues the first start; dispatch immediately instead of
+        // waiting for the queue timer. Centralised here so every approve
+        // surface (HTML, /data, MCP, connect, Slack) behaves identically.
         this.taskRunner.processTaskQueue().catch((err) => {
           logError(this.db, "reactive_task_dispatch", { taskId: event.taskId }, err);
         });
       }
 
-      if (event.newStatus === "completed" || event.newStatus === "failed") {
-        // Close any active realtime session for this task (without finalization on cancel/fail)
+      if (event.newStatus === "settled") {
+        // Close any live input-pipeline session for this task.
         try {
           if (this.realtimeSessionManager.isSessionActive(event.taskId)) {
             this.realtimeSessionManager.closeSession(event.taskId);
           }
         } catch (err) {
-          logError(this.db, "realtime_session_cleanup", { taskId: event.taskId, newStatus: event.newStatus }, err);
+          logError(this.db, "input_session_cleanup", { taskId: event.taskId, newStatus: event.newStatus }, err);
         }
         try {
           this.recoveryManager.cleanupTerminalTaskState(event.taskId);
         } catch (err) {
           logError(this.db, "terminal_task_cleanup_handler", { taskId: event.taskId, newStatus: event.newStatus }, err);
         }
-        if (event.newStatus === "completed") {
-          this.taskRunner.processTaskQueue().catch((err) => {
-            logError(this.db, "reactive_task_dispatch_after_terminal", { taskId: event.taskId }, err);
-          });
-        }
+        this.taskRunner.processTaskQueue().catch((err) => {
+          logError(this.db, "reactive_task_dispatch_after_terminal", { taskId: event.taskId }, err);
+        });
       }
     };
     eventBus.on("task:state_changed", this.taskStateHandler);
+
+    this.wakeRequestedHandler = (event: import("../events/bus").TaskWakeRequestedEvent) => {
+      // New input while at rest. Drop stale phase dedup (the woken run may
+      // legitimately complete the same phase again), then dispatch — input
+      // wakes go through the queue so they respect the concurrency cap.
+      this.phaseManager.clearTaskState(event.taskId);
+      this.taskRunner.processTaskQueue().catch((err) => {
+        logError(this.db, "reactive_wake_dispatch", { taskId: event.taskId }, err);
+      });
+    };
+    eventBus.on("task:wake_requested", this.wakeRequestedHandler);
+
+    this.runSettledHandler = (event: { taskId: string }) => {
+      // A run settled (complete_task / run failure). completeRun/failRun moved
+      // the task to its resting state already; park the orchestration step at
+      // IDLE and clear idle-poke bookkeeping. The settled-status branch of
+      // taskStateHandler closes sessions, cleans runtime state, and frees the
+      // concurrency slot.
+      try {
+        const prev = this.recoveryManager.getOrchestrationState(event.taskId);
+        this.recoveryManager.updateOrchestrationState(event.taskId, {
+          step: "IDLE",
+          last_checkpoint_ts: new Date().toISOString(),
+          session_id: prev?.session_id ?? null,
+          active_delegation_group_id: null,
+          active_delegation_child_count: 0,
+          active_delegation_settled_count: 0,
+          phase_guards: [],
+          pending_regression: null,
+          checkpoint_prompt_hash: null,
+        });
+      } catch (err) {
+        logError(this.db, "run_settled_state", { taskId: event.taskId }, err);
+      }
+      try {
+        this.idlePokeManager.clearIdle(event.taskId);
+      } catch (err) {
+        logError(this.db, "run_settled_idle_clear", { taskId: event.taskId }, err);
+      }
+    };
+    eventBus.on("task:run_completed", this.runSettledHandler);
+    eventBus.on("task:run_failed", this.runSettledHandler);
   }
 
   destroy(): void {
@@ -892,6 +969,15 @@ export class ManagerDaemon {
     if (this.taskStateHandler) {
       eventBus.off("task:state_changed", this.taskStateHandler);
       this.taskStateHandler = null;
+    }
+    if (this.wakeRequestedHandler) {
+      eventBus.off("task:wake_requested", this.wakeRequestedHandler);
+      this.wakeRequestedHandler = null;
+    }
+    if (this.runSettledHandler) {
+      eventBus.off("task:run_completed", this.runSettledHandler);
+      eventBus.off("task:run_failed", this.runSettledHandler);
+      this.runSettledHandler = null;
     }
     this.hookManager.destroy();
     this.exitHandlerRegistered = false;
@@ -970,7 +1056,7 @@ export class ManagerDaemon {
       }
 
       const task = this.taskScheduler.getTask(taskId);
-      if (!task || task.status !== "running") {
+      if (!task || task.status !== "active") {
         logError(this.db, "agent_exit_bail", { agentId: event.agentId, taskId, reason: !task ? "task_not_found" : `task_status_${task.status}`, method: "handleAgentExit" }, new Error("bail"));
         return;
       }
@@ -980,14 +1066,26 @@ export class ManagerDaemon {
       // id for legacy non-instance agents.
       const templateId = this.agentManager.getTemplateAgentId(event.agentId) ?? event.agentId;
 
-      // Real-time tasks are never completed or failed by agent exit — they run
-      // continuously until the user explicitly archives them. Clean up the agent
-      // instance but leave the task running.
-      if ((task as unknown as Record<string, unknown>).task_type === "real_time") {
+      // Conversational tasks are never failed by agent exit — idle with no
+      // agents is their resting state; the input pipeline re-feeds them when
+      // new input arrives. Clean up the instance and leave the task active.
+      if (task.mode !== "workflow") {
         this.db
           .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
           .run(templateId);
-        updateInstanceStatus(this.db, event.agentId, event.code === 0 ? "completed" : "failed");
+        const settledStatus = event.code === 0 ? "completed" : "failed";
+        updateInstanceStatus(this.db, event.agentId, settledStatus);
+        const relRow = this.db
+          .prepare("SELECT parent_instance_id, root_instance_id FROM agent_instances WHERE id = ?")
+          .get(event.agentId) as { parent_instance_id: string | null; root_instance_id: string | null } | null;
+        eventBus.emit("instance:state_changed", {
+          instanceId: event.agentId,
+          templateAgentId: templateId,
+          taskId,
+          parentInstanceId: relRow?.parent_instance_id ?? null,
+          rootInstanceId: relRow?.root_instance_id ?? null,
+          status: settledStatus,
+        });
         return;
       }
 
@@ -1018,7 +1116,7 @@ export class ManagerDaemon {
           // not a terminal one, so do NOT failTask here — that used to throw
           // away long-running multi-phase work on a single dropped turn.
           //
-          // Leave the task 'running' with no live instance and let the
+          // Leave the task active with no live instance and let the
           // tick-loop orphan recovery (recoverAllStaleTasks) treat it exactly
           // like a crashed/orphaned root agent: it respawns the entrypoint
           // (15s grace, session/context preserved) and, if that retry makes
@@ -1028,18 +1126,19 @@ export class ManagerDaemon {
           // instance finished + clears current_task_id, which is what makes
           // the task look orphaned to the recovery loop.
           logError(this.db, "agent_exit_bail", { agentId: event.agentId, taskId, reason: "no_completed_turn_output_recoverable", method: "handleAgentExit" }, new Error("bail"));
-        } else {
+        } else if ((task.orchestration_state as { step?: string }).step !== "IDLE") {
           // Phase advancement is Skipper-explicit only. A clean exit with no
           // outstanding delegation / escalation simply means Skipper's turn
           // ended. Mark the task idle; the tick-loop poke will nudge Skipper
-          // for a decision after IDLE_POKE_DELAY_MS.
+          // for a decision after IDLE_POKE_DELAY_MS. A settled run (step IDLE,
+          // set when complete_task or a run failure landed) rests instead.
           this.idlePokeManager.markIdle(taskId);
         }
       } else if (this.isPromptTooLongError(event.stderrSnippet)) {
         this.handlePromptTooLong(event.agentId, taskId, task).catch((err) => {
           logError(this.db, "prompt_too_long_recovery", { agentId: event.agentId, taskId, method: "handleAgentExit" }, err);
           try {
-            this.taskScheduler.failTask(taskId, `Prompt too long recovery failed: ${err instanceof Error ? err.message : String(err)}`);
+            this.taskScheduler.failRun(taskId, `Prompt too long recovery failed: ${err instanceof Error ? err.message : String(err)}`);
           } catch (innerErr) {
             logError(this.db, "prompt_too_long_fail_task", { taskId, method: "handleAgentExit" }, innerErr);
           }
@@ -1053,7 +1152,7 @@ export class ManagerDaemon {
         return;
       } else {
         try {
-          this.taskScheduler.failTask(taskId, `Agent exited with code ${event.code}`);
+          this.taskScheduler.failRun(taskId, `Agent exited with code ${event.code}`);
         } catch (err) {
           logError(this.db, "agent_exit_fail_task", { agentId: event.agentId, taskId: taskId, exitCode: event.code }, err);
         }
@@ -1082,6 +1181,15 @@ export class ManagerDaemon {
           rootInstanceId: rel?.root_instance_id ?? null,
           status: finalStatus,
         });
+        // Input arrived while this root was busy (wake marker persisted). Now
+        // that its instance is finalized the queue can deliver immediately
+        // instead of waiting for the next 60s tick.
+        const settled = this.taskScheduler.getTask(taskId);
+        if (settled?.status === "active" && settled.wake_requested_at) {
+          this.taskRunner.processTaskQueue().catch((err) => {
+            logError(this.db, "reactive_wake_after_exit", { taskId }, err);
+          });
+        }
       }
     } catch (err) {
       logError(this.db, "agent_exit_handler", { agentId: event.agentId, method: "handleAgentExit" }, err);
@@ -1408,7 +1516,7 @@ export class ManagerDaemon {
       logError(this.db, "agent.prompt_too_long_max_retries", {
         agentId, taskId, retries: retryRow.count, method: "handlePromptTooLong",
       });
-      this.taskScheduler.failTask(
+      this.taskScheduler.failRun(
         taskId,
         `Prompt too long after ${retryRow.count} retry attempt(s). Task context exceeds CLI limits.`,
       );
@@ -1426,7 +1534,7 @@ export class ManagerDaemon {
     const entrypointAgentId = teamExec?.entrypoint_agent_id ?? agentId;
     const agent = this.agentManager.getAgent(entrypointAgentId);
     if (!agent) {
-      this.taskScheduler.failTask(taskId, "Agent not found for prompt-too-long recovery");
+      this.taskScheduler.failRun(taskId, "Agent not found for prompt-too-long recovery");
       return;
     }
 

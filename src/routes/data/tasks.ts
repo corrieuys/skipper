@@ -9,15 +9,16 @@ import {
 } from "../../data/queries";
 import { TaskScheduler } from "../../tasks/scheduler";
 import { finalizeActiveInstancesForTask } from "../../agents/instance-status";
-import type { TaskType, RealtimeTaskConfig } from "../../tasks/scheduler";
-import { ArtifactManager } from "../../orchestrator/artifact-manager";
+import type { TaskMode, TaskConfig } from "../../tasks/scheduler";
+import { ArtifactManager, artifactToJson } from "../../orchestrator/artifact-manager";
+import { getRealtimeTeamId } from "../../config/teams";
 import { parseRequestBody } from "../utils";
 import { eventBus } from "../../events/bus";
 import type { ManagerDaemon } from "../../agents/manager-daemon";
 import { ok, err } from "./envelope";
 
 export function registerDataTaskRoutes(
-  _daemon?: Pick<ManagerDaemon, "getAgentManager" | "getRealtimeSessionManager" | "getPhaseManager" | "pauseTaskAgents" | "resumeTaskAgents">,
+  _daemon?: Pick<ManagerDaemon, "getAgentManager" | "getRealtimeSessionManager" | "getPhaseManager" | "pauseTaskAgents" | "resumeTaskAgents" | "inputTask">,
 ): void {
   const scheduler = new TaskScheduler();
   const artifactManager = new ArtifactManager();
@@ -73,7 +74,7 @@ export function registerDataTaskRoutes(
     const version: "latest" | number = versionParam === "latest" ? "latest" : parseInt(versionParam, 10);
     const artifact = artifactManager.getArtifact(params.id, params.name, version);
     if (!artifact) return err("Artifact not found", 404);
-    return ok(artifact);
+    return ok(artifactToJson(artifact));
   });
 
   addDataRoute("GET", "/data/tasks/:id/forensics", (_req, params) => {
@@ -103,6 +104,15 @@ export function registerDataTaskRoutes(
   // POST/mutation routes
   // ---------------------------------------------------------------------------
 
+  // Accepts mode workflow|conversational; legacy taskType standard/real_time
+  // maps onto mode for older clients.
+  function parseMode(body: Record<string, string>): TaskMode | undefined {
+    if (body.mode === "workflow" || body.mode === "conversational") return body.mode;
+    if (body.taskType === "real_time") return "conversational";
+    if (body.taskType === "standard") return "workflow";
+    return undefined;
+  }
+
   addDataRoute("POST", "/data/tasks", async (req) => {
     const body = await parseRequestBody<Record<string, string>>(req);
 
@@ -110,12 +120,9 @@ export function registerDataTaskRoutes(
       return err("title is required");
     }
 
-    let taskType: TaskType | undefined;
-    if (body.taskType === "standard" || body.taskType === "real_time") {
-      taskType = body.taskType;
-    }
+    const mode = parseMode(body);
 
-    let taskConfig: RealtimeTaskConfig | undefined;
+    let taskConfig: TaskConfig | undefined;
     if (body.taskConfig) {
       try {
         taskConfig = typeof body.taskConfig === "string" ? JSON.parse(body.taskConfig) : body.taskConfig;
@@ -123,12 +130,15 @@ export function registerDataTaskRoutes(
     }
 
     try {
+      // Conversational tasks default to the Real Time team when none is given.
+      const teamId = body.teamId?.trim()
+        || (mode === "conversational" ? getRealtimeTeamId() ?? undefined : undefined);
       const created = scheduler.createTask({
         title: body.title.trim(),
         description: body.description?.trim() || undefined,
-        teamId: body.teamId?.trim() || undefined,
+        teamId,
         workingDirectory: body.workingDirectory?.trim() || process.cwd(),
-        taskType,
+        mode,
         taskConfig,
       });
       return ok(created, 201);
@@ -145,11 +155,8 @@ export function registerDataTaskRoutes(
     }
 
     try {
-      let taskType: TaskType | undefined;
-      if (body.taskType === "standard" || body.taskType === "real_time") {
-        taskType = body.taskType;
-      }
-      let taskConfig: RealtimeTaskConfig | undefined;
+      const mode = parseMode(body);
+      let taskConfig: TaskConfig | undefined;
       if (body.taskConfig) {
         try {
           taskConfig = typeof body.taskConfig === "string" ? JSON.parse(body.taskConfig) : body.taskConfig;
@@ -159,7 +166,7 @@ export function registerDataTaskRoutes(
         title: body.title.trim(),
         description: body.description,
         teamId: body.teamId,
-        taskType,
+        mode,
         taskConfig,
       });
       return ok(updated);
@@ -171,7 +178,21 @@ export function registerDataTaskRoutes(
   addDataRoute("POST", "/data/tasks/:id/approve", (_req, params) => {
     try {
       scheduler.approveTask(params.id);
-      return ok({ id: params.id, status: "approved" });
+      return ok({ id: params.id, status: "active" });
+    } catch (e: unknown) {
+      return err(e instanceof Error ? e.message : "Internal error");
+    }
+  });
+
+  addDataRoute("POST", "/data/tasks/:id/autopilot", async (req, params) => {
+    try {
+      const task = scheduler.getTask(params.id);
+      if (!task) return err("Task not found", 404);
+      const body = await req.json().catch(() => ({})) as { on?: unknown; autopilot?: unknown };
+      const raw = body.on ?? body.autopilot;
+      const on = raw === true || raw === "true" || raw === "on" || raw === 1;
+      const updated = scheduler.setAutopilot(params.id, on);
+      return ok({ id: params.id, autopilot: updated.autopilot, mode: updated.mode });
     } catch (e: unknown) {
       return err(e instanceof Error ? e.message : "Internal error");
     }
@@ -181,12 +202,11 @@ export function registerDataTaskRoutes(
     try {
       const task = scheduler.getTask(params.id);
       if (!task) return err("Task not found", 404);
-      if (task.task_type === "real_time") return err("Realtime tasks cannot be paused");
-      // Flip to 'paused' first so recovery/health/queue loops immediately stop
-      // treating it as a live running task, THEN stop the agents + their trees.
+      // Flip the paused flag first so recovery/health/queue loops immediately
+      // stop treating it as a live task, THEN stop the agents + their trees.
       scheduler.pauseTask(params.id);
       if (_daemon) await _daemon.pauseTaskAgents(params.id);
-      return ok({ id: params.id, status: "paused" });
+      return ok({ id: params.id, status: "active", paused: true });
     } catch (e: unknown) {
       return err(e instanceof Error ? e.message : "Internal error");
     }
@@ -196,12 +216,12 @@ export function registerDataTaskRoutes(
     try {
       const task = scheduler.getTask(params.id);
       if (!task) return err("Task not found", 404);
-      if (task.status !== "paused") return err(`Task is not paused (status: ${task.status})`);
+      if (!task.paused) return err("Task is not paused");
       // Respawn the agents first (reading snapshots from orchestration_state),
-      // THEN flip to 'running' so the task is only live once agents are back.
+      // THEN clear the paused flag so the task is only live once agents are back.
       if (_daemon) await _daemon.resumeTaskAgents(params.id);
       scheduler.resumeFromPause(params.id);
-      return ok({ id: params.id, status: "running" });
+      return ok({ id: params.id, status: "active", paused: false });
     } catch (e: unknown) {
       return err(e instanceof Error ? e.message : "Internal error");
     }
@@ -231,40 +251,86 @@ export function registerDataTaskRoutes(
           try { agentManager.killAgent(runtimeId); } catch { /* best-effort */ }
         }
       }
-      scheduler.cancelTask(params.id);
-      return ok({ id: params.id, status: "cancelled" });
+      scheduler.settleTask(params.id, { error: "Cancelled by user" });
+      return ok({ id: params.id, status: "settled" });
     } catch (e: unknown) {
       return err(e instanceof Error ? e.message : "Internal error");
     }
   });
 
-  addDataRoute("POST", "/data/tasks/:id/retry", (_req, params) => {
-    try {
-      scheduler.retryTask(params.id);
-      return ok({ id: params.id });
-    } catch (e: unknown) {
-      return err(e instanceof Error ? e.message : "Internal error");
-    }
+  addDataRoute("POST", "/data/tasks/:id/retry", () => {
+    return err("Retry was removed. Send new input via POST /data/tasks/:id/input instead.", 410);
   });
 
-  addDataRoute("POST", "/data/tasks/:id/resume", (_req, params) => {
+  addDataRoute("POST", "/data/tasks/:id/resume", async (_req, params) => {
     try {
-      scheduler.resumeTask(params.id);
-      return ok({ id: params.id });
-    } catch (e: unknown) {
-      return err(e instanceof Error ? e.message : "Internal error");
-    }
-  });
-
-  addDataRoute("POST", "/data/tasks/:id/iterate", async (req, params) => {
-    try {
-      const body = await parseRequestBody<Record<string, string>>(req);
-      const additionalInput = body.additionalInput || body.additional_input;
-      if (!additionalInput) {
-        return err("additionalInput is required");
+      const task = scheduler.getTask(params.id);
+      if (!task) return err("Task not found", 404);
+      if (task.paused) {
+        // Respawn the agents first, THEN clear the paused flag (same ordering
+        // as /resume-from-pause).
+        if (_daemon) await _daemon.resumeTaskAgents(params.id);
+        scheduler.resumeFromPause(params.id);
+        return ok({ id: params.id, status: "active", paused: false });
       }
-      const updated = scheduler.iterateTask(params.id, additionalInput);
-      return ok(updated);
+      if (task.status === "settled") {
+        scheduler.reviveTask(params.id);
+        scheduler.requestWake(params.id);
+        return ok({ id: params.id, status: "active" });
+      }
+      return err("Task is not paused or settled", 409);
+    } catch (e: unknown) {
+      return err(e instanceof Error ? e.message : "Internal error");
+    }
+  });
+
+  // Unified input entry point: draft appends, settled revives + wakes,
+  // active queues or accumulates. Replaces the old iterate endpoint.
+  async function handleInput(req: Request, params: { id: string }): Promise<Response> {
+    try {
+      if (!_daemon) return err("Daemon not available", 503);
+      const body = await parseRequestBody<Record<string, string>>(req);
+      const text = body.text || body.additionalInput || body.additional_input;
+      if (!text || !text.trim()) {
+        return err("text is required");
+      }
+      const result = await _daemon.inputTask(params.id, text, "api");
+      return ok({ id: params.id, delivered: result.delivered });
+    } catch (e: unknown) {
+      return err(e instanceof Error ? e.message : "Internal error");
+    }
+  }
+
+  addDataRoute("POST", "/data/tasks/:id/input", handleInput);
+  // Legacy shim: iterate is now just input.
+  addDataRoute("POST", "/data/tasks/:id/iterate", handleInput);
+
+  addDataRoute("POST", "/data/tasks/:id/archive", (_req, params) => {
+    try {
+      if (_daemon) {
+        const rtMgr = _daemon.getRealtimeSessionManager();
+        if (rtMgr.isSessionActive(params.id)) {
+          rtMgr.closeSession(params.id);
+        }
+        const agentManager = _daemon.getAgentManager();
+        const runtimeIds = Array.from(agentManager.getRunningAgents().values())
+          .filter((runtime) => runtime.taskId === params.id)
+          .map((runtime) => runtime.id);
+        for (const runtimeId of runtimeIds) {
+          try { agentManager.killAgent(runtimeId); } catch { /* best-effort */ }
+        }
+      }
+      scheduler.settleTask(params.id, {});
+      return ok({ id: params.id, status: "settled" });
+    } catch (e: unknown) {
+      return err(e instanceof Error ? e.message : "Internal error");
+    }
+  });
+
+  addDataRoute("POST", "/data/tasks/:id/unarchive", (_req, params) => {
+    try {
+      scheduler.reviveTask(params.id);
+      return ok({ id: params.id, status: "active" });
     } catch (e: unknown) {
       return err(e instanceof Error ? e.message : "Internal error");
     }
@@ -297,8 +363,8 @@ export function registerDataTaskRoutes(
       if (!_daemon) return err("Daemon not available", 503);
       const task = scheduler.getTask(params.id);
       if (!task) return err("Task not found", 404);
-      // PhaseManager silently no-ops outside this state — surface it instead.
-      if (task.status !== "running" || !task.needs_review) {
+      // PhaseManager silently no-ops outside this state, so surface it instead.
+      if (task.status !== "active" || !task.needs_review) {
         return err("Task is not awaiting review", 409);
       }
       const message = await readOptionalMessage(req);

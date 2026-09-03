@@ -360,9 +360,9 @@ export class ReconciliationLoop {
         const rows = this.db
           .prepare(
             `SELECT id FROM tasks
-             WHERE status IN ('completed', 'failed')
+             WHERE status = 'settled'
                AND source_scheduled_task_id IS NULL
-               AND updated_at < datetime('now', ? || ' days')`,
+               AND COALESCE(settled_at, updated_at) < datetime('now', ? || ' days')`,
           )
           .all(-regularDays) as { id: string }[];
         ids.push(...rows.map((r) => r.id));
@@ -371,9 +371,9 @@ export class ReconciliationLoop {
         const rows = this.db
           .prepare(
             `SELECT id FROM tasks
-             WHERE status IN ('completed', 'failed')
+             WHERE status = 'settled'
                AND source_scheduled_task_id IS NOT NULL
-               AND updated_at < datetime('now', ? || ' days')`,
+               AND COALESCE(settled_at, updated_at) < datetime('now', ? || ' days')`,
           )
           .all(-recurringDays) as { id: string }[];
         ids.push(...rows.map((r) => r.id));
@@ -388,7 +388,7 @@ export class ReconciliationLoop {
       try {
         if (this.taskScheduler.deleteTask(id)) deleted++;
       } catch (err) {
-        // deleteTask refuses running tasks; the query already excludes those, but a
+        // deleteTask refuses tasks with live agents; the query already excludes those, but a
         // task could transition between select and delete — skip and move on.
         logError(this.db, "task_auto_delete", { taskId: id }, err);
       }

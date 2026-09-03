@@ -58,6 +58,7 @@ const SOLO_ESSENTIAL_TOOLS = [
   "create_note",
   "list_notes",
   "create_artifact",
+  "create_file_artifact",
   "list_artifacts",
   "get_artifact",
 ] as const;

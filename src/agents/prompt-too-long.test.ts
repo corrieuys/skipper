@@ -34,6 +34,8 @@ describe("Prompt too long detection in stderr", () => {
     manager.getRunningAgents().clear();
     db.close();
     try { unlinkSync(TEST_DB); } catch {}
+    try { unlinkSync(`${TEST_DB}-wal`); } catch {}
+    try { unlinkSync(`${TEST_DB}-shm`); } catch {}
   });
 
   it("includes stderrSnippet in exit event", async () => {

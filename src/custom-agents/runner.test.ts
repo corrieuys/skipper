@@ -71,7 +71,7 @@ function defineAgent(overrides: Partial<CustomAgentInput> = {}): string {
 /** Spawn a custom agent on a task and resolve when it exits. */
 async function runAgent(typeName: string, prompt: string): Promise<{ exit: AgentExitEvent; runtimeId: string }> {
   const agent = manager.createAgent({ name: "Tester", type: typeName });
-  db.prepare("INSERT INTO tasks (id, title, status) VALUES ('task-1', 'T', 'running')").run();
+  db.prepare("INSERT INTO tasks (id, title, status, started_at) VALUES ('task-1', 'T', 'active', datetime('now'))").run();
 
   const exited = new Promise<AgentExitEvent>((resolve) => {
     const handler = (e: AgentExitEvent) => {
@@ -119,7 +119,11 @@ afterEach(() => {
   manager.close();
   db.close();
   rmSync(workingDir, { recursive: true, force: true });
-  try { unlinkSync(TEST_DB); } catch { }
+  // WAL mode leaves -wal/-shm sidecars; a stale pair next to a fresh db file
+  // causes intermittent "disk I/O error" on the next open.
+  for (const f of [TEST_DB, `${TEST_DB}-wal`, `${TEST_DB}-shm`]) {
+    try { unlinkSync(f); } catch { }
+  }
   clearAgentTypeCache();
 });
 
@@ -322,7 +326,7 @@ describe("failure and cancellation", () => {
     }) as typeof fetch;
 
     const agent = manager.createAgent({ name: "Tester", type: defineAgent() });
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('task-1', 'T', 'running')").run();
+    db.prepare("INSERT INTO tasks (id, title, status, started_at) VALUES ('task-1', 'T', 'active', datetime('now'))").run();
     const exited = new Promise<AgentExitEvent>((resolve) => {
       const handler = (e: AgentExitEvent) => { eventBus.off("agent:exit", handler); resolve(e); };
       eventBus.on("agent:exit", handler);

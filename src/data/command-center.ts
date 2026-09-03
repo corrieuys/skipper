@@ -2,15 +2,24 @@
 // src/html/view-models/command-center.vm.ts so the view-model is a pure
 // assembler and the same rows can feed a JSON endpoint.
 import type { Database } from "bun:sqlite";
+import { deriveDisplayStatus } from "../tasks/status";
 
 export interface CommandCenterTaskRow {
   id: string;
   title: string;
   description: string | null;
+  /** Stored status: draft | active | settled. */
   status: string;
   current_phase: number;
   team_id: string | null;
+  /** @deprecated compat mirror of `mode` ("real_time" when conversational, else "standard"). */
   task_type: string;
+  /** Task mode: workflow | conversational. */
+  mode?: string;
+  /** Paused flag on active tasks (0/1). */
+  paused?: number;
+  /** Derived presentation status: draft|queued|working|idle|paused|review|blocked|completed|failed. */
+  display_status?: string;
   needs_review: number;
   working_directory: string;
   created_at: string;
@@ -22,29 +31,36 @@ export interface CommandCenterTaskRow {
 }
 
 /**
- * Tasks with team names. Running/approved/paused/failed scheduled runs stay in
- * the list; completed ones are hidden (visible under the recurring task's
- * "runs" instead). `includeTaskId` force-includes one task so its detail view
- * can render.
+ * Tasks with team names. Active and failed (settled-with-error) scheduled runs
+ * stay in the list; cleanly settled ones are hidden (visible under the
+ * recurring task's "runs" instead). `includeTaskId` force-includes one task so
+ * its detail view can render.
  */
 export function fetchCommandCenterTasks(db: Database, includeTaskId?: string): CommandCenterTaskRow[] {
-  return db.prepare(
-    `SELECT t.id, t.title, t.description, t.status, t.current_phase, t.team_id, t.task_type, t.needs_review,
+  const rows = db.prepare(
+    `SELECT t.id, t.title, t.description, t.status, t.current_phase, t.team_id, t.mode, t.paused, t.needs_review,
             t.working_directory, t.created_at, t.completed_at, t.result, t.task_config,
-            t.source_scheduled_task_id,
+            t.source_scheduled_task_id, t.wake_requested_at, t.started_at,
             tm.name AS team_name
      FROM tasks t LEFT JOIN teams tm ON tm.id = t.team_id
      WHERE t.source_scheduled_task_id IS NULL
-        OR t.status IN ('running', 'approved', 'paused', 'failed')
+        OR t.status = 'active'
+        OR (t.status = 'settled' AND json_valid(t.result) AND json_extract(t.result, '$.error') IS NOT NULL)
         OR t.id = ?
      ORDER BY t.created_at DESC`,
-  ).all(includeTaskId ?? null) as CommandCenterTaskRow[];
+  ).all(includeTaskId ?? null) as (CommandCenterTaskRow & { wake_requested_at: string | null; started_at: string | null })[];
+  for (const row of rows) {
+    row.display_status = deriveDisplayStatus(db, row);
+    row.task_type = row.mode === "conversational" ? "real_time" : "standard";
+  }
+  return rows;
 }
 
 export interface ScheduledRunRow {
   id: string;
   title: string;
   status: string;
+  result: string | null;
   created_at: string;
   completed_at: string | null;
   source_scheduled_task_id: string;
@@ -57,9 +73,9 @@ export interface ScheduledRunRow {
  */
 export function fetchRecentScheduledRuns(db: Database, perTask = 5): Record<string, ScheduledRunRow[]> {
   const rows = db.prepare(
-    `SELECT id, title, status, created_at, completed_at, source_scheduled_task_id
+    `SELECT id, title, status, result, created_at, completed_at, source_scheduled_task_id
      FROM (
-       SELECT t.id, t.title, t.status, t.created_at, t.completed_at, t.source_scheduled_task_id,
+       SELECT t.id, t.title, t.status, t.result, t.created_at, t.completed_at, t.source_scheduled_task_id,
               ROW_NUMBER() OVER (PARTITION BY t.source_scheduled_task_id ORDER BY t.created_at DESC) AS rn
        FROM tasks t
        WHERE t.source_scheduled_task_id IS NOT NULL
@@ -103,7 +119,7 @@ export function fetchActiveInstanceRows(db: Database): ActiveInstanceRow[] {
      FROM agent_instances ai
      LEFT JOIN agents a ON a.id = ai.template_agent_id
      WHERE ai.status IN ('running', 'waiting_delegation', 'pending')
-        OR (ai.status IN ('completed', 'failed') AND ai.task_id IN (SELECT id FROM tasks WHERE status = 'running'))
+        OR (ai.status IN ('completed', 'failed') AND ai.task_id IN (SELECT id FROM tasks WHERE status = 'active'))
      ORDER BY ai.created_at`,
   ).all() as ActiveInstanceRow[];
 }

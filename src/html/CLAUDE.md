@@ -9,7 +9,7 @@ Server-side HTML rendering. No framework — string templates from TS.
 | `atoms/` | Smallest helpers: `escape-html`, `render-inline-markdown` (safe inline md → HTML for the activity feed: escapes first, then a fixed `<strong>`/`<em>`/`<code>` allowlist; unrecognised/unbalanced markers stay plain text), `render-message-body` (operator-message body by stored format: text=escaped, markdown=`data-artifact-md`, html=trusted inline w/ scripts stripped; shared by timeline + Messages dock), `format-timestamp`, `format-tokens`, `sniff-html`, `creature` (the six agent creature characters + color palette — `creatureSvg`, `CREATURE_IDS`, `AGENT_COLORS`, `sanitizeColor`; tints via `--agent-color`/`--agent-ink` CSS vars), `agent-identity-picker` (`agentIdentityPicker`/`identityPanel` HTML + `agentIdentityPickerScript` client wiring, exposing `window.SkipperIdentity.read/set`; shared by all three agent editors) |
 | `fragments/` | Single-element snippets (badge, metric, task-row, tree-node, phase-step…). Also the v2-UI composite fragments: `task-timeline.fragment.ts` (unified timeline: agent prose + operator messages as cards, tool frames grouped into `<details>`, escalations inline via `escalationCardPanel`; drops duplicate `result` frames) and `artifact-list.fragment.ts` (per-name rows, main link opens latest, expandable version sub-list) — both shared by the fragment routes and `ws/ui-push.ts` |
 | `panels/` | Larger composite cards (steer panel, active mission, task queue, phase stepper, escalation bar/card, iterate, metrics bar, artifacts, notes) |
-| `pages/` | Full-page renderers (command-center, task-list, task-create, config, logs, grug, agent-terminal, teams, team-map). Recurring tasks use the same task-create form (Task Type = Recurring) |
+| `pages/` | Full-page renderers (command-center, task-list, task-create, config, logs, grug, agent-terminal, teams, team-map). Recurring tasks use the same task-create form (Schedule = Recurring) |
 
 ## Command center UI
 
@@ -19,25 +19,28 @@ old classic dock sidebar/task-view were removed (there is no `isV2UI` flag). The
 views share the same shell.
 
 - **Sidebar** (`renderSidebarListBody`) is a segmented **tab bar** (`.tc-tabs`,
-  mirroring the iOS `Board` picker) over four boards: **Latest** / **Recurring**
-  / **Teams** / **Agents**. Only one `.tc-board` panel shows at a time; the
+  mirroring the iOS `Board` picker) over three boards: **Latest** / **Teams** /
+  **Agents**. Only one `.tc-board` panel shows at a time; the
   server always renders Latest active and the client re-applies the persisted
-  board (`sidebarBoard`, `tcSetBoard`/`tcRestoreBoard` in `skipper.js`) after
+  board (`sidebarBoard`, `tcSetBoard`/`tcRestoreBoard` in `skipper.js`; a stale
+  persisted `recurring` value falls back to `latest`) after
   every WS re-render. Tabs switch via a `[data-tc-board]` click delegate. Each
   Teams and Agents row (`renderTeamGroup`) reveals a
   hover **"+"** (`.tc-team__add`) linking to `/tasks/new?team=<id>` — the create
   form pre-selects that team/agent (the `/fragments/task-form/team` picker honours
   `selectedTeamId` for real teams and `sa:`/`ca:` solo agents alike). Boards:
   **Latest** stacks **Needs you** (tasks with `has_attention`, always visible,
-  never collapsible) → **Active** (running/approved/paused/draft, any kind) →
-  **Recent** (the 5 latest tasks not already in Needs you / Active — mostly
-  completed/failed history, `allTasks` is created_at DESC so a post-exclusion
-  slice is chronological). **Recurring** (one series row per recurring task: name opens the detail view,
-  last 5 runs as status squares via `vm.scheduledRuns` /
-  `data/command-center.ts:fetchRecentScheduledRuns`, expanding lists those runs
-  as direct links into each run's task view + "All runs") → **Teams** (each team
+  never collapsible) → **Active** (stored status active or draft, any kind) →
+  **Recurring** (collapsible section keyed `sec:Scheduled`; one series row per
+  recurring task: name opens the detail view, last 5 runs as status squares via
+  `vm.scheduledRuns` / `data/command-center.ts:fetchRecentScheduledRuns`,
+  expanding lists those runs as direct links into each run's task view + "All
+  runs") → **Recent** (the 5 latest tasks not already in Needs you / Active —
+  mostly completed/failed history, `allTasks` is created_at DESC so a
+  post-exclusion slice is chronological). **Teams** (each team
   a `<details data-tc-team>` with its 8 most recent tasks; team name links to
-  `pickTeamLandingTask` = running > approved > paused > latest) → a "Task
+  `pickTeamLandingTask` = working > review/blocked > queued > paused > idle >
+  latest, ranked on `display_status`) → a "Task
   history" link to `/tasks`. Section and series collapse state persists through
   the same `data-tc-team` toggle store in `skipper.js` (keys `sec:<name>` /
   `rec:<id>`) because WS pushes re-render the list blind. `/?team=<id>` opens a
@@ -47,18 +50,69 @@ views share the same shell.
   (the pinned grid column + hover-overlay width both read that var) and persists
   it as `mcSidebarW` (`Skipper.sidebar.restoreWidth` re-applies on load).
 - **Task view** (`taskMainContent`): full-width task header (stepper, orbs,
-  lifecycle actions), attention slot (review/recovery/iterate/result), then
+  lifecycle actions keyed on the unified model: draft Approve/Delete, active
+  Pause|Resume + Cancel (+ Unapprove while queued, Approve Phase on review),
+  settled Resume + Delete; neither "archive" nor "settled" surfaces as a word. Draft + active
+  headers also carry the quiet **Autopilot pill** (`renderAutopilotToggle`,
+  `.tc-autopilot`, posts the flipped value to `POST /api/tasks/:id/autopilot`,
+  which HX-redirects back to the task view)), then the shared
+  **composer + record bar**
+  (`renderTaskComposer`, posts text to `POST /api/tasks/:id/input`; shown on
+  EVERY active task, any mode, AND on settled tasks, where the placeholder says
+  input continues the task (posting revives it) and the record button is
+  disabled until input revives), attention slot (review/result), then
   `.tc-work` = timeline column + draggable divider (`data-tc-divider`; rail
   width % persisted as `tcRailWidthPct`, default 50/50) + artifacts/notes rail.
+  BOTH modes render this same view (the old conversational-only
+  `realtimeTaskContent` / merged `#mc-rt-feed-<id>` feed is deleted, so the
+  autopilot toggle never swaps the chrome). The iterate panel is gone; the
+  composer replaces iterate/resume/retry. Status chips/dots render the derived
+  `display_status` via `fragments/status-chip.fragment.ts`.
   No escalations/messages tabs — both live in the timeline. Notes input lives
   only in the rail.
 - **Timeline** `/workspace/task/:id/timeline` → `fragments/task-timeline.fragment.ts`,
   container `#mc-timeline-<id>` / inner `#mc-timeline-inner-<id>`; scroll sticks
   to bottom (`tcStickTimeline` in skipper.js). WS pushes re-render it on
-  agent:output (debounced), task:message_posted, escalation:created/resolved.
+  agent:output (debounced), task:message_posted, escalation:created/resolved,
+  realtime:timeline_updated. Operator uploads render as "You · image" (lazy
+  `<img>` max-height 320px, opens full size) / "You · file" (glyph, name, size,
+  caption, download) cards (`uploadEntryHtml`, `.tc-entry--upload`), read via a
+  LEFT JOIN from `realtime_timeline.artifact_id` to `task_artifacts`; both use
+  `/api/artifacts/:id/file`. The header names the source: `task_artifacts.source`
+  is joined to `agents` (name + config color), so a file an agent attached via
+  `create_file_artifact` renders as "<Agent name> · image/file" with the same
+  avatar/name tinting as its message cards (`.tc-entry--agent-upload`, no
+  input styling, no "queued" tag); operator sources (`operator`, `user`, `web`,
+  `connect:*`) keep "You".
+- **Activity** tab (rail) is paged: `/workspace/task/:id/activity` renders the
+  newest 100 rows (`parseTerminalActivity`, newest at the top) ending in a
+  load-more sentinel (`activityLoadMoreSentinel`, `hx-trigger="intersect once"`)
+  that swaps itself for the next older page as the user scrolls down. Rows carry
+  only `data-sk-activity-id`; the detail modal fetches the raw frame from
+  `/workspace/activity/:id` on click. Live rows arrive via the WS poke
+  (`#mc-activity-poke-<id>` → `activityFeedRefresh` in skipper.js fetches
+  `?after=<newest id>` and prepends, preserving scroll position), so loaded
+  history is never wiped by a push. The old per-kind budget is gone: a CSS
+  filter that hides tool rows just reveals the sentinel sooner.
 - **Artifacts** rail uses `fragments/artifact-list.fragment.ts`; the detail
   opens fullscreen via the existing `#sk-artifact-detail-window` ids restyled as
-  `.tc-artifact-overlay`.
+  `.tc-artifact-overlay`. The list is headed by the **Add artifact** form
+  (`artifactUploadForm`, `.tc-art-upload[data-sk-artifact-upload=<taskId>]`:
+  file input (any type, multiple) + optional description + button, mirroring
+  the notes panel's add form). `skipper.js` owns the upload: the form submit,
+  clipboard image paste anywhere on the task view and drag-drop onto `.tc-work`
+  (`.tc-work--drop` overlay) all go through `window.skUploadArtifacts` → one
+  multipart `fetch` per file to `POST /api/tasks/:id/artifacts/upload` (busy /
+  error state on the form); PNG/JPEG/WebP over 2048px on the long edge are
+  downscaled on a canvas to JPEG q0.85 first (also strips EXIF). The rail
+  re-renders via the `artifact:created` WS push. File artifact rows
+  (`.tc-art--file`) show a type glyph (`fileArtifactIcon`), mime, size and
+  dimensions, plus a lazy thumbnail (`.tc-art__thumb` →
+  `/api/artifacts/:id/file`) for images; the detail overlay
+  (`renderArtifactDetail` in routes/pages.ts, `.artifact-detail--file`) shows
+  the image full size or a download link and no Raw/Edit controls.
+  `PRIMARY_ARTIFACT_LIST_VARIANT` is the rail variant shared by the fragment
+  route, `ws/ui-push.ts` and the upload route.
 - **Agent identity** — each agent may carry a chosen `color` + creature
   `character` (`atoms/creature.ts`, seven creatures incl. `captain`, the Skipper's
   cap). The active-agent orb banner (`dashboardLatestSteerFragment`) renders the
@@ -97,7 +151,8 @@ Lots of legacy flat `*Fragment.ts` files at this level — pre-reorg into `fragm
 | file | use |
 |---|---|
 | `components.ts` | Big top-level renderer for standard pages. Wire DTO types (TaskData, ForensicsData, …) moved to `src/contracts/types.ts` — re-exported here for legacy importers |
-| `realtime-components.ts` | LEGACY realtime pieces. The standalone detail page is retired (`/realtime/:id` now 302s to `/?task=<id>`); the real-time task renders in the v2 command center via `command-center.page.ts:realtimeTaskContent` (the `tc-work` timeline+rail layout + the audio/text `mc-rt-composer`, feed container `#mc-rt-feed-<id>`). This file still exports fragment renderers (`timelineEntriesFragment`, `notesFragment`, `runningAgentsFragment`, `agentAssignmentFragment`) used by `ws/ui-push.ts` + the `/api/realtime-tasks/*` routes |
+| `realtime-components.ts` | LEGACY realtime pieces. The standalone detail/new pages were **deleted** with the unified task model (`/realtime/:id` 302s to `/?task=<id>`; every task renders via `command-center.page.ts:taskMainContent`). Surviving exports: fragment renderers (`timelineEntriesFragment`, `notesFragment`, `runningAgentsFragment`, `agentAssignmentFragment`) used by `ws/ui-push.ts` + realtime routes, plus the legacy list page (`realtimeTasksPage`) still imported by `routes/realtime.ts` |
+| `fragments/status-chip.fragment.ts` | Unified-model presentation helpers: `displayStatusOf(row)` (display_status with stored-status fallback), `statusChip`/`displayBadgeClass` (settled-with-error = old failed look), `displayDotClass`/`displayIndicatorClass`/`displayRunSquareClass` (map display statuses onto the existing CSS modifier classes), `modeChip` (snail marker for tasks with autopilot off), `taskResultHasError` |
 | `layout.ts`, `baseStyles.ts` | Shared shell + base CSS |
 | `forensics*.ts` | Forensics tab on task detail (timeline, instance tree, delegations, escalations, token usage, terminal tails) |
 | `dashboard*Fragment.ts` | Dashboard polling fragments |

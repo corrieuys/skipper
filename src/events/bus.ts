@@ -169,6 +169,23 @@ export interface TaskNeedsReviewChangedEvent {
   phaseIndex?: number;
 }
 
+/** A run of an active task finished (root called complete_task / last phase done). Task stays active. */
+export interface TaskRunCompletedEvent {
+  taskId: string;
+  result: unknown | null;
+}
+
+/** A run of an active task hit an error. Task stays active and can be woken with new input. */
+export interface TaskRunFailedEvent {
+  taskId: string;
+  error: string | null;
+}
+
+/** Input arrived for a task with no live root agent; the queue should wake it when a slot frees. */
+export interface TaskWakeRequestedEvent {
+  taskId: string;
+}
+
 export interface EventMap {
   "agent:output": [AgentOutputEvent];
   "agent:exit": [AgentExitEvent];
@@ -194,6 +211,9 @@ export interface EventMap {
   "realtime:audio_lock": [RealtimeAudioLockEvent];
   "consensus:phase_advance": [ConsensusPhaseAdvanceEvent];
   "task:needs_review_changed": [TaskNeedsReviewChangedEvent];
+  "task:run_completed": [TaskRunCompletedEvent];
+  "task:run_failed": [TaskRunFailedEvent];
+  "task:wake_requested": [TaskWakeRequestedEvent];
 }
 
 export type EventName = keyof EventMap;

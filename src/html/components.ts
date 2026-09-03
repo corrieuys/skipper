@@ -44,6 +44,7 @@ import { agentDetailSummaryContent } from "./agentDetailSummaryContent";
 import { taskDelegationsContent } from "./taskDelegationsContent";
 import { taskListFragment } from "./taskListFragment";
 import { formatTimestamp } from "./formatTimestamp";
+import { statusChip, displayStatusOf, taskResultHasError } from "./fragments/status-chip.fragment";
 
 export const navItems: { href: string; label: string }[] = [
   { href: "/", label: "Dashboard" },
@@ -132,7 +133,12 @@ export function taskDetailSummaryFragment(
 }
 
 export function taskPhasesContent(task: TaskData): string {
-  return phaseStepper(task.current_phase, task.phases, task.status, task.needs_review);
+  // phaseStepper's terminal rendering keys on the old completed/failed strings;
+  // settled tasks map onto them by whether the result carries an error.
+  const stepperStatus = task.status === "settled"
+    ? (taskResultHasError(task.result) ? "failed" : "completed")
+    : task.status;
+  return phaseStepper(task.current_phase, task.phases, stepperStatus, task.needs_review);
 }
 
 export function taskPhaseStepperFragment(
@@ -171,53 +177,46 @@ export function taskForensicsFragment(
 export function taskTableRow(task: TaskData): string {
   const eid = escapeHtml(task.id);
   const menuItems: string[] = [];
-  const isRealtime = task.task_type === "real_time";
+  const isConversational = task.mode === "conversational";
+  const display = displayStatusOf(task);
+  const hasError = taskResultHasError(task.result);
+  const isWorking = display === "working";
 
   if (task.status === "draft") {
     menuItems.push(
       `<a href="/tasks/${eid}" hx-get="/tasks/${eid}" hx-target="body" hx-push-url="true">Edit</a>`,
     );
     menuItems.push(`<div class="action-divider"></div>`);
-    if (task.team_id || isRealtime) {
+    if (task.team_id || isConversational) {
       menuItems.push(
         `<button hx-post="/api/tasks/${eid}/approve" hx-target="body" hx-swap="innerHTML">Approve</button>`,
       );
     } else {
       menuItems.push(
-        `<button disabled title="Assign a team before approving standard tasks">Approve</button>`,
+        `<button disabled title="Assign a team before approving workflow tasks">Approve</button>`,
+      );
+    }
+  }
+  if (task.status === "active") {
+    if (display === "queued") {
+      menuItems.push(
+        `<button hx-post="/api/tasks/${eid}/unapprove" hx-target="body" hx-swap="innerHTML">Unapprove</button>`,
+      );
+    }
+    if (task.paused) {
+      menuItems.push(
+        `<button hx-post="/api/tasks/${eid}/resume" hx-target="body" hx-swap="innerHTML">Resume</button>`,
+      );
+    } else {
+      menuItems.push(
+        `<button hx-post="/api/tasks/${eid}/pause" hx-target="body" hx-swap="innerHTML">Pause</button>`,
       );
     }
     menuItems.push(
-      `<button hx-post="/api/tasks/${eid}/cancel" hx-target="body" hx-swap="innerHTML" class="action-danger">Cancel</button>`,
+      `<button hx-post="/api/tasks/${eid}/cancel" hx-target="body" hx-swap="innerHTML" hx-confirm="Cancel this task? Any live agents will be stopped." class="action-danger">Cancel</button>`,
     );
   }
-  if (task.status === "approved") {
-    menuItems.push(
-      `<button hx-post="/api/tasks/${eid}/unapprove" hx-target="body" hx-swap="innerHTML">Unapprove</button>`,
-    );
-    menuItems.push(
-      `<button hx-post="/api/tasks/${eid}/cancel" hx-target="body" hx-swap="innerHTML" class="action-danger">Cancel</button>`,
-    );
-  }
-  if (task.status === "running") {
-    menuItems.push(
-      `<button hx-post="/api/tasks/${eid}/cancel" hx-target="body" hx-swap="innerHTML" class="action-danger">Cancel</button>`,
-    );
-  }
-  if (task.status === "failed") {
-    menuItems.push(
-      `<button hx-post="/api/tasks/${eid}/resume" hx-target="body" hx-swap="innerHTML">Resume</button>`,
-    );
-    menuItems.push(
-      `<button hx-post="/api/tasks/${eid}/retry" hx-target="body" hx-swap="innerHTML">Retry (Reset)</button>`,
-    );
-  }
-  if (task.status === "completed") {
-    menuItems.push(
-      `<a href="/tasks/${eid}" hx-get="/tasks/${eid}" hx-target="body" hx-push-url="true">Iterate</a>`,
-    );
-  }
-  if (task.status !== "running") {
+  if (!isWorking) {
     if (menuItems.length > 0)
       menuItems.push(`<div class="action-divider"></div>`);
     menuItems.push(
@@ -231,7 +230,7 @@ export function taskTableRow(task: TaskData): string {
       : "";
 
   return `<tr class="task-row">
-    <td><span class="badge badge-${task.status}">${task.status}</span>${isRealtime ? ' <span class="badge badge-info" title="Real-time task">RT</span>' : ""}</td>
+    <td>${statusChip(display, hasError)}${isConversational ? ' <span class="badge badge-info" title="Autopilot off: this task waits for your input">Manual</span>' : ""}</td>
     <td>
       <div class="task-row-title">
         <a href="/tasks/${eid}" hx-get="/tasks/${eid}" hx-target="body" hx-push-url="true">${escapeHtml(task.title)}</a>

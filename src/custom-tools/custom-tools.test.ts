@@ -211,7 +211,7 @@ describe("execution", () => {
 
 describe("session resolution", () => {
   function seedInstance(runtimeId: string, templateAgentId: string, taskId: string, providerType?: string): void {
-    db.prepare("INSERT OR IGNORE INTO tasks (id, title, status) VALUES (?, 'T', 'running')").run(taskId);
+    db.prepare("INSERT OR IGNORE INTO tasks (id, title, status, started_at) VALUES (?, 'T', 'active', datetime('now'))").run(taskId);
     db.prepare(
       `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, state_metadata, attempt)
        VALUES (?, ?, ?, NULL, ?, 'running', ?, 1)`,
@@ -239,7 +239,7 @@ describe("session resolution", () => {
       phases: [{ name: "build", prompt: "" }],
       agents: [{ id: "coder", name: "Coder", type: "claude-code", model: "default", customTools: ["lookup_customer"] }],
     });
-    db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('t1','T',?,'running')").run(team.id);
+    db.prepare("INSERT INTO tasks (id, title, team_id, status, started_at) VALUES ('t1','T',?,'active',datetime('now'))").run(team.id);
     seedInstance("rt-2", "coder", "t1", "claude-code");
 
     expect(resolveSessionCustomTools(db, "rt-2").map((t) => t.name)).toEqual(["lookup_customer"]);
@@ -254,7 +254,7 @@ describe("session resolution", () => {
       phases: [{ name: "build", prompt: "" }],
       agents: [{ id: "coder", name: "Coder", type: "claude-code", model: "default", customTools: ["lookup_customer"] }],
     });
-    db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('t-ns','T',?,'running')").run(team.id);
+    db.prepare("INSERT INTO tasks (id, title, team_id, status, started_at) VALUES ('t-ns','T',?,'active',datetime('now'))").run(team.id);
     seedInstance("rt-ns", `${team.id}:coder`, "t-ns", "claude-code");
 
     expect(resolveSessionCustomTools(db, "rt-ns").map((t) => t.name)).toEqual(["lookup_customer"]);
@@ -270,7 +270,7 @@ describe("session resolution", () => {
       agents: [],
       config: { skipperCustomTools: ["lookup_customer"] },
     });
-    db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('t-skip','T',?,'running')").run(team.id);
+    db.prepare("INSERT INTO tasks (id, title, team_id, status, started_at) VALUES ('t-skip','T',?,'active',datetime('now'))").run(team.id);
     seedInstance("rt-skip", "skipper", "t-skip", "claude-code");
 
     expect(resolveSessionCustomTools(db, "rt-skip").map((t) => t.name)).toEqual(["lookup_customer"]);
@@ -293,7 +293,7 @@ describe("session resolution", () => {
         customTools: ["lookup_customer", "team_only"],
       }],
     });
-    db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('t2','T',?,'running')").run(team.id);
+    db.prepare("INSERT INTO tasks (id, title, team_id, status, started_at) VALUES ('t2','T',?,'active',datetime('now'))").run(team.id);
     seedInstance("rt-3", "worker", "t2", customAgentTypeName(agent.id));
 
     expect(resolveSessionCustomTools(db, "rt-3").map((t) => t.name).sort()).toEqual(["lookup_customer", "team_only"]);
@@ -312,7 +312,7 @@ describe("session resolution", () => {
       phases: [{ name: "build", prompt: "" }],
       agents: [{ id: "coder", name: "C", type: "claude-code", model: "default", customTools: ["lookup_customer"] }],
     });
-    db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('t3','T',?,'running')").run(team.id);
+    db.prepare("INSERT INTO tasks (id, title, team_id, status, started_at) VALUES ('t3','T',?,'active',datetime('now'))").run(team.id);
     seedInstance("rt-5", "coder", "t3", "claude-code");
     deleteCustomTool(db, tool.id);
 
@@ -347,7 +347,7 @@ describe("registration on an MCP session", () => {
       phases: [{ name: "build", prompt: "" }],
       agents: [{ id: "coder", name: "C", type: "claude-code", model: "default", customTools: ["lookup_customer"] }],
     });
-    db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('t4','T',?,'running')").run(team.id);
+    db.prepare("INSERT INTO tasks (id, title, team_id, status, started_at) VALUES ('t4','T',?,'active',datetime('now'))").run(team.id);
     db.prepare(
       `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, state_metadata, attempt)
        VALUES ('rt-6','t4','coder',NULL,'rt-6','running','{}',1)`,

@@ -53,22 +53,38 @@ function createTeamWithEntrypoint(agentId: string, phases: { name: string; promp
   return teamId;
 }
 
+// "Running" under the unified model: active + started.
 function createRunningTask(teamId: string, title = "Test Task"): string {
   const taskId = crypto.randomUUID();
   db.prepare(
     `INSERT INTO tasks (id, title, team_id, status, started_at)
-     VALUES (?, ?, ?, 'running', datetime('now'))`,
+     VALUES (?, ?, ?, 'active', datetime('now'))`,
   ).run(taskId, title, teamId);
   return taskId;
 }
 
+// "Approved" under the unified model: active, never started (queued).
 function createApprovedTask(teamId: string, title = "Test Task"): string {
   const taskId = crypto.randomUUID();
   db.prepare(
     `INSERT INTO tasks (id, title, team_id, status, approved_at)
-     VALUES (?, ?, ?, 'approved', datetime('now'))`,
+     VALUES (?, ?, ?, 'active', datetime('now'))`,
   ).run(taskId, title, teamId);
   return taskId;
+}
+
+function createDraftTask(teamId: string, title = "Draft Task"): string {
+  const taskId = crypto.randomUUID();
+  db.prepare(
+    "INSERT INTO tasks (id, title, team_id, status) VALUES (?, ?, ?, 'draft')",
+  ).run(taskId, title, teamId);
+  return taskId;
+}
+
+function remediationEvents(taskId: string, type: string): unknown[] {
+  return db
+    .prepare("SELECT * FROM events WHERE task_id = ? AND type = ?")
+    .all(taskId, `remediation:${type}`);
 }
 
 beforeEach(() => {
@@ -92,60 +108,60 @@ afterEach(() => {
 });
 
 describe("State machine invariant tests", () => {
-  it("should not allow completing a non-running task", () => {
+  it("should not allow completing a run on a non-active task", () => {
+    const agentId = createAgent("worker");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createDraftTask(teamId);
+
+    expect(() => scheduler.completeRun(taskId)).toThrow("Can only complete a run on active tasks");
+  });
+
+  it("should not allow failing a run on a non-active task", () => {
+    const agentId = createAgent("worker");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createDraftTask(teamId);
+
+    expect(() => scheduler.failRun(taskId, "test")).toThrow("Can only fail a run on active tasks");
+  });
+
+  it("should not allow starting a non-active task", () => {
+    const agentId = createAgent("worker");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createDraftTask(teamId);
+
+    expect(() => scheduler.markStarted(taskId)).toThrow("Can only start active tasks");
+  });
+
+  it("should not allow reviving a non-settled task", () => {
+    // Retry-from-failed became unarchive-from-archived; the guard is the analog.
     const agentId = createAgent("worker");
     const teamId = createTeamWithEntrypoint(agentId);
     const taskId = createApprovedTask(teamId);
 
-    expect(() => scheduler.completeTask(taskId)).toThrow("Can only complete running tasks");
+    expect(() => scheduler.reviveTask(taskId)).toThrow("Can only revive settled tasks");
   });
 
-  it("should not allow failing a non-running task", () => {
-    const agentId = createAgent("worker");
-    const teamId = createTeamWithEntrypoint(agentId);
-    const taskId = createApprovedTask(teamId);
-
-    expect(() => scheduler.failTask(taskId, "test")).toThrow("Can only fail running tasks");
-  });
-
-  it("should not allow starting a non-approved task", () => {
-    const agentId = createAgent("worker");
-    const teamId = createTeamWithEntrypoint(agentId);
-    const taskId = crypto.randomUUID();
-    db.prepare(
-      "INSERT INTO tasks (id, title, team_id, status) VALUES (?, ?, ?, 'draft')",
-    ).run(taskId, "Draft Task", teamId);
-
-    expect(() => scheduler.startTask(taskId)).toThrow("Can only start approved tasks");
-  });
-
-  it("should not allow retrying a non-failed task", () => {
-    const agentId = createAgent("worker");
-    const teamId = createTeamWithEntrypoint(agentId);
-    const taskId = createApprovedTask(teamId);
-
-    expect(() => scheduler.retryTask(taskId)).toThrow("Can only retry failed tasks");
-  });
-
-  it("should allow a task to reach completed from running", () => {
+  it("completing a run settles the task with completed_at set", () => {
     const agentId = createAgent("worker");
     const teamId = createTeamWithEntrypoint(agentId);
     const taskId = createRunningTask(teamId);
 
-    const completed = scheduler.completeTask(taskId);
-    expect(completed.status).toBe("completed");
+    const completed = scheduler.completeRun(taskId);
+    expect(completed.status).toBe("settled");
+    expect(completed.completed_at).toBeTruthy();
   });
 
-  it("should allow a task to reach failed from running", () => {
+  it("failing a run settles the task with the error recorded", () => {
     const agentId = createAgent("worker");
     const teamId = createTeamWithEntrypoint(agentId);
     const taskId = createRunningTask(teamId);
 
-    const failed = scheduler.failTask(taskId, "test error");
-    expect(failed.status).toBe("failed");
+    const failed = scheduler.failRun(taskId, "test error");
+    expect(failed.status).toBe("settled");
+    expect(failed.result).toEqual({ error: "test error" });
   });
 
-  it("should clear agent assignments when task completes", () => {
+  it("should clear agent assignments when a run completes", () => {
     const agentId = createAgent("worker");
     const teamId = createTeamWithEntrypoint(agentId);
     const taskId = createRunningTask(teamId);
@@ -153,20 +169,20 @@ describe("State machine invariant tests", () => {
     // Assign agent to task
     db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run(taskId, agentId);
 
-    scheduler.completeTask(taskId);
+    scheduler.completeRun(taskId);
 
     const agent = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as { current_task_id: string | null };
     expect(agent.current_task_id).toBeNull();
   });
 
-  it("should clear agent assignments when task fails", () => {
+  it("should clear agent assignments when a run fails", () => {
     const agentId = createAgent("worker");
     const teamId = createTeamWithEntrypoint(agentId);
     const taskId = createRunningTask(teamId);
 
     db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run(taskId, agentId);
 
-    scheduler.failTask(taskId, "test error");
+    scheduler.failRun(taskId, "test error");
 
     const agent = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as { current_task_id: string | null };
     expect(agent.current_task_id).toBeNull();
@@ -206,8 +222,9 @@ describe("Health monitor — instance process health", () => {
 
 describe("Health monitor — parallel-task fail authority", () => {
   // Two tasks sharing one template ('skipper') must not clobber each other's
-  // failure decision. Task-fail authority lives in the per-instance check
-  // (checkInstanceProcessHealth), keyed on agent_instances.task_id.
+  // failure decision. A dead ROOT instance is no longer terminal for the task
+  // (it stays active); checkInstanceProcessHealth instead emits a per-task
+  // remediation:root_instance_died event, keyed on agent_instances.task_id.
 
   function runningInstance(
     taskId: string,
@@ -222,23 +239,27 @@ describe("Health monitor — parallel-task fail authority", () => {
     return id;
   }
 
-  it("fails only the task whose entrypoint PID is dead, not its sibling", () => {
+  it("flags only the task whose entrypoint PID is dead, not its sibling", () => {
     const teamId = createTeamWithEntrypoint("skipper");
     const taskA = createRunningTask(teamId, "Task A");
     const taskB = createRunningTask(teamId, "Task B");
 
     // Both tasks run the same template. A's entrypoint died (pid 999999),
-    // B's is alive-but-untracked-here (no pid recorded → left alone).
+    // B's is alive-but-untracked-here (no pid recorded, fresh → left alone).
     runningInstance(taskA, "skipper", { pid: 999999 });
     runningInstance(taskB, "skipper", { pid: null });
 
     daemon.getHealthMonitor().checkInstanceProcessHealth();
 
-    expect(scheduler.getTask(taskA)!.status).toBe("failed");
-    expect(scheduler.getTask(taskB)!.status).toBe("running");
+    // Both tasks stay active (dead root is no longer terminal); only A gets
+    // the root_instance_died remediation event feeding stale recovery.
+    expect(scheduler.getTask(taskA)!.status).toBe("active");
+    expect(scheduler.getTask(taskB)!.status).toBe("active");
+    expect(remediationEvents(taskA, "root_instance_died").length).toBe(1);
+    expect(remediationEvents(taskB, "root_instance_died").length).toBe(0);
   });
 
-  it("does not fail a task that is parked on an open escalation", () => {
+  it("does not flag a task that is parked on an open escalation", () => {
     const teamId = createTeamWithEntrypoint("skipper");
     const taskId = createRunningTask(teamId);
     runningInstance(taskId, "skipper", { pid: 999999 });
@@ -250,10 +271,11 @@ describe("Health monitor — parallel-task fail authority", () => {
 
     daemon.getHealthMonitor().checkInstanceProcessHealth();
 
-    expect(scheduler.getTask(taskId)!.status).toBe("running");
+    expect(scheduler.getTask(taskId)!.status).toBe("active");
+    expect(remediationEvents(taskId, "root_instance_died").length).toBe(0);
   });
 
-  it("does not fail the task when only a delegated child instance dies", () => {
+  it("does not flag the task when only a delegated child instance dies", () => {
     const teamId = createTeamWithEntrypoint("skipper");
     const taskId = createRunningTask(teamId);
     const root = runningInstance(taskId, "skipper", { pid: null });
@@ -261,10 +283,11 @@ describe("Health monitor — parallel-task fail authority", () => {
 
     daemon.getHealthMonitor().checkInstanceProcessHealth();
 
-    expect(scheduler.getTask(taskId)!.status).toBe("running");
+    expect(scheduler.getTask(taskId)!.status).toBe("active");
+    expect(remediationEvents(taskId, "root_instance_died").length).toBe(0);
   });
 
-  it("checkProcessHealth no longer fails a task off the shared template row", () => {
+  it("checkProcessHealth does not touch a task off the shared template row", () => {
     const teamId = createTeamWithEntrypoint("skipper");
     const taskB = createRunningTask(teamId, "Task B");
 
@@ -276,7 +299,7 @@ describe("Health monitor — parallel-task fail authority", () => {
 
     daemon.getHealthMonitor().checkProcessHealth();
 
-    expect(scheduler.getTask(taskB)!.status).toBe("running");
+    expect(scheduler.getTask(taskB)!.status).toBe("active");
     const tmpl = db.prepare("SELECT process_pid FROM agents WHERE id = 'skipper'").get() as { process_pid: number | null };
     expect(tmpl.process_pid).toBeNull(); // orphan cleanup still runs
   });
@@ -354,11 +377,11 @@ describe("Health monitor — orphaned task detection", () => {
     expect(events[0].type).toBe("remediation:orphaned_task");
   });
 
-  it("should ignore running real-time tasks for orphaned detection", () => {
+  it("should ignore conversational tasks for orphaned detection", () => {
     const rtTaskId = crypto.randomUUID();
     db.prepare(
-      `INSERT INTO tasks (id, title, team_id, status, task_type, started_at)
-       VALUES (?, ?, NULL, 'running', 'real_time', datetime('now'))`,
+      `INSERT INTO tasks (id, title, team_id, status, mode, started_at)
+       VALUES (?, ?, NULL, 'active', 'conversational', datetime('now'))`,
     ).run(rtTaskId, "Realtime Task");
 
     daemon.getHealthMonitor().checkOrphanedTasks();
@@ -448,17 +471,18 @@ describe("Health monitor — pid-null ghost reaping", () => {
     expect(inst.status).toBe("running");
   });
 
-  it("fails the owning task when a ROOT ghost is reaped", () => {
+  it("flags the owning task (root_instance_died) when a ROOT ghost is reaped; task stays active", () => {
     const teamId = createTeamWithEntrypoint("skipper");
     const taskId = createRunningTask(teamId);
     ghostInstance(taskId, "skipper", { ageMinutes: 5 });
 
     daemon.getHealthMonitor().checkInstanceProcessHealth();
 
-    expect(scheduler.getTask(taskId)!.status).toBe("failed");
+    expect(scheduler.getTask(taskId)!.status).toBe("active");
+    expect(remediationEvents(taskId, "root_instance_died").length).toBe(1);
   });
 
-  it("does NOT fail the task when only a delegated-child ghost is reaped", () => {
+  it("does NOT flag the task when only a delegated-child ghost is reaped", () => {
     const teamId = createTeamWithEntrypoint("skipper");
     const taskId = createRunningTask(teamId);
     const root = ghostInstance(taskId, "skipper", { ageMinutes: 0 }); // root still in grace
@@ -468,7 +492,8 @@ describe("Health monitor — pid-null ghost reaping", () => {
 
     const childInst = db.prepare("SELECT status FROM agent_instances WHERE id = ?").get(child) as { status: string };
     expect(childInst.status).toBe("failed");
-    expect(scheduler.getTask(taskId)!.status).toBe("running");
+    expect(scheduler.getTask(taskId)!.status).toBe("active");
+    expect(remediationEvents(taskId, "root_instance_died").length).toBe(0);
   });
 });
 
@@ -518,7 +543,7 @@ describe("Health monitor — why stuck diagnostic", () => {
     const diagnostic = daemon.getHealthMonitor().generateWhyStuckDiagnostic(taskId);
     expect(diagnostic).not.toBeNull();
     expect(diagnostic!.taskId).toBe(taskId);
-    expect(diagnostic!.taskStatus).toBe("running");
+    expect(diagnostic!.taskStatus).toBe("active");
     expect(diagnostic!.likely_reasons.length).toBeGreaterThan(0);
   });
 
@@ -541,11 +566,11 @@ describe("Recovery manager — one-shot recovery policy", () => {
     expect(row).not.toBeNull();
   });
 
-  it("should not recover running real-time tasks", async () => {
+  it("should not recover conversational tasks", async () => {
     const rtTaskId = crypto.randomUUID();
     db.prepare(
-      `INSERT INTO tasks (id, title, team_id, status, task_type, started_at)
-       VALUES (?, ?, NULL, 'running', 'real_time', datetime('now'))`,
+      `INSERT INTO tasks (id, title, team_id, status, mode, started_at)
+       VALUES (?, ?, NULL, 'active', 'conversational', datetime('now'))`,
     ).run(rtTaskId, "Realtime Recovery");
 
     const recovered = await daemon.getRecoveryManager().recoverTask(rtTaskId);
@@ -571,6 +596,27 @@ describe("Recovery manager — one-shot recovery policy", () => {
 
     const row = db.prepare("SELECT value FROM daemon_state WHERE key = ?").get(`recovery_attempt:${taskId}`) as { value: string } | null;
     expect(row).toBeNull();
+  });
+
+  it("does not recover a workflow task marked idle-at-rest (clean exit belongs to idle pokes)", async () => {
+    const agentId = createAgent("worker");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createRunningTask(teamId);
+
+    // handleAgentExit marks a clean root exit idle via IdlePokeManager.markIdle.
+    daemon.getIdlePokeManager().markIdle(taskId);
+
+    const recovered = await daemon.getRecoveryManager().recoverTask(taskId);
+    expect(recovered).toBe(false);
+
+    const row = db.prepare("SELECT value FROM daemon_state WHERE key = ?").get(`recovery_attempt:${taskId}`) as { value: string } | null;
+    expect(row).toBeNull();
+
+    // Once the marker clears (poke fired / task woke), recovery may act again.
+    daemon.getIdlePokeManager().clearIdle(taskId);
+    await daemon.getRecoveryManager().recoverTask(taskId);
+    const after = db.prepare("SELECT value FROM daemon_state WHERE key = ?").get(`recovery_attempt:${taskId}`) as { value: string } | null;
+    expect(after).not.toBeNull();
   });
 });
 
@@ -662,9 +708,9 @@ describe("Recovery manager — duplicate-root prevention", () => {
 
     await daemon.getRecoveryManager().recoverAllStaleTasks();
 
-    // The child guard fires: task stays running, no recovery attempted, child untouched.
+    // The child guard fires: task stays active, no recovery attempted, child untouched.
     const task = scheduler.getTask(taskId)!;
-    expect(task.status).toBe("running");
+    expect(task.status).toBe("active");
     const seen = db.prepare("SELECT value FROM daemon_state WHERE key = ?").get(`orphan_recovery_seen:${taskId}`);
     expect(seen).toBeNull();
     const recoveryAttempt = db.prepare("SELECT value FROM daemon_state WHERE key = ?").get(`recovery_attempt:${taskId}`);
@@ -704,8 +750,8 @@ describe("Recovery manager — duplicate-root prevention", () => {
 
     await daemon.getRecoveryManager().recoverAllStaleTasks();
 
-    // B is alive → not recovered: no recovery attempt, grace cleared, still running.
-    expect(scheduler.getTask(taskB)!.status).toBe("running");
+    // B is alive → not recovered: no recovery attempt, grace cleared, still active.
+    expect(scheduler.getTask(taskB)!.status).toBe("active");
     expect(db.prepare("SELECT value FROM daemon_state WHERE key = ?").get(`recovery_attempt:${taskB}`)).toBeNull();
     expect(db.prepare("SELECT value FROM daemon_state WHERE key = ?").get(`orphan_recovery_seen:${taskB}`)).toBeNull();
     expect(daemon.getAgentManager().getRunningAgent(bRuntimeId)).toBeDefined();
@@ -901,12 +947,12 @@ describe("Delegation manager — target validation", () => {
     expect(payload.target).toBe("nonexistent-agent");
   });
 
-  it("allows realtime delegation to assigned agents even without team membership", async () => {
+  it("allows conversational-task delegation to assigned agents even without team membership", async () => {
     const librarianId = createAgent("Librarian");
     const taskId = crypto.randomUUID();
     db.prepare(
-      `INSERT INTO tasks (id, title, team_id, status, task_type, task_config, started_at)
-       VALUES (?, ?, NULL, 'running', 'real_time', ?, datetime('now'))`,
+      `INSERT INTO tasks (id, title, team_id, status, mode, task_config, started_at)
+       VALUES (?, ?, NULL, 'active', 'conversational', ?, datetime('now'))`,
     ).run(taskId, "Realtime Investigation", JSON.stringify({ assigned_agent_ids: [librarianId] }));
     db.prepare("UPDATE agents SET current_task_id = ? WHERE id = 'skipper'").run(taskId);
 
@@ -988,28 +1034,28 @@ describe("StateTracker — last_signal_at tracking", () => {
   });
 });
 
-describe("Task scheduler — agent cleanup on terminal states", () => {
-  it("should clear agents.current_task_id in completeTask", () => {
+describe("Task scheduler — agent cleanup when runs settle", () => {
+  it("should clear agents.current_task_id in completeRun", () => {
     const agentId = createAgent("worker");
     const teamId = createTeamWithEntrypoint(agentId);
     const taskId = createRunningTask(teamId);
 
     db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run(taskId, agentId);
 
-    scheduler.completeTask(taskId);
+    scheduler.completeRun(taskId);
 
     const row = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as { current_task_id: string | null };
     expect(row.current_task_id).toBeNull();
   });
 
-  it("should clear agents.current_task_id in failTask", () => {
+  it("should clear agents.current_task_id in failRun", () => {
     const agentId = createAgent("worker");
     const teamId = createTeamWithEntrypoint(agentId);
     const taskId = createRunningTask(teamId);
 
     db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run(taskId, agentId);
 
-    scheduler.failTask(taskId, "test error");
+    scheduler.failRun(taskId, "test error");
 
     const row = db.prepare("SELECT current_task_id FROM agents WHERE id = ?").get(agentId) as { current_task_id: string | null };
     expect(row.current_task_id).toBeNull();

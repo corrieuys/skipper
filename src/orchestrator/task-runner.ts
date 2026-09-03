@@ -10,11 +10,28 @@ import type { OrchestrationState } from "./types";
 import { resolvePhaseConfig } from "./phase-config";
 import { getBoolSetting, SETTING_PARALLEL_TASKS } from "../config/app-settings";
 
+/**
+ * Implemented by the input pipeline (realtime-session.ts): delivers pending
+ * timeline input to a task's root agent, resuming its session or cold-starting
+ * it. The queue routes a woken task through this when input is waiting, so
+ * input wakes respect the same concurrency cap as first starts.
+ */
+export interface TaskWakeFeeder {
+  hasPendingFeed(taskId: string): boolean;
+  feedTask(taskId: string): Promise<boolean>;
+  consumePendingFeed(taskId: string): { text: string; commit: () => void } | null;
+}
+
 export class TaskRunner {
   private consensusManager: ConsensusManager | null = null;
+  private wakeFeeder: TaskWakeFeeder | null = null;
 
   setConsensusManager(cm: ConsensusManager): void {
     this.consensusManager = cm;
+  }
+
+  setWakeFeeder(feeder: TaskWakeFeeder): void {
+    this.wakeFeeder = feeder;
   }
 
   constructor(
@@ -29,47 +46,64 @@ export class TaskRunner {
 
   private static readonly PARALLEL_MAX_CONCURRENT = 5;
 
+  /**
+   * A task occupies a concurrency slot while it has live agents or is paused.
+   * A paused task keeps its slot — pausing must NOT free the daemon to start
+   * the next queued task (critical when parallel execution is disabled, cap=1).
+   * Idle active tasks hold no slot: running-with-no-agents is a resting state.
+   */
+  private countOccupiedSlots(): number {
+    return (this.db
+      .prepare(
+        `SELECT COUNT(*) as c FROM tasks t
+         WHERE t.status = 'active'
+           AND (t.paused = 1 OR EXISTS (
+             SELECT 1 FROM agent_instances ai
+             WHERE ai.task_id = t.id AND ai.status IN ('running', 'waiting_delegation', 'pending')
+           ))`,
+      )
+      .get() as { c: number }).c;
+  }
+
   async processTaskQueue(): Promise<{ processed: number }> {
     const parallel = getBoolSetting(this.db, SETTING_PARALLEL_TASKS, true);
     const cap = parallel ? TaskRunner.PARALLEL_MAX_CONCURRENT : 1;
-    // A paused task still occupies its concurrency slot — pausing must NOT free
-    // the daemon to start the next approved task (critical when parallel
-    // execution is disabled, cap=1).
-    const runningCount = (this.db
-      .prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('running', 'paused') AND task_type != 'real_time'")
-      .get() as { c: number }).c;
-    if (runningCount >= cap) {
+    if (this.countOccupiedSlots() >= cap) {
       return { processed: 0 };
     }
 
-
-    const task = this.taskScheduler.getNextApprovedTask();
+    const task = this.taskScheduler.getNextStartableTask();
     if (!task) {
       return { processed: 0 };
     }
 
-    this.taskScheduler.startTask(task.id);
-    const startedTask = (this.taskScheduler as { getTask?: (id: string) => typeof task | null }).getTask?.(task.id) ?? task;
+    this.taskScheduler.markStarted(task.id);
+    const startedTask = this.taskScheduler.getTask(task.id);
     if (!startedTask) {
-      this.taskScheduler.failTask(task.id, "Task disappeared after start");
       return { processed: 1 };
     }
 
     if (!startedTask.team_id) {
-      this.taskScheduler.failTask(task.id, "Task has no team assigned");
+      // Teamless (conversational) task: nothing to run without input. If input
+      // is waiting, deliver it through the pipeline (it resolves the fallback
+      // entrypoint); otherwise rest idle until input arrives.
+      if (this.wakeFeeder?.hasPendingFeed(task.id)) {
+        const fed = await this.wakeFeeder.feedTask(task.id);
+        if (fed) this.markAgentRunning(task.id, 0);
+      }
       return { processed: 1 };
     }
 
     const teamExec = this.teamManager.getTeamForExecution(startedTask.team_id);
     if (!teamExec) {
-      this.taskScheduler.failTask(task.id, "Team has no entrypoint agent");
+      this.taskScheduler.failRun(task.id, "Team has no entrypoint agent");
       return { processed: 1 };
     }
 
     const entrypointAgentId = teamExec.entrypoint_agent_id;
     const agent = this.agentManager.getAgent(entrypointAgentId);
     if (!agent) {
-      this.taskScheduler.failTask(task.id, `Entrypoint agent not found: ${entrypointAgentId}`);
+      this.taskScheduler.failRun(task.id, `Entrypoint agent not found: ${entrypointAgentId}`);
       return { processed: 1 };
     }
 
@@ -79,7 +113,7 @@ export class TaskRunner {
     const isStreaming = typeDef?.supports_stdin ?? false;
 
     // Resume prior entrypoint session if one exists for this task and the agent type supports resume.
-    // Restart should continue the prior skipper's conversation rather than start cold.
+    // A wake or restart should continue the prior skipper's conversation rather than start cold.
     const priorEntrypoint = (typeDef?.supports_resume
       ? this.db
         .prepare(
@@ -140,15 +174,21 @@ export class TaskRunner {
       return { processed: 1 };
     }
 
-    const { prompt, noteIds } = this.promptBuilder.buildInitialPromptTracked({
+    const { prompt: basePrompt, noteIds } = this.promptBuilder.buildInitialPromptTracked({
       agent: agentInfo,
       task: { id: startedTask.id, title: startedTask.title, description: startedTask.description ?? undefined },
       phase: phaseInfo,
       isStreaming,
       isResume: resumeSessionId !== null,
-      isIteration: (startedTask.iteration_count ?? 0) > 0,
       injectedInput: startedTask.run_input ?? undefined,
     }, entrypointAgentId);
+
+    // A wake carries the pending input as an INPUT_FEED block appended to the
+    // full prompt (phases, notes, resume preamble included) — the unified
+    // replacement for the old iterate / resume / realtime-feed paths. Entries
+    // are only marked fed after the prompt actually reaches the agent.
+    const pendingFeed = this.wakeFeeder?.consumePendingFeed(task.id) ?? null;
+    const prompt = pendingFeed ? `${basePrompt}\n\n${pendingFeed.text}` : basePrompt;
 
     const usesInlinePrompt = typeDef ? agentTypeUsesInlinePrompt(typeDef) : false;
     // Agents spawn in the orchestrator's cwd (where Claude Code config/hooks live).
@@ -170,7 +210,7 @@ export class TaskRunner {
       });
       spawnedRuntimeId = spawned.id;
     } catch (err) {
-      this.taskScheduler.failTask(
+      this.taskScheduler.failRun(
         task.id,
         `Failed to spawn agent: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -194,14 +234,21 @@ export class TaskRunner {
       }
     } catch (err) {
       logError(this.db, "task_startup_send_input", { taskId: task.id, agentId: entrypointAgentId, method: "processTaskQueue" }, err);
-      this.taskScheduler.failTask(
+      this.taskScheduler.failRun(
         task.id,
         `Failed to send initial prompt: ${err instanceof Error ? err.message : String(err)}`,
       );
       return { processed: 1 };
     }
 
-    this.updateOrchestrationState(task.id, {
+    pendingFeed?.commit();
+    this.markAgentRunning(task.id, startPhase);
+
+    return { processed: 1 };
+  }
+
+  private markAgentRunning(taskId: string, phase: number): void {
+    this.updateOrchestrationState(taskId, {
       step: "AGENT_RUNNING",
       last_checkpoint_ts: new Date().toISOString(),
       session_id: null,
@@ -212,14 +259,19 @@ export class TaskRunner {
       pending_regression: null,
       checkpoint_prompt_hash: null,
     });
-    this.writeCheckpoint(task.id, "PHASE_START", { phase: startPhase });
-
-    return { processed: 1 };
+    this.writeCheckpoint(taskId, "PHASE_START", { phase });
   }
 
   getRunningTask(): import("../tasks/scheduler").Task | null {
     const row = this.db
-      .prepare("SELECT * FROM tasks WHERE status = 'running' LIMIT 1")
+      .prepare(
+        `SELECT t.* FROM tasks t
+         WHERE t.status = 'active' AND EXISTS (
+           SELECT 1 FROM agent_instances ai
+           WHERE ai.task_id = t.id AND ai.status IN ('running', 'waiting_delegation', 'pending')
+         )
+         LIMIT 1`,
+      )
       .get() as Record<string, unknown> | null;
 
     if (!row) return null;

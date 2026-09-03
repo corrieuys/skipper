@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
 import { logError } from "../logging";
+import { deriveDisplayStatus } from "../tasks/status";
 import type {
   AgentTile,
   PollIntervalSeconds,
@@ -80,17 +81,40 @@ export function parseRow(
 // Tasks
 // ---------------------------------------------------------------------------
 
+/**
+ * Fill the derived presentation fields on a task row selected with `t.*`:
+ * `display_status` (via deriveDisplayStatus), `paused` as a boolean, and the
+ * deprecated `task_type` compat mirror of `mode` so downstream renderers keep
+ * working until their own sweep.
+ */
+function decorateTaskCompat(db: Database, task: TaskData, row: Record<string, unknown>): TaskData {
+  task.display_status = deriveDisplayStatus(db, {
+    id: String(row.id),
+    status: String(row.status),
+    paused: row.paused as number | null,
+    needs_review: row.needs_review as number | null,
+    wake_requested_at: (row.wake_requested_at as string | null) ?? null,
+    started_at: (row.started_at as string | null) ?? null,
+    result: row.result ?? null,
+  });
+  task.paused = !!row.paused;
+  task.task_type = task.mode === "conversational" ? "real_time" : "standard";
+  return task;
+}
+
 export function fetchTasksWithTeams(db: ReturnType<typeof getDb>): TaskData[] {
   const rows = db.prepare(
     `SELECT t.*, tm.name AS team_name
      FROM tasks t
      LEFT JOIN teams tm ON tm.id = t.team_id
      ORDER BY
-       CASE t.status WHEN 'approved' THEN 0 WHEN 'draft' THEN 1 WHEN 'running' THEN 2 ELSE 3 END,
+       CASE t.status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,
        COALESCE(t.updated_at, t.created_at) DESC,
        t.rowid DESC`,
   ).all() as Record<string, unknown>[];
-  return rows.map((r) => parseRow(r, ["result", "orchestration_state"])) as unknown as TaskData[];
+  return rows.map((r) =>
+    decorateTaskCompat(db, parseRow(r, ["result", "orchestration_state"]) as unknown as TaskData, r),
+  );
 }
 
 export function fetchTaskById(db: ReturnType<typeof getDb>, taskId: string): TaskData | null {
@@ -101,7 +125,7 @@ export function fetchTaskById(db: ReturnType<typeof getDb>, taskId: string): Tas
      WHERE t.id = ?`,
   ).get(taskId) as Record<string, unknown> | null;
   if (!row) return null;
-  const task = parseRow(row, ["result", "orchestration_state"]) as unknown as TaskData;
+  const task = decorateTaskCompat(db, parseRow(row, ["result", "orchestration_state"]) as unknown as TaskData, row);
 
   if (task.team_id) {
     const teamRow = db.prepare("SELECT phases FROM teams WHERE id = ?").get(task.team_id) as { phases: string } | null;
@@ -143,9 +167,10 @@ export function fetchTaskNotes(db: ReturnType<typeof getDb>, taskId: string): Ta
 export function fetchTaskArtifacts(
   db: ReturnType<typeof getDb>,
   taskId: string,
-): { id: string; name: string; version: number; kind: string; description: string | null; format: string | null; created_by_agent_id: string | null; created_at: string }[] {
+): TaskArtifactListRow[] {
   return db.prepare(
-    `SELECT a.id, a.name, a.version, a.kind, a.description, a.format, a.created_by_agent_id, a.created_at
+    `SELECT a.id, a.name, a.version, a.kind, a.description, a.format, a.created_by_agent_id, a.created_at,
+            a.storage, a.mime, a.bytes, a.width, a.height, a.sha256, a.source
      FROM task_artifacts a
      INNER JOIN (
        SELECT name, MAX(version) AS max_version
@@ -155,7 +180,26 @@ export function fetchTaskArtifacts(
      ) latest ON a.name = latest.name AND a.version = latest.max_version
      WHERE a.task_id = ?
      ORDER BY a.created_at DESC`,
-  ).all(taskId, taskId) as { id: string; name: string; version: number; kind: string; description: string | null; format: string | null; created_by_agent_id: string | null; created_at: string }[];
+  ).all(taskId, taskId) as TaskArtifactListRow[];
+}
+
+export interface TaskArtifactListRow {
+  id: string;
+  name: string;
+  version: number;
+  kind: string;
+  description: string | null;
+  format: string | null;
+  created_by_agent_id: string | null;
+  created_at: string;
+  storage: string;
+  mime: string | null;
+  bytes: number | null;
+  width: number | null;
+  height: number | null;
+  sha256: string | null;
+  /** File artifacts: 'operator' / 'connect:<clientId>' or the attaching agent's id. */
+  source: string | null;
 }
 
 export function fetchTaskArtifactByName(
@@ -377,6 +421,78 @@ export function fetchAgentTypes(db: ReturnType<typeof getDb>): { name: string; a
     .all() as { name: string; available_models: string }[];
 }
 
+export interface TaskOutputRow {
+  id: number;
+  agent_id: string;
+  agent_name: string | null;
+  stream: string;
+  data: string;
+  created_at: string;
+}
+
+export interface TaskOutputPageOptions {
+  /** Rows with id strictly below this (older page). */
+  beforeId?: number | null;
+  /** Rows with id strictly above this (newer rows since the client last looked). */
+  afterId?: number | null;
+  limit: number;
+}
+
+/**
+ * One page of a task's terminal output, newest-first, keyed on terminal_outputs.id
+ * (globally monotonic insertion order — never `sequence`, which is per instance).
+ *
+ * Two-step on purpose: the id-only pass runs on the covering
+ * idx_terminal_outputs_agent_seq index, so the ORDER BY sorts a few thousand
+ * integers instead of dragging every frame body through the sorter (a 300 MB
+ * task took ~1 s per page the naive way; this is ~1-2 ms). The second query
+ * fetches only the page's bodies by primary key.
+ */
+export function fetchTaskOutputPage(
+  db: ReturnType<typeof getDb>,
+  taskId: string,
+  opts: TaskOutputPageOptions,
+): TaskOutputRow[] {
+  const limit = Math.max(1, Math.min(2000, Math.floor(opts.limit) || 1));
+  const conds = ["t.agent_id IN (SELECT id FROM agent_instances WHERE task_id = ?)"];
+  const args: (string | number)[] = [taskId];
+  if (opts.beforeId != null && Number.isFinite(opts.beforeId)) {
+    conds.push("t.id < ?");
+    args.push(Math.floor(opts.beforeId));
+  }
+  if (opts.afterId != null && Number.isFinite(opts.afterId)) {
+    conds.push("t.id > ?");
+    args.push(Math.floor(opts.afterId));
+  }
+  const ids = db.prepare(
+    `SELECT t.id FROM terminal_outputs t WHERE ${conds.join(" AND ")} ORDER BY t.id DESC LIMIT ?`,
+  ).all(...args, limit) as { id: number }[];
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => "?").join(",");
+  return db.prepare(
+    `SELECT t.id, t.agent_id, a.name AS agent_name, t.stream, t.data, t.created_at
+     FROM terminal_outputs t
+     LEFT JOIN agent_instances ai ON ai.id = t.agent_id
+     LEFT JOIN agents a ON a.id = ai.template_agent_id
+     WHERE t.id IN (${placeholders})
+     ORDER BY t.id DESC`,
+  ).all(...ids.map((r) => r.id)) as TaskOutputRow[];
+}
+
+/** One stored output row by id, with the owning task so routes can scope access. */
+export function fetchTaskOutputRow(
+  db: ReturnType<typeof getDb>,
+  outputId: number,
+): (TaskOutputRow & { task_id: string | null }) | null {
+  return db.prepare(
+    `SELECT t.id, t.agent_id, a.name AS agent_name, t.stream, t.data, t.created_at, ai.task_id
+     FROM terminal_outputs t
+     LEFT JOIN agent_instances ai ON ai.id = t.agent_id
+     LEFT JOIN agents a ON a.id = ai.template_agent_id
+     WHERE t.id = ?`,
+  ).get(outputId) as (TaskOutputRow & { task_id: string | null }) | null;
+}
+
 export function fetchAgentOutput(
   db: ReturnType<typeof getDb>,
   agentId: string,
@@ -473,7 +589,7 @@ export function fetchEscalations(
 export function getPollIntervalSeconds(db: ReturnType<typeof getDb>): PollIntervalSeconds {
   const row = db.prepare(
     `SELECT
-      EXISTS(SELECT 1 FROM tasks WHERE status IN ('running', 'approved')) AS has_active_task,
+      EXISTS(SELECT 1 FROM tasks WHERE status = 'active') AS has_active_task,
       EXISTS(SELECT 1 FROM agent_instances WHERE status IN ('running', 'waiting_delegation', 'pending')) AS has_busy_agent`,
   ).get() as { has_active_task: number; has_busy_agent: number };
 
@@ -504,9 +620,9 @@ export function fetchDashboardRealtimeTimeline(
   const activeRealtimeTask = db.prepare(
     `SELECT id, title
      FROM tasks
-     WHERE task_type = 'real_time'
-       AND status IN ('running', 'approved')
-     ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at DESC
+     WHERE mode = 'conversational'
+       AND status = 'active'
+     ORDER BY CASE WHEN started_at IS NOT NULL THEN 0 ELSE 1 END, created_at DESC
      LIMIT 1`,
   ).get() as { id: string; title: string } | null;
 
@@ -591,7 +707,9 @@ export function fetchDashboardMetrics(db: ReturnType<typeof getDb>): DashboardMe
   const mttrRow = db.prepare(
     `SELECT AVG((julianday(completed_at) - julianday(started_at)) * 24 * 60) as mttr
      FROM tasks
-     WHERE status = 'completed' AND started_at IS NOT NULL AND completed_at IS NOT NULL
+     WHERE status = 'settled'
+       AND (result IS NULL OR json_valid(result) = 0 OR json_extract(result, '$.error') IS NULL)
+       AND started_at IS NOT NULL AND completed_at IS NOT NULL
        AND completed_at > datetime('now', '-7 days')`,
   ).get() as { mttr: number | null } | null;
 
@@ -599,7 +717,7 @@ export function fetchDashboardMetrics(db: ReturnType<typeof getDb>): DashboardMe
     `SELECT
       COUNT(*) as total,
       SUM(CASE WHEN unixepoch('now') - unixepoch(updated_at) > 600 THEN 1 ELSE 0 END) as stuck
-     FROM tasks WHERE status = 'running'`,
+     FROM tasks WHERE status = 'active'`,
   ).get() as { total: number; stuck: number };
 
   const delegationRow = db.prepare(
@@ -641,14 +759,15 @@ export function fetchDashboardPhaseIndicatorTask(
   db: ReturnType<typeof getDb>,
 ): DashboardData["phaseIndicatorTask"] {
   const row = db.prepare(
-    `SELECT t.id, t.title, t.status, t.current_phase, t.needs_review, t.task_type, tm.phases
+    `SELECT t.id, t.title, t.status, t.current_phase, t.needs_review, t.mode, t.paused,
+            t.wake_requested_at, t.started_at, tm.phases
      FROM tasks t
      LEFT JOIN teams tm ON tm.id = t.team_id
-     WHERE t.task_type != 'real_time'
-       AND t.status IN ('running', 'approved')
-     ORDER BY CASE t.status WHEN 'running' THEN 0 ELSE 1 END, t.created_at DESC
+     WHERE t.mode = 'workflow'
+       AND t.status = 'active'
+     ORDER BY CASE WHEN t.started_at IS NOT NULL THEN 0 ELSE 1 END, t.created_at DESC
      LIMIT 1`,
-  ).get() as { id: string; title: string; status: string; current_phase: number; needs_review?: number; task_type?: string; phases?: string | null } | null;
+  ).get() as { id: string; title: string; status: string; current_phase: number; needs_review?: number; mode?: string; paused?: number; wake_requested_at?: string | null; started_at?: string | null; phases?: string | null } | null;
 
   if (!row) return null;
 
@@ -668,7 +787,18 @@ export function fetchDashboardPhaseIndicatorTask(
     status: row.status,
     current_phase: row.current_phase,
     needs_review: !!(row.needs_review ?? 0),
-    task_type: row.task_type,
+    task_type: row.mode === "conversational" ? "real_time" : "standard",
+    mode: row.mode,
+    paused: !!(row.paused ?? 0),
+    display_status: deriveDisplayStatus(db, {
+      id: row.id,
+      status: row.status,
+      paused: row.paused ?? 0,
+      needs_review: row.needs_review ?? 0,
+      result: (row as Record<string, unknown>).result ?? null,
+      wake_requested_at: row.wake_requested_at ?? null,
+      started_at: row.started_at ?? null,
+    }),
     phases,
   };
 }

@@ -34,7 +34,7 @@ function seedData(db: Database) {
   ]));
 }
 
-function insertTask(db: Database, id: string, status = "running", currentPhase = 0) {
+function insertTask(db: Database, id: string, status = "active", currentPhase = 0) {
   db.prepare(
     `INSERT INTO tasks (id, title, status, team_id, current_phase, orchestration_state)
      VALUES (?, ?, ?, 'team-1', ?, '{}')`,
@@ -83,7 +83,7 @@ describe("sendInput error handling", () => {
 
   describe("PhaseManager.handlePhaseComplete", () => {
     it("fails the task when sendInput throws during phase advance", async () => {
-      insertTask(db, "task-1", "running", 0);
+      insertTask(db, "task-1", "active", 0);
       assignAgent(db, "task-1");
 
       let failedTaskId: string | null = null;
@@ -111,7 +111,7 @@ describe("sendInput error handling", () => {
             return row ? { ...row } : null;
           },
           advancePhase: () => ({ current_phase: 1 }),
-          failTask: (id: string) => { failedTaskId = id; },
+          failRun: (id: string) => { failedTaskId = id; },
         } as any,
         { getTeamForExecution: () => mockTeamExec } as any,
         () => {},
@@ -125,7 +125,8 @@ describe("sendInput error handling", () => {
 
   describe("TaskRunner.processTaskQueue", () => {
     it("fails the task when sendInput throws during startup", async () => {
-      insertTask(db, "task-1", "approved", 0);
+      // Queued under the unified model: active, never started.
+      insertTask(db, "task-1", "active", 0);
 
       let failedTaskId: string | null = null;
       const runner = new TaskRunner(
@@ -148,12 +149,16 @@ describe("sendInput error handling", () => {
         } as any,
         { buildInitialPrompt: () => "prompt", buildInitialPromptTracked: () => ({ prompt: "prompt", noteIds: [] }), recordNoteDelivery: () => {} } as any,
         {
-          getNextApprovedTask: () => {
-            const row = db.prepare("SELECT * FROM tasks WHERE status = 'approved' LIMIT 1").get() as any;
+          getNextStartableTask: () => {
+            const row = db.prepare("SELECT * FROM tasks WHERE status = 'active' AND started_at IS NULL LIMIT 1").get() as any;
             return row ?? null;
           },
-          startTask: (id: string) => { db.prepare("UPDATE tasks SET status = 'running' WHERE id = ?").run(id); },
-          failTask: (id: string) => { failedTaskId = id; },
+          markStarted: (id: string) => { db.prepare("UPDATE tasks SET started_at = datetime('now') WHERE id = ?").run(id); },
+          getTask: (id: string) => {
+            const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as any;
+            return row ? { ...row } : null;
+          },
+          failRun: (id: string) => { failedTaskId = id; },
         } as any,
         { getTeamForExecution: () => mockTeamExec } as any,
         () => {},
@@ -168,7 +173,7 @@ describe("sendInput error handling", () => {
 
   describe("RecoveryManager.recoverTask", () => {
     it("returns false when sendInput throws during recovery", async () => {
-      insertTask(db, "task-1", "running", 0);
+      insertTask(db, "task-1", "active", 0);
       assignAgent(db, "task-1");
 
       const rm = new RecoveryManager(
@@ -204,7 +209,7 @@ describe("sendInput error handling", () => {
 
   describe("PhaseManager.advanceAndRespawn", () => {
     it("fails the task when sendInput throws after respawn", async () => {
-      insertTask(db, "task-1", "running", 0);
+      insertTask(db, "task-1", "active", 0);
       assignAgent(db, "task-1");
 
       let failedTaskId: string | null = null;
@@ -228,7 +233,7 @@ describe("sendInput error handling", () => {
         { buildInitialPrompt: () => "prompt", buildInitialPromptTracked: () => ({ prompt: "prompt", noteIds: [] }), recordNoteDelivery: () => {} } as any,
         {
           advancePhase: () => ({ current_phase: 1 }),
-          failTask: (id: string) => { failedTaskId = id; },
+          failRun: (id: string) => { failedTaskId = id; },
         } as any,
         {} as any,
         () => {},
@@ -244,7 +249,7 @@ describe("sendInput error handling", () => {
 
   describe("PhaseManager.respawnForRegression", () => {
     it("fails the task when sendInput throws after regression respawn", async () => {
-      insertTask(db, "task-1", "running", 1);
+      insertTask(db, "task-1", "active", 1);
       assignAgent(db, "task-1");
 
       let failedTaskId: string | null = null;
@@ -267,7 +272,7 @@ describe("sendInput error handling", () => {
         } as any,
         { buildInitialPrompt: () => "prompt", buildInitialPromptTracked: () => ({ prompt: "prompt", noteIds: [] }), recordNoteDelivery: () => {} } as any,
         {
-          failTask: (id: string) => { failedTaskId = id; },
+          failRun: (id: string) => { failedTaskId = id; },
         } as any,
         {} as any,
         () => {},

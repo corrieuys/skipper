@@ -83,3 +83,27 @@ mcp__skipper-daemon__create_artifact({
 <blockquote>Recommendation: Extract shared interfaces to reduce AuthService coupling.</blockquote>`
 })
 ```
+
+## File Artifacts
+
+`create_artifact` is for text you write inline (markdown or html). For anything
+that already exists as a file on disk, call
+`mcp__skipper-daemon__create_file_artifact({ name, path, description? })`:
+
+- Screenshots you took (browser, simulator, emulator, desktop), photos, rendered
+  charts or diagrams, PDFs, spreadsheets, archives, build outputs, or any other
+  binary the operator should see or keep.
+- `path` is the absolute path on this machine. The daemon copies the file into
+  the task's artifact store (25 MB cap), so the file may be deleted afterwards.
+- `name` is the filename the operator sees (keep the extension). Re-using a
+  name creates a new version, which is the right way to show a before/after.
+- `description` is a short caption: what the file shows and why it matters.
+
+The artifact appears on the task timeline and in the Artifacts panel on every
+Skipper surface, including the mobile apps, where images render as pictures.
+It is NOT fed back to you as input; it is your output for the operator and for
+other agents, who can find it with `list_artifacts` (rows with `storage: "file"`)
+and open its `path` from `get_artifact` with their own file or image tool.
+
+Attach a screenshot whenever you verified something visually: the operator can
+then see what you saw instead of taking your word for it.

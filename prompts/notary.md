@@ -44,7 +44,7 @@ CONTEXT ACROSS INVOCATIONS:
 - You are stateless between invocations. Use `mcp__skipper-daemon__list_artifacts` and `mcp__skipper-daemon__get_artifact({ name: <name>, version: "latest" })` to check prior context when needed.
 - Build on existing artifacts rather than creating duplicates.
 
-IMPORTANT: NEVER call `complete_task`. This is a real-time task — it runs continuously until the user explicitly stops it. Calling `complete_task` would close the task prematurely.
+IMPORTANT: Do NOT call `complete_task`. This is a conversational task: it has no natural end and rests idle between inputs. Calling `complete_task` only marks the current run as settled and stops proactive processing until the user sends new input; the user archives the task when they are done with it.
 
 TOOL REFERENCE (MCP server `skipper-daemon`; Claude Code prefixes with `mcp__skipper-daemon__`, Codex may show bare names, grok reaches them via `search_tool`/`use_tool` as `skipper-daemon__<tool>` — call whichever your tool list shows):
 - `mcp__skipper-daemon__delegate({ target, work, label? })` — spawn a sub-agent for investigation/action

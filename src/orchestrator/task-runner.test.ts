@@ -51,24 +51,31 @@ function createTeam(
 }
 
 function createApprovedTask(
-  teamId: string,
-  taskType: "standard" | "real_time" = "standard",
+  teamId: string | null,
+  mode: "workflow" | "conversational" = "workflow",
   title = "Test Task",
 ): string {
+  // Approved under the unified model: active, never started (started_at NULL).
   const taskId = crypto.randomUUID();
   db.prepare(
-    `INSERT INTO tasks (id, title, description, team_id, status, task_type, approved_at)
-     VALUES (?, ?, 'Task description', ?, 'approved', ?, datetime('now'))`,
-  ).run(taskId, title, teamId, taskType);
+    `INSERT INTO tasks (id, title, description, team_id, status, mode, approved_at)
+     VALUES (?, ?, 'Task description', ?, 'active', ?, datetime('now'))`,
+  ).run(taskId, title, teamId, mode);
   return taskId;
 }
 
 function createRunningTask(teamId: string, title = "Running Task"): string {
+  // Working under the unified model: active, started, with a live agent
+  // instance (live instances are what occupy a concurrency slot now).
   const taskId = crypto.randomUUID();
   db.prepare(
     `INSERT INTO tasks (id, title, team_id, status, started_at)
-     VALUES (?, ?, ?, 'running', datetime('now'))`,
+     VALUES (?, ?, ?, 'active', datetime('now'))`,
   ).run(taskId, title, teamId);
+  db.prepare(
+    `INSERT INTO agent_instances (id, task_id, template_agent_id, status)
+     VALUES (?, ?, ?, 'running')`,
+  ).run(crypto.randomUUID(), taskId, ENTRYPOINT_AGENT_ID);
   return taskId;
 }
 
@@ -183,92 +190,114 @@ describe("TaskRunner", () => {
       expect(result.processed).toBe(0);
     });
 
-    it("skips real_time tasks entirely", async () => {
-      const teamId = createTeam([{ name: "Phase 1", prompt: "Monitor something" }]);
-      createApprovedTask(teamId, "real_time");
+    it("starts a teamless conversational task and lets it idle (no failRun)", async () => {
+      // Realtime/conversational tasks no longer bypass the queue, and teamless
+      // tasks are no longer failed — they start and rest idle until input.
+      const taskId = createApprovedTask(null, "conversational");
 
       const runner = createRunner();
       const result = await runner.processTaskQueue();
 
-      // Real-time tasks are managed by RealtimeSessionManager, not the task runner
-      expect(result.processed).toBe(0);
-      expect(orchestrationUpdates.length).toBe(0);
-      expect(checkpointWrites.length).toBe(0);
-    });
-
-    it("running real_time tasks do not count against the standard task concurrency cap", async () => {
-      const teamId = createTeam([{ name: "Phase 1", prompt: "Do something" }]);
-
-      // Create a running real_time task — managed separately by RealtimeSessionManager
-      const rtTaskId = crypto.randomUUID();
-      db.prepare(
-        `INSERT INTO tasks (id, title, team_id, status, task_type, started_at)
-         VALUES (?, 'RT Task', ?, 'running', 'real_time', datetime('now'))`,
-      ).run(rtTaskId, teamId);
-
-      // Create a standard approved task
-      const stdTaskId = createApprovedTask(teamId, "standard");
-
-      const runner = createRunner();
-      const result = await runner.processTaskQueue();
-
-      // The realtime task is excluded from the running count, so the standard task runs
       expect(result.processed).toBe(1);
-      const task = scheduler.getTask(stdTaskId);
-      expect(task?.status).toBe("running");
+      const task = scheduler.getTask(taskId);
+      expect(task?.status).toBe("active");
+      expect(task?.started_at).toBeTruthy();
+      expect(task?.result).toBeNull(); // not failRun'd for being teamless
+      expect(scheduler.getRuntimeState(taskId)).toBe("idle");
     });
 
-    it("in sequential mode, a failed task does not occupy the concurrency slot", async () => {
+    it("an idle active task does not occupy a concurrency slot", async () => {
       const teamId = createTeam([{ name: "Phase 1", prompt: "Do something" }]);
       setBoolSetting(db, SETTING_PARALLEL_TASKS, false);
 
-      // Failed is a terminal status — only running/paused tasks hold the
-      // sequential (cap=1) slot, so the next approved task starts normally.
-      const failedTaskId = crypto.randomUUID();
+      // Idle: active + started, but no live instances — holds no slot.
+      const idleTaskId = crypto.randomUUID();
       db.prepare(
-        `INSERT INTO tasks (id, title, team_id, status, task_type, started_at, completed_at)
-         VALUES (?, 'Failed Task', ?, 'failed', 'standard', datetime('now', '-1 hour'), datetime('now'))`,
-      ).run(failedTaskId, teamId);
+        `INSERT INTO tasks (id, title, team_id, status, started_at)
+         VALUES (?, 'Idle Task', ?, 'active', datetime('now', '-1 hour'))`,
+      ).run(idleTaskId, teamId);
 
-      const approvedTaskId = createApprovedTask(teamId, "standard");
+      const approvedTaskId = createApprovedTask(teamId);
 
       const runner = createRunner();
       const result = await runner.processTaskQueue();
 
       expect(result.processed).toBe(1);
-      expect(scheduler.getTask(approvedTaskId)?.status).toBe("running");
+      expect(scheduler.getTask(approvedTaskId)?.started_at).toBeTruthy();
     });
 
-    it("in parallel mode, a failed task does not block the queue", async () => {
+    it("in sequential mode, a task with a failed run does not occupy the concurrency slot", async () => {
+      const teamId = createTeam([{ name: "Phase 1", prompt: "Do something" }]);
+      setBoolSetting(db, SETTING_PARALLEL_TASKS, false);
+
+      // A failed run keeps the task active (idle, with an error result) — only
+      // live instances / paused tasks hold the sequential (cap=1) slot.
+      const failedRunTaskId = crypto.randomUUID();
+      db.prepare(
+        `INSERT INTO tasks (id, title, team_id, status, result, started_at, completed_at)
+         VALUES (?, 'Failed Run Task', ?, 'active', '{"error":"boom"}', datetime('now', '-1 hour'), datetime('now'))`,
+      ).run(failedRunTaskId, teamId);
+
+      const approvedTaskId = createApprovedTask(teamId);
+
+      const runner = createRunner();
+      const result = await runner.processTaskQueue();
+
+      expect(result.processed).toBe(1);
+      expect(scheduler.getTask(approvedTaskId)?.started_at).toBeTruthy();
+    });
+
+    it("in parallel mode, an archived task does not block the queue", async () => {
       const teamId = createTeam([{ name: "Phase 1", prompt: "Do something" }]);
       setBoolSetting(db, SETTING_PARALLEL_TASKS, true);
 
-      const failedTaskId = crypto.randomUUID();
+      const archivedTaskId = crypto.randomUUID();
       db.prepare(
-        `INSERT INTO tasks (id, title, team_id, status, task_type, started_at, completed_at)
-         VALUES (?, 'Failed Task', ?, 'failed', 'standard', datetime('now', '-1 hour'), datetime('now'))`,
-      ).run(failedTaskId, teamId);
+        `INSERT INTO tasks (id, title, team_id, status, result, started_at, completed_at, settled_at)
+         VALUES (?, 'Archived Task', ?, 'settled', '{"error":"boom"}', datetime('now', '-1 hour'), datetime('now'), datetime('now'))`,
+      ).run(archivedTaskId, teamId);
 
-      const approvedTaskId = createApprovedTask(teamId, "standard");
+      const approvedTaskId = createApprovedTask(teamId);
 
       const runner = createRunner();
       const result = await runner.processTaskQueue();
 
       expect(result.processed).toBe(1);
-      expect(scheduler.getTask(approvedTaskId)?.status).toBe("running");
+      expect(scheduler.getTask(approvedTaskId)?.started_at).toBeTruthy();
     });
 
-    it("in sequential mode, a running standard task blocks the queue", async () => {
+    it("in sequential mode, a working task (live instances) blocks the queue", async () => {
       const teamId = createTeam([{ name: "Phase 1", prompt: "Do something" }]);
       setBoolSetting(db, SETTING_PARALLEL_TASKS, false);
       createRunningTask(teamId);
-      const stdTaskId = createApprovedTask(teamId, "standard");
+      const stdTaskId = createApprovedTask(teamId);
 
       const runner = createRunner();
       const result = await runner.processTaskQueue();
 
       expect(result.processed).toBe(0);
-      expect(scheduler.getTask(stdTaskId)?.status).toBe("approved");
+      // Still queued: active, never started.
+      expect(scheduler.getTask(stdTaskId)?.started_at).toBeNull();
+      expect(scheduler.getRuntimeState(stdTaskId)).toBe("queued");
+    });
+
+    it("in sequential mode, a paused task keeps its concurrency slot", async () => {
+      const teamId = createTeam([{ name: "Phase 1", prompt: "Do something" }]);
+      setBoolSetting(db, SETTING_PARALLEL_TASKS, false);
+
+      const pausedTaskId = crypto.randomUUID();
+      db.prepare(
+        `INSERT INTO tasks (id, title, team_id, status, paused, started_at)
+         VALUES (?, 'Paused Task', ?, 'active', 1, datetime('now'))`,
+      ).run(pausedTaskId, teamId);
+
+      const stdTaskId = createApprovedTask(teamId);
+
+      const runner = createRunner();
+      const result = await runner.processTaskQueue();
+
+      expect(result.processed).toBe(0);
+      expect(scheduler.getTask(stdTaskId)?.started_at).toBeNull();
     });
   });
 });

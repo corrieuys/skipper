@@ -151,7 +151,7 @@ repo's GitHub Releases.
 Two paths feed `agent:signal` on the bus:
 
 **1. MCP tools** (primary). Agents call typed tools on the daemon MCP server at `/mcp` (Bearer = `runtimeId`). Definitions in `src/mcp/tools.ts`. Includes:
-`delegate`, `delegate_batch`, `complete_phase`, `regress_phase`, `complete_task`, `escalate`, `create_note`, `create_artifact`, `get_artifact`, `list_artifacts`, `set_global_value`, `get_global_value`, `query_global_store`, `delete_global_value`, plus `send_message`, plus the recurring-task pair `list_recurring_tasks`/`run_recurring_task`. Phase-lifecycle tools (`complete_phase`, `regress_phase`, `complete_task`) and the recurring-task pair (`list_recurring_tasks`, `run_recurring_task` — kick off another approved recurring task's run, optional one-off `prompt`; carries the calling task's Slack thread to the new run by default so its Slack output continues there, opt out with `continue_slack_thread:false`) are root-Skipper only — delegated children get a refusal message (recurring pair simply isn't registered for them). Global-store tools (`set_global_value`/`get_global_value`/`query_global_store`/`delete_global_value`) write a cross-task shared table — agents use them only when a task/phase/template explicitly instructs it. Slack tools (`slack_send_message`/`slack_send_dm`/`slack_read_channel`, experimental) post/read as the Skipper Slack app; registered on a session only when a bot token is configured AND the task's team has Slack enabled (see [src/slack/CLAUDE.md](src/slack/CLAUDE.md)).
+`delegate`, `delegate_batch`, `complete_phase`, `regress_phase`, `complete_task`, `escalate`, `create_note`, `create_artifact`, `create_file_artifact` (attach a file the agent generated on disk as a file artifact; timeline card attributed to the agent, never fed back as input), `get_artifact`, `list_artifacts`, `set_global_value`, `get_global_value`, `query_global_store`, `delete_global_value`, plus `send_message`, plus the recurring-task pair `list_recurring_tasks`/`run_recurring_task`. Phase-lifecycle tools (`complete_phase`, `regress_phase`, `complete_task`) and the recurring-task pair (`list_recurring_tasks`, `run_recurring_task` — kick off another approved recurring task's run, optional one-off `prompt`; carries the calling task's Slack thread to the new run by default so its Slack output continues there, opt out with `continue_slack_thread:false`) are root-Skipper only — delegated children get a refusal message (recurring pair simply isn't registered for them). Global-store tools (`set_global_value`/`get_global_value`/`query_global_store`/`delete_global_value`) write a cross-task shared table — agents use them only when a task/phase/template explicitly instructs it. Slack tools (`slack_send_message`/`slack_send_dm`/`slack_read_channel`, experimental) post/read as the Skipper Slack app; registered on a session only when a bot token is configured AND the task's team has Slack enabled (see [src/slack/CLAUDE.md](src/slack/CLAUDE.md)).
 
 **2. Stdout marker parse** (legacy, narrow). `src/agents/manager.ts:SIGNAL_PATTERNS` scans each line. Surviving markers:
 
@@ -164,13 +164,50 @@ JSON-mode agents (claude-code, codex) also scan assistant text via `detectSignal
 
 Deprecated stdout markers (now MCP-only): `[DELEGATE]`, `[DELEGATE_BATCH]`, `[ESCALATE]`, `[NOTE]`, `[PHASE_COMPLETE]`, `[PHASE_REGRESSION N]`, `[TASK_COMPLETE]`, `[ARTIFACT]…[END_ARTIFACT]`, `[ARTIFACT_LIST]`, `[ARTIFACT_GET]`. If you see one in stdout it is silently ignored.
 
-## Task lifecycle
+## Task lifecycle (unified model)
 
 ```
-draft → approved → running → completed | failed
+draft → active → settled
 ```
 
-Plus: `approved→draft` (unapprove), `completed→approved` (iterate), `failed→draft|approved` (retry/resume), cancel any active → failed. Daemon picks one approved task per tick. Realtime tasks bypass queue. Phase idx starts 0, increments on `[PHASE_COMPLETE]`.
+Stored status is only those three. Everything else is derived runtime state
+(`src/tasks/status.ts:deriveDisplayStatus`): an active task is `queued`
+(wake pending / first start), `working` (live agents or open delegations),
+`idle` (at rest, wake with input), `paused` (flag), `review`, or `blocked`
+(open escalation). Archive is the only terminal transition and is always
+user- or policy-initiated (`settleTask`); `reviveTask` reverses it.
+
+**Autopilot** (stored as `mode: workflow | conversational`, per task, defaulted
+from the team, toggleable mid-task via `setAutopilot` / POST
+/api/tasks/:id/autopilot) replaces the old realtime task type. On (workflow):
+the system drives to the end of the phases (idle pokes, stale recovery, and a
+DRIVE MODE prompt block telling the root to advance phases on its own). Off
+(conversational): the operator drives; the prompt block tells the agent to
+finish the current instruction, rest, and never advance phases uninstructed.
+Both settings support phases (0..n).
+
+A run settles via `completeRun`/`failRun`: the task moves to stored status
+`settled` (emits `task:run_completed`/`task:run_failed` + state_changed). The
+word "settled" never surfaces in UX either — a settled task just presents as
+**Completed** or **Failed** (`display_status`), and sending input revives it
+(`daemon.inputTask` auto-revives + wakes). `settleTask` remains the
+internal/cancel transition; retention sweeps settled tasks.
+
+**Unified input** replaces iterate/retry/resume/realtime-input:
+`daemon.inputTask(taskId, text)` — draft: appended to description; settled:
+auto-revive + wake; active + review gate: input IS the review response;
+active idle: timeline entry + `requestWake` (wakes through the queue, so input
+wakes respect the concurrency cap); active busy: accumulates and is delivered
+when the turn ends. File uploads (pictures and any file) are the third input kind: the
+rail's Add artifact form / paste / drag-drop, `POST /api/tasks/:id/artifacts/upload`
+and connect `artifacts/upload-*` create a `kind='upload'` file artifact (bytes
+at `<data dir>/artifacts/<taskId>/`), put an `image`/`file` entry on the
+timeline and wake the task exactly like text (`ingestArtifactUpload`); the agent
+gets the absolute path in the INPUT_FEED and opens it with its own file/image
+tool. Audio recording is available on EVERY active task via the
+input pipeline (`src/orchestrator/realtime-session.ts`, single-writer lock,
+transcribe → summarize → timeline → feed). Phase idx starts 0, increments on
+`complete_phase`.
 
 ## Test convention
 

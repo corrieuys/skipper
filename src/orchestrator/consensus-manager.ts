@@ -87,7 +87,7 @@ export class ConsensusManager {
 
     const agent = this.agentManager.getAgent(entrypointAgentId);
     if (!agent) {
-      this.taskScheduler.failTask(task.id, "Entrypoint agent not found for consensus phase");
+      this.taskScheduler.failRun(task.id, "Entrypoint agent not found for consensus phase");
       return;
     }
 
@@ -222,7 +222,7 @@ export class ConsensusManager {
     }
 
     if (spawnedCount === 0) {
-      this.taskScheduler.failTask(task.id, "Failed to spawn any consensus agents");
+      this.taskScheduler.failRun(task.id, "Failed to spawn any consensus agents");
       return;
     }
 
@@ -508,7 +508,7 @@ ${instructions}`;
     const reviewer = this.agentManager.getAgent(reviewerAgentId);
     if (!reviewer) {
       logError(this.db, "consensus_reviewer_not_found", { reviewerAgentId, groupId });
-      this.taskScheduler.failTask(meta.taskId, `Consensus reviewer agent not found: ${reviewerAgentId}`);
+      this.taskScheduler.failRun(meta.taskId, `Consensus reviewer agent not found: ${reviewerAgentId}`);
       await this.worktreeManager.cleanupAllForGroup(groupId);
       this.reviewStartGuard.delete(groupId);
       return;
@@ -552,7 +552,7 @@ ${instructions}`;
       });
     } catch (err) {
       logError(this.db, "consensus_reviewer_spawn", { groupId, reviewerAgentId }, err);
-      this.taskScheduler.failTask(meta.taskId, `Failed to spawn consensus reviewer: ${err instanceof Error ? err.message : String(err)}`);
+      this.taskScheduler.failRun(meta.taskId, `Failed to spawn consensus reviewer: ${err instanceof Error ? err.message : String(err)}`);
       await this.worktreeManager.cleanupAllForGroup(groupId);
       this.reviewStartGuard.delete(groupId);
     }
@@ -574,7 +574,7 @@ ${instructions}`;
 
     if (!picked) {
       logError(this.db, "consensus_pick_not_found", { groupId, pickedShortId, validShortIds });
-      this.taskScheduler.failTask(meta.taskId, `Consensus pick not found: ${pickedShortId}. Valid: ${validShortIds.join(", ")}`);
+      this.taskScheduler.failRun(meta.taskId, `Consensus pick not found: ${pickedShortId}. Valid: ${validShortIds.join(", ")}`);
       if (useWorktree) await this.worktreeManager.cleanupAllForGroup(groupId);
       return;
     }
@@ -582,7 +582,7 @@ ${instructions}`;
     if (useWorktree) {
       if (!picked.diff_snapshot) {
         logError(this.db, "consensus_pick_no_diff", { groupId, pickedShortId });
-        this.taskScheduler.failTask(meta.taskId, `Picked agent has no diff: ${pickedShortId}`);
+        this.taskScheduler.failRun(meta.taskId, `Picked agent has no diff: ${pickedShortId}`);
         await this.worktreeManager.cleanupAllForGroup(groupId);
         return;
       }
@@ -730,7 +730,7 @@ ${instructions}`;
 
     // Advance phase or complete task
     const task = this.taskScheduler.getTask(meta.taskId);
-    if (!task || task.status !== "running") return;
+    if (!task || task.status !== "active" || task.paused) return;
 
     // Check if phase has review: true — set needs_review before advancing
     // (consolidation is done, now the standard phase review gate applies)
@@ -759,7 +759,7 @@ ${instructions}`;
 
     if (meta.phaseIndex >= meta.totalPhases - 1) {
       try {
-        this.taskScheduler.completeTask(meta.taskId);
+        this.taskScheduler.completeRun(meta.taskId);
       } catch (err) {
         logError(this.db, "consensus_complete_task", { taskId: meta.taskId }, err);
       }

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
-import { AgentManager, extractTextFromJsonEvent, detectAllSignalsInText, detectSignalsInText, compactResumeMessage } from "./manager";
+import { AgentManager, extractTextFromJsonEvent, detectAllSignalsInText, detectSignalsInText, compactResumeMessage, compactFrameForStorage } from "./manager";
 import type { RunningAgent, JsonEvent } from "./manager";
 import { clearAgentTypeCache } from "./types";
 import { eventBus } from "../events/bus";
@@ -336,6 +336,41 @@ describe("spawnAgent", () => {
     expect(stored?.data ?? "").toContain("frame truncated");
     // The realtime event still carried the full, untruncated text.
     expect(events.some((e) => e.data.length === 40000)).toBe(true);
+
+    manager.killAgent(running.id);
+    await running.process.exited.catch(() => {});
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  it("stores stdout one complete line per row, flushing an unterminated tail on drain", async () => {
+    // Two frames, the second with no trailing newline (crash mid-run shape).
+    const { agentId } = createTestEchoAgent("printf '{\"a\":1}\\n{\"b\":2}'");
+    const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+    await running.process.exited;
+    await new Promise((r) => setTimeout(r, 100));
+
+    const rows = db
+      .prepare("SELECT data FROM terminal_outputs WHERE agent_id = ? AND stream = 'stdout' ORDER BY sequence")
+      .all(running.id) as { data: string }[];
+    expect(rows.map((r) => r.data)).toEqual(['{"a":1}', '{"b":2}']);
+  });
+
+  it("splits a multi-line synthetic write into one row per line and emits one event per line", async () => {
+    const { agentId } = createTestEchoAgent("sleep 0.5");
+    const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+    const events: AgentOutputEvent[] = [];
+    const handler = (e: AgentOutputEvent) => { if (e.agentId === running.id) events.push(e); };
+    eventBus.on("agent:output", handler);
+
+    manager.ingestSyntheticStdout(running.id, '{"type":"assistant"}\n\n{"type":"result"}\n');
+
+    eventBus.off("agent:output", handler);
+    const rows = db
+      .prepare("SELECT data FROM terminal_outputs WHERE agent_id = ? AND stream = 'stdout' ORDER BY sequence")
+      .all(running.id) as { data: string }[];
+    // Blank lines are dropped; each frame is its own row and its own event.
+    expect(rows.map((r) => r.data)).toEqual(['{"type":"assistant"}', '{"type":"result"}']);
+    expect(events.map((e) => e.data)).toEqual(['{"type":"assistant"}', '{"type":"result"}']);
 
     manager.killAgent(running.id);
     await running.process.exited.catch(() => {});
@@ -980,7 +1015,7 @@ describe("handleJsonOutput", () => {
     // is what the terminal `result` frame reports cumulatively (and why that frame's
     // own usage is deliberately not read — it would double-count).
     const tmpl = manager.createAgent({ name: "Grok Coder", type: "grok" });
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('t-grok', 'T', 'running')").run();
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('t-grok', 'T', 'active')").run();
     db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES (?, 't-grok', ?, 'running')")
       .run("grok-inst-1", tmpl.id);
 
@@ -1366,7 +1401,7 @@ describe("sendResumeMessage", () => {
     db.prepare("INSERT INTO tasks (id, title, status, team_id) VALUES (?, ?, ?, ?)").run(
       "task-1",
       "Runtime Resume Task",
-      "running",
+      "active",
       "team-1",
     );
 
@@ -1402,7 +1437,7 @@ describe("sendResumeMessage", () => {
     db.prepare("INSERT INTO tasks (id, title, status, team_id) VALUES (?, ?, ?, ?)").run(
       "task-attempt-1",
       "Runtime Attempt Task",
-      "running",
+      "active",
       "team-attempt-1",
     );
 
@@ -1439,7 +1474,7 @@ describe("sendResumeMessage", () => {
     db.prepare("INSERT INTO tasks (id, title, status, team_id) VALUES (?, ?, ?, ?)").run(
       "task-resume-lock-1",
       "Runtime Resume Lock Task",
-      "running",
+      "active",
       "team-resume-lock-1",
     );
 
@@ -1636,5 +1671,43 @@ describe("internal sub-agent recording (subagent_usage)", () => {
     manager.parseAgentOutput(inst, JSON.stringify({ type: "assistant", message: { content: [ { type: "tool_use", id: "toolu_X", name: "Agent", input: { subagent_type: "Explore" } } ] } }));
     manager.parseAgentOutput(inst, JSON.stringify({ type: "system", subtype: "task_progress", tool_use_id: "toolu_X", usage: { total_tokens: 9000 } }));
     expect((db.prepare("SELECT COUNT(*) c FROM subagent_usage").get() as any).c).toBe(0);
+  });
+});
+
+describe("compactFrameForStorage", () => {
+  it("keeps small frames verbatim", () => {
+    const frame = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hi" }] } });
+    expect(compactFrameForStorage(frame)).toBe(frame);
+  });
+
+  it("drops inline base64 payloads from an oversized frame and keeps it valid JSON", () => {
+    const frame = JSON.stringify({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(200_000) } },
+      ] }] },
+    });
+    const stored = compactFrameForStorage(frame);
+    expect(Buffer.byteLength(stored, "utf-8")).toBeLessThan(32_768);
+    const parsed = JSON.parse(stored) as { type: string; message: { content: Array<{ content: Array<{ source: { data: string; media_type: string } }> }> } };
+    expect(parsed.type).toBe("user");
+    const source = parsed.message.content[0]!.content[0]!.source;
+    expect(source.media_type).toBe("image/png");
+    expect(source.data).toContain("base64 payload omitted");
+    expect(stored).not.toContain("frame truncated");
+  });
+
+  it("cuts long strings inside an oversized frame instead of chopping the JSON", () => {
+    const frame = JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "L".repeat(60_000) }] } });
+    const stored = compactFrameForStorage(frame);
+    const parsed = JSON.parse(stored) as { message: { content: Array<{ content: string }> } };
+    expect(parsed.message.content[0]!.content).toContain("more chars omitted for storage");
+    expect(parsed.message.content[0]!.content.length).toBeLessThan(10_000);
+  });
+
+  it("falls back to the plain byte cut for oversized non-JSON output", () => {
+    const stored = compactFrameForStorage("X".repeat(40_000));
+    expect(Buffer.byteLength(stored, "utf-8")).toBeLessThan(40_000);
+    expect(stored).toContain("frame truncated");
   });
 });

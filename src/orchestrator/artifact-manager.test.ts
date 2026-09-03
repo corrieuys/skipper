@@ -13,7 +13,7 @@ let artifactManager: ArtifactManager;
 function seedTask(database: Database, id = "task-1"): string {
   database.prepare("INSERT INTO teams (id, name) VALUES (?, ?)").run("team-1", "Test Team");
   database
-    .prepare("INSERT INTO tasks (id, title, team_id, status) VALUES (?, ?, ?, 'running')")
+    .prepare("INSERT INTO tasks (id, title, team_id, status) VALUES (?, ?, ?, 'active')")
     .run(id, "Test Task", "team-1");
   return id;
 }

@@ -48,7 +48,11 @@ beforeEach(() => {
 afterEach(() => {
   process.argv = origArgv;
   db.close();
-  try { require("fs").unlinkSync(TEST_DB); } catch { }
+  // WAL mode leaves -wal/-shm sidecars; a stale pair next to a fresh db file
+  // causes intermittent "disk I/O error" on the next open.
+  for (const f of [TEST_DB, `${TEST_DB}-wal`, `${TEST_DB}-shm`]) {
+    try { require("fs").unlinkSync(f); } catch { }
+  }
 });
 
 describe("MCP tool catalogue", () => {
@@ -60,7 +64,7 @@ describe("MCP tool catalogue", () => {
       name: "T", skipper_prompt: "", hooks: [], phases: [{ name: "build", prompt: "" }], agents: [],
       config: { slackEnabled: true },
     });
-    db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('t1','T',?,'running')").run(team.id);
+    db.prepare("INSERT INTO tasks (id, title, team_id, status, started_at) VALUES ('t1','T',?,'active',datetime('now'))").run(team.id);
 
     const real = new Set(registeredNames(false, "t1"));
     const missing = allMcpToolNames().filter((name) => !real.has(name));

@@ -8,6 +8,9 @@ import { htmlToMrkdwn } from "./html-to-mrkdwn";
 // the origin message coordinates in `private_metadata`, so the message can be
 // edited in place once the action completes.
 
+// "task"/"iterate" survive only so legacy Iterate buttons in Slack scrollback
+// still decode (they self-heal with a pointer to the thread-reply input flow);
+// no new message carries them.
 export type ActionKind = "esc" | "rev" | "task";
 export type ActionName = "respond" | "dismiss" | "approve" | "reject" | "iterate";
 
@@ -115,30 +118,22 @@ export function reviewMessageBlocks(taskId: string, taskTitle: string, phaseLabe
 }
 
 /**
- * Task-completion notice posted back into the origin thread, carrying an Iterate
- * button. Clicking it opens a modal that collects the next iteration's prompt
- * (mirrors the web UI's iterate flow) → `TaskScheduler.iterateTask`. Only used for
- * completed tasks (a failed task can't be iterated), so the button always targets a
- * task that is currently iterable — a stale click self-heals with an error edit.
+ * Notice posted back into the origin thread when a run settles (completed or
+ * failed). The task stays active in the unified model, so there is no button:
+ * a thread reply containing the word "Skipper" is fed straight to the task as
+ * new input and continues the conversation.
  */
-export function completionMessageBlocks(taskId: string, taskTitle: string): unknown[] {
+export function completionMessageBlocks(taskTitle: string, failed = false): unknown[] {
+  const headline = failed
+    ? `:x: Task *${escapeMrkdwn(taskTitle)}* stopped, its run failed before finishing.`
+    : `:white_check_mark: Task *${escapeMrkdwn(taskTitle)}* finished its run.`;
   return [
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        // The "will not restart" line is load-bearing: a reply in this thread that
-        // mentions Skipper is captured as a note on a RUNNING task, but silently
-        // ignored once the task has completed — so without it the operator types a
-        // follow-up here and waits for a run that never starts.
-        text: `:white_check_mark: Task *${escapeMrkdwn(taskTitle)}* finished running.\nTo run another pass, click *Iterate* below and enter your instructions — replying in this thread will not restart it.`,
+        text: `${headline}\nReply in this thread (include the word "Skipper") to continue this task.`,
       },
-    },
-    {
-      type: "actions",
-      elements: [
-        button("Iterate", "task_iterate", encodeActionValue({ kind: "task", action: "iterate", id: taskId }), "primary"),
-      ],
     },
   ];
 }

@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
-import { ArtifactManager } from "./artifact-manager";
+import { ArtifactManager, type TaskArtifact } from "./artifact-manager";
+import { formatBytes } from "./artifact-files";
 import type { AgentManager } from "../agents/manager";
 import type { TaskScheduler } from "../tasks/scheduler";
 import { eventBus } from "../events/bus";
@@ -21,6 +22,24 @@ export interface InputChunk {
   chunkStartAt?: string;
   chunkEndAt?: string;
   metadata?: Record<string, unknown>;
+}
+
+/** Unfed `realtime_timeline` row as read by the two feed formatters. */
+interface FeedEntryRow {
+  id: string;
+  entry_type: string;
+  content: string;
+  priority: string;
+  created_at: string;
+  artifact_id: string | null;
+}
+
+/** Who attached a file artifact, for the INPUT_FEED line. */
+function describeUploadSource(source: string | null): string {
+  if (!source || source === "operator" || source === "user" || source === "web" || source.startsWith("connect:")) {
+    return "Operator";
+  }
+  return `Agent ${source}`;
 }
 
 interface ActiveSession {
@@ -55,6 +74,7 @@ export class RealtimeSessionManager {
   private db: Database;
   private artifactManager: ArtifactManager;
   private agentManager: AgentManager | null;
+  private taskScheduler: TaskScheduler | null;
   private sessions: Map<string, ActiveSession> = new Map();
   private activeSummarizerRuns: Map<string, SummarizerRun> = new Map();
   private disposed = false;
@@ -89,12 +109,17 @@ export class RealtimeSessionManager {
     const taskId = row?.task_id;
     if (!taskId) return;
 
-    // Only realtime tasks with a live session are relevant.
+    // Only active, unpaused tasks are relevant. Every task has the input
+    // pipeline now; a live recording session is not required for text input.
+    const taskRow = this.db
+      .prepare("SELECT status, paused FROM tasks WHERE id = ?")
+      .get(taskId) as { status: string; paused: number } | null;
+    if (!taskRow || taskRow.status !== "active" || taskRow.paused) return;
     const session = this.sessions.get(taskId);
-    if (!session || session.stopped) return;
+    if (session?.stopped) return;
 
     // Confirm the exited agent is this task's entrypoint (not a delegate/summarizer).
-    const entrypointAgentId = this.resolveRealtimeEntrypointAgentId(taskId);
+    const entrypointAgentId = this.resolveEntrypointAgentId(taskId);
     if (!entrypointAgentId || row?.template_agent_id !== entrypointAgentId) return;
 
     // Still busy (a delegation is outstanding) — the delegation's own completion
@@ -106,8 +131,190 @@ export class RealtimeSessionManager {
       .get(taskId) as { c: number }).c;
     if (unfed === 0) return;
 
-    console.log(`[realtime-session] entrypoint exit — draining ${unfed} unfed timeline entries for task=${taskId}`);
+    console.log(`[input-pipeline] entrypoint exit — ${unfed} unfed timeline entries for task=${taskId}, requesting wake`);
+    this.requestFeed(taskId);
+  }
+
+  /**
+   * Route pending feed delivery through the task queue when a scheduler is
+   * wired (input wakes respect the concurrency cap); fall back to a direct
+   * feed for legacy/test construction without a scheduler.
+   */
+  private requestFeed(taskId: string): void {
+    if (!this.taskScheduler) {
+      // Legacy/test construction without a scheduler: feed directly, but never
+      // mid-turn — the queue's no-live-instances guard is absent on this path.
+      if (!this.isSkipperBusy(taskId)) this.feedSkipper(taskId);
+      return;
+    }
+    try {
+      this.taskScheduler.requestWake(taskId);
+    } catch (err) {
+      logError(this.db, "input.request_wake", { taskId }, err);
+    }
+  }
+
+  // ── TaskWakeFeeder (used by task-runner to deliver queued wakes) ──────────
+
+  hasPendingFeed(taskId: string): boolean {
+    const unfed = (this.db
+      .prepare("SELECT COUNT(*) as c FROM realtime_timeline WHERE task_id = ? AND fed_to_skipper = 0")
+      .get(taskId) as { c: number }).c;
+    return unfed > 0;
+  }
+
+  async feedTask(taskId: string): Promise<boolean> {
+    if (this.isSkipperBusy(taskId)) return false;
+    if (!this.hasPendingFeed(taskId)) return false;
     this.feedSkipper(taskId);
+    return true;
+  }
+
+  /**
+   * Hand the pending feed to the caller as a prompt block instead of
+   * delivering it here — used by task-runner's standard (team) spawn path so
+   * a woken task's full prompt (phases, notes, resume preamble) carries the
+   * new input. `commit` marks the entries fed; call it only after the prompt
+   * was actually handed to the agent.
+   */
+  consumePendingFeed(taskId: string): { text: string; commit: () => void } | null {
+    const unfed = this.db
+      .prepare(
+        "SELECT * FROM realtime_timeline WHERE task_id = ? AND fed_to_skipper = 0 ORDER BY created_at",
+      )
+      .all(taskId) as FeedEntryRow[];
+    if (unfed.length === 0) return null;
+
+    const feedLines = unfed.map((entry) => this.formatFeedLine(entry));
+    const text = ["[INPUT_FEED] New operator/audio input for this task:", ...feedLines, "[END_INPUT_FEED]"].join("\n");
+    const ids = unfed.map((e) => e.id);
+    const commit = () => {
+      const markPlaceholders = ids.map(() => "?").join(",");
+      this.db
+        .prepare(`UPDATE realtime_timeline SET fed_to_skipper = 1 WHERE id IN (${markPlaceholders})`)
+        .run(...ids);
+    };
+    return { text, commit };
+  }
+
+  /**
+   * One INPUT_FEED line per timeline entry. Text/summary/error entries render
+   * their content; image/file entries (operator uploads) render the artifact's
+   * absolute path plus a hint telling the agent to open it with its own
+   * file/image tool, since the bytes never travel through the prompt.
+   */
+  private formatFeedLine(entry: FeedEntryRow): string {
+    const time = entry.created_at.includes("T")
+      ? (entry.created_at.split("T")[1]?.split(".")[0] ?? entry.created_at)
+      : (entry.created_at.split(" ")[1]?.split(".")[0] ?? entry.created_at);
+    const typeLabel = entry.entry_type.toUpperCase();
+    const priorityTag = entry.priority === "high" ? " PRIORITY:HIGH" : "";
+    const prefix = `[${time} ${typeLabel}${priorityTag}]`;
+
+    if ((entry.entry_type === "image" || entry.entry_type === "file") && entry.artifact_id) {
+      const artifact = this.artifactManager.getArtifactById(entry.artifact_id);
+      const path = artifact ? this.artifactManager.getArtifactFilePath(artifact) : null;
+      if (artifact && path) {
+        const who = describeUploadSource(artifact.source);
+        const caption = artifact.body.trim();
+        const captionClause = caption ? ` - caption: "${caption}"` : "";
+        if (entry.entry_type === "image") {
+          const dims = artifact.width && artifact.height ? `, ${artifact.width}x${artifact.height}` : "";
+          return `${prefix} ${who} attached an image artifact "${artifact.name}" (v${artifact.version}${dims}): ${path}${captionClause}. View it with your file/image reading tool before you continue.`;
+        }
+        const size = formatBytes(artifact.bytes);
+        return `${prefix} ${who} attached a file artifact "${artifact.name}" (v${artifact.version}, ${artifact.mime ?? "application/octet-stream"}${size ? `, ${size}` : ""}): ${path}${captionClause}. Read it with your file-reading tool before you continue.`;
+      }
+    }
+    return `${prefix} ${entry.content}`;
+  }
+
+  /**
+   * Shared admission step for any operator input (text or file) into a task
+   * that is not a draft: a settled task is revived, and an open review gate is
+   * cleared because the input IS the review response. Returns the stored
+   * status the caller should act on ('draft' = store only, fed on first run).
+   */
+  prepareTaskForInput(taskId: string): "draft" | "active" {
+    const task = this.db
+      .prepare("SELECT status, needs_review FROM tasks WHERE id = ?")
+      .get(taskId) as { status: string; needs_review: number } | null;
+    if (!task) throw new Error("Task not found");
+    if (task.status === "draft") return "draft";
+    if (task.status === "settled") {
+      if (!this.taskScheduler) throw new Error("Task is not active");
+      this.taskScheduler.reviveTask(taskId);
+    }
+    if (task.needs_review) {
+      if (this.taskScheduler) this.taskScheduler.setNeedsReview(taskId, false);
+      else this.db.prepare("UPDATE tasks SET needs_review = 0, updated_at = datetime('now') WHERE id = ?").run(taskId);
+    }
+    return "active";
+  }
+
+  /**
+   * Put an uploaded file artifact on the task's input timeline and schedule
+   * its delivery with the same wake semantics as typed text: draft = stored,
+   * fed on the first run; active idle = wake through the queue; active busy =
+   * accumulates until the turn ends; settled = revive + wake.
+   */
+  ingestArtifactUpload(
+    taskId: string,
+    artifact: TaskArtifact,
+    options: { caption?: string; source: string },
+  ): { entryId: string; delivered: "draft" | "queued" | "accumulated" } {
+    const status = this.prepareTaskForInput(taskId);
+    const entryType = artifact.mime?.startsWith("image/") ? "image" : "file";
+    const content = options.caption?.trim() || artifact.name;
+    const entryId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO realtime_timeline (id, task_id, entry_type, content, source_segment_ids, priority, artifact_id)
+         VALUES (?, ?, ?, ?, '[]', 'high', ?)`,
+      )
+      .run(entryId, taskId, entryType, content, artifact.id);
+    this.emitTimelineUpdated(taskId, entryId, entryType);
+    eventBus.emit("realtime:window_ready", {
+      windowId: entryId,
+      taskId,
+      artifactName: artifact.name,
+      version: artifact.version,
+      windowStartAt: now,
+      windowEndAt: now,
+    });
+    console.log(`[input-pipeline] ${entryType} artifact ${artifact.id} (${artifact.name} v${artifact.version}) attached to task=${taskId} source=${options.source} status=${status}`);
+
+    if (status === "draft") return { entryId, delivered: "draft" };
+    this.requestFeed(taskId);
+    return { entryId, delivered: this.isSkipperBusy(taskId) ? "accumulated" : "queued" };
+  }
+
+  /**
+   * Put a file artifact an AGENT generated (the `create_file_artifact` MCP
+   * tool) on the task's timeline as that agent's output. Unlike an operator
+   * upload the row is inserted already fed (`fed_to_skipper = 1`) so it never
+   * enters the INPUT_FEED, and nothing about the task changes: no status
+   * transition, no wake, no `realtime:window_ready`. Only
+   * `realtime:timeline_updated` fires so the UI surfaces re-render.
+   */
+  ingestAgentArtifact(
+    taskId: string,
+    artifact: TaskArtifact,
+    options: { agentId: string },
+  ): { entryId: string } {
+    const entryType = artifact.mime?.startsWith("image/") ? "image" : "file";
+    const content = artifact.body.trim() || artifact.name;
+    const entryId = crypto.randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO realtime_timeline (id, task_id, entry_type, content, source_segment_ids, priority, artifact_id, fed_to_skipper)
+         VALUES (?, ?, ?, ?, '[]', 'normal', ?, 1)`,
+      )
+      .run(entryId, taskId, entryType, content, artifact.id);
+    this.emitTimelineUpdated(taskId, entryId, entryType);
+    console.log(`[input-pipeline] ${entryType} artifact ${artifact.id} (${artifact.name} v${artifact.version}) attached by agent=${options.agentId} to task=${taskId} (agent output, not fed)`);
+    return { entryId };
   }
 
   private emitTimelineUpdated(taskId: string, entryId: string, entryType: string): void {
@@ -118,11 +325,12 @@ export class RealtimeSessionManager {
     db?: Database,
     artifactManager?: ArtifactManager,
     agentManager?: AgentManager | null,
-    _taskScheduler?: TaskScheduler | null,
+    taskScheduler?: TaskScheduler | null,
   ) {
     this.db = db ?? getDb();
     this.artifactManager = artifactManager ?? new ArtifactManager(this.db);
     this.agentManager = agentManager ?? null;
+    this.taskScheduler = taskScheduler ?? null;
 
     // Clean up any stale temp files from a previous crash
     RealtimeSessionManager.cleanupStaleTempFiles();
@@ -216,16 +424,16 @@ export class RealtimeSessionManager {
     taskId: string,
     source: { id: string; label: string },
   ): Promise<{ ok: true; state: string } | { ok: false; error: string; ownerLabel?: string }> {
-    // Recording is only allowed on an approved (or already-running) real_time
-    // task — never a draft. Mirrors the start-session gate in routes/realtime.ts.
+    // Recording is allowed on any ACTIVE task — audio input is universal.
+    // Drafts and settled tasks are rejected (approve/revive first).
     const task = this.db
-      .prepare("SELECT task_type, status FROM tasks WHERE id = ?")
-      .get(taskId) as { task_type: string; status: string } | null;
-    if (!task || task.task_type !== "real_time") {
+      .prepare("SELECT status FROM tasks WHERE id = ?")
+      .get(taskId) as { status: string } | null;
+    if (!task) {
       return { ok: false, error: "Not found" };
     }
-    if (task.status !== "approved" && task.status !== "running") {
-      return { ok: false, error: "TASK_NOT_APPROVED" };
+    if (task.status !== "active") {
+      return { ok: false, error: "TASK_NOT_ACTIVE" };
     }
 
     if (!this.isSessionActive(taskId)) {
@@ -319,24 +527,33 @@ export class RealtimeSessionManager {
   }
 
   async ingestInput(taskId: string, input: InputChunk, source?: string): Promise<void> {
+    const taskRow = this.db
+      .prepare("SELECT status FROM tasks WHERE id = ?")
+      .get(taskId) as { status: string } | null;
+    if (!taskRow || taskRow.status !== "active") {
+      throw new Error("Task is not active");
+    }
+
     const session = this.sessions.get(taskId);
-    if (!session || session.stopped) {
+    // Audio requires a live recording session (acquireRecording starts one).
+    // Text input is sessionless: every active task accepts it at any time.
+    if (input.sourceType === "audio" && (!session || session.stopped)) {
       throw new Error("No active session for this task");
     }
 
     // Single-writer enforcement: audio may only come from the current lock owner.
     // (Text input is never gated.) A caller that omits `source` is a legacy/local
     // path and is allowed through unchanged.
-    if (input.sourceType === "audio" && session.recordingOwner && source) {
+    if (input.sourceType === "audio" && session && session.recordingOwner && source) {
       if (source !== session.recordingOwner) {
         throw new Error("NOT_RECORDING_OWNER");
       }
       session.recordingActivityAt = Date.now(); // refresh the lease
     }
 
-    session.ingestInProgress++;
+    if (session) session.ingestInProgress++;
     try {
-      session.sequenceCounter++;
+      const sequence = session ? ++session.sequenceCounter : this.getMaxSequence(taskId) + 1;
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
 
@@ -344,7 +561,7 @@ export class RealtimeSessionManager {
       const transcriptionStatus =
         input.sourceType === "text" ? "not_applicable" : "pending";
 
-      console.log(`[realtime-session] ingestInput: task=${taskId} type=${input.sourceType} seq=${session.sequenceCounter} status=${transcriptionStatus} size=${input.contentBody.length}`);
+      console.log(`[realtime-session] ingestInput: task=${taskId} type=${input.sourceType} seq=${sequence} status=${transcriptionStatus} size=${input.contentBody.length}`);
 
       this.db
         .prepare(
@@ -360,7 +577,7 @@ export class RealtimeSessionManager {
           input.contentBody,
           input.chunkStartAt ?? now,
           input.chunkEndAt ?? now,
-          session.sequenceCounter,
+          sequence,
           input.metadata ? JSON.stringify(input.metadata) : "{}",
           transcriptionStatus,
         );
@@ -381,54 +598,25 @@ export class RealtimeSessionManager {
         windowId: id,
         taskId,
         artifactName: input.sourceType === "text" ? "text-input" : "audio-input",
-        version: session.sequenceCounter,
+        version: sequence,
         windowStartAt: input.chunkStartAt ?? now,
         windowEndAt: input.chunkEndAt ?? now,
       });
 
-      // For manual text input, don't wait for cadence when the pipeline is idle.
-      // This keeps realtime tasks responsive for note/message-style interactions.
-      if (input.sourceType === "text" && this.shouldForceImmediateTick(taskId)) {
-        console.log(`[realtime-session] ingestInput: task=${taskId} forcing immediate tick after text input`);
-        this.processCadenceTick(taskId).catch((err) => {
-          logError(this.db, "realtime.immediate_tick", { taskId, sourceType: "text" }, err);
-        });
+      // Text input ALWAYS schedules delivery. The wake is routed through the
+      // task queue (cap-respecting): idle tasks feed immediately, busy tasks
+      // keep the persisted wake marker and the queue delivers as soon as the
+      // root's turn/delegations end. Never gate this on pipeline idleness —
+      // workflow tasks have no cadence timer, so a skipped wake here was a
+      // permanently stuck "queued for agent" entry.
+      if (input.sourceType === "text") {
+        this.requestFeed(taskId);
       }
     } finally {
-      session.ingestInProgress--;
+      if (session) session.ingestInProgress--;
     }
   }
 
-  private shouldForceImmediateTick(taskId: string): boolean {
-    const session = this.sessions.get(taskId);
-    if (!session || session.stopped || session.tickInProgress) return false;
-
-    // Only force when the entrypoint/delegations are idle.
-    if (this.isSkipperBusy(taskId)) return false;
-
-    // If transcription is already queued or in-flight, let cadence handle it.
-    const pendingTranscription = (this.db
-      .prepare(
-        "SELECT COUNT(*) AS c FROM task_input_streams WHERE task_id = ? AND transcription_status = 'pending'",
-      )
-      .get(taskId) as { c: number }).c;
-    if (pendingTranscription > 0) return false;
-
-    // If a summarizer run is currently active for this task, avoid overlapping work.
-    const summarizerInFlight = Array.from(this.activeSummarizerRuns.values())
-      .some((run) => run.taskId === taskId);
-    if (summarizerInFlight) return false;
-
-    // If segments are currently marked as pending summary, wait for that flow to settle.
-    const pendingSummary = (this.db
-      .prepare(
-        "SELECT COUNT(*) AS c FROM task_input_streams WHERE task_id = ? AND summary_batch_id LIKE 'pending:%'",
-      )
-      .get(taskId) as { c: number }).c;
-    if (pendingSummary > 0) return false;
-
-    return true;
-  }
 
   async processCadenceTick(taskId: string): Promise<void> {
     const session = this.sessions.get(taskId);
@@ -472,7 +660,9 @@ export class RealtimeSessionManager {
           )
           .run(taskId);
 
-        this.feedSkipper(taskId);
+        if (this.hasPendingFeed(taskId)) {
+          this.requestFeed(taskId);
+        }
       }
     } finally {
       session.tickInProgress = false;
@@ -490,7 +680,7 @@ export class RealtimeSessionManager {
    * 3. It has an active delegation group (batch delegation in progress)
    */
   isSkipperBusy(taskId: string): boolean {
-    const entrypointAgentId = this.resolveRealtimeEntrypointAgentId(taskId);
+    const entrypointAgentId = this.resolveEntrypointAgentId(taskId);
     if (!entrypointAgentId) return false;
 
     // 1. This task's entrypoint instance is currently running (producing output).
@@ -538,10 +728,10 @@ export class RealtimeSessionManager {
   }
 
   /**
-   * Resolve the realtime entrypoint agent for a task.
-   * Realtime tasks may not have a team, so we fall back to the default Skipper agent.
+   * Resolve the entrypoint agent for a task.
+   * Conversational tasks may not have a team, so we fall back to the default Skipper agent.
    */
-  private resolveRealtimeEntrypointAgentId(taskId: string): string | null {
+  private resolveEntrypointAgentId(taskId: string): string | null {
     const teamEntrypoint = getEntrypointAgentId(this.db, taskId);
     if (teamEntrypoint) return teamEntrypoint;
 
@@ -806,7 +996,8 @@ export class RealtimeSessionManager {
     const row = this.db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(taskId) as { team_id: string | null } | null;
     if (!row?.team_id) return null;
     const team = getLocalTeam(this.db, row.team_id);
-    if (!team || team.config?.mode !== "realtime") return null;
+    const teamMode = team?.config?.mode;
+    if (!team || (teamMode !== "realtime" && teamMode !== "conversational")) return null;
     const rt = team.config.realtime;
     return {
       enabled: rt?.summaryEnabled !== false, // absent = enabled
@@ -1046,6 +1237,10 @@ export class RealtimeSessionManager {
         )
         .run(timelineId, run.taskId, summaryContent, JSON.stringify(run.segmentIds));
       this.emitTimelineUpdated(run.taskId, timelineId, "summary");
+      // Schedule delivery now — the summarizer may finish after the session's
+      // cadence timer stopped (recording ended, task paused), and workflow
+      // tasks have no timer at all. The wake persists until the queue delivers.
+      this.requestFeed(run.taskId);
 
       // Update segments to point to the real timeline entry
       const placeholders = run.segmentIds.map(() => "?").join(",");
@@ -1115,6 +1310,9 @@ export class RealtimeSessionManager {
       )
       .run(timelineId, taskId, concatenated, JSON.stringify(segmentIds));
     this.emitTimelineUpdated(taskId, timelineId, "summary");
+    // Same rule as the summarizer path: a timeline entry schedules its own
+    // delivery instead of waiting for a cadence tick that may never come.
+    this.requestFeed(taskId);
 
     const placeholders = segmentIds.map(() => "?").join(",");
     this.db
@@ -1135,13 +1333,7 @@ export class RealtimeSessionManager {
       .prepare(
         "SELECT * FROM realtime_timeline WHERE task_id = ? AND fed_to_skipper = 0 ORDER BY created_at",
       )
-      .all(taskId) as Array<{
-        id: string;
-        entry_type: string;
-        content: string;
-        priority: string;
-        created_at: string;
-      }>;
+      .all(taskId) as FeedEntryRow[];
 
     if (unfed.length === 0) return;
 
@@ -1156,7 +1348,7 @@ export class RealtimeSessionManager {
       return;
     }
 
-    const entrypointAgentId = this.resolveRealtimeEntrypointAgentId(taskId);
+    const entrypointAgentId = this.resolveEntrypointAgentId(taskId);
     if (!entrypointAgentId) {
       console.error(`[realtime-session] feedSkipper: no entrypoint agent found for task=${taskId}`);
       return;
@@ -1173,12 +1365,7 @@ export class RealtimeSessionManager {
     };
 
     // Format chronological feed
-    const feedLines = unfed.map((entry) => {
-      const time = entry.created_at.split("T")[1]?.split(".")[0] ?? entry.created_at;
-      const typeLabel = entry.entry_type.toUpperCase();
-      const priorityTag = entry.priority === "high" ? " PRIORITY:HIGH" : "";
-      return `[${time} ${typeLabel}${priorityTag}] ${entry.content}`;
-    });
+    const feedLines = unfed.map((entry) => this.formatFeedLine(entry));
 
     // Build available agents roster from assigned team members + individual selections.
     const taskRow = this.db
@@ -1340,9 +1527,10 @@ export class RealtimeSessionManager {
     // Spawn summarizer for any freshly transcribed segments
     this.spawnSummarizer(taskId);
 
-    // Flush any unfed timeline entries to Skipper (only if not already busy)
-    if (!this.isSkipperBusy(taskId)) {
-      this.feedSkipper(taskId);
+    // Flush any unfed timeline entries. The wake marker persists, so a busy
+    // root delivers when its turn ends — never gate this on busyness.
+    if (this.hasPendingFeed(taskId)) {
+      this.requestFeed(taskId);
     }
 
     // Update pipeline state
@@ -1358,7 +1546,7 @@ export class RealtimeSessionManager {
     // map, so after Resume `isSkipperBusy` keeps returning true and new input is
     // never fed. Scope the kill to THIS task's runtime instance so a sibling
     // task's Skipper (shared 'skipper' template) is untouched.
-    const entrypointAgentId = this.resolveRealtimeEntrypointAgentId(taskId);
+    const entrypointAgentId = this.resolveEntrypointAgentId(taskId);
     if (entrypointAgentId) {
       if (this.agentManager && typeof this.agentManager.getRunningInstanceForTask === "function") {
         const runningInstance = this.agentManager.getRunningInstanceForTask(entrypointAgentId, taskId);
@@ -1486,7 +1674,7 @@ export class RealtimeSessionManager {
       const runningTasks = this.db
         .prepare(`SELECT t.id FROM tasks t
           JOIN realtime_pipeline_state rps ON rps.task_id = t.id
-          WHERE t.task_type = 'real_time' AND t.status = 'running' AND rps.cadence_timer_active = 1`)
+          WHERE t.status = 'active' AND t.paused = 0 AND rps.cadence_timer_active = 1`)
         .all() as { id: string }[];
 
       for (const task of runningTasks) {

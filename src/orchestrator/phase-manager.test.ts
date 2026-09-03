@@ -47,7 +47,7 @@ function createRunningTask(
 ): string {
   database
     .prepare(
-      "INSERT INTO tasks (id, title, team_id, status, current_phase) VALUES (?, ?, ?, 'running', ?)",
+      "INSERT INTO tasks (id, title, team_id, status, current_phase) VALUES (?, ?, ?, 'active', ?)",
     )
     .run(taskId, "Test Task", teamId, currentPhase);
   database
@@ -59,7 +59,7 @@ function createRunningTask(
 function createPhaseManager(
   database: Database,
   overrides: {
-    completeTask?: (id: string) => void;
+    completeRun?: (id: string) => void;
     advancePhase?: (id: string) => { current_phase: number };
     sendInput?: (agentId: string, prompt: string) => void;
     spawnAgent?: (id: string, opts: unknown) => Promise<void>;
@@ -81,13 +81,14 @@ function createPhaseManager(
         description: row.description as string | null,
         team_id: row.team_id as string | null,
         status: row.status as string,
+        paused: !!(row.paused ?? 0),
         current_phase: row.current_phase as number,
         regression_count: row.regression_count as number,
       };
     },
-    completeTask: overrides.completeTask ?? (() => {}),
+    completeRun: overrides.completeRun ?? (() => {}),
     setNeedsReview: () => {},
-    failTask: overrides.failTask ?? (() => {}),
+    failRun: overrides.failTask ?? (() => {}),
     advancePhase:
       overrides.advancePhase ??
       ((id: string) => {
@@ -183,14 +184,14 @@ afterEach(() => {
 });
 
 describe("handlePhaseComplete - dedup retry after failure", () => {
-  it("does not add dedup key when completeTask throws, allowing retry", () => {
+  it("does not add dedup key when completeRun throws, allowing retry", () => {
     const agentId = createAgent(db);
     const teamId = createTeamWithPhases(db, agentId, []);
     createRunningTask(db, teamId, 0);
 
     let callCount = 0;
     const phaseManager = createPhaseManager(db, {
-      completeTask: () => {
+      completeRun: () => {
         callCount++;
         if (callCount === 1) throw new Error("DB error on first attempt");
       },
@@ -206,14 +207,14 @@ describe("handlePhaseComplete - dedup retry after failure", () => {
     expect(callCount).toBe(2);
   });
 
-  it("adds dedup key after successful completeTask, preventing duplicate", () => {
+  it("adds dedup key after successful completeRun, preventing duplicate", () => {
     const agentId = createAgent(db);
     const teamId = createTeamWithPhases(db, agentId, []);
     createRunningTask(db, teamId, 0);
 
     let callCount = 0;
     const phaseManager = createPhaseManager(db, {
-      completeTask: () => {
+      completeRun: () => {
         callCount++;
       },
     });

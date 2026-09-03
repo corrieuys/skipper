@@ -7,7 +7,7 @@ SQLite via `bun:sqlite`. Split architecture.
 | file | use |
 |---|---|
 | `connection.ts` | `initializeDatabase()`, `getDb()`, `closeDb()`, `resetDb()`. Split or single mode, `seedAgentTypes()` |
-| `legacy-migrations.ts` | One-shot guarded schema migrations (`migrateLegacySchema()`), run on every init. New migrations go in `migrations/` unless they need a table rebuild |
+| `legacy-migrations.ts` | One-shot guarded schema migrations (`migrateLegacySchema()`), run on every init. New migrations go in `migrations/` unless they need a table rebuild. Table rebuilds (copy → drop → rename inside a transaction, FKs off, indexes recreated) live here: tasks (unified model), scheduled_tasks, task_notes, team_agents, and the two file-artifact ones: `task_artifacts` (kind CHECK gains `upload`; guarded on the stored CREATE lacking `'upload'`) and `realtime_timeline` (entry_type CHECK gains `image`/`file`; guarded on `'image'`). The file-artifact metadata columns (`storage`, `mime`, `bytes`, `sha256`, `width`, `height`, `source`, timeline `artifact_id`) arrive via `ensureColumn` first, so the rebuild SELECT can read them. Legacy runs BEFORE the numbered migrations, so a rebuild must carry every column a later numbered migration would ADD (the runner tolerates the resulting `duplicate column` and marks that version applied) |
 | `schema.sql` | Monolith schema. Tests only (explicit DB path) |
 | `schema.config.sql` | Config tables — applied to in-memory ATTACH |
 | `schema.runtime.sql` | Runtime tables — applied to on-disk DB |

@@ -46,7 +46,7 @@ describe("initUpdateRestartOnIdle", () => {
     setStringSetting(db, SETTING_UPDATE_DOWNLOADED_VERSION, "1.2.4");
     // An approved task in the queue means not fully idle → the real idle check
     // blocks the restart, so no process is spawned.
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('q1', 'Queued', 'approved')").run();
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('q1', 'Queued', 'active')").run();
     stop = initUpdateRestartOnIdle(db, idleAgents);
     expect(() =>
       eventBus.emit("task:state_changed", { taskId: "q1", previousStatus: "running", newStatus: "completed" }),

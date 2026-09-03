@@ -6,7 +6,13 @@ import { validateWorkingDirectory } from "../orchestrator/delegation-manager";
 import type { PhaseManager } from "../orchestrator/phase-manager";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { EscalationManager } from "../escalations/manager";
-import type { ArtifactManager, ArtifactKind } from "../orchestrator/artifact-manager";
+import type { ArtifactManager, ArtifactKind, TaskArtifact } from "../orchestrator/artifact-manager";
+import { MAX_FILE_ARTIFACT_BYTES } from "../orchestrator/artifact-manager";
+import { mimeFromExtension } from "../orchestrator/artifact-files";
+import type { RealtimeSessionManager } from "../orchestrator/realtime-session";
+import { isAbsolute, basename } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { isCustomAgentType } from "../agents/types";
 import type { ConsensusManager } from "../orchestrator/consensus-manager";
 import type { GlobalStoreManager } from "../global-store/manager";
 import type { AgentIdentity, InternalAgentIdentity } from "./auth";
@@ -34,6 +40,14 @@ export interface DaemonDeps {
   artifactManager: ArtifactManager;
   consensusManager: ConsensusManager;
   globalStoreManager: GlobalStoreManager;
+  /**
+   * Input pipeline; `create_file_artifact` puts the agent's file on the task
+   * timeline through it. Optional so test harnesses that never exercise the
+   * tool need not build one (the tool then skips the timeline row).
+   */
+  realtimeSessionManager?: Pick<RealtimeSessionManager, "ingestAgentArtifact">;
+  /** Unified input entry (daemon.inputTask): text into any task, waking it if idle. */
+  inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>;
 }
 
 export interface RegisterDaemonToolsOptions {
@@ -123,6 +137,30 @@ export function registerDaemonTools(
   // Stateless over the db handle, so it is built here rather than threaded
   // through DaemonDeps and every construction site.
   const messageManager = new MessageManager(db);
+
+  /** The file-artifact shape shared by `get_artifact` and `create_file_artifact`: metadata + on-disk path, never bytes. */
+  function fileArtifactMeta(artifact: TaskArtifact) {
+    return {
+      id: artifact.id,
+      storage: "file" as const,
+      kind: artifact.kind,
+      name: artifact.name,
+      version: artifact.version,
+      mime: artifact.mime,
+      bytes: artifact.bytes,
+      width: artifact.width,
+      height: artifact.height,
+      sha256: artifact.sha256,
+      path: artifactManager.getArtifactFilePath(artifact),
+      description: artifact.body,
+    };
+  }
+
+  /** True when the calling runtime's template agent is a custom (in-process) agent. */
+  function isCustomAgentRuntime(templateAgentId: string): boolean {
+    const row = db.prepare("SELECT type FROM agents WHERE id = ?").get(templateAgentId) as { type: string } | null;
+    return !!row && isCustomAgentType(row.type);
+  }
 
   function getInternalIdentity(): InternalAgentIdentity | null {
     const id = getIdentity();
@@ -276,8 +314,60 @@ export function registerDaemonTools(
   );
 
   server.tool(
+    "create_file_artifact",
+    "Attach a file that already exists on disk (screenshot, photo, PDF, archive, any binary you generated) to the task as a file artifact. Pass the absolute path; the daemon copies it into the artifact store. Use create_artifact for text you can write inline.",
+    {
+      name: z.string().describe("Filename the operator sees; keep the extension (e.g. 'login-page.png'). Re-using a name creates a new version."),
+      path: z.string().describe("Absolute path of the file on this machine"),
+      description: z.string().optional().describe("Short caption: what the file shows and why it matters"),
+    },
+    async ({ name, path, description }) => {
+      const identity = getInternalIdentity();
+      if (!identity?.taskId) return { content: [{ type: "text" as const, text: "Error: no active task" }] };
+
+      try {
+        if (!isAbsolute(path)) {
+          throw new Error(`path must be absolute (got "${path}"). Pass the full path of the file on this machine.`);
+        }
+        let stat: ReturnType<typeof statSync>;
+        try {
+          stat = statSync(path);
+        } catch {
+          throw new Error(`File not found: ${path}. The path must point to an existing file on the daemon host.`);
+        }
+        if (stat.isDirectory()) {
+          throw new Error(`${path} is a directory. create_file_artifact takes a single file; zip a directory first.`);
+        }
+        if (!stat.isFile()) {
+          throw new Error(`${path} is not a regular file.`);
+        }
+        if (stat.size > MAX_FILE_ARTIFACT_BYTES) {
+          throw new Error(`File is too large (${stat.size} bytes). The limit is ${MAX_FILE_ARTIFACT_BYTES} bytes (25 MB).`);
+        }
+        const bytes = new Uint8Array(readFileSync(path));
+        const fileName = name.trim() || basename(path);
+        // Images are re-sniffed by createFileArtifact (magic bytes win); the
+        // extension only decides the mime for everything else.
+        const artifact = artifactManager.createFileArtifact({
+          taskId: identity.taskId,
+          name: fileName,
+          kind: "upload",
+          mime: mimeFromExtension(fileName) ?? mimeFromExtension(path),
+          bytes,
+          description,
+          source: identity.templateAgentId,
+        });
+        deps.realtimeSessionManager?.ingestAgentArtifact(identity.taskId, artifact, { agentId: identity.templateAgentId });
+        return { content: [{ type: "text" as const, text: JSON.stringify(fileArtifactMeta(artifact)) }] };
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.tool(
     "get_artifact",
-    "Retrieve a specific artifact by name",
+    "Retrieve a specific artifact by name. Inline artifacts return their text body. File artifacts (storage 'file': operator-uploaded images and files) return metadata plus an absolute `path` and never the bytes: open the path with your own file or image reading tool.",
     {
       name: z.string().describe("Artifact name"),
       version: z.union([z.literal("latest"), z.number()]).optional().describe("Version number or 'latest'"),
@@ -292,13 +382,32 @@ export function registerDaemonTools(
         return { content: [{ type: "text" as const, text: JSON.stringify({ error: "not_found" }) }] };
       }
 
+      if (artifact.storage === "file") {
+        const meta = {
+          ...fileArtifactMeta(artifact),
+          note: "Binary artifact. Read it with your file or image tool at `path`; there is no text body.",
+        };
+        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+          { type: "text", text: JSON.stringify(meta) },
+        ];
+        // A custom (in-process) agent has no file tool of its own, so hand it
+        // the image inline as an MCP image block. CLI agents read the path.
+        if (artifact.mime?.startsWith("image/") && isCustomAgentRuntime(identity.templateAgentId)) {
+          const file = artifactManager.readArtifactBytes(artifact.id);
+          if (file) {
+            content.push({ type: "image", data: Buffer.from(file.bytes).toString("base64"), mimeType: artifact.mime });
+          }
+        }
+        return { content };
+      }
+
       return { content: [{ type: "text" as const, text: JSON.stringify({ body: artifact.body, version: artifact.version, kind: artifact.kind }) }] };
     },
   );
 
   server.tool(
     "list_artifacts",
-    "List artifacts for the current task",
+    "List artifacts for the current task. Each row carries `storage`: 'inline' rows have a text body via get_artifact; 'file' rows (operator uploads, kind 'upload') carry mime/bytes/width/height and get_artifact returns their on-disk `path` for your file or image tool, never the bytes.",
     {
       kind: z.string().optional().describe("Filter by artifact kind"),
       name_prefix: z.string().optional().describe("Filter by name prefix"),
@@ -839,7 +948,7 @@ export function registerDaemonTools(
   if (!options?.isDelegated) {
     server.tool(
       "complete_task",
-      "Signal that the entire task is complete (root Skipper or single agent)",
+      "Signal that this run of the task is complete (root Skipper or single agent). The task stays active and idle; new operator input can wake it later.",
       { summary: z.string().describe("Summary of what was accomplished") },
       async ({ summary }) => {
         const identity = getInternalIdentity();
@@ -848,7 +957,7 @@ export function registerDaemonTools(
         if (reject) return reject;
 
         try {
-          taskScheduler.completeTask(identity.taskId);
+          taskScheduler.completeRun(identity.taskId);
 
           signalBridge.registerMcpAction(identity.runtimeId, "task_complete", summary.slice(0, 200));
 

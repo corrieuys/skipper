@@ -4,7 +4,6 @@ import { slackLog } from "./log";
 import { isSlackUserAllowed } from "../config/slack-settings";
 import type { EscalationManager } from "../escalations/manager";
 import type { PhaseManager } from "../orchestrator/phase-manager";
-import type { TaskScheduler } from "../tasks/scheduler";
 import type { SlackClient } from "./client";
 import {
   decodeActionValue,
@@ -23,7 +22,6 @@ export interface InteractionDeps {
   client: SlackClient;
   escalationManager: EscalationManager;
   phaseManager: PhaseManager;
-  taskScheduler: TaskScheduler;
 }
 
 /** Minimal shapes of the Slack interactive payloads we consume. */
@@ -85,6 +83,20 @@ function handleBlockAction(deps: InteractionDeps, payload: BlockActionsPayload):
   }
 
   const meta: ModalMeta = { kind: decoded.kind, action: decoded.action, id: decoded.id, channel, messageTs };
+
+  // Legacy Iterate buttons from the old completion notice. Iterating was
+  // replaced by the unified input flow: a thread reply containing the word
+  // "Skipper" is fed straight to the task. Self-heal the old button.
+  if (decoded.kind === "task") {
+    const hint = 'Iterate was replaced. Reply in this thread (include the word "Skipper") to continue this task.';
+    slackLog("interaction.legacy_iterate", { id: decoded.id, userId });
+    return {
+      run: async () => {
+        await postEphemeral(payload.response_url, hint);
+        await editMessage(deps.client, channel, messageTs, `:information_source: ${hint}`, keepContextBlocks(deps, meta));
+      },
+    };
+  }
 
   // Is the item still actionable? Checked ahead of every button, for two reasons.
   // For the modal actions the alternative is the operator typing a full response
@@ -190,13 +202,6 @@ async function performAction(deps: InteractionDeps, meta: ModalMeta, message: st
     await deps.phaseManager.rejectReview(meta.id, message);
     return `:leftwards_arrow_with_hook: *Phase rejected* by <@${userId}>\n> ${quote(message)}`;
   }
-  if (meta.kind === "task" && meta.action === "iterate") {
-    // Re-open the completed task with the operator's prompt. iterateTask throws if
-    // the task is no longer `completed` (e.g. an already-clicked button), which the
-    // caller catches and surfaces as an error edit — the stale button self-heals.
-    deps.taskScheduler.iterateTask(meta.id, message);
-    return `:repeat: *Iteration started* by <@${userId}>\n> ${quote(message)}`;
-  }
   return ":grey_question: Unknown action.";
 }
 
@@ -213,15 +218,9 @@ async function performAction(deps: InteractionDeps, meta: ModalMeta, message: st
  */
 function staleReason(deps: InteractionDeps, kind: string, id: string): string | null {
   try {
-    if (kind === "task") {
-      const task = deps.taskScheduler.getTask(id);
-      if (!task) return "That task no longer exists — it was cleaned up by task retention, so there is nothing to iterate. Start a fresh run instead.";
-      if (task.status !== "completed") return `That task is *${task.status}* right now, so it can't be iterated. Iterating is only possible once a run has completed.`;
-      return null;
-    }
     if (kind === "esc") {
       const esc = deps.escalationManager.getEscalation(id);
-      if (!esc) return "That escalation no longer exists — its task was cleaned up by task retention.";
+      if (!esc) return "That escalation no longer exists. Its task was cleaned up by task retention.";
       if (esc.status !== "open") return "That escalation has already been handled.";
       return null;
     }
@@ -230,10 +229,10 @@ function staleReason(deps: InteractionDeps, kind: string, id: string): string | 
       const row = deps.db
         .prepare("SELECT status, needs_review FROM tasks WHERE id = ?")
         .get(id) as { status?: string; needs_review?: number } | null;
-      if (!row) return "That task no longer exists — it was cleaned up by task retention.";
+      if (!row) return "That task no longer exists. It was cleaned up by task retention.";
       // Mirrors the guard in PhaseManager.approveReview/rejectReview, which
       // otherwise returns silently and leaves the message claiming it worked.
-      if (row.status !== "running" || !row.needs_review) return "That phase review is no longer open — it was already approved or rejected.";
+      if (row.status !== "active" || !row.needs_review) return "That phase review is no longer open. It was already approved or rejected.";
       return null;
     }
   } catch {
@@ -254,9 +253,6 @@ function modalSpecFor(
   }
   if (kind === "rev" && action === "reject") {
     return { title: "Reject phase", label: "What should change?", submit: "Reject", optional: false, placeholder: "Why are you rejecting?" };
-  }
-  if (kind === "task" && action === "iterate") {
-    return { title: "Iterate task", label: "What should this iteration do?", submit: "Iterate", optional: false, placeholder: "Describe the changes or additions…" };
   }
   return null;
 }
@@ -306,7 +302,8 @@ function keepContextBlocks(deps: InteractionDeps, meta: ModalMeta): unknown[] {
       return escalationMessageBlocks(meta.id, taskTitle(deps.db, e.task_id), e.question).slice(0, 1);
     }
     if (meta.kind === "task") {
-      return completionMessageBlocks(meta.id, taskTitle(deps.db, meta.id)).slice(0, 1);
+      // Legacy iterate button: keep the completion notice section visible.
+      return completionMessageBlocks(taskTitle(deps.db, meta.id)).slice(0, 1);
     }
     if (meta.kind === "rev") {
       // Phase label isn't reliably recoverable after the action, so keep a minimal

@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { clearAgentTypeCache } from "../agents/types";
 import { TaskScheduler } from "../tasks/scheduler";
-import { findRunningTaskByThread, mentionsSkipper, SLACK_NOTE_PREFIX } from "./slash-command";
+import { findTaskByThread, mentionsSkipper, SLACK_NOTE_PREFIX } from "./slash-command";
 
 let db: Database;
 let scheduler: TaskScheduler;
@@ -24,39 +24,50 @@ beforeEach(() => {
 
 afterEach(() => db.close());
 
-function seedTask(status: string, origin?: Record<string, unknown>): string {
-  const id = `task-${status}`;
+function seedTask(status: string, origin?: Record<string, unknown>, id = `task-${status}`): string {
   db.prepare(
     "INSERT INTO tasks (id, title, team_id, status, task_config) VALUES (?, 'Add webhook', 'team-1', ?, ?)",
   ).run(id, status, JSON.stringify(origin ? { slack_origin: origin } : {}));
   return id;
 }
 
-describe("findRunningTaskByThread", () => {
-  it("matches a running task on channel + thread_ts", () => {
-    const id = seedTask("running", { channel: "C1", thread_ts: "1700.5" });
-    expect(findRunningTaskByThread(db, "C1", "1700.5")).toBe(id);
+describe("findTaskByThread", () => {
+  it("matches an active task on channel + thread_ts", () => {
+    const id = seedTask("active", { channel: "C1", thread_ts: "1700.5" });
+    expect(findTaskByThread(db, "C1", "1700.5")).toEqual({ id, status: "active" });
   });
 
   it("does not match when the channel differs", () => {
-    seedTask("running", { channel: "C1", thread_ts: "1700.5" });
-    expect(findRunningTaskByThread(db, "C-other", "1700.5")).toBeNull();
+    seedTask("active", { channel: "C1", thread_ts: "1700.5" });
+    expect(findTaskByThread(db, "C-other", "1700.5")).toBeNull();
   });
 
-  it("ignores tasks that are not running", () => {
-    seedTask("completed", { channel: "C1", thread_ts: "1700.5" });
-    expect(findRunningTaskByThread(db, "C1", "1700.5")).toBeNull();
+  // Unified input auto-unarchives, so an archived task's thread stays matchable.
+  it("matches an archived task so a reply can revive it", () => {
+    const id = seedTask("settled", { channel: "C1", thread_ts: "1700.5" });
+    expect(findTaskByThread(db, "C1", "1700.5")).toEqual({ id, status: "settled" });
+  });
+
+  it("prefers the active task when active and archived share a thread", () => {
+    seedTask("settled", { channel: "C1", thread_ts: "1700.5" });
+    const activeId = seedTask("active", { channel: "C1", thread_ts: "1700.5" });
+    expect(findTaskByThread(db, "C1", "1700.5")?.id).toBe(activeId);
+  });
+
+  it("ignores draft tasks", () => {
+    seedTask("draft", { channel: "C1", thread_ts: "1700.5" });
+    expect(findTaskByThread(db, "C1", "1700.5")).toBeNull();
   });
 
   it("returns null for a task with no origin", () => {
-    seedTask("running");
-    expect(findRunningTaskByThread(db, "C1", "1700.5")).toBeNull();
+    seedTask("active");
+    expect(findTaskByThread(db, "C1", "1700.5")).toBeNull();
   });
 });
 
 describe("TaskScheduler.addExternalNote", () => {
   it("records a note attributed to the team entrypoint agent", () => {
-    const id = seedTask("running", { channel: "C1", thread_ts: "1700.5" });
+    const id = seedTask("active", { channel: "C1", thread_ts: "1700.5" });
     const noteId = scheduler.addExternalNote(id, "Slack reply from <@U9>: use postgres", "user");
     expect(noteId).not.toBeNull();
     const row = db.prepare("SELECT agent_id, content, source FROM task_notes WHERE id = ?").get(noteId) as {
@@ -70,7 +81,7 @@ describe("TaskScheduler.addExternalNote", () => {
   });
 
   it("returns null (no note) for blank content", () => {
-    const id = seedTask("running", { channel: "C1", thread_ts: "1700.5" });
+    const id = seedTask("active", { channel: "C1", thread_ts: "1700.5" });
     expect(scheduler.addExternalNote(id, "   ")).toBeNull();
     expect((db.prepare("SELECT COUNT(*) AS c FROM task_notes").get() as { c: number }).c).toBe(0);
   });

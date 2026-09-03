@@ -9,7 +9,7 @@ import {
   listLocalTeams,
   getLocalTeam,
   namespacedAgentId,
-  isRealtimeTeam,
+  isConversationalTeam,
   type LocalTeamInput,
 } from "./local-teams";
 
@@ -168,9 +168,10 @@ describe("local teams persistence + flatten", () => {
     expect(memberRows.length).toBe(0);
   });
 
-  it("validation rejects empty name, empty phases, bad type, dup ids, and skipper id", () => {
+  it("validation rejects empty name, bad type, dup ids, and skipper id", () => {
     expect(() => createLocalTeam(db, { ...baseInput(), name: "" })).toThrow();
-    expect(() => createLocalTeam(db, { ...baseInput(), phases: [] })).toThrow();
+    // Empty phases are allowed in both modes now (quick-run workflow teams).
+    expect(() => createLocalTeam(db, { ...baseInput(), id: "np", phases: [] })).not.toThrow();
     expect(() =>
       createLocalTeam(db, { ...baseInput(), agents: [{ id: "x", name: "X", type: "nope-type", model: "default" }] }),
     ).toThrow();
@@ -189,45 +190,51 @@ describe("local teams persistence + flatten", () => {
   });
 });
 
-describe("real-time team mode", () => {
-  const realtimeInput = (): LocalTeamInput => ({
+describe("conversational team mode", () => {
+  const conversationalInput = (): LocalTeamInput => ({
     id: "rt",
     name: "Voice Room",
-    phases: [], // realtime teams carry no phases
+    phases: [], // phases optional in both modes
     agents: [],
     config: {
-      mode: "realtime",
+      mode: "conversational",
       realtime: { summaryEnabled: true, summaryProvider: "claude-code", summaryModel: "claude-sonnet-4-6" },
     },
   });
 
-  it("allows creating a realtime team with no phases", () => {
-    const team = createLocalTeam(db, realtimeInput());
-    expect(team.config.mode).toBe("realtime");
+  it("allows creating a conversational team with no phases", () => {
+    const team = createLocalTeam(db, conversationalInput());
+    expect(team.config.mode).toBe("conversational");
     expect(team.phases.length).toBe(0);
-    expect(isRealtimeTeam(team)).toBe(true);
+    expect(isConversationalTeam(team)).toBe(true);
   });
 
-  it("still requires >=1 phase for a regular team", () => {
-    expect(() => createLocalTeam(db, { ...realtimeInput(), config: { mode: "regular" } })).toThrow();
-    // absent mode defaults to regular -> phase required
-    expect(() => createLocalTeam(db, { id: "r2", name: "R2", phases: [], agents: [] })).toThrow();
+  it("allows a workflow team with no phases (quick run)", () => {
+    const team = createLocalTeam(db, { id: "r2", name: "R2", phases: [], agents: [] });
+    expect(team.phases.length).toBe(0);
+    expect(isConversationalTeam(team)).toBe(false);
+  });
+
+  it("reads legacy stored 'realtime' mode as conversational", () => {
+    const team = createLocalTeam(db, { ...conversationalInput(), id: "legacy" });
+    // Simulate a pre-rename row by writing the legacy value directly.
+    db.prepare("UPDATE local_teams SET team_config = json_set(team_config, '$.mode', 'realtime') WHERE id = 'legacy'").run();
+    expect(isConversationalTeam(getLocalTeam(db, "legacy"))).toBe(true);
   });
 
   it("round-trips mode + summary config through the JSON blob", () => {
-    createLocalTeam(db, realtimeInput());
+    createLocalTeam(db, conversationalInput());
     const rt = getLocalTeam(db, "rt")!.config.realtime!;
     expect(rt.summaryEnabled).toBe(true);
     expect(rt.summaryProvider).toBe("claude-code");
     expect(rt.summaryModel).toBe("claude-sonnet-4-6");
   });
 
-  it("can toggle a regular team into realtime mode on update", () => {
+  it("can toggle a workflow team into conversational mode on update", () => {
     createLocalTeam(db, baseInput());
-    expect(isRealtimeTeam(getLocalTeam(db, "alpha"))).toBe(false);
-    // switching to realtime no longer needs phases
-    const updated = updateLocalTeam(db, "alpha", { ...baseInput(), phases: [], config: { mode: "realtime" } });
-    expect(isRealtimeTeam(updated)).toBe(true);
+    expect(isConversationalTeam(getLocalTeam(db, "alpha"))).toBe(false);
+    const updated = updateLocalTeam(db, "alpha", { ...baseInput(), phases: [], config: { mode: "conversational" } });
+    expect(isConversationalTeam(updated)).toBe(true);
   });
 });
 

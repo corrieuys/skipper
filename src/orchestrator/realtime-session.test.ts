@@ -21,7 +21,7 @@ function seedRealtimeTask(
     .run("team-1", "Test Team");
   database
     .prepare(
-      "INSERT INTO tasks (id, title, team_id, status, task_type, task_config) VALUES (?, ?, ?, 'running', 'real_time', ?)",
+      "INSERT INTO tasks (id, title, team_id, status, mode, task_config) VALUES (?, ?, ?, 'active', 'conversational', ?)",
     )
     .run(id, "Realtime Task", "team-1", JSON.stringify(config));
   return id;
@@ -34,7 +34,7 @@ function seedRealtimeTaskWithoutTeam(
 ): string {
   database
     .prepare(
-      "INSERT INTO tasks (id, title, team_id, status, task_type, task_config) VALUES (?, ?, NULL, 'running', 'real_time', ?)",
+      "INSERT INTO tasks (id, title, team_id, status, mode, task_config) VALUES (?, ?, NULL, 'active', 'conversational', ?)",
     )
     .run(id, "Realtime Task Without Team", JSON.stringify(config));
   // Auto-resume on construction only picks up tasks that were actively
@@ -158,11 +158,21 @@ describe("RealtimeSessionManager", () => {
       expect(timeline.c).toBe(0);
     });
 
-    it("throws for inactive session", async () => {
+    it("rejects text ingest for a missing/inactive task, and audio ingest without a session", async () => {
+      // Text is sessionless now, but still requires an ACTIVE task.
       expect(
         sessionManager.ingestInput("no-session", {
           sourceType: "text",
           contentBody: "test",
+        }),
+      ).rejects.toThrow("Task is not active");
+
+      // Audio still requires a live recording session.
+      const taskId = seedRealtimeTask(db, "task-audio-no-session");
+      expect(
+        sessionManager.ingestInput(taskId, {
+          sourceType: "audio",
+          contentBody: "audio-bytes",
         }),
       ).rejects.toThrow("No active session");
     });
@@ -189,7 +199,7 @@ describe("RealtimeSessionManager", () => {
       expect(timeline!.fed_to_skipper).toBe(1);
     });
 
-    it("does not force an immediate tick for text input when transcription is pending", async () => {
+    it("feeds text immediately even while transcription is pending (audio stays queued)", async () => {
       const taskId = seedRealtimeTask(db);
       sessionManager.startSession(taskId);
 
@@ -213,13 +223,16 @@ describe("RealtimeSessionManager", () => {
       expect(pendingAudio).not.toBeNull();
       expect(pendingAudio!.transcription_status).toBe("pending");
 
+      // Text no longer waits for pending transcription: it feeds immediately
+      // (no agent manager on this construction, so the entry is marked fed);
+      // the transcript arrives in a later feed batch.
       const textTimeline = db
         .prepare(
           "SELECT fed_to_skipper FROM realtime_timeline WHERE task_id = ? AND entry_type = 'text' ORDER BY created_at DESC LIMIT 1",
         )
         .get(taskId) as { fed_to_skipper: number } | null;
       expect(textTimeline).not.toBeNull();
-      expect(textTimeline!.fed_to_skipper).toBe(0);
+      expect(textTimeline!.fed_to_skipper).toBe(1);
     });
   });
 
@@ -455,7 +468,7 @@ describe("RealtimeSessionManager", () => {
       // seeded, so findSummarizerAgent resolves it - a summarizer WOULD spawn
       // were it enabled, which is what makes the disabled-case assertion meaningful.
       db.prepare(
-        "INSERT INTO tasks (id, title, team_id, status, task_type, task_config) VALUES (?, 'RT', 'rt-team', 'running', 'real_time', '{}')",
+        "INSERT INTO tasks (id, title, team_id, status, mode, task_config) VALUES (?, 'RT', 'rt-team', 'active', 'conversational', '{}')",
       ).run(taskId);
       db.prepare(
         `INSERT INTO task_input_streams (id, task_id, source_type, content_type, content_body, sequence, transcription_status, transcribed_text)
@@ -992,7 +1005,9 @@ describe("RealtimeSessionManager", () => {
         .get(taskId) as { c: number };
       expect(fedCount.c).toBe(3);
 
-      // Pipeline state should show idle
+      // The immediate text feed no longer runs a full cadence tick, so the
+      // persisted analyst_status is reconciled on the next tick — run one.
+      await sessionManager.processCadenceTick(taskId);
       const state = db
         .prepare("SELECT analyst_status FROM realtime_pipeline_state WHERE task_id = ?")
         .get(taskId) as { analyst_status: string };

@@ -1,5 +1,6 @@
 import { escapeHtml } from "./components";
 import { dashboardInlineTaskCreationFragment } from "./dashboardInlineTaskCreationFragment";
+import { statusChip, displayStatusOf, modeChip } from "./fragments/status-chip.fragment";
 
 
 export function dashboardActiveTaskFragment(
@@ -7,33 +8,34 @@ export function dashboardActiveTaskFragment(
         id: string;
         title: string;
         status: string;
+        display_status?: string;
+        mode?: string;
         task_type?: string;
         description?: string | null;
         created_at?: string;
     }[]
 ): string {
-    if (tasks.length === 0 || !tasks.some((task) => task.status === "running")) {
+    if (tasks.length === 0 || !tasks.some((task) => displayStatusOf(task) === "working")) {
         return dashboardInlineTaskCreationFragment([]);
     }
 
     const [current, ...queued] = tasks;
-    const isRT = current.task_type === "real_time";
-    const detailHref = isRT
-        ? `/realtime/${escapeHtml(current.id)}`
-        : `/tasks/${escapeHtml(current.id)}`;
+    if (!current) return dashboardInlineTaskCreationFragment([]);
+    const display = displayStatusOf(current);
+    const detailHref = `/?task=${escapeHtml(current.id)}`;
 
-    const eyebrow = current.status === "running"
+    const eyebrow = display === "working"
         ? "Active Mission"
-        : current.status === "approved"
+        : display === "queued"
             ? "Next in Queue"
-            : "Latest Completed";
+            : "Latest Task";
 
     return `<div class="cmd-focus">
     <div class="cmd-focus-eyebrow">${eyebrow}</div>
-    <a href="${detailHref}" hx-get="${detailHref}" hx-target="body" hx-push-url="true" class="cmd-focus-title" style="display:block;color:var(--on-surface);text-decoration:none;">${escapeHtml(current.title)}</a>
+    <a href="${detailHref}" class="cmd-focus-title" style="display:block;color:var(--on-surface);text-decoration:none;">${escapeHtml(current.title)}</a>
     <div class="cmd-focus-meta">
-      <span class="badge badge-${current.status}">${current.status}</span>
-      ${isRT ? '<span class="badge badge-info">RT</span>' : ""}
+      ${statusChip(display)}
+      ${modeChip(current.mode)}
       ${queued.length > 0 ? `<span style="font-size:0.72rem;color:var(--muted);">+${queued.length} queued</span>` : ""}
     </div>
   </div>`;

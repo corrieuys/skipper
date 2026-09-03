@@ -9,7 +9,7 @@ let db: Database;
 let manager: MessageManager;
 
 function createTask(id: string): void {
-  db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, 'running')").run(id, `Task ${id}`);
+  db.prepare("INSERT INTO tasks (id, title, status) VALUES (?, ?, 'active')").run(id, `Task ${id}`);
 }
 
 function createAgent(id: string, name: string): void {
@@ -146,7 +146,7 @@ describe("listMessages", () => {
     // rows explicitly rather than relying on the FK cascade (foreign_keys is not
     // enabled on every connection).
     manager.postMessage({ taskId: "task-1", agentId: "agent-1", content: "Gone soon" });
-    db.prepare("UPDATE tasks SET status = 'completed' WHERE id = ?").run("task-1");
+    db.prepare("UPDATE tasks SET status = 'settled' WHERE id = ?").run("task-1");
     new TaskScheduler(db).deleteTask("task-1");
 
     expect(manager.listMessages("task-1")).toHaveLength(0);

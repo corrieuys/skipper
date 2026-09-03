@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { unlinkSync } from "fs";
 import { initializeDatabase } from "../db/connection";
-import { fetchTaskForensics, buildTeamAgentTiles, fetchRecentActivity } from "./queries";
+import { fetchTaskForensics, buildTeamAgentTiles, fetchRecentActivity, fetchTaskOutputPage, fetchTaskOutputRow } from "./queries";
 
 const TEST_DB = "test-queries.db";
 
@@ -22,17 +22,21 @@ beforeEach(() => {
 
 afterEach(() => {
   db.close();
-  try {
-    unlinkSync(TEST_DB);
-  } catch {
-    // no-op
+  // WAL mode leaves -wal/-shm sidecars; a stale pair next to a fresh db file
+  // causes intermittent "disk I/O error" on the next open.
+  for (const f of [TEST_DB, `${TEST_DB}-wal`, `${TEST_DB}-shm`]) {
+    try {
+      unlinkSync(f);
+    } catch {
+      // no-op
+    }
   }
 });
 
 describe("forensics token usage queries", () => {
   it("forensics token usage includes step_finish and prompt/completion token fields", () => {
     insertAgent("agent-coder", "Coder");
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('task-2', 'Task 2', 'running')").run();
+    db.prepare("INSERT INTO tasks (id, title, status, started_at) VALUES ('task-2', 'Task 2', 'active', datetime('now'))").run();
     db.prepare(
       "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES (?, 'task-2', ?, 'completed')",
     ).run("inst-forensics-1", "agent-coder");
@@ -75,7 +79,7 @@ describe("forensics token usage queries", () => {
 describe("fetchRecentActivity", () => {
   it("returns newest-first, dedupes exact-duplicate frames, and excludes result frames", () => {
     insertAgent("agent-coder", "Coder");
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('task-ra', 'RA', 'running')").run();
+    db.prepare("INSERT INTO tasks (id, title, status, started_at) VALUES ('task-ra', 'RA', 'active', datetime('now'))").run();
     db.prepare(
       "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('inst-ra', 'task-ra', 'agent-coder', 'running')",
     ).run();
@@ -112,7 +116,7 @@ describe("buildTeamAgentTiles identity", () => {
     db.prepare("INSERT INTO teams (id, name, entrypoint_agent_id) VALUES ('team-a', 'A', 'team-a:coder')").run();
     db.prepare("INSERT INTO team_agents (id, team_id, agent_id, level) VALUES ('m1', 'team-a', 'team-a:coder', 1)").run();
     db.prepare("INSERT INTO team_agents (id, team_id, agent_id, level) VALUES ('m2', 'team-a', 'team-a:writer', 2)").run();
-    db.prepare("INSERT INTO tasks (id, title, status, team_id) VALUES ('t-tiles', 'T', 'running', 'team-a')").run();
+    db.prepare("INSERT INTO tasks (id, title, status, started_at, team_id) VALUES ('t-tiles', 'T', 'active', datetime('now'), 'team-a')").run();
     // One running instance of the coder → active.
     db.prepare(
       "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('i1', 't-tiles', 'team-a:coder', 'running')",
@@ -128,5 +132,53 @@ describe("buildTeamAgentTiles identity", () => {
     expect(writer.color).toBeNull();
     expect(writer.character).toBeNull();
     expect(writer.is_active).toBe(false);
+  });
+});
+
+describe("fetchTaskOutputPage", () => {
+  function seedOutputs(): number[] {
+    insertAgent("agent-page", "Pager");
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('task-p', 'Paged', 'active')").run();
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('task-q', 'Other', 'active')").run();
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('inst-p1', 'task-p', 'agent-page', 'completed')").run();
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('inst-p2', 'task-p', 'agent-page', 'running')").run();
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('inst-q', 'task-q', 'agent-page', 'running')").run();
+    const ins = db.prepare("INSERT INTO terminal_outputs (agent_id, stream, data, sequence) VALUES (?, 'stdout', ?, ?)");
+    const ids: number[] = [];
+    // Interleave two instances (per-instance `sequence` collides on purpose)
+    // plus a row from another task that must never show up.
+    for (let i = 1; i <= 6; i++) {
+      const r = ins.run(i % 2 ? "inst-p1" : "inst-p2", `frame-${i}`, i);
+      ids.push(Number(r.lastInsertRowid));
+      if (i === 3) ins.run("inst-q", "other-task", i);
+    }
+    return ids;
+  }
+
+  it("returns the newest page first, ordered by global id across instances", () => {
+    const ids = seedOutputs();
+    const page = fetchTaskOutputPage(db, "task-p", { limit: 4 });
+    expect(page.map((r) => r.data)).toEqual(["frame-6", "frame-5", "frame-4", "frame-3"]);
+    expect(page.map((r) => r.id)).toEqual([ids[5], ids[4], ids[3], ids[2]]);
+    expect(page[0]!.agent_name).toBe("Pager");
+    expect(page.some((r) => r.data === "other-task")).toBe(false);
+  });
+
+  it("pages older rows with beforeId and newer rows with afterId", () => {
+    const ids = seedOutputs();
+    const older = fetchTaskOutputPage(db, "task-p", { limit: 10, beforeId: ids[2] });
+    expect(older.map((r) => r.data)).toEqual(["frame-2", "frame-1"]);
+    const newer = fetchTaskOutputPage(db, "task-p", { limit: 10, afterId: ids[3] });
+    expect(newer.map((r) => r.data)).toEqual(["frame-6", "frame-5"]);
+    expect(fetchTaskOutputPage(db, "task-p", { limit: 10, afterId: ids[5] })).toEqual([]);
+    expect(fetchTaskOutputPage(db, "task-missing", { limit: 10 })).toEqual([]);
+  });
+
+  it("fetches one row by id with its owning task", () => {
+    const ids = seedOutputs();
+    const row = fetchTaskOutputRow(db, ids[0]!);
+    expect(row?.data).toBe("frame-1");
+    expect(row?.task_id).toBe("task-p");
+    expect(fetchTaskOutputRow(db, 999_999)).toBeNull();
   });
 });

@@ -112,3 +112,24 @@ so without the server a root opencode task can never call `complete_phase` /
 `parseAgentOutput()` scans stdout lines. JSON agents also call `detectSignalsInText()` on assistant text. Emits `agent:signal` on `events/bus.ts`.
 
 Narrow surface — `SIGNAL_PATTERNS` only covers `[MSG:…]` and `[DELEGATE_COMPLETE]`. All delegation/escalation/phase/artifact/note signals are MCP-tool calls on the daemon MCP server — see [../mcp/CLAUDE.md](../mcp/CLAUDE.md). Root [CLAUDE.md](../../CLAUDE.md) has the full protocol table.
+
+## Terminal output storage (`terminal_outputs`)
+
+`manager.ts:ingestChunk` records **stdout one complete line per row** (stderr
+stays per chunk). Every provider prints NDJSON, so a row is always one whole
+frame: never a 64KB pipe read that starts mid-string, never three frames glued
+together. The realtime `agent:output` event uses the same unit, so the WS UI and
+the connect output tail receive parseable frames. An unterminated tail is
+flushed when the stream drains; a synthetic write (`ingestSyntheticStdout`) is
+newline-terminated so it lands immediately. The line buffer allows 16MB (a
+claude-code image `tool_result` is one multi-MB line); anything larger is
+dropped with a marker row.
+
+Only the **stored** copy is capped (`MAX_TERMINAL_OUTPUT_BYTES`, 32KB):
+`compactFrameForStorage` first compacts an oversized JSON frame structurally
+(inline `{type:"base64",data}` payloads become a size note, strings over 8KB
+are cut) so it stays valid JSON for the feed, the modal and the token/turn
+queries; only a frame that is still too big, or was never JSON, gets the hard
+byte cut plus the "frame truncated" marker. The event still carries the full
+text. Before this, one long task stored 340MB of unrenderable base64 chunk
+fragments; the retention sweep (`log_retention_hours`) removes old rows either way.

@@ -27,8 +27,8 @@ beforeAll(() => {
 
   // FK targets first: events/escalations reference tasks + agents.
   db.prepare("INSERT INTO agents (id, name, type, model, config, capabilities) VALUES ('agent-esc', 'Esc', 'claude-code', 'default', '{}', '[]')").run();
-  db.prepare("INSERT INTO tasks (id, title, status) VALUES ('task-a', 'A', 'running')").run();
-  db.prepare("INSERT INTO tasks (id, title, status) VALUES ('task-b', 'B', 'running')").run();
+  db.prepare("INSERT INTO tasks (id, title, status) VALUES ('task-a', 'A', 'active')").run();
+  db.prepare("INSERT INTO tasks (id, title, status) VALUES ('task-b', 'B', 'active')").run();
 
   db.prepare("INSERT INTO error_log (category, message, context) VALUES ('daemon.tick', 'boom', '{\"taskId\":\"task-a\"}')").run();
   db.prepare("INSERT INTO error_log (category, message, context) VALUES ('agent.spawn', 'oops', '{}')").run();

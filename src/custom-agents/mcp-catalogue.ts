@@ -34,6 +34,7 @@ export const MCP_TOOL_GROUPS: McpToolGroup[] = [
       { name: "create_note", label: "Create note", description: "Leave a note for the next agent on this task." },
       { name: "list_notes", label: "List notes", description: "Read notes left by earlier agents." },
       { name: "create_artifact", label: "Create artifact", description: "Write a versioned document on the task." },
+      { name: "create_file_artifact", label: "Attach file artifact", description: "Attach a file on disk (screenshot, PDF, archive) to the task." },
       { name: "get_artifact", label: "Get artifact", description: "Read a specific artifact version." },
       { name: "list_artifacts", label: "List artifacts", description: "See which artifacts exist on the task." },
     ],

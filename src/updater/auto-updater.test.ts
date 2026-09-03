@@ -127,7 +127,7 @@ describe("checkForUpdates", () => {
 
   it("downloads but does not restart while a task is queued (approved)", async () => {
     setAutoUpdateEnabled(db, true);
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('q1', 'Queued', 'approved')").run();
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('q1', 'Queued', 'active')").run();
     // Real DB-backed idle check (the default): the approved task blocks restart.
     const calls = { update: 0, restart: 0 };
     await checkForUpdates(db, {
@@ -150,7 +150,7 @@ describe("isSystemFullyIdle", () => {
   it("is true only when no agents run and no task is active or queued", () => {
     expect(isSystemFullyIdle(db, idleAgents)).toBe(true);
 
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('a1', 'A', 'approved')").run();
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('a1', 'A', 'active')").run();
     expect(isSystemFullyIdle(db, idleAgents)).toBe(false);
   });
 
@@ -159,8 +159,8 @@ describe("isSystemFullyIdle", () => {
   });
 
   it("ignores completed/failed/draft tasks", () => {
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('c1', 'C', 'completed')").run();
-    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('f1', 'F', 'failed')").run();
+    db.prepare("INSERT INTO tasks (id, title, status, settled_at) VALUES ('c1', 'C', 'settled', datetime('now'))").run();
+    db.prepare(`INSERT INTO tasks (id, title, status, started_at, result) VALUES ('f1', 'F', 'active', datetime('now'), '{"error":"x"}')`).run();
     db.prepare("INSERT INTO tasks (id, title, status) VALUES ('d1', 'D', 'draft')").run();
     expect(isSystemFullyIdle(db, idleAgents)).toBe(true);
   });

@@ -7,6 +7,17 @@ import { registerRealtimeRoutes } from "./realtime";
 let server: Server;
 let baseUrl: string;
 
+// Creation/edit of conversational tasks now goes through the unified task
+// endpoints (see tasks.test.ts); these routes only carry the session/timeline
+// surface the embedded JS still calls. Seed rows directly.
+function seedTask(id: string, status: string = "active"): void {
+  getDb()
+    .prepare(
+      "INSERT INTO tasks (id, title, description, status, mode) VALUES (?, ?, ?, ?, 'conversational')",
+    )
+    .run(id, `Task ${id}`, "seeded", status);
+}
+
 beforeAll(() => {
   resetDb();
   const db = getDb(":memory:");
@@ -23,121 +34,38 @@ afterAll(() => {
   resetDb();
 });
 
-describe("POST /api/realtime-tasks/:id", () => {
-  it("updates title/description for an existing real-time task", async () => {
-    const createBody = new URLSearchParams({
-      title: "Realtime Original",
-      description: "original description",
-    });
-    const createRes = await fetch(`${baseUrl}/api/realtime-tasks`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: createBody.toString(),
-    });
-    expect(createRes.status).toBe(201);
-
-    const created = await createRes.json() as { id: string };
-    const updateBody = new URLSearchParams({
-      title: "Realtime Updated",
-      description: "updated description",
-    });
-    const updateRes = await fetch(`${baseUrl}/api/realtime-tasks/${created.id}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: updateBody.toString(),
-    });
-    expect(updateRes.status).toBe(200);
-
-    const db = getDb();
-    const row = db.prepare("SELECT title, description FROM tasks WHERE id = ?").get(created.id) as {
-      title: string;
-      description: string | null;
-    } | null;
-    expect(row).not.toBeNull();
-    expect(row!.title).toBe("Realtime Updated");
-    expect(row!.description).toBe("updated description");
-  });
-
-  it("returns HX redirect for HTMX requests", async () => {
-    const createBody = new URLSearchParams({
-      title: "Realtime HTMX Original",
-    });
-    const createRes = await fetch(`${baseUrl}/api/realtime-tasks`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: createBody.toString(),
-    });
-    expect(createRes.status).toBe(201);
-    const created = await createRes.json() as { id: string };
-
-    const updateBody = new URLSearchParams({
-      title: "Realtime HTMX Updated",
-    });
-    const updateRes = await fetch(`${baseUrl}/api/realtime-tasks/${created.id}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "HX-Request": "true",
-      },
-      body: updateBody.toString(),
-    });
-    expect(updateRes.status).toBe(200);
-    // Legacy /realtime/:id page retired: real-time tasks now open in the v2
-    // command center via /?task=<id>.
-    expect(updateRes.headers.get("HX-Redirect")).toBe(`/?task=${created.id}`);
-  });
-});
-
 describe("POST /api/realtime-tasks/:id/start", () => {
   it("returns 503 when daemon is not available", async () => {
-    const createBody = new URLSearchParams({
-      title: "Realtime Start No Daemon",
-      description: "start me",
-    });
-    const createRes = await fetch(`${baseUrl}/api/realtime-tasks`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: createBody.toString(),
-    });
-    expect(createRes.status).toBe(201);
-    const created = await createRes.json() as { id: string };
+    seedTask("rt-start");
 
-    const db = getDb();
-    db.prepare("UPDATE tasks SET status = 'approved', started_at = NULL WHERE id = ?").run(created.id);
-
-    const startRes = await fetch(`${baseUrl}/api/realtime-tasks/${created.id}/start`, { method: "POST" });
+    const startRes = await fetch(`${baseUrl}/api/realtime-tasks/rt-start/start`, { method: "POST" });
     expect(startRes.status).toBe(503);
     const body = await startRes.json() as { error: string };
     expect(body.error).toContain("Daemon not available");
   });
 
+  it("rejects a draft task", async () => {
+    seedTask("rt-draft", "draft");
+    const startRes = await fetch(`${baseUrl}/api/realtime-tasks/rt-draft/start`, { method: "POST" });
+    expect([400, 409]).toContain(startRes.status);
+  });
 });
 
 describe("GET /api/realtime-tasks/:id/timeline", () => {
   it("returns newest timeline entries first", async () => {
-    const createBody = new URLSearchParams({
-      title: "Realtime Timeline Sort",
-      description: "ordering",
-    });
-    const createRes = await fetch(`${baseUrl}/api/realtime-tasks`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: createBody.toString(),
-    });
-    expect(createRes.status).toBe(201);
-    const created = await createRes.json() as { id: string };
+    seedTask("rt-tl");
 
     const db = getDb();
     db.prepare(
       `INSERT INTO realtime_timeline (id, task_id, entry_type, content, created_at)
        VALUES (?, ?, 'text', ?, ?)`,
-    ).run("rt-old", created.id, "old entry", "2026-01-01 10:00:00");
+    ).run("rt-old", "rt-tl", "old entry", "2026-01-01 10:00:00");
     db.prepare(
       `INSERT INTO realtime_timeline (id, task_id, entry_type, content, created_at)
        VALUES (?, ?, 'text', ?, ?)`,
-    ).run("rt-new", created.id, "new entry", "2026-01-01 10:10:00");
+    ).run("rt-new", "rt-tl", "new entry", "2026-01-01 10:10:00");
 
-    const res = await fetch(`${baseUrl}/api/realtime-tasks/${created.id}/timeline`);
+    const res = await fetch(`${baseUrl}/api/realtime-tasks/rt-tl/timeline`);
     expect(res.status).toBe(200);
     const timeline = await res.json() as Array<{ id: string; content: string }>;
     expect(timeline[0].id).toBe("rt-new");

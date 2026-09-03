@@ -18,7 +18,7 @@ function createTestTask(taskId: string, hooks: unknown[]): void {
   db.prepare(
     `INSERT INTO tasks (id, title, team_id, status, task_config, working_directory)
      VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(taskId, "Test Task", "team-1", "approved", JSON.stringify({ hooks }), "/tmp");
+  ).run(taskId, "Test Task", "team-1", "active", JSON.stringify({ hooks }), "/tmp");
 }
 
 beforeEach(() => {
@@ -43,8 +43,8 @@ describe("HookManager", () => {
 
     eventBus.emit("task:state_changed", {
       taskId,
-      previousStatus: "approved",
-      newStatus: "running",
+      previousStatus: "draft",
+      newStatus: "active",
     });
 
     // Wait for async hook execution
@@ -65,13 +65,9 @@ describe("HookManager", () => {
     createTestTask(taskId, [
       { event: "task.completed", type: "curl", template: "echo completed_{{event.status}}" },
     ]);
-    db.prepare("UPDATE tasks SET status = 'running' WHERE id = ?").run(taskId);
+    
 
-    eventBus.emit("task:state_changed", {
-      taskId,
-      previousStatus: "running",
-      newStatus: "completed",
-    });
+    eventBus.emit("task:run_completed", { taskId, result: null });
 
     await new Promise((r) => setTimeout(r, 500));
 
@@ -92,8 +88,8 @@ describe("HookManager", () => {
 
     eventBus.emit("task:state_changed", {
       taskId,
-      previousStatus: "approved",
-      newStatus: "running",
+      previousStatus: "draft",
+      newStatus: "active",
     });
 
     await new Promise((r) => setTimeout(r, 300));
@@ -113,8 +109,8 @@ describe("HookManager", () => {
 
     eventBus.emit("task:state_changed", {
       taskId,
-      previousStatus: "approved",
-      newStatus: "running",
+      previousStatus: "draft",
+      newStatus: "active",
     });
 
     await new Promise((r) => setTimeout(r, 300));
@@ -203,12 +199,12 @@ describe("HookManager", () => {
     db.prepare(
       `INSERT INTO tasks (id, title, team_id, status, task_config, working_directory)
        VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run("task-no-hooks", "No Hooks Task", "team-no-hooks", "approved", "{}", "/tmp");
+    ).run("task-no-hooks", "No Hooks Task", "team-no-hooks", "active", "{}", "/tmp");
 
     eventBus.emit("task:state_changed", {
       taskId: "task-no-hooks",
-      previousStatus: "approved",
-      newStatus: "running",
+      previousStatus: "draft",
+      newStatus: "active",
     });
 
     await new Promise((r) => setTimeout(r, 200));
@@ -228,8 +224,8 @@ describe("HookManager", () => {
 
     eventBus.emit("task:state_changed", {
       taskId,
-      previousStatus: "approved",
-      newStatus: "running",
+      previousStatus: "draft",
+      newStatus: "active",
     });
 
     await new Promise((r) => setTimeout(r, 500));

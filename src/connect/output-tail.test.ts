@@ -30,8 +30,8 @@ function capture(frame: string): void {
 function seed(): { taskId: string; otherTaskId: string; instanceId: string; otherInstanceId: string } {
   const db = getDb();
   db.prepare("INSERT INTO teams (id, name) VALUES ('team-1', 'Team')").run();
-  db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('task-1', 'Watched', 'team-1', 'running')").run();
-  db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('task-2', 'Unwatched', 'team-1', 'running')").run();
+  db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('task-1', 'Watched', 'team-1', 'active')").run();
+  db.prepare("INSERT INTO tasks (id, title, team_id, status) VALUES ('task-2', 'Unwatched', 'team-1', 'active')").run();
   db.prepare("INSERT INTO agents (id, name, type) VALUES ('tmpl-1', 'Tail Agent', 'claude-code')").run();
   db.prepare(
     "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('inst-1', 'task-1', 'tmpl-1', 'running')",
@@ -210,5 +210,22 @@ describe("OutputTailManager", () => {
     expect(busListenerCount()).toBe(baseline);
     await Bun.sleep(30);
     expect(frames).toHaveLength(0);
+  });
+});
+
+describe("backfill entries", () => {
+  it("carry the terminal_outputs id as the paging cursor and honour the byte budget", () => {
+    const { taskId, instanceId } = seed();
+    insertTerminalRow(instanceId, "a".repeat(30));
+    insertTerminalRow(instanceId, "b".repeat(30));
+    insertTerminalRow(instanceId, "c".repeat(30));
+    manager = new OutputTailManager(getDb(), capture, { flushMs: 10, maxEntries: 50, maxBytes: 32_768, backfillEntries: 200, backfillMaxBytes: 50 });
+    manager.handleSubscribe(taskId);
+    expect(frames).toHaveLength(1);
+    // Budget of 50 bytes fits one 30-byte row; the newest wins, never zero rows.
+    expect(frames[0]!.entries.map((e) => e.data)).toEqual(["c".repeat(30)]);
+    expect(typeof frames[0]!.entries[0]!.id).toBe("number");
+    const row = getDb().prepare("SELECT id FROM terminal_outputs WHERE data = ?").get("c".repeat(30)) as { id: number };
+    expect(frames[0]!.entries[0]!.id).toBe(row.id);
   });
 });

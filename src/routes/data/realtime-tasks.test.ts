@@ -27,7 +27,7 @@ beforeAll(() => {
   registerDataRoutes(db, fakeDaemon);
 
   db.prepare(
-    "INSERT INTO tasks (id, title, status, task_type) VALUES ('task-rt-data', 'RT', 'approved', 'real_time')",
+    "INSERT INTO tasks (id, title, status, mode) VALUES ('task-rt-data', 'RT', 'active', 'conversational')",
   ).run();
   authHeaders = createTestApiKey(db).headers;
 

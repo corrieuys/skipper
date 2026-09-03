@@ -140,10 +140,13 @@ describe("autoDeleteOldTasks", () => {
   }
 
   function insertTask(id: string, status: string, ageDays: number, recurring: boolean): void {
+    const mapped = status === "completed" || status === "failed" ? "settled" : status === "running" || status === "approved" || status === "paused" ? "active" : status;
     db.prepare(
-      `INSERT INTO tasks (id, title, status, source_scheduled_task_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, datetime('now', ? || ' days'), datetime('now', ? || ' days'))`,
-    ).run(id, `t-${id}`, status, recurring ? "sched-1" : null, -ageDays, -ageDays);
+      `INSERT INTO tasks (id, title, status, source_scheduled_task_id, created_at, updated_at, settled_at, result)
+       VALUES (?, ?, ?, ?, datetime('now', ? || ' days'), datetime('now', ? || ' days'),
+               CASE WHEN ? = 'settled' THEN datetime('now', ? || ' days') ELSE NULL END,
+               CASE WHEN ? = 'failed' THEN '{"error":"x"}' ELSE NULL END)`,
+    ).run(id, `t-${id}`, mapped, recurring ? "sched-1" : null, -ageDays, -ageDays, mapped, -ageDays, status);
   }
 
   const remaining = (): string[] =>

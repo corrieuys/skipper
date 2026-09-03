@@ -29,13 +29,14 @@ export function tryUpgradeRealtimeWs(
 
   const taskId = match[1];
 
-  // Validate task exists and is real_time type
+  // Validate the task exists; the input pipeline works for ANY task now
+  // (per-message handlers enforce active-status rules).
   try {
     const db = getDb();
     const taskRow = db
-      .prepare("SELECT task_type, status FROM tasks WHERE id = ?")
-      .get(taskId) as { task_type: string; status: string } | null;
-    if (!taskRow || taskRow.task_type !== "real_time") {
+      .prepare("SELECT status FROM tasks WHERE id = ?")
+      .get(taskId) as { status: string } | null;
+    if (!taskRow) {
       return false;
     }
   } catch {
@@ -237,8 +238,8 @@ export const realtimeWsHandlers = {
               code: result.error,
               message: result.error === "RECORDING_IN_USE"
                 ? `Recording in use by ${result.ownerLabel}`
-                : result.error === "TASK_NOT_APPROVED"
-                  ? "Task must be approved before recording"
+                : result.error === "TASK_NOT_ACTIVE"
+                  ? "Task must be active before recording"
                   : result.error,
               owner_label: result.ownerLabel,
             }));

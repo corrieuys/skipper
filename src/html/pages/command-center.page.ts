@@ -3,14 +3,20 @@ import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
 import { renderInlineMarkdown } from "../atoms/render-inline-markdown";
 import { formatTimestamp } from "../atoms/format-timestamp";
-import { badgeFragment } from "../fragments/badge.fragment";
 import { terminalJsonSummary, stripThinking, classifyPlainTerminalLine } from "../terminalJsonSummary";
-import { iteratePanel } from "../panels/iterate.panel";
 import { isExperimental } from "../../config/feature-flags";
+import {
+  statusChip,
+  modeChip,
+  displayStatusOf,
+  displayDotClass,
+  displayIndicatorClass,
+  displayRunSquareClass,
+  taskResultHasError,
+} from "../fragments/status-chip.fragment";
 import { isSoloTeamId } from "../../agents/solo";
 import { parseScheduleMatrix } from "../../tasks/scheduled-scheduler";
 import { renderScheduleMatrixEditor, renderScheduleMatrixView, countMatrixHours } from "../atoms/schedule-matrix";
-import { sanitizeColor } from "../atoms/creature";
 import type { CommandCenterViewModel, TaskSummary, ScheduledTaskSummary } from "../view-models/command-center.vm";
 import type { ScheduledRunRow } from "../../data/command-center";
 import type { AgentTreeNode } from "../fragments/tree-node.fragment";
@@ -42,7 +48,7 @@ export function commandCenterPage(vm: CommandCenterViewModel, selectedTaskId?: s
   const selected = scheduledOverride ? null
     : selectedTaskId
       ? vm.allTasks.find(t => t.id === selectedTaskId)
-      : vm.allTasks.find(t => t.status === "running");
+      : vm.allTasks.find(t => t.display_status === "working");
 
   const activeId = scheduledOverride ? scheduledOverride.scheduledTask.id : (selected?.id ?? null);
 
@@ -82,16 +88,16 @@ function renderSidebar(vm: CommandCenterViewModel, activeId: string | null): str
  * persistence in skipper.js (keys "sec:<name>" / "rec:<id>").
  */
 export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: string | null): string {
-  // Terminal tasks can carry a stale needs_review flag (completed while a
+  // Settled tasks can carry a stale needs_review flag (settled while a
   // review was pending); nothing is actionable on them, so they stay out.
   const attention = vm.allTasks.filter(t =>
-    t.has_attention && t.status !== "completed" && t.status !== "failed");
+    t.has_attention && t.status !== "settled");
   const attnIds = new Set(attention.map(t => t.id));
 
   // Active = alive or awaiting action, minus what already sits in Needs you.
   const active = vm.allTasks.filter(t =>
     !attnIds.has(t.id) &&
-    (t.status === "running" || t.status === "approved" || t.status === "paused" || t.status === "draft"));
+    (t.status === "active" || t.status === "draft"));
 
   const teamIds = new Set(vm.teams.map(t => t.id));
   const byTeam = new Map<string, TaskSummary[]>();
@@ -133,18 +139,17 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
   const shownIds = new Set<string>([...attnIds, ...active.map(t => t.id)]);
   const recent = vm.allTasks.filter(t => !shownIds.has(t.id)).slice(0, 5);
 
-  // Tabbed boards (mirrors the iOS segmented control: Latest / Recurring /
-  // Teams / Agents). Latest stacks Needs you + Active + Recent; each other tab
-  // shows one list. The active board is a client-side toggle persisted as
+  // Tabbed boards (mirrors the iOS segmented control: Latest / Teams /
+  // Agents). Latest stacks Needs you + Active + Recurring + Recent; each other
+  // tab shows one list. The active board is a client-side toggle persisted as
   // `sidebarBoard` and re-applied after WS re-renders (see skipper.js), so the
   // server always renders Latest active and the client corrects it.
   const latestBody = `${attnHtml}
     ${section("active", "Active", active.length,
       active.length > 0 ? active.map(t => sidebarItem(t, activeId)).join("") : `<div class="tc-team__empty">Nothing running</div>`)}
+    ${vm.scheduledTasks.length > 0 ? section("Scheduled", "Recurring", vm.scheduledTasks.length, recurring) : ""}
     ${recent.length > 0 ? section("recent", "Recent", recent.length,
       recent.map(t => sidebarItem(t, activeId)).join("")) : ""}`;
-  const recurringBody = vm.scheduledTasks.length > 0
-    ? recurring : `<div class="tc-team__empty">No recurring tasks</div>`;
   const teamsBody = (`${groups}${other}`) || `<div class="tc-team__empty">No teams yet</div>`;
   const agentsBody = soloTeams.length > 0
     ? soloGroups : `<div class="tc-team__empty">No agents yet</div>`;
@@ -152,12 +157,10 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
   return `<div class="tc-side">
     <div class="tc-tabs" role="tablist">
       ${tab("latest", "Latest", 0, true)}
-      ${tab("recurring", "Recurring", vm.scheduledTasks.length, false)}
       ${tab("teams", "Teams", regularTeams.length, false)}
       ${tab("agents", "Agents", soloTeams.length, false)}
     </div>
     ${board("latest", latestBody, true)}
-    ${board("recurring", recurringBody, false)}
     ${board("teams", teamsBody, false)}
     ${board("agents", agentsBody, false)}
     <a class="tc-history" href="/tasks">Task history &rarr;</a>
@@ -193,20 +196,26 @@ function section(key: string, label: string, count: number, bodyHtml: string): s
 function renderRecurringSeries(st: ScheduledTaskSummary, runs: ScheduledRunRow[], activeId: string | null): string {
   const eid = escapeHtml(st.id);
   const badge = formatScheduleBadge(st.schedule_unit, st.schedule_amount, st.schedule_matrix ?? null);
-  // Oldest → newest left to right, like a CI run strip.
+  // Run rows only carry the stored status; approximate the display state from
+  // whether the last run settled (completed_at) or is still live.
+  const runDisplay = (r: ScheduledRunRow): "working" | "idle" | "completed" | "failed" =>
+    r.status === "settled"
+      ? (taskResultHasError(r.result) ? "failed" : "completed")
+      : r.completed_at ? "idle" : "working";
+  // Oldest to newest left to right, like a CI run strip.
   const strip = runs.length > 0
     ? `<span class="tc-runstrip">${[...runs].reverse().map(r =>
-        `<span class="tc-runsq tc-runsq--${escapeHtml(r.status)}" title="${escapeHtml(r.status)}"></span>`).join("")}</span>`
+        `<span class="tc-runsq tc-runsq--${displayRunSquareClass(runDisplay(r))}" title="${escapeHtml(runDisplay(r))}"></span>`).join("")}</span>`
     : "";
   const runRows = runs.map(r => `
     <a href="/?task=${escapeHtml(r.id)}"
         class="mc-sidebar__item${r.id === activeId ? " mc-sidebar__item--active" : ""}"
         hx-get="/workspace/task/${escapeHtml(r.id)}" hx-target="#mc-main" hx-swap="innerHTML" hx-push-url="/?task=${escapeHtml(r.id)}">
-      <span class="mc-sidebar__item-dot mc-sidebar__item-dot--${escapeHtml(r.status)}"></span>
+      <span class="mc-sidebar__item-dot mc-sidebar__item-dot--${displayDotClass(runDisplay(r))}"></span>
       <span class="mc-sidebar__item-title">${formatTimestamp(r.created_at)}</span>
-      <span class="mc-sidebar__item-time">${escapeHtml(r.status)}</span>
+      <span class="mc-sidebar__item-time">${escapeHtml(runDisplay(r))}</span>
     </a>`).join("");
-  const hasRunning = runs.some(r => r.status === "running");
+  const hasRunning = runs.some(r => runDisplay(r) === "working");
   const isActive = st.id === activeId;
 
   return `<details class="tc-team tc-rec${isActive ? " tc-team--active" : ""}" data-tc-team="rec:${eid}"${isActive || hasRunning ? " open" : ""}>
@@ -229,15 +238,24 @@ function renderRecurringSeries(st: ScheduledTaskSummary, runs: ScheduledRunRow[]
 }
 
 export function pickTeamLandingTask(tasks: TaskSummary[]): TaskSummary | null {
-  const rank = (t: TaskSummary): number =>
-    t.status === "running" ? 0 : t.status === "approved" ? 1 : t.status === "paused" ? 2 : 3;
+  const rank = (t: TaskSummary): number => {
+    switch (t.display_status) {
+      case "working": return 0;
+      case "review": return 1;
+      case "blocked": return 1;
+      case "queued": return 2;
+      case "paused": return 3;
+      case "idle": return 4;
+      default: return 5;
+    }
+  };
   // allTasks arrives created_at DESC, so within a rank the first hit is newest.
   return [...tasks].sort((a, b) => rank(a) - rank(b))[0] ?? null;
 }
 
 function renderTeamGroup(team: { id: string; name: string }, tasks: TaskSummary[], activeId: string | null): string {
   const hasActive = tasks.some(t => t.id === activeId);
-  const hasRunning = tasks.some(t => t.status === "running");
+  const hasRunning = tasks.some(t => t.display_status === "working");
   const attention = tasks.filter(t => t.has_attention).length;
   const landing = pickTeamLandingTask(tasks);
   // Collapsed by default on startup; only the group holding the currently
@@ -251,7 +269,7 @@ function renderTeamGroup(team: { id: string; name: string }, tasks: TaskSummary[
         style="color:inherit;text-decoration:none;">${escapeHtml(team.name)}</a>`
     : `<span class="tc-team__name">${escapeHtml(team.name)}</span>`;
 
-  // Recent tasks only — the deep archive lives on /tasks. The active task is
+  // Recent tasks only — the full history lives on /tasks. The active task is
   // force-included so the selection never renders outside its group.
   const shown = tasks.slice(0, 8);
   if (activeId && tasks.some(t => t.id === activeId) && !shown.some(t => t.id === activeId)) {
@@ -291,15 +309,15 @@ function sidebarTitle(title: string): string {
 
 function sidebarItem(t: TaskSummary, activeId: string | null): string {
   const isActive = t.id === activeId;
-  const isRunning = t.status === "running";
-  const isRT = t.task_type === "real_time";
+  const display = displayStatusOf(t);
+  const isRunning = display === "working";
   return `<a href="/?task=${escapeHtml(t.id)}"
       class="mc-sidebar__item${isActive ? " mc-sidebar__item--active" : ""}${isRunning ? " mc-sidebar__item--running" : ""}"
       hx-get="/workspace/task/${escapeHtml(t.id)}" hx-target="#mc-main" hx-swap="innerHTML" hx-push-url="/?task=${escapeHtml(t.id)}">
-    <span class="mc-sidebar__item-dot mc-sidebar__item-dot--${t.status}"></span>
+    <span class="mc-sidebar__item-dot mc-sidebar__item-dot--${displayDotClass(display, t.result_has_error)}"></span>
     ${sidebarTitle(t.title)}
     ${t.has_attention ? '<span class="mc-sidebar__item-attention" title="Needs your input (escalation or review)"></span>' : ""}
-    ${isRT ? '<span class="sk-badge sk-badge--waiting" style="font-size:8px;padding:1px 4px;">RT</span>' : ""}
+    ${modeChip(t.mode, { compact: true })}
     <span class="mc-sidebar__item-time">${t.completed_at ? formatTimestamp(t.completed_at) : formatTimestamp(t.created_at)}</span>
   </a>`;
 }
@@ -322,9 +340,9 @@ function renderWelcome(vm: CommandCenterViewModel): string {
     ? latest.map(t => `
         <a class="mc-landing__task" href="/?task=${escapeHtml(t.id)}"
            hx-get="/workspace/task/${escapeHtml(t.id)}" hx-target="#mc-main" hx-swap="innerHTML" hx-push-url="/?task=${escapeHtml(t.id)}">
-          <span class="mc-sidebar__item-dot mc-sidebar__item-dot--${escapeHtml(t.status)}"></span>
+          <span class="mc-sidebar__item-dot mc-sidebar__item-dot--${displayDotClass(displayStatusOf(t), t.result_has_error)}"></span>
           <span class="mc-landing__task-title">${escapeHtml(t.title)}</span>
-          ${badgeFragment(t.status)}
+          ${statusChip(displayStatusOf(t), t.result_has_error)}
           <span class="mc-landing__task-time">${formatTimestamp(t.completed_at ?? t.created_at)}</span>
         </a>`).join("")
     : `<div class="mc-landing__empty">No tasks yet. Create your first one.</div>`;
@@ -350,16 +368,11 @@ function renderWelcome(vm: CommandCenterViewModel): string {
 }
 
 function renderTaskView(vm: CommandCenterViewModel, task: TaskSummary): string {
-  // Draft tasks — show edit form
+  // Draft tasks: show edit form
   if (task.status === "draft") {
     return renderDraftEdit(task, vm.teams);
   }
-  // Check if this is a real-time task — render different UI
-  const taskRow = vm.allTasks.find(t => t.id === task.id);
-  if (taskRow && (taskRow as any).task_type === "real_time") {
-    const isSessionActive = vm.realtimeSessionActive[task.id];
-    return realtimeTaskContent(vm, task, isSessionActive);
-  }
+  // One view for both modes: autopilot on/off must not swap the chrome.
   return taskMainContent(vm, task);
 }
 
@@ -367,7 +380,6 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
   void _teams; // team select is rendered via the shared slot endpoint
   const eid = escapeHtml(task.id);
   const slotQuery = new URLSearchParams({
-    taskType: "standard",
     context: "full",
     selectedTeamId: task.team_id ?? "",
   }).toString();
@@ -381,6 +393,7 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
       ${headerTitle(task.title)}
       <span class="sk-badge sk-badge--draft">draft</span>
       <div class="mc-task-header__actions">
+        ${renderAutopilotToggle(task)}
         <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/approve" hx-swap="none">Approve</button>
         <button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/tasks/${eid}" hx-swap="none" hx-confirm="Delete this draft?">Delete</button>
       </div>
@@ -426,109 +439,37 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
   `;
 }
 
-/** Real-time task view - v2 timeline + rail, with the audio/text composer. */
-export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummary, isSessionActive?: boolean): string {
-  const eid = escapeHtml(task.id);
-  const isRunning = task.status === "running";
-  const sessionActive = isRunning && isSessionActive !== false;
-  const isPaused = isRunning && isSessionActive === false;
-
-  // Reuse the shared task chrome: phase stepper inlined into the task bar, agent
-  // orbs beside it, and the review/escalation prompts inside a User Input tab —
-  // exactly like the standard task view.
-  const mission = vm.missionsByTask[task.id] ?? (vm.mission?.taskId === task.id ? vm.mission : null);
-  const needsReview = mission?.needsReview ?? false;
-  const phaseStepper = mission && mission.phases.length > 0 ? renderPhaseStepper(mission.phases, task.id, isRunning) : "";
-
-  const reload = `if(event.detail.successful){htmx.ajax('GET','/workspace/task/${eid}',{target:'#mc-main',swap:'innerHTML'});}`;
-  const reloadStopAudio = `${reload}if(typeof stopRealtimeAudio==='function')stopRealtimeAudio();`;
-  let headerButtons = "";
-  if (sessionActive) {
-    headerButtons = `
-          <button class="sk-btn sk-btn--sm"
-                  hx-post="/api/tasks/${eid}/realtime/session/stop" hx-swap="none"
-                  hx-on::after-request="${reloadStopAudio}">Pause Session</button>
-          <button class="sk-btn sk-btn--sm"
-                  hx-post="/api/tasks/${eid}/complete" hx-swap="none"
-                  hx-confirm="Complete this task? The session will be stopped."
-                  hx-on::after-request="${reloadStopAudio}">Complete</button>
-          <button class="sk-btn sk-btn--danger sk-btn--sm"
-                  hx-post="/api/tasks/${eid}/cancel" hx-swap="none"
-                  hx-confirm="Archive this real-time task? This will permanently stop the session."
-                  hx-on::after-request="${reloadStopAudio}">Archive</button>`;
-  } else if (isPaused) {
-    headerButtons = `
-          <button class="sk-btn sk-btn--primary sk-btn--sm"
-                  hx-post="/api/tasks/${eid}/realtime/session/start" hx-swap="none"
-                  hx-on::after-request="${reload}">Resume Session</button>
-          <button class="sk-btn sk-btn--sm"
-                  hx-post="/api/tasks/${eid}/complete" hx-swap="none"
-                  hx-confirm="Mark this task as completed?"
-                  hx-on::after-request="${reload}">Complete</button>
-          <button class="sk-btn sk-btn--danger sk-btn--sm"
-                  hx-post="/api/tasks/${eid}/cancel" hx-swap="none"
-                  hx-confirm="Archive this real-time task? This will permanently stop the session."
-                  hx-on::after-request="${reloadStopAudio}">Archive</button>`;
-  } else if (task.status === "approved") {
-    headerButtons = `
-          <button class="sk-btn sk-btn--primary sk-btn--sm"
-                  hx-post="/api/tasks/${eid}/realtime/session/start" hx-swap="none"
-                  hx-on::after-request="${reload}">Start Session</button>
-          <button class="sk-btn sk-btn--sm"
-                  hx-post="/api/tasks/${eid}/cancel" hx-swap="none"
-                  hx-confirm="Cancel this real-time task?"
-                  hx-on::after-request="${reload}">Cancel</button>`;
-  } else if (task.status === "completed") {
-    headerButtons = `
-          <button class="sk-btn sk-btn--sm"
-                  hx-post="/api/realtime-tasks/${eid}/unarchive" hx-swap="none"
-                  hx-on::after-request="${reload}">Reopen</button>`;
-  } else if (task.status === "failed") {
-    headerButtons = `
-          <button class="sk-btn sk-btn--sm"
-                  hx-post="/api/realtime-tasks/${eid}/unarchive" hx-swap="none"
-                  hx-on::after-request="${reload}">Retry</button>`;
-  }
-
-  // Review gate / recovery banner sits between the task bar and the tab strip
-  // (its historic home), not inside a tab. The Escalations tab holds only
-  // agent escalations now.
-  const reviewGate = task.status === "failed" && task.needs_review
-    ? renderRecoveryPausedBanner(task)
-    : needsReview ? renderReviewBanner(task) : "";
-
+/**
+ * Composer + record controls shared by every non-draft task view. Text posts to
+ * the unified input endpoint (daemon.inputTask); audio uses the realtime
+ * recording pipeline, which works for any active task. On a settled task the
+ * text composer stays live (posting input revives the task); recording needs an
+ * active task, so the record button is disabled until input revives it.
+ */
+export function renderTaskComposer(taskId: string, opts: { settled?: boolean } = {}): string {
+  const eid = escapeHtml(taskId);
+  const settled = opts.settled === true;
+  const placeholder = settled ? "Send input to continue this task..." : "Type a message or instruction...";
+  const recordBtn = settled
+    ? `<button id="btn-start-recording" class="sk-btn sk-btn--sm" disabled
+          title="Recording needs a live task. Send a text message first; input revives this task."
+          style="display:inline-flex;align-items:center;gap:0.35rem;opacity:0.5;cursor:not-allowed;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          Record
+        </button>`
+    : `<button id="btn-start-recording" onclick="startRealtimeAudio('${eid}', 60, 5)" class="sk-btn sk-btn--sm" title="Start audio recording (auto-starts whisper)" style="display:inline-flex;align-items:center;gap:0.35rem;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          Record
+        </button>`;
   return `
-    <!-- Task bar — phase stepper + agent orbs inlined (shared chrome) -->
-    <div class="mc-task-header mc-task-header--with-phases${isRunning ? " mc-task-header--running" : ""}">
-      <span class="mc-node__indicator mc-node__indicator--${isPaused ? "paused" : task.status}"></span>
-      ${headerTitle(task.title)}
-      <div class="mc-task-header__scroll">
-        ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
-        ${isRunning ? `<div class="mc-task-header__orbs">
-          <div id="mc-steer-${eid}"
-            hx-get="/fragments/dashboard/latest-steer?task=${eid}"
-            hx-trigger="load"
-            hx-target="this"
-            hx-swap="innerHTML"></div>
-        </div>` : ""}
-      </div>
-      <div class="mc-task-header__actions">${headerButtons}</div>
-    </div>
-
-    <!-- Real-time composer (text + audio) — the primary input, kept directly
-         under the task bar so it stays reachable on any tab. -->
-    ${sessionActive ? `
     <div class="mc-rt-composer">
-      <form hx-post="/api/realtime-tasks/${eid}/input" hx-swap="none"
+      <form hx-post="/api/tasks/${eid}/input" hx-swap="none"
             hx-on::after-request="if(event.detail.successful){this.querySelector('input[name=text]').value='';}" class="mc-rt-composer__form">
-        <input type="text" name="text" placeholder="Type a message or cue..." required autocomplete="off" class="mc-rt-composer__input" />
+        <input type="text" name="text" placeholder="${placeholder}" required autocomplete="off" class="mc-rt-composer__input" />
         <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Send</button>
       </form>
       <div id="rt-audio-controls" class="mc-rt-composer__audio">
-        <button id="btn-start-recording" onclick="startRealtimeAudio('${eid}', 60, 5)" class="sk-btn sk-btn--sm" title="Start audio recording (auto-starts whisper)" style="display:inline-flex;align-items:center;gap:0.35rem;">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-          Record
-        </button>
+        ${recordBtn}
         <button id="btn-stop-recording" onclick="stopRealtimeAudio()" class="sk-btn sk-btn--sm sk-btn--danger sk-animate-pulse" title="Stop recording and whisper" style="display:none;align-items:center;gap:0.35rem;">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
           Stop
@@ -540,94 +481,6 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
       </div>
     </div>
     <script src="/realtime-audio.js"></script>
-    ` : ""}
-
-    <!-- Review gate / recovery banner — between the task bar and the tabs -->
-    ${reviewGate ? `<div class="mc-attention-slot">${reviewGate}</div>` : ""}
-
-    <!-- v2 timeline + rail. The timeline column is the merged realtime feed
-         (transcript / summary / agent output) - its container id stays
-         mc-rt-feed-<id> so ui-push.pushRealtimeUnifiedFeed lands unchanged. The
-         rail carries artifacts + notes + a details/agents link. -->
-    <div class="tc-work">
-      <div class="tc-timeline-col">
-        <div class="tc-timeline" id="mc-timeline-${eid}" data-tc-stick="on">
-          <div class="tc-timeline__inner" id="mc-rt-feed-${eid}"
-            hx-get="/workspace/task/${eid}/realtime-activity" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading...</span></div>
-        </div>
-      </div>
-
-      <div class="tc-divider" data-tc-divider title="Drag to resize"></div>
-
-      <aside class="tc-rail">
-        <input type="radio" class="tc-rt tc-rt-arts" name="tc-rail-tab" id="tc-rt-arts" checked>
-        <input type="radio" class="tc-rt tc-rt-notes" name="tc-rail-tab" id="tc-rt-notes">
-        <div class="tc-rail__tabs">
-          <label class="tc-tab--arts" for="tc-rt-arts">Artifacts</label>
-          <label class="tc-tab--notes" for="tc-rt-notes">Notes</label>
-        </div>
-        <div class="tc-rail__pane tc-rail__pane--arts">
-          <div id="mc-artifacts-${eid}" hx-get="/fragments/tasks/${eid}/artifacts" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading artifacts...</span></div>
-        </div>
-        <div class="tc-rail__pane tc-rail__pane--notes">
-          <div id="mc-notes-${eid}" hx-get="/fragments/tasks/${eid}/notes" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading notes...</span></div>
-        </div>
-        <div class="tc-rail__more">
-          <a onclick="Skipper.modal.open('tc-details-modal')"
-             hx-get="/workspace/task/${eid}/details" hx-target="#tc-details-modal-body" hx-swap="innerHTML">Details &amp; agents</a>
-        </div>
-      </aside>
-    </div>
-
-    <!-- Fullscreen artifact overlay (shared ids so the artifact links/editor/close JS work unchanged) -->
-    <div id="sk-artifact-detail-window" class="tc-artifact-overlay" hidden>
-      <div class="artifact-inset__bar">
-        <span class="artifact-inset__bar-title">Artifact</span>
-        <button type="button" class="artifact-inset__close" data-sk-artifact-close title="Close" aria-label="Close artifact">&times;</button>
-      </div>
-      <div class="artifact-inset__body"><div id="sk-artifact-detail" data-sk-artifact-detail></div></div>
-    </div>
-
-    <!-- Details modal -->
-    <div id="tc-details-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
-      <div class="sk-modal__content" style="width:min(900px, 95vw); max-height:85vh; display:flex; flex-direction:column;">
-        <div class="sk-modal__header" style="padding:0.5rem 1rem; gap:0.75rem;">
-          <span style="font-weight:600;">Details</span>
-          <button class="sk-btn sk-btn--sm" data-sk-modal-close="tc-details-modal">Close</button>
-        </div>
-        <div class="sk-modal__body" id="tc-details-modal-body" style="flex:1; min-height:0; overflow:auto; padding:0.75rem 1rem;">
-          <span class="sk-muted">Loading...</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Activity detail modal -->
-    <div id="activity-detail-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
-      <div class="sk-modal__content" style="width:min(900px, 95vw); max-height:85vh; display:flex; flex-direction:column;">
-        <div class="sk-modal__header" style="padding:0.5rem 1rem; gap:0.75rem;">
-          <span id="activity-detail-modal-title" style="font-weight:600;">Activity</span>
-          <span id="activity-detail-modal-meta" class="sk-muted sk-text-xs" style="flex:1;"></span>
-          <button class="sk-btn sk-btn--sm" data-sk-modal-close="activity-detail-modal">Close</button>
-        </div>
-        <div class="sk-modal__body" style="flex:1; min-height:0; overflow:auto; padding:0.75rem 1rem;">
-          <pre id="activity-detail-modal-body" style="margin:0; white-space:pre-wrap; word-break:break-word; font-family:var(--sk-font-mono); font-size:12px; line-height:1.45;"></pre>
-        </div>
-      </div>
-    </div>
-
-    <!-- Delegation prompt modal -->
-    <div id="sk-delegation-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">
-      <div class="sk-modal__content" style="width:min(900px, 95vw); max-height:85vh; display:flex; flex-direction:column;">
-        <div class="sk-modal__header" style="padding:0.5rem 1rem; gap:0.75rem;">
-          <span style="font-weight:600;">Delegation</span>
-          <button class="sk-btn sk-btn--sm" data-sk-modal-close="sk-delegation-modal">Close</button>
-        </div>
-        <div class="sk-modal__body" id="sk-delegation-modal-body" style="flex:1; min-height:0; overflow:auto; padding:0.75rem 1rem;">
-          <span class="sk-muted">Loading delegation...</span>
-        </div>
-      </div>
-    </div>
-
   `;
 }
 
@@ -641,30 +494,30 @@ export function realtimeTaskContent(vm: CommandCenterViewModel, task: TaskSummar
 export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): string {
   const eid = escapeHtml(task.id);
   const mission = vm.missionsByTask[task.id] ?? (vm.mission?.taskId === task.id ? vm.mission : null);
-  const isRunning = task.status === "running";
+  const display = displayStatusOf(task);
+  const isActive = task.status === "active";
+  const isWorking = display === "working";
   const needsReview = mission?.needsReview ?? false;
-  const phaseStepper = mission && mission.phases.length > 0 ? renderPhaseStepper(mission.phases, task.id, isRunning) : "";
+  const phaseStepper = mission && mission.phases.length > 0 ? renderPhaseStepper(mission.phases, task.id, isWorking) : "";
   const actions = renderActions(task, needsReview);
 
-  const resultHtml = (task.status === "completed" || task.status === "failed") && task.result_summary ? `
-    <div class="sk-panel"><div class="sk-panel__body" style="padding: var(--sk-space-3) var(--sk-space-4); color: var(--sk-text-muted); font-size: var(--sk-text-sm);">${escapeHtml(task.result_summary)}</div></div>
+  const showResult = (task.status === "settled" || display === "idle") && task.result_summary;
+  const resultHtml = showResult ? `
+    <div class="sk-panel"><div class="sk-panel__body" style="padding: var(--sk-space-3) var(--sk-space-4); color: var(--sk-text-muted); font-size: var(--sk-text-sm);">${escapeHtml(task.result_summary!)}</div></div>
   ` : "";
-  const reviewGate = task.status === "failed" && task.needs_review
-    ? renderRecoveryPausedBanner(task)
-    : needsReview ? renderReviewBanner(task) : "";
-  const iterate = task.status === "completed" ? iteratePanel(task.id) : "";
-  const attention = reviewGate || iterate || resultHtml
-    ? `<div class="mc-attention-slot">${reviewGate}${iterate}${resultHtml}</div>` : "";
+  const reviewGate = needsReview ? renderReviewBanner(task) : "";
+  const attention = reviewGate || resultHtml
+    ? `<div class="mc-attention-slot">${reviewGate}${resultHtml}</div>` : "";
 
   return `
     <!-- Task header: full width above timeline + rail -->
-    <div class="mc-task-header mc-task-header--with-phases${isRunning ? " mc-task-header--running" : ""}">
-      <span class="mc-node__indicator mc-node__indicator--${task.status === "waiting_delegation" ? "waiting" : task.status}"></span>
+    <div class="mc-task-header mc-task-header--with-phases${isWorking ? " mc-task-header--running" : ""}">
+      <span class="mc-node__indicator mc-node__indicator--${displayIndicatorClass(display, task.result_has_error)}"></span>
       ${headerTitle(task.title)}
       ${escalationHeaderSlot(task.id, task.open_escalation_count)}
       <div class="mc-task-header__scroll">
         ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
-        ${isRunning || task.status === "completed" ? `<div class="mc-task-header__orbs">
+        ${isActive ? `<div class="mc-task-header__orbs">
           <div id="mc-steer-${eid}"
             hx-get="/fragments/dashboard/latest-steer?task=${eid}"
             hx-trigger="load"
@@ -674,6 +527,11 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
       </div>
       <div class="mc-task-header__actions">${actions}</div>
     </div>
+
+    <!-- Composer (text + audio): the unified input, available on every active
+         task and every settled task. Input wakes an idle task, answers a review
+         gate, accumulates while agents are busy, or revives a settled task. -->
+    ${isActive ? renderTaskComposer(task.id) : task.status === "settled" ? renderTaskComposer(task.id, { settled: true }) : ""}
 
     ${attention}
 
@@ -708,7 +566,8 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
             <button class="mc-activity__filter mc-activity__filter--active" data-sk-activity-filter="messages">Messages</button>
             <button class="mc-activity__filter" data-sk-activity-filter="tools">Tools</button>
           </div>
-          <div class="mc-activity__feed" id="mc-activity-feed-${eid}" data-activity-filter="messages"
+          <div id="mc-activity-poke-${eid}" data-sk-activity-poke="${eid}" hidden></div>
+          <div class="mc-activity__feed" id="mc-activity-feed-${eid}" data-activity-filter="messages" data-sk-activity-feed="${eid}"
             hx-get="/workspace/task/${eid}/activity" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading...</span></div>
         </div>
         <div class="tc-rail__more">
@@ -770,25 +629,48 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
   `;
 }
 
+/**
+ * Quiet autopilot pill for the task header. Reflects task.mode (workflow =
+ * autopilot on); clicking posts the flipped value to /api/tasks/:id/autopilot,
+ * which HX-redirects back to the task view. Rendered on draft + active tasks
+ * only (the route rejects settled tasks).
+ */
+function renderAutopilotToggle(task: Pick<TaskSummary, "id" | "mode">): string {
+  const eid = escapeHtml(task.id);
+  const on = task.mode !== "conversational";
+  const title = on
+    ? "Autopilot on: the team drives the task to the end of its phases. Click to switch to manual."
+    : "Autopilot off: the task waits for your input between turns. Click to switch to autopilot.";
+  return `<button type="button" class="tc-autopilot${on ? " tc-autopilot--on" : ""}"
+      hx-post="/api/tasks/${eid}/autopilot" hx-vals='{"on":"${on ? "false" : "true"}"}' hx-swap="none"
+      title="${title}" aria-pressed="${on}">
+    <span class="tc-autopilot__dot"></span>Autopilot</button>`;
+}
+
 function renderActions(task: TaskSummary, needsReview?: boolean): string {
+  const eid = escapeHtml(task.id);
   const btns: string[] = [];
   if (task.status === "draft") {
-    btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/approve" hx-swap="none">Approve</button>`);
-  } else if (task.status === "approved") {
-    btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/unapprove" hx-swap="none">Unapprove</button>`);
-  } else if (task.status === "running") {
+    btns.push(renderAutopilotToggle(task));
+    btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/approve" hx-swap="none">Approve</button>`);
+    btns.push(`<button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/tasks/${eid}" hx-swap="none" hx-confirm="Delete this draft?">Delete</button>`);
+  } else if (task.status === "active") {
+    btns.push(renderAutopilotToggle(task));
     if (needsReview) {
-      btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/approve-phase" hx-swap="none">Approve Phase</button>`);
+      btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/approve-phase" hx-swap="none">Approve Phase</button>`);
     }
-    btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/pause" hx-swap="none" hx-confirm="Pause this task? All its agents and their subprocesses will be stopped; you can resume later.">Pause</button>`);
-    btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/complete" hx-swap="none" hx-confirm="Mark this task as complete and kill all active agents?">Complete</button>`);
-    btns.push(`<button class="sk-btn sk-btn--danger sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/cancel" hx-swap="none" hx-confirm="Cancel?">Cancel</button>`);
-  } else if (task.status === "paused") {
-    btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/resume-from-pause" hx-swap="none" title="Respawn agents and continue from where the task was paused.">Resume</button>`);
-    btns.push(`<button class="sk-btn sk-btn--danger sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/cancel" hx-swap="none" hx-confirm="Cancel?">Cancel</button>`);
-  } else if (task.status === "failed") {
-    btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/resume" hx-swap="none" title="Resume at the current phase. Skipper inspects notes/artifacts/delegations and continues from where the task left off.">Resume</button>`);
-    btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${escapeHtml(task.id)}/retry" hx-swap="none" title="Reset to phase 0 and start over.">Retry</button>`);
+    if (displayStatusOf(task) === "queued") {
+      btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${eid}/unapprove" hx-swap="none" title="Send the task back to draft (only before its first run starts).">Unapprove</button>`);
+    }
+    if (task.paused) {
+      btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/resume" hx-swap="none" title="Respawn agents and continue from where the task was paused.">Resume</button>`);
+    } else {
+      btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${eid}/pause" hx-swap="none" hx-confirm="Pause this task? All its agents and their subprocesses will be stopped; you can resume later.">Pause</button>`);
+    }
+    btns.push(`<button class="sk-btn sk-btn--danger sk-btn--sm" hx-post="/api/tasks/${eid}/cancel" hx-swap="none" hx-confirm="Cancel this task? Any live agents will be stopped.">Cancel</button>`);
+  } else if (task.status === "settled") {
+    btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/resume" hx-swap="none" title="Reactivate this task and wake the agent from where it left off. Notes, artifacts, and checkpoints are intact.">Resume</button>`);
+    btns.push(`<button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/tasks/${eid}" hx-swap="none" hx-confirm="Delete this task and all its data?">Delete</button>`);
   }
   return btns.join("");
 }
@@ -810,28 +692,6 @@ export function escalationHeaderSlot(taskId: string, count: number): string {
         <span aria-hidden="true" style="font-weight: 700;">&#9888;</span>${escapeHtml(count === 1 ? "1 escalation" : `${count} escalations`)}</span>`
     : "";
   return `<span id="mc-task-escalation-${eid}" class="mc-task-header__escalation-slot">${inner}</span>`;
-}
-
-function renderRecoveryPausedBanner(task: TaskSummary): string {
-  const eid = escapeHtml(task.id);
-  return `<div class="sk-panel sk-mb-4" data-mc-pending="recovery">
-    <div class="sk-panel__header">
-      <div class="sk-flex sk-items-center sk-gap-2">
-        <span class="esc-alert-bang" style="color: var(--sk-accent-warning); font-weight: 700;">&#x23F8;</span>
-        <strong style="color: var(--sk-text);">Recovery paused</strong>
-        <span class="sk-text-xs sk-muted">skipper</span>
-        ${warnBadge("paused")}
-      </div>
-    </div>
-    <div class="sk-panel__body">
-      <div class="sk-mb-4" style="color: var(--sk-text-muted); font-size: var(--sk-text-sm);">
-        Skipper died twice without progress. Notes and artifacts are intact. Resume to continue.
-      </div>
-      <div class="sk-flex sk-gap-2">
-        <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/resume" hx-swap="none">Resume</button>
-      </div>
-    </div>
-  </div>`;
 }
 
 function renderReviewBanner(task: TaskSummary): string {
@@ -908,23 +768,24 @@ export function renderAgentList(agents: AgentTreeNode[]): string {
 }
 
 /**
- * Parse terminal output and return human-readable activity entries.
+ * Parse terminal output and return human-readable activity entries, one row
+ * per input line, in the order given (the feed reads newest-first).
  *
- * The client filters kinds via CSS (msg / tool), so if the row window were a
- * single shared cap, a burst of tool rows would starve the message filter:
- * 18 tools + 2 messages in the window means the Messages tab shows just 2. To
- * stop one kind from crowding out another, each kind gets its OWN budget.
- * `lines` arrive newest-first, so keeping the first `perKindLimit` of each kind
- * keeps the newest of each — and the Messages tab fills to `perKindLimit` even
- * when tool rows dominate the raw stream (caller must pull a wide enough window).
+ * A row carries only its summary and the output's id (`data-sk-activity-id`);
+ * the raw frame is fetched on click from /workspace/activity/:id. Embedding the
+ * frame in the markup meant a 100-row page could weigh 20 MB on a task with
+ * big tool results — that was the "timeline takes forever to load" bug.
+ *
+ * The client filters kinds via CSS (msg / tool). Pages are small and the feed
+ * lazy-loads older pages as the user scrolls (see the /activity route), so a
+ * burst of tool rows no longer needs a per-kind budget: a filtered view simply
+ * reveals the load-more sentinel sooner and pulls the next page.
  */
 export function parseTerminalActivity(
-  lines: Array<{ stream: string; data: string; agent_name?: string; process_pid?: number | null; created_at?: string }>,
-  perKindLimit = 120,
+  lines: Array<{ id?: number; stream: string; data: string; agent_name?: string; process_pid?: number | null; created_at?: string }>,
 ): string {
   if (lines.length === 0) return `<div class="mc-activity__empty">No activity yet</div>`;
 
-  const kindCounts: Record<string, number> = { message: 0, tool: 0, event: 0 };
   const items = lines.map(line => {
     const data = line.data.trim();
     let kind: "message" | "tool" | "event" = "event";
@@ -971,17 +832,15 @@ export function parseTerminalActivity(
         kind = classifyPlainTerminalLine(line.stream, data);
       }
     } else {
+      // Pre-line-storage rows can be a bare 32KB slice of a base64 payload
+      // (no JSON, no whitespace); showing them as "messages" is pure noise.
+      if (looksLikeBinaryJunk(data)) return "";
       summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
       kind = classifyPlainTerminalLine(line.stream, data);
     }
 
     if (kind === "message") summary = stripThinking(summary);
     if (!summary) return "";
-
-    // Per-kind budget: once a kind is full, drop further (older) rows of that
-    // kind. Newest-first input means we keep the newest `perKindLimit` of each.
-    if (kindCounts[kind] >= perKindLimit) return "";
-    kindCounts[kind]++;
 
     const kindLabel = kind === "tool" ? "tool" : kind === "message" ? "msg" : "sys";
     const agentLabel = line.agent_name ? `<span class="mc-activity__agent">${escapeHtml(line.agent_name)}</span>` : "";
@@ -991,7 +850,7 @@ export function parseTerminalActivity(
 
     return `<div class="mc-activity__item mc-activity__item--${kind}" data-activity-kind="${kind}"
         data-sk-activity-row
-        data-sk-activity-data="${escapeHtml(line.data)}"
+        data-sk-activity-id="${line.id ?? ""}"
         data-sk-activity-agent="${escapeHtml(line.agent_name ?? "")}"
         data-sk-activity-pid="${line.process_pid ?? ""}"
         data-sk-activity-time="${escapeHtml(line.created_at ?? "")}"
@@ -1006,117 +865,23 @@ export function parseTerminalActivity(
   return items.length > 0 ? items : `<div class="mc-activity__empty">No activity yet</div>`;
 }
 
-export interface RealtimeActivityRow {
-  source: "timeline" | "terminal";
-  // timeline fields
-  entry_type?: string;
-  content?: string;
-  priority?: string;
-  // terminal fields
-  stream?: string;
-  data?: string;
-  agent_name?: string;
-  agent_color?: string | null;
-  process_pid?: number | null;
-  // shared
-  created_at: string;
+/** A long run of non-whitespace (a base64 fragment) rather than readable output. */
+function looksLikeBinaryJunk(data: string): boolean {
+  return data.length > 1000 && !/\s/.test(data.slice(0, 400));
 }
 
-export function parseRealtimeActivity(rows: RealtimeActivityRow[]): string {
-  if (rows.length === 0) return `<div class="mc-activity__empty">No activity yet</div>`;
-
-  return rows.map(row => {
-    if (row.source === "timeline") {
-      const entryType = row.entry_type ?? "text";
-      const content = row.content ?? "";
-      const kind = entryType === "error" ? "event" : entryType === "summary" ? "tool" : "message";
-      const kindLabel = entryType === "summary" ? "sum" : entryType === "error" ? "err" : "txt";
-      const preview = content.length > 200 ? content.slice(0, 200) + "…" : content;
-      const priorityTag = row.priority === "high"
-        ? ` <span class="mc-activity__kind" style="color:var(--sk-accent-warning);background:rgba(255,208,128,0.12);font-size:8px;">HIGH</span>`
-        : "";
-      const timeLabel = row.created_at ? `<span class="mc-activity__pid">${formatTimestamp(row.created_at)}</span>` : "";
-
-      return `<div class="mc-activity__item mc-activity__item--${kind} mc-activity__item--timeline" data-activity-kind="timeline"
-          data-sk-activity-row
-          data-sk-activity-data="${escapeHtml(content)}"
-          data-sk-activity-time="${escapeHtml(row.created_at ?? "")}"
-          data-sk-activity-kind="timeline">
-        <span class="mc-activity__kind mc-activity__kind--${kind}">${kindLabel}</span>${priorityTag}
-        ${timeLabel}
-        <span class="mc-activity__text">${kind === "message" ? renderInlineMarkdown(preview) : escapeHtml(preview)}</span>
-      </div>`;
-    }
-
-    // terminal output row — reuse existing parsing logic
-    const data = (row.data ?? "").trim();
-    let kind: "message" | "tool" | "event" = "event";
-    let summary = "";
-
-    if (data.startsWith("{")) {
-      let parsed: Record<string, unknown> | null = null;
-      try {
-        parsed = JSON.parse(data);
-      } catch {
-        const firstLine = data.split("\n").find(l => l.trim().startsWith("{"));
-        if (firstLine) {
-          try { parsed = JSON.parse(firstLine.trim()); } catch { /* give up */ }
-        }
-      }
-
-      if (parsed) {
-        summary = terminalJsonSummary(parsed);
-        const type = typeof parsed.type === "string" ? parsed.type : "";
-        const item = parsed.item && typeof parsed.item === "object" ? parsed.item as Record<string, unknown> : null;
-        const itemType = item && typeof item.type === "string" ? item.type : "";
-        const message = parsed.message && typeof parsed.message === "object" ? parsed.message as Record<string, unknown> : null;
-        const content = message?.content;
-
-        if (itemType === "command_execution" || itemType === "tool_call" || itemType === "tool_result" || itemType === "tool_use" || type.includes("tool")) {
-          kind = "tool";
-        } else if (Array.isArray(content)) {
-          const hasToolBlock = content.some((b: any) => b?.type === "tool_use" || b?.type === "tool_result");
-          kind = hasToolBlock ? "tool" : "message";
-        } else if (type === "assistant" || type === "user" || type === "message" || typeof parsed.result === "string"
-          // Grok response/reasoning chunks: {type:"text"|"thought",data:"…"}. Prose,
-          // so they belong under the Messages filter rather than with system events.
-          || ((type === "text" || type === "thought") && typeof parsed.data === "string")
-          // OpenCode whole-message text: {type:"text",part:{text:"…"}} (part, not data).
-          || (type === "text" && !!(parsed.part as Record<string, unknown> | undefined)?.text)) {
-          kind = "message";
-        }
-      } else {
-        summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
-        kind = classifyPlainTerminalLine(row.stream, data);
-      }
-    } else {
-      summary = data.length > 200 ? data.slice(0, 200) + "..." : data;
-      kind = classifyPlainTerminalLine(row.stream, data);
-    }
-
-    if (kind === "message") summary = stripThinking(summary);
-    if (!summary) return "";
-
-    const kindLabel = kind === "tool" ? "tool" : kind === "message" ? "msg" : "sys";
-    const agentColorStyle = row.agent_color ? ` style="color:${sanitizeColor(row.agent_color)}"` : "";
-    const agentLabel = row.agent_name ? `<span class="mc-activity__agent"${agentColorStyle}>${escapeHtml(row.agent_name)}</span>` : "";
-    const pidLabel = row.process_pid != null
-      ? `<span class="mc-activity__pid" title="Process ID">PID ${row.process_pid}</span>`
-      : "";
-
-    return `<div class="mc-activity__item mc-activity__item--${kind} mc-activity__item--activity" data-activity-kind="activity"
-        data-sk-activity-row
-        data-sk-activity-data="${escapeHtml(row.data ?? "")}"
-        data-sk-activity-agent="${escapeHtml(row.agent_name ?? "")}"
-        data-sk-activity-pid="${row.process_pid ?? ""}"
-        data-sk-activity-time="${escapeHtml(row.created_at ?? "")}"
-        data-sk-activity-kind="activity">
-      <span class="mc-activity__kind mc-activity__kind--${kind}">${kindLabel}</span>
-      ${agentLabel}
-      ${pidLabel}
-      <span class="mc-activity__text">${kind === "message" ? renderInlineMarkdown(summary) : escapeHtml(summary)}</span>
+/**
+ * Lazy-load sentinel appended below a full page of activity rows. When it
+ * scrolls into view (`intersect once` — the feed is its own overflow
+ * container, so `revealed` would never fire) it swaps itself for the next
+ * older page, which ends in its own sentinel until a short page comes back.
+ */
+export function activityLoadMoreSentinel(taskId: string, beforeId: number): string {
+  return `<div class="mc-activity__more" data-sk-activity-more
+      hx-get="/workspace/task/${escapeHtml(taskId)}/activity?before=${beforeId}"
+      hx-trigger="intersect once" hx-swap="outerHTML" hx-target="this">
+      <span class="sk-muted">Loading older activity…</span>
     </div>`;
-  }).filter(Boolean).join("");
 }
 
 export function renderScheduledTaskDetail(
@@ -1404,11 +1169,15 @@ export function renderScheduledRuns(runs: Array<{ id: string; title: string; sta
     <thead><tr><th>Started</th><th>Status</th><th>Duration</th><th>Result</th></tr></thead>
     <tbody>
       ${runs.map(r => {
-    const statusClass = r.status === "completed" ? "sk-badge--completed"
-      : r.status === "failed" ? "sk-badge--failed"
-        : r.status === "running" ? "sk-badge--running"
-          : "sk-badge--draft";
-    let duration = "—";
+    const hasError = taskResultHasError(r.result);
+    const isSettled = r.status === "settled";
+    const statusLabel = isSettled
+      ? (hasError ? "failed" : "completed")
+      : r.completed_at ? (hasError ? "error" : "done") : "running";
+    const statusClass = hasError ? "sk-badge--failed"
+      : (!isSettled && !r.completed_at) ? "sk-badge--running"
+        : "sk-badge--completed";
+    let duration = "-";
     if (r.started_at && r.completed_at) {
       const ms = new Date(r.completed_at).getTime() - new Date(r.started_at).getTime();
       const secs = Math.round(ms / 1000);
@@ -1425,9 +1194,9 @@ export function renderScheduledRuns(runs: Array<{ id: string; title: string; sta
     }
     return `<tr style="cursor:pointer;" onclick="htmx.ajax('GET','/workspace/task/${escapeHtml(r.id)}',{target:'#mc-main',swap:'innerHTML'});history.pushState(null,'','/?task=${escapeHtml(r.id)}');">
           <td>${formatTimestamp(r.created_at)}</td>
-          <td><span class="sk-badge ${statusClass}" style="font-size:10px;padding:1px 5px;">${escapeHtml(r.status)}</span></td>
+          <td><span class="sk-badge ${statusClass}" style="font-size:10px;padding:1px 5px;">${escapeHtml(statusLabel)}</span></td>
           <td>${duration}</td>
-          <td class="sk-muted sk-text-xs">${resultSummary ? escapeHtml(resultSummary) : "—"}</td>
+          <td class="sk-muted sk-text-xs">${resultSummary ? escapeHtml(resultSummary) : "-"}</td>
         </tr>`;
   }).join("")}
     </tbody>

@@ -6,22 +6,28 @@ CREATE TABLE IF NOT EXISTS tasks (
   title TEXT NOT NULL,
   description TEXT,
   team_id TEXT,
-  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'approved', 'running', 'paused', 'completed', 'failed')),
+  -- Unified lifecycle: draft (editable) -> active (live: queued/working/idle,
+  -- always resumable via input) -> settled (terminal, user-initiated).
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'active', 'settled')),
+  -- workflow: system drives to end of phases (pokes, recovery). conversational:
+  -- user drives via input; idle is the normal resting state. Both use phases.
+  mode TEXT NOT NULL DEFAULT 'workflow' CHECK (mode IN ('workflow', 'conversational')),
+  paused INTEGER NOT NULL DEFAULT 0,
   current_phase INTEGER NOT NULL DEFAULT 0,
   result TEXT,
   orchestration_state TEXT NOT NULL DEFAULT '{}',
   regression_count INTEGER NOT NULL DEFAULT 0,
-  iteration_count INTEGER NOT NULL DEFAULT 0,
   needs_review INTEGER NOT NULL DEFAULT 0,
   working_directory TEXT NOT NULL DEFAULT '',
-  task_type TEXT NOT NULL DEFAULT 'standard' CHECK (task_type IN ('standard', 'real_time')),
   task_config TEXT NOT NULL DEFAULT '{}',
   source_scheduled_task_id TEXT,
   run_input TEXT,
+  wake_requested_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   approved_at TEXT,
   started_at TEXT,
   completed_at TEXT,
+  settled_at TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -266,7 +272,7 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
   task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   version INTEGER NOT NULL DEFAULT 1,
-  kind TEXT NOT NULL CHECK (kind IN ('transcript', 'summary', 'plan', 'other')),
+  kind TEXT NOT NULL CHECK (kind IN ('transcript', 'summary', 'plan', 'other', 'upload')),
   description TEXT,
   body TEXT NOT NULL,
   created_by_agent_id TEXT,
@@ -279,6 +285,17 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
   -- Soft-delete: set on ALL versions of a name at once. Deleted artifacts stay
   -- visible in the list (annotated) but are excluded from agent context injection.
   deleted_at TEXT,
+  -- File artifacts (operator uploads): storage='file' means the bytes live on
+  -- disk at <data dir>/artifacts/<task_id>/<id>.<ext> and `body` holds only the
+  -- optional caption. Enum enforced in ArtifactManager, not a CHECK.
+  storage TEXT NOT NULL DEFAULT 'inline',
+  mime TEXT,
+  bytes INTEGER,
+  sha256 TEXT,
+  width INTEGER,
+  height INTEGER,
+  -- 'operator', 'connect:<clientId>', or the uploading agent's id.
+  source TEXT,
   UNIQUE(task_id, name, version)
 );
 CREATE INDEX IF NOT EXISTS idx_task_artifacts_task_kind ON task_artifacts(task_id, kind, created_at);
@@ -345,10 +362,11 @@ CREATE TABLE IF NOT EXISTS notification_preferences (
 CREATE TABLE IF NOT EXISTS realtime_timeline (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-  entry_type TEXT NOT NULL CHECK (entry_type IN ('summary', 'text', 'error')),
+  entry_type TEXT NOT NULL CHECK (entry_type IN ('summary', 'text', 'error', 'image', 'file')),
   content TEXT NOT NULL,
   source_segment_ids TEXT NOT NULL DEFAULT '[]',  -- JSON array of task_input_streams IDs that produced this
   fed_to_skipper INTEGER NOT NULL DEFAULT 0,       -- 0 = not yet fed, 1 = fed
+  artifact_id TEXT,                                -- file artifact behind an 'image' / 'file' entry
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_realtime_timeline_task_fed ON realtime_timeline(task_id, fed_to_skipper, created_at);

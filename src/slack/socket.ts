@@ -10,7 +10,7 @@ import { handleSlashCommand, type SlackSlashCommandPayload } from "./commands";
 import { handleInteraction, type InteractionPayload } from "./interactions";
 import { SlackClient } from "./client";
 import { slackLog } from "./log";
-import { findRunningTaskByThread, findCompletedTaskByThread, mentionsSkipper, SLACK_NOTE_PREFIX } from "./slash-command";
+import { findTaskByThread, mentionsSkipper } from "./slash-command";
 import { isExperimental } from "../config/feature-flags";
 
 const SLACK_API_BASE = "https://slack.com/api";
@@ -70,6 +70,7 @@ export class SlackSocketManager {
   private scheduledScheduler: ScheduledTaskScheduler;
   private escalationManager: EscalationManager;
   private phaseManager: PhaseManager;
+  private inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>;
 
   constructor(
     db: Database,
@@ -77,12 +78,14 @@ export class SlackSocketManager {
     scheduledScheduler: ScheduledTaskScheduler,
     escalationManager: EscalationManager,
     phaseManager: PhaseManager,
+    inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>,
   ) {
     this.db = db;
     this.taskScheduler = taskScheduler;
     this.scheduledScheduler = scheduledScheduler;
     this.escalationManager = escalationManager;
     this.phaseManager = phaseManager;
+    this.inputTask = inputTask;
   }
 
   start(): void {
@@ -262,34 +265,30 @@ export class SlackSocketManager {
       return;
     }
     try {
-      const taskId = findRunningTaskByThread(this.db, channel, threadTs);
-      if (!taskId) {
-        // Not a live task. If the thread belongs to a COMPLETED task, ignore the
-        // reply silently (no auto-nudge): we never auto-iterate a finished task,
-        // and the "click Iterate to run another pass" instruction now lives in the
-        // completion notice itself (see completionMessageBlocks). Just log it.
-        const completedTaskId = findCompletedTaskByThread(this.db, channel, threadTs);
-        if (completedTaskId) {
-          slackLog("in.thread_reply.completed_ignored", { taskId: completedTaskId, channel, threadTs });
-          return;
-        }
+      const match = findTaskByThread(this.db, channel, threadTs);
+      if (!match) {
         slackLog("in.thread_reply.no_task", { channel, threadTs });
         return;
       }
-      // Prefixed so the prompt can single these out: they are operator-sourced but
-      // arrive from a conversation, not from someone deliberately instructing the
-      // run — see appendNotesSections in agents/prompt-builder.ts.
+      if (!this.inputTask) {
+        slackLog("in.thread_reply.skip", { reason: "no_input_handler", taskId: match.id });
+        return;
+      }
+      // Unified input: the reply is fed straight to the task. daemon.inputTask
+      // auto-revives a settled task, wakes an idle one, and accumulates
+      // behind a busy root until its turn ends.
       const attribution = event.user ? `Slack reply from <@${event.user}>` : "Slack reply";
-      const noteId = this.taskScheduler.addExternalNote(taskId, `${SLACK_NOTE_PREFIX} ${attribution}: ${text}`, "user");
-      slackLog("in.thread_reply.noted", { taskId, channel, threadTs, noteId: noteId ?? "none" });
-      if (noteId) {
-        // Confirm back in-thread. The ack is a bot message (carries bot_id) so the
-        // next events_api frame for it is filtered out above — no capture loop.
-        try {
-          await new SlackClient(this.db).postMessage(channel, ":memo: Added to this task's notes.", { thread_ts: threadTs });
-        } catch (err) {
-          logError(this.db, "slack_thread_reply_ack", { channel, threadTs }, err);
-        }
+      const { delivered } = await this.inputTask(match.id, `${attribution}: ${text}`, "slack");
+      slackLog("in.thread_reply.input", { taskId: match.id, channel, threadTs, delivered });
+      // Confirm back in-thread. The ack is a bot message (carries bot_id) so the
+      // next events_api frame for it is filtered out above, no capture loop.
+      const ack = delivered === "accumulated"
+        ? ":memo: Passed to the task. It is mid-turn, so your input is queued for when the current turn ends."
+        : ":memo: Passed to the task.";
+      try {
+        await new SlackClient(this.db).postMessage(channel, ack, { thread_ts: threadTs });
+      } catch (err) {
+        logError(this.db, "slack_thread_reply_ack", { channel, threadTs }, err);
       }
     } catch (err) {
       logError(this.db, "slack_thread_reply", { channel, threadTs }, err);
@@ -312,7 +311,6 @@ export class SlackSocketManager {
           client: new SlackClient(this.db),
           escalationManager: this.escalationManager,
           phaseManager: this.phaseManager,
-          taskScheduler: this.taskScheduler,
         },
         payload,
       );
@@ -405,8 +403,9 @@ export function initSlackSocket(
   scheduledScheduler: ScheduledTaskScheduler,
   escalationManager: EscalationManager,
   phaseManager: PhaseManager,
+  inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>,
 ): SlackSocketManager {
-  _slackSocket = new SlackSocketManager(getDb(), taskScheduler, scheduledScheduler, escalationManager, phaseManager);
+  _slackSocket = new SlackSocketManager(getDb(), taskScheduler, scheduledScheduler, escalationManager, phaseManager, inputTask);
   return _slackSocket;
 }
 

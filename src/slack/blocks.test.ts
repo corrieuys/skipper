@@ -29,7 +29,9 @@ describe("action value codec", () => {
     expect(decoded?.id).toBe(id);
   });
 
-  it("round-trips the task iterate action", () => {
+  // Legacy Iterate buttons live on in Slack scrollback; the codec must keep
+  // decoding them so a click can self-heal instead of silently no-oping.
+  it("still decodes the legacy task iterate action", () => {
     const v = { kind: "task" as const, action: "iterate" as const, id: "task-9" };
     expect(decodeActionValue(encodeActionValue(v))).toEqual(v);
   });
@@ -58,14 +60,25 @@ describe("message blocks", () => {
     expect(values).toContain("rev:reject:t1");
   });
 
-  it("completion notice carries an Iterate button keyed by task id + iterate instruction", () => {
-    const blocks = completionMessageBlocks("t1", "Add webhook") as Array<Record<string, unknown>>;
-    const actions = blocks.find((b) => b.type === "actions") as { elements: Array<{ value: string }> };
-    expect(actions.elements.map((e) => e.value)).toContain("task:iterate:t1");
-    const section = blocks.find((b) => b.type === "section") as { text: { text: string } };
-    expect(section.text.text).toContain("finished running");
-    expect(section.text.text).toContain("Iterate");
-    expect(section.text.text).toContain("will not restart");
+  // The unified model kills the Iterate button: a run settling leaves the task
+  // active, and continuing it is a thread reply, so the notice is section-only.
+  it("run-completed notice has no buttons and points at the thread-reply input flow", () => {
+    const blocks = completionMessageBlocks("Add webhook") as Array<Record<string, unknown>>;
+    expect(blocks.some((b) => b.type === "actions")).toBe(false);
+    expect(blocks).toHaveLength(1);
+    const section = blocks[0] as { type: string; text: { text: string } };
+    expect(section.type).toBe("section");
+    expect(section.text.text).toContain("finished its run");
+    expect(section.text.text).toContain("Reply in this thread");
+    expect(section.text.text).toContain("Skipper");
+  });
+
+  it("run-failed notice says the run failed and still points at the thread-reply flow", () => {
+    const blocks = completionMessageBlocks("Add webhook", true) as Array<Record<string, unknown>>;
+    expect(blocks.some((b) => b.type === "actions")).toBe(false);
+    const section = blocks[0] as { text: { text: string } };
+    expect(section.text.text).toContain("failed");
+    expect(section.text.text).toContain("Reply in this thread");
   });
 
   it("operator message is a single section, attributed, with no buttons", () => {

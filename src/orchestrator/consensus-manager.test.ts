@@ -27,11 +27,11 @@ describe("ConsensusManager.finishConsensus", () => {
     db.prepare("INSERT INTO teams (id, name, phases) VALUES ('team-1', 'Team', ?)")
       .run(JSON.stringify(phases));
     db.prepare(
-      "INSERT INTO tasks (id, title, status, team_id, current_phase) VALUES ('task-1', 'T', 'running', 'team-1', 1)",
+      "INSERT INTO tasks (id, title, status, team_id, current_phase) VALUES ('task-1', 'T', 'active', 'team-1', 1)",
     ).run();
 
     const setNeedsReview = mock(() => {});
-    const completeTask = mock(() => {});
+    const completeRun = mock(() => {});
     const advancePhase = mock(() => {});
     const checkpoints: string[] = [];
 
@@ -40,9 +40,9 @@ describe("ConsensusManager.finishConsensus", () => {
       {} as never,
       {} as never,
       {
-        getTask: () => ({ id: "task-1", status: "running", team_id: "team-1", task_config: {} }),
+        getTask: () => ({ id: "task-1", status: "active", paused: false, team_id: "team-1", task_config: {} }),
         setNeedsReview,
-        completeTask,
+        completeRun,
         advancePhase,
       } as never,
       { cleanupAllForGroup: async () => {} } as never,
@@ -67,7 +67,7 @@ describe("ConsensusManager.finishConsensus", () => {
 
     expect(setNeedsReview).toHaveBeenCalledWith("task-1", true, { phaseName: "Verify", phaseIndex: 1 });
     expect(checkpoints).toContain("PHASE_REVIEW_PENDING");
-    expect(completeTask).not.toHaveBeenCalled();
+    expect(completeRun).not.toHaveBeenCalled();
     expect(advancePhase).not.toHaveBeenCalled();
   });
 });

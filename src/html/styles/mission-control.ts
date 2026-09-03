@@ -131,7 +131,7 @@ export function missionControlStyles(): string {
     .mc-sidebar__item-dot--paused { background: var(--sk-accent-warning); }
     .mc-sidebar__item-dot--draft { background: var(--sk-surface-4); }
     .mc-sidebar__item-dot--active { background: var(--sk-accent-tertiary); }
-    .mc-sidebar__item-dot--archived { background: var(--sk-surface-4); }
+    .mc-sidebar__item-dot--settled { background: var(--sk-surface-4); }
     .mc-sidebar__item-title {
       flex: 1;
       font-size: var(--sk-text-sm);
@@ -754,6 +754,11 @@ export function missionControlStyles(): string {
       flex: 1;
       overflow-y: auto;
       padding: var(--sk-space-1) 0;
+    }
+    .mc-activity__more {
+      padding: var(--sk-space-2) var(--sk-space-3);
+      font-size: var(--sk-text-xs);
+      text-align: center;
     }
     .mc-activity__item {
       display: flex;

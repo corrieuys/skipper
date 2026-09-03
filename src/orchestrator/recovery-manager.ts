@@ -13,6 +13,10 @@ import type { OrchestrationState, TaskCheckpoint } from "./types";
 const RECOVERY_ATTEMPT_KEY_PREFIX = "recovery_attempt:";
 const ORPHAN_RECOVERY_SEEN_KEY_PREFIX = "orphan_recovery_seen:";
 const ORPHAN_RECOVERY_GRACE_MS = 15_000;
+// Written by IdlePokeManager.markIdle when a workflow root exits cleanly with a
+// completed turn. Same prefix as idle-poke-manager.ts (duplicated like
+// RECOVERY_ATTEMPT_KEY_PREFIX is there).
+const IDLE_SINCE_KEY_PREFIX = "idle_since:";
 interface RecoveryAttemptState {
   attemptedAt: string;
   phase: number;
@@ -198,8 +202,10 @@ export class RecoveryManager {
     let recovered = 0;
 
     try {
+      // Only workflow tasks get stale recovery: conversational tasks rest idle
+      // with no agents by design, and the input pipeline re-feeds them.
       const runningTasks = this.db
-        .prepare("SELECT * FROM tasks WHERE status = 'running' AND task_type != 'real_time'")
+        .prepare("SELECT * FROM tasks WHERE status = 'active' AND paused = 0 AND mode = 'workflow'")
         .all() as Array<Record<string, unknown>>;
 
       for (const row of runningTasks) {
@@ -208,6 +214,14 @@ export class RecoveryManager {
         if (!task) continue;
         if (task.needs_review) continue; // Intentionally paused for human review — not orphaned
         if (this.hasOpenEscalation(taskId)) continue; // Parked awaiting human response — see injectResponse
+        // A settled run rests at step IDLE until new input wakes it — not orphaned.
+        if ((task.orchestration_state as { step?: string }).step === "IDLE") continue;
+        // A pending wake belongs to the queue (task-runner), not recovery.
+        if (task.wake_requested_at) continue;
+        // A clean root exit marked the task idle-at-rest: the idle-poke manager
+        // owns forward pressure (poke, then escalate). Recovery treating this
+        // rest as a crash used to respawn twice and fail the run.
+        if (this.isIdleAtRest(taskId)) continue;
 
         // Liveness must be keyed on THIS task, not the shared per-template
         // `agents` row. That row stores a single current_task_id/process_pid
@@ -256,9 +270,12 @@ export class RecoveryManager {
 
   async recoverTask(taskId: string): Promise<boolean> {
     const task = this.taskScheduler.getTask(taskId);
-    if (!task || task.status !== "running") return false;
+    if (!task || task.status !== "active" || task.paused) return false;
     if (task.needs_review) return false; // Not a recovery candidate — waiting for human review
-    if (task.task_type === "real_time") return false;
+    if (task.mode !== "workflow") return false; // Conversational tasks rest idle; input re-feeds them
+    if ((task.orchestration_state as { step?: string }).step === "IDLE") return false; // Settled run at rest
+    if (task.wake_requested_at) return false; // Pending wake — the queue owns the next start
+    if (this.isIdleAtRest(taskId)) return false; // Clean exit at rest — idle pokes own it
     if (!task.team_id) return false;
     if (this.hasOpenEscalation(taskId)) return false; // Awaiting human escalation response
 
@@ -284,35 +301,22 @@ export class RecoveryManager {
         // user can click Resume (which preserves notes/artifacts/checkpoints)
         // and continue from where things left off.
         const pauseReason =
-          "Recovery paused — Skipper died unexpectedly twice in a row and the daemon stopped retrying to avoid an infinite loop. Notes, artifacts, escalations, and checkpoints are all intact. Click Resume to continue from the current phase.";
+          "Recovery paused: Skipper died unexpectedly twice in a row and the daemon stopped retrying to avoid an infinite loop. Notes, artifacts, escalations, and checkpoints are all intact. Send new input to continue from the current phase.";
         try {
-          this.taskScheduler.failTask(taskId, pauseReason);
-          // failTask resets needs_review=0; re-arm it AFTER so the UI knows
-          // this is a recoverable pause, not a permanent failure.
-          // We can't use setNeedsReview here because it gates on
-          // status='running', and we just flipped status to 'failed'.
-          // Direct UPDATE is fine — the flag is just a UI marker on a
-          // failed task and doesn't need the scheduler's invariants.
-          this.db
-            .prepare("UPDATE tasks SET needs_review = 1, updated_at = datetime('now') WHERE id = ?")
-            .run(taskId);
-          // Attribute a system note to the team entrypoint so the resumed
-          // Skipper sees it in NOTES FROM PREVIOUS AGENTS.
-          const noteAgentRow = this.db.prepare(
-            `SELECT COALESCE(t.entrypoint_agent_id, (SELECT agent_id FROM team_agents WHERE team_id = t.id LIMIT 1)) AS agent_id
-             FROM teams t WHERE t.id = (SELECT team_id FROM tasks WHERE id = ?)`,
-          ).get(taskId) as { agent_id: string | null } | null;
-          if (noteAgentRow?.agent_id) {
-            this.db.prepare(
-              `INSERT INTO task_notes (id, task_id, agent_id, content, created_at)
-               VALUES (?, ?, ?, ?, datetime('now'))`,
-            ).run(
-              crypto.randomUUID(),
-              taskId,
-              noteAgentRow.agent_id,
-              `[system] Recovery paused at phase ${currentPhase} after one-shot recovery exhausted. The daemon detected the prior run died without forward progress. User Resume continues from this checkpoint.`,
-            );
-          }
+          // The task stays active: failRun records the error + a system note and
+          // the run rests at step IDLE until the user wakes it with input.
+          this.taskScheduler.failRun(taskId, pauseReason);
+          this.updateOrchestrationState(taskId, {
+            step: "IDLE",
+            last_checkpoint_ts: new Date().toISOString(),
+            session_id: null,
+            active_delegation_group_id: null,
+            active_delegation_child_count: 0,
+            active_delegation_settled_count: 0,
+            phase_guards: [],
+            pending_regression: null,
+            checkpoint_prompt_hash: null,
+          });
         } catch (err) {
           logError(this.db, "one_shot_recovery_fail", { taskId, method: "recoverTask" }, err);
         }
@@ -571,6 +575,14 @@ export class RecoveryManager {
     return false;
   }
 
+  /** True while the idle-poke manager holds the task (clean root exit at rest). */
+  private isIdleAtRest(taskId: string): boolean {
+    const row = this.db
+      .prepare("SELECT 1 FROM daemon_state WHERE key = ?")
+      .get(`${IDLE_SINCE_KEY_PREFIX}${taskId}`);
+    return !!row;
+  }
+
   private clearOrphanRecoverySeen(taskId: string): void {
     this.db
       .prepare("DELETE FROM daemon_state WHERE key = ?")
@@ -772,7 +784,7 @@ export class RecoveryManager {
 
   private getRunningTasks(): import("../tasks/scheduler").Task[] {
     const rows = this.db
-      .prepare("SELECT id FROM tasks WHERE status = 'running' AND task_type != 'real_time'")
+      .prepare("SELECT id FROM tasks WHERE status = 'active' AND paused = 0")
       .all() as Array<{ id: string }>;
 
     return rows

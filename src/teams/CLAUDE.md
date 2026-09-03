@@ -48,13 +48,18 @@ flattened into the shared config `teams`/`team_agents` at boot + on mutation. Th
 `slashCommand` (`findTeamBySlashCommand`), binding a Slack slash command that
 creates + auto-approves a task on this team. See [../slack/CLAUDE.md](../slack/CLAUDE.md).
 
-`team_config` also carries the team **mode**: `mode: 'regular' | 'realtime'`
-(absent = regular, `isRealtimeTeam`). Real-time teams back real-time tasks
-(audio/text), carry **no phases** (the phase-count guard in `validateInput` is
-relaxed for them), and expose `config.realtime = { summaryEnabled, summaryProvider,
-summaryModel }` — the per-team transcription-summary config the realtime session
-reads (`orchestrator/realtime-session.ts:getRealtimeSummaryConfig`). `config/teams.ts`
-`listRealtimeTeams()` / `listTeamsForStandardTasks()` split teams by mode; the
-provider list for the summary model comes from `model-settings.ts:listModelOptions`
-(never a hardcoded model). The built-in "Real Time" team predates this and keeps
-its legacy summarizer default.
+`team_config` also carries the team **mode**: `mode: 'workflow' | 'conversational'`
+(absent = workflow; legacy stored values `'regular'`/`'realtime'` are read as
+aliases via `normalizeTeamMode`, predicate `isConversationalTeam`). The mode
+only sets the DEFAULT task autopilot (presented as "Autopilot default" in the
+team settings modal); both modes support phases (0..n — the old phase-count
+guard is gone). Teams may expose
+`config.realtime = { summaryEnabled, summaryProvider, summaryModel }` — the
+per-team transcription-summary config the input pipeline reads
+(`orchestrator/realtime-session.ts:getRealtimeSummaryConfig`). Team pickers are
+UNIFIED: `config/teams.ts:listAssignableTeams()` lists every visible team
+regardless of mode (the old `listRealtimeTeams`/`listTeamsForStandardTasks`
+mode split is gone — any team runs any task); the provider list for the
+summary model comes from
+`model-settings.ts:listModelOptions` (never a hardcoded model). The built-in
+"Real Time" team predates this and keeps its legacy summarizer default.

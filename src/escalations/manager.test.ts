@@ -47,7 +47,7 @@ function createRunningTask(agentId: string): string {
   const taskId = crypto.randomUUID();
   db.prepare(
     `INSERT INTO tasks (id, title, team_id, status)
-     VALUES (?, 'Test Task', ?, 'running')`,
+     VALUES (?, 'Test Task', ?, 'active')`,
   ).run(taskId, teamId);
 
   // Assign task to agent
@@ -175,7 +175,7 @@ describe("listEscalations", () => {
       question: "Still needed?",
     });
 
-    db.prepare("UPDATE tasks SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(taskId);
+    db.prepare("UPDATE tasks SET status = 'settled', settled_at = datetime('now') WHERE id = ?").run(taskId);
 
     const changes = escalationManager.reconcileOpenEscalationsForInactiveTasks();
     expect(changes).toBe(1);
@@ -252,7 +252,7 @@ describe("handleEscalation", () => {
     const teamId = crypto.randomUUID();
     db.prepare("INSERT INTO teams (id, name, phases) VALUES (?, 'T', '[]')").run(teamId);
     db.prepare(
-      "INSERT INTO tasks (id, title, team_id, status) VALUES (?, 'Done Task', ?, 'completed')",
+      "INSERT INTO tasks (id, title, team_id, status) VALUES (?, 'Done Task', ?, 'settled')",
     ).run(taskId, teamId);
     db.prepare("UPDATE agents SET current_task_id = ? WHERE id = ?").run(taskId, agentId);
 

@@ -49,8 +49,8 @@ interface TaskToolSpec {
   handler: (args: any, deps: DaemonDeps, identity: AgentIdentity) => ToolResult | Promise<ToolResult>;
 }
 
-/** Statuses that count as "active" (running or queued) for list_active_tasks. */
-const ACTIVE_STATUSES = new Set(["approved", "running", "paused"]);
+/** Statuses that count as "active" (live: queued/working/idle/paused) for list_active_tasks. */
+const ACTIVE_STATUSES = new Set(["active"]);
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -98,7 +98,7 @@ function scheduleSummary(s: ScheduledTask): string {
 }
 
 /** Compact recurring-task view. `active_runs` is how many runs it currently has
- * in flight (approved/running/paused) — non-zero means it is already going. */
+ * in flight (status active) — non-zero means it is already going. */
 function recurringRow(s: ScheduledTask, activeRuns: number) {
   return {
     id: s.id,
@@ -114,7 +114,7 @@ function recurringRow(s: ScheduledTask, activeRuns: number) {
 
 /**
  * Count in-flight runs per recurring task, keyed by `source_scheduled_task_id`.
- * A run counts while it is approved/running/paused. Lets a caller (and the root
+ * A run counts while its task is active. Lets a caller (and the root
  * Skipper's prompt) see that a recurring task is already going before triggering
  * it again — the guard against a reset re-firing a run that is still active.
  */
@@ -124,7 +124,7 @@ function activeRunsByRecurring(deps: DaemonDeps): Map<string, number> {
       `SELECT source_scheduled_task_id AS sid, COUNT(*) AS n
          FROM tasks
         WHERE source_scheduled_task_id IS NOT NULL
-          AND status IN ('approved','running','paused')
+          AND status = 'active'
         GROUP BY source_scheduled_task_id`,
     )
     .all() as Array<{ sid: string; n: number }>;
@@ -143,12 +143,13 @@ function taskDetail(t: Task) {
     team_id: t.team_id,
     working_directory: t.working_directory,
     current_phase: t.current_phase,
-    task_type: t.task_type,
+    mode: t.mode,
     result: t.result ?? null,
     created_at: t.created_at,
     approved_at: t.approved_at,
     started_at: t.started_at,
     completed_at: t.completed_at,
+    settled_at: t.settled_at,
     updated_at: t.updated_at,
   };
 }
@@ -202,7 +203,7 @@ const TASK_TOOLS: TaskToolSpec[] = [
       "List tasks, newest first, paginated. Optionally filter by status. Returns { tasks, pagination } — use pagination.has_more / total_pages to page through large lists.",
     audience: "external",
     schema: {
-      status: z.enum(["draft", "approved", "running", "paused", "completed", "failed"]).optional().describe("Filter by status"),
+      status: z.enum(["draft", "active", "settled"]).optional().describe("Filter by status"),
       page: z.number().int().min(1).optional().describe("1-based page number (default 1)"),
       page_size: z.number().int().min(1).max(MAX_PAGE_SIZE).optional().describe(`Results per page (default ${DEFAULT_PAGE_SIZE}, max ${MAX_PAGE_SIZE})`),
     },
@@ -216,7 +217,7 @@ const TASK_TOOLS: TaskToolSpec[] = [
   {
     name: "list_active_tasks",
     description:
-      "List only active tasks — running or queued (approved/running/paused) — newest first, paginated. Returns { tasks, pagination }.",
+      "List only active tasks (live: queued, working, idle, or paused) — newest first, paginated. Returns { tasks, pagination }.",
     audience: "external",
     schema: {
       page: z.number().int().min(1).optional().describe("1-based page number (default 1)"),
@@ -266,7 +267,7 @@ const TASK_TOOLS: TaskToolSpec[] = [
   },
   {
     name: "pause_task",
-    description: "Pause a running task (running → paused). The daemon stops its agents; resume later with resume_task.",
+    description: "Pause an active task. The daemon stops its agents; resume later with resume_task.",
     audience: "external",
     schema: { task_id: z.string().describe("Task ID to pause") },
     handler: ({ task_id }, deps) => {
@@ -276,7 +277,7 @@ const TASK_TOOLS: TaskToolSpec[] = [
   },
   {
     name: "resume_task",
-    description: "Resume a paused task (paused → running). Only paused tasks can be resumed.",
+    description: "Resume a paused task. Only paused tasks can be resumed.",
     audience: "external",
     schema: { task_id: z.string().describe("Task ID to resume") },
     handler: ({ task_id }, deps) => {
@@ -286,25 +287,45 @@ const TASK_TOOLS: TaskToolSpec[] = [
   },
   {
     name: "cancel_task",
-    description: "Cancel an active task (draft/approved/running/paused → failed). Completed/failed tasks cannot be cancelled.",
+    description: "Cancel an active task (settles it with a cancelled result). Draft tasks should be deleted instead; settled tasks cannot be cancelled.",
     audience: "external",
     schema: { task_id: z.string().describe("Task ID to cancel") },
-    handler: ({ task_id }, deps) => {
-      const task = deps.taskScheduler.cancelTask(task_id);
+    handler: ({ task_id, }, deps) => {
+      const existing = deps.taskScheduler.getTask(task_id);
+      if (existing?.status === "draft") {
+        deps.taskScheduler.deleteTask(task_id);
+        return ok({ id: task_id, status: "deleted" });
+      }
+      const task = deps.taskScheduler.settleTask(task_id, { error: "Cancelled by user" });
       return ok({ id: task.id, status: task.status });
     },
   },
   {
     name: "complete_task",
-    description: "Mark a running task as completed (running → completed), optionally recording a result.",
+    description: "Archive an active task as done, optionally recording a result.",
     audience: "external",
     schema: {
       task_id: z.string().describe("Task ID to complete"),
       result: z.string().optional().describe("Optional result/summary to record on the task"),
     },
     handler: ({ task_id, result }, deps) => {
-      const task = deps.taskScheduler.completeTask(task_id, result);
+      const task = deps.taskScheduler.settleTask(task_id, result !== undefined ? { result } : {});
       return ok({ id: task.id, status: task.status });
+    },
+  },
+  {
+    name: "input_task",
+    description:
+      "Send input to a task — the unified way to talk to any task. Draft: appended to the description. Settled: auto-revives and wakes. Active and idle: wakes the root agent with the input. Active and busy: accumulates and is delivered when the current turn ends. Input during a review gate counts as the review response.",
+    audience: "external",
+    schema: {
+      task_id: z.string().describe("Task ID to send input to"),
+      text: z.string().describe("The input text"),
+    },
+    handler: async ({ task_id, text }, deps) => {
+      if (!deps.inputTask) throw new Error("Input is not available on this server");
+      const result = await deps.inputTask(task_id, text, "mcp");
+      return ok({ id: task_id, delivered: result.delivered });
     },
   },
   {
