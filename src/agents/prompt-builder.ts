@@ -115,12 +115,6 @@ export interface PromptOptions {
   /** Optional one-off operator input (e.g. from a recurring task "Run Now"),
    *  injected into the prompt directly below the task description. */
   injectedInput?: string;
-  consensusContext?: {
-    agentIndex: number;
-    totalAgents: number;
-    shortId: string;
-    worktreePath?: string;
-  };
 }
 
 export interface DelegationPromptOptions {
@@ -129,8 +123,6 @@ export interface DelegationPromptOptions {
   delegationPrompt: string;
   /** Label only — a child never receives the phase instructions. */
   phase?: PhaseLabel;
-  consensusShortId?: string;
-  consensusWorktree?: boolean;
   // Override for the agent-note injection cap (default DEFAULT_AGENT_NOTE_LIMIT).
   // Set from the delegate MCP tool so Skipper can widen/narrow a child's context.
   noteLimit?: number;
@@ -314,21 +306,6 @@ export class PromptBuilder {
       parts.push("The previous phase was approved by the operator with this note. Take it into account as you start this phase:");
       parts.push(options.approvalNote);
       parts.push("--- END OPERATOR NOTE ---");
-      parts.push("");
-    }
-
-    // Consensus context — tells agent it's one of N parallel workers
-    if (options.consensusContext) {
-      const cc = options.consensusContext;
-      parts.push(`PARALLEL CONSENSUS MODE: You are agent ${cc.agentIndex + 1} of ${cc.totalAgents} working on this phase independently.`);
-      parts.push(`Your instance ID is: ${cc.shortId}`);
-      parts.push(`IMPORTANT: All artifact names you create MUST be prefixed with your instance ID to avoid collisions with other parallel agents.`);
-      parts.push(`Example: instead of "implementation-plan", use "${cc.shortId}-implementation-plan".`);
-      parts.push(`All agents working on this phase and their delegated agents must follow this naming convention.`);
-      parts.push(`Work independently — do not reference or depend on other agents' outputs.`);
-      if (cc.worktreePath) {
-        parts.push(`WORKTREE ISOLATION: You are working in an isolated git worktree. All file operations MUST use paths relative to your current working directory. Do NOT use absolute paths from the task description. Your cwd is already set to the correct repository copy — use relative paths like "src/index.ts", not full absolute paths.`);
-      }
       parts.push("");
     }
 
@@ -540,17 +517,6 @@ export class PromptBuilder {
     const noteIds = notes.map((n) => n.id);
     if (notes.length > 0) {
       this.appendNotesSections(parts, notes, !!agentInstanceId);
-    }
-
-    // Consensus artifact scoping — propagated from parent consensus agent
-    if (options.consensusShortId) {
-      parts.push(`PARALLEL CONSENSUS MODE: You are part of a consensus work stream (ID: ${options.consensusShortId}).`);
-      parts.push(`IMPORTANT: All artifact names you create MUST be prefixed with "${options.consensusShortId}-" to avoid collisions with other parallel agents.`);
-      parts.push(`Example: instead of "implementation-plan", use "${options.consensusShortId}-implementation-plan".`);
-      if (options.consensusWorktree) {
-        parts.push(`WORKTREE ISOLATION: You are working in an isolated git worktree. All file operations MUST use paths relative to your current working directory. Do NOT use absolute paths from the task description. Your cwd is already set to the correct repository copy — use relative paths like "src/index.ts", not full absolute paths.`);
-      }
-      parts.push("");
     }
 
     // The specific assignment

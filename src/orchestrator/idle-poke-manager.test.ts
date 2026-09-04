@@ -254,7 +254,7 @@ describe("IdlePokeManager", () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it("skips when a running child agent_instance exists (e.g. consensus fan-out)", async () => {
+  it("skips when a running child agent_instance exists", async () => {
     const agentId = createAgent(db);
     const childAgentId = createAgent(db, "tester-agent");
     const teamId = createTeam(db, agentId);

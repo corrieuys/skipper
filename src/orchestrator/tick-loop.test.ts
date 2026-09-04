@@ -134,7 +134,7 @@ describe("autoDeleteOldTasks", () => {
       { cleanupStaleState: noop, recoverAllStaleTasks: async () => {}, persistCheckpoints: noop } as any,
       { checkStaleDelegations: noop, getActiveDelegationForParent: () => null } as any,
       { checkProcessHealth: noop, runStuckDetection: noop } as any,
-      undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined,
       new TaskScheduler(database),
     );
   }

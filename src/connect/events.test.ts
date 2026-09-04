@@ -87,6 +87,21 @@ describe("subscribeConnectEvents", () => {
     ]);
   });
 
+  it("forwards instance:state_changed with the task projection", () => {
+    const taskId = seedTask();
+    cleanup = subscribeConnectEvents(capture);
+    frames.length = 0;
+
+    eventBus.emit("instance:state_changed", {
+      instanceId: "inst-1", templateAgentId: "agent-1", taskId, parentInstanceId: null, rootInstanceId: null, status: "active",
+    });
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0]!.event).toBe("instance:state_changed");
+    expect(frames[0]!.payload.status).toBe("active");
+    expect((frames[0]!.payload.task as Record<string, unknown>).id).toBe(taskId);
+  });
+
   it("attaches projections for phase change, note, escalation, and artifact events", () => {
     const taskId = seedTask();
     const db = getDb();

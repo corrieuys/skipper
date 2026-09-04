@@ -181,10 +181,10 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         }
         return name;
       }
-      // Consensus and the per-team Slack opt-in are experimental everywhere else
-      // in the UI (task form, config page), so they stay gated here too. When a
-      // section is not rendered its apply path must LEAVE the stored value alone
-      // rather than read a missing field as "cleared".
+      // The per-team Slack opt-in is experimental everywhere else in the UI
+      // (task form, config page), so it stays gated here too. When a section is
+      // not rendered its apply path must LEAVE the stored value alone rather than
+      // read a missing field as "cleared".
       var EXPERIMENTAL = ${isExperimental() ? "true" : "false"};
       var AGENT_COLORS = ${JSON.stringify(AGENT_COLORS)};
       var CREATURE_CHOICES = ${JSON.stringify(CREATURE_IDS.filter((c) => c !== "captain"))};
@@ -210,8 +210,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       function el(html){ var t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstChild; }
       function markDirty(){ dirty = true; dirtyEl.hidden = false; }
 
-      // Ensure every agent carries a stable client-side id so consensus reviewer
-      // refs survive renames.
+      // Ensure every agent carries a stable client-side id.
       function slug(s){
         return String(s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
       }
@@ -225,19 +224,10 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         return candidate + '-' + i;
       }
 
-      // Agent ids are author-facing (they show up in exports and in consensus
-      // reviewer refs), so keep them tracking the name until the team is saved.
-      // Every inbound reference has to move with the id.
+      // Agent ids are author-facing (they show up in exports), so keep them
+      // tracking the name until the team is saved.
       function renameAgentId(a, nextId){
         if (!nextId || nextId === a.id) return;
-        var prevId = a.id;
-        if (TEAM.id) {
-          var before = TEAM.id + ':' + prevId;
-          var after = TEAM.id + ':' + nextId;
-          TEAM.phases.forEach(function(p){
-            if (p.consensus && p.consensus.reviewer_agent_id === before) p.consensus.reviewer_agent_id = after;
-          });
-        }
         a.id = nextId;
       }
       TEAM.agents.forEach(function(a){ if (!a.id) a.id = uniqueAgentId(a.name || 'agent'); });
@@ -305,8 +295,6 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       function phaseNode(p, i){
         var chips = '';
         if (p.review) chips += '<span class="tm-chip tm-chip--review">Gate</span>';
-        if (p.consensus) chips += '<span class="tm-chip tm-chip--consensus">' + esc(p.consensus.agent_count) + '&times; ' + esc(p.consensus.strategy) + '</span>';
-        if (p.consensus && p.consensus.worktree) chips += '<span class="tm-chip">worktree</span>';
 
         var promptText = (p.prompt || '').trim();
         var node = el(
@@ -423,11 +411,6 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       function removeAgent(id){
         if (!TEAM.agents.some(function(x){ return x.id === id; })) return;
         TEAM.agents = TEAM.agents.filter(function(a){ return a.id !== id; });
-        // Drop consensus reviewer references to the removed agent.
-        var ns = TEAM.id ? TEAM.id + ':' + id : null;
-        TEAM.phases.forEach(function(p){
-          if (p.consensus && ns && p.consensus.reviewer_agent_id === ns) delete p.consensus.reviewer_agent_id;
-        });
         markDirty(); render();
       }
 
@@ -583,14 +566,6 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       function openPhaseModal(i){
         var p = TEAM.phases[i];
         if (!p) return;
-        var c = p.consensus || null;
-        var reviewerOptions = ['<option value="">— none —</option>'].concat(
-          TEAM.agents.map(function(a){
-            var val = TEAM.id ? TEAM.id + ':' + a.id : '';
-            var sel = (c && c.reviewer_agent_id === val && val) ? ' selected' : '';
-            return '<option value="' + esc(val) + '"' + sel + '>' + esc(a.name || a.id) + '</option>';
-          })
-        ).join('');
 
         var body =
           '<div class="tm-field__row">' +
@@ -605,65 +580,15 @@ export function teamMapPage(vm: TeamMapViewModel): string {
             '<label class="sk-label">Phase prompt</label>' +
             '<textarea class="sk-textarea tm-field__prompt" data-f="prompt" placeholder="What this phase should accomplish, and what &quot;done&quot; looks like...">' + esc(p.prompt) + '</textarea>' +
             '<p class="tm-field__hint">Given to Skipper when the task enters this phase. Task-level overrides can replace it per task.</p>' +
-          '</div>' +
-          (EXPERIMENTAL ?
-          '<div class="tm-sub">' +
-            '<div class="tm-sub__head">' +
-              '<label class="sk-checkbox"><input type="checkbox" data-f="consensus_on"' + (c ? ' checked' : '') + '>' +
-              '<span class="sk-checkbox__toggle"></span>' +
-              '<span class="sk-checkbox__label">Consensus — run this phase with parallel agents</span></label>' +
-            '</div>' +
-            '<div data-consensus-fields' + (c ? '' : ' hidden') + '>' +
-              '<div class="tm-field__row">' +
-                '<div class="tm-field"><label class="sk-label">Agents</label>' +
-                  '<input class="sk-input" data-f="agent_count" type="number" min="2" max="10" value="' + esc(c ? c.agent_count : 2) + '"></div>' +
-                '<div class="tm-field"><label class="sk-label">Strategy</label>' +
-                  '<select class="sk-select" data-f="strategy">' +
-                    '<option value="best_of"' + (!c || c.strategy === 'best_of' ? ' selected' : '') + '>Best of N</option>' +
-                    '<option value="majority"' + (c && c.strategy === 'majority' ? ' selected' : '') + '>Majority</option>' +
-                    '<option value="merge"' + (c && c.strategy === 'merge' ? ' selected' : '') + '>Merge</option>' +
-                  '</select></div>' +
-              '</div>' +
-              '<div class="tm-field__row">' +
-                '<div class="tm-field"><label class="sk-label">Reviewer</label>' +
-                  '<select class="sk-select" data-f="reviewer"' + (TEAM.id ? '' : ' disabled') + '>' + reviewerOptions + '</select>' +
-                  (TEAM.id ? '' : '<p class="tm-field__hint">Available once the team is saved.</p>') + '</div>' +
-                '<div class="tm-field"><label class="sk-label">Isolation</label>' +
-                  '<label class="sk-checkbox"><input type="checkbox" data-f="worktree"' + (c && c.worktree ? ' checked' : '') + '>' +
-                  '<span class="sk-checkbox__toggle"></span>' +
-                  '<span class="sk-checkbox__label">Each agent in its own git worktree</span></label></div>' +
-              '</div>' +
-            '</div>' +
-          '</div>' : '');
+          '</div>';
 
         openModal('Phase <span class="tm-phase__idx">' + String(i + 1).padStart(2, '0') + '</span>', body, doneFooter(), function(){
-          if (EXPERIMENTAL) {
-            var fields = modalBody.querySelector('[data-consensus-fields]');
-            modalBody.querySelector('[data-f="consensus_on"]').addEventListener('change', function(){
-              fields.hidden = !this.checked;
-            });
-          }
           wireFooter(function(){
             var name = modalBody.querySelector('[data-f="name"]').value.trim();
             if (!name) { flashError('A phase needs a name.'); return false; }
             p.name = name;
             p.prompt = modalBody.querySelector('[data-f="prompt"]').value;
             p.review = modalBody.querySelector('[data-f="review"]').checked;
-            // Not rendered → the phase keeps whatever consensus config it had.
-            if (!EXPERIMENTAL) return;
-            if (modalBody.querySelector('[data-f="consensus_on"]').checked) {
-              var count = parseInt(modalBody.querySelector('[data-f="agent_count"]').value, 10);
-              if (!(count >= 2 && count <= 10)) { flashError('Consensus agent count must be between 2 and 10.'); return false; }
-              var reviewer = modalBody.querySelector('[data-f="reviewer"]').value;
-              p.consensus = {
-                agent_count: count,
-                strategy: modalBody.querySelector('[data-f="strategy"]').value,
-                worktree: modalBody.querySelector('[data-f="worktree"]').checked
-              };
-              if (reviewer) p.consensus.reviewer_agent_id = reviewer;
-            } else {
-              delete p.consensus;
-            }
           });
         });
       }

@@ -231,7 +231,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         void ensureTaskTitle(db, scheduler, created.id);
       }
 
-      // Collect per-task phase overrides (prompt / review gate / consensus) from
+      // Collect per-task phase overrides (prompt / review gate) from
       // the task-create form fields. See src/routes/phase-overrides.ts.
       const { overrides: phaseOverrides } = parsePhaseOverridesFromForm(formData, resolvedTeamId);
 
@@ -352,7 +352,7 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         values.push(workingDirectory.trim());
       }
 
-      // Collect per-task phase overrides (prompt / review gate / consensus).
+      // Collect per-task phase overrides (prompt / review gate).
       // See src/routes/phase-overrides.ts.
       const resolvedTeamId = typeof teamId === "string" ? teamId.trim() : task.team_id;
       const { overrides: phaseOverrides, submitted: phaseOverridesSubmitted } =

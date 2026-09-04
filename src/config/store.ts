@@ -29,18 +29,10 @@ export interface TeamMember {
   level: number;
 }
 
-export interface TeamConsensusConfig {
-  agent_count: number;
-  strategy: string;
-  worktree: boolean;
-  reviewer_agent_id?: string;
-}
-
 export interface TeamPhase {
   name: string;
   prompt: string;
   review?: boolean;
-  consensus?: TeamConsensusConfig;
 }
 
 export interface TeamDefinition {

@@ -59,7 +59,7 @@ export class DaemonMcpServer {
   /**
    * A solo session - its task is assigned to a single agent OR a custom agent
    * run solo (projected team id `sa:<id>` / `ca:<id>`). Such a session gets the
-   * restricted solo tool profile (no delegation/phase/consensus/recurring, but
+   * restricted solo tool profile (no delegation/phase/recurring, but
    * keeps complete_task so the sole executor can close its own task).
    */
   private isSoloRuntime(runtimeId: string): boolean {

@@ -24,6 +24,7 @@ import { MonkeyEngine } from "./src/monkey/tick";
 import { getGregDb, closeGregDb } from "./src/monkey/db";
 import { GlobalStoreManager } from "./src/global-store/manager";
 import { initConnectClient } from "./src/connect/client";
+import { createConnectLocalEndpoint } from "./src/connect/local-endpoint";
 import { initSlackSocket, getSlackSocket } from "./src/slack/socket";
 import { initSlackPush, getSlackPush } from "./src/slack/push";
 import { isSocketModeConfigured, isSlackSocketEnabled, isSlackConfigured } from "./src/config/slack-settings";
@@ -59,7 +60,6 @@ const mcpServer = new DaemonMcpServer(getDb(), {
   taskScheduler: daemon.getTaskScheduler(),
   escalationManager: daemon.getEscalationManager(),
   artifactManager: daemon.getArtifactManager(),
-  consensusManager: daemon.getConsensusManager(),
   globalStoreManager: new GlobalStoreManager(getDb()),
   realtimeSessionManager: daemon.getRealtimeSessionManager(),
   inputTask: (taskId, text, source) => daemon.inputTask(taskId, text, source),
@@ -122,18 +122,6 @@ addRoute("POST", "/api/whisper/stop", () => {
 });
 
 
-// Register WebSocket upgrade handlers (tried in order)
-setWebSocketUpgradeHandlers([
-  (req, server) => tryUpgradeRealtimeWs(req, server, daemon.getRealtimeSessionManager()),
-  (req, server) => monkeyEngine.tryUpgrade(req, server),
-  (req, server) => uiPush.tryUpgrade(req, server),
-]);
-setWebSocketHandlers({
-  realtime: realtimeWsHandlers,
-  monkey: monkeyEngine.wsHandlers,
-  "ui-push": uiPush.wsHandlers,
-});
-
 const connectClient = initConnectClient(
   daemon.getTaskScheduler(),
   daemon.getScheduledTaskScheduler(),
@@ -144,6 +132,26 @@ const connectClient = initConnectClient(
   (taskId, text, source) => daemon.inputTask(taskId, text, source),
   (taskId) => killRunningRuntimesForTask(taskId, daemon),
 );
+
+// Local consumer WebSocket for apps on this machine (Mac app). Unauthenticated
+// and loopback-only; shares the ConnectClient's ResourceDeps so the wiring
+// exists once.
+const connectLocal = createConnectLocalEndpoint(connectClient.getResourceDeps());
+addRoute("GET", "/connect/local", () => connectLocal.routeHandler());
+
+// Register WebSocket upgrade handlers (tried in order)
+setWebSocketUpgradeHandlers([
+  (req, server) => tryUpgradeRealtimeWs(req, server, daemon.getRealtimeSessionManager()),
+  (req, server) => monkeyEngine.tryUpgrade(req, server),
+  (req, server) => uiPush.tryUpgrade(req, server),
+  (req, server) => connectLocal.tryUpgrade(req, server),
+]);
+setWebSocketHandlers({
+  realtime: realtimeWsHandlers,
+  monkey: monkeyEngine.wsHandlers,
+  "ui-push": uiPush.wsHandlers,
+  "connect-local": connectLocal.wsHandlers,
+});
 
 // Slack Socket Mode (experimental): inbound slash commands + interactive
 // button/modal handling → Skipper actions.
@@ -204,6 +212,7 @@ function shutdown() {
   daemon.stop();
   whisperManager.stop(getDb());
   uiPush.destroy();
+  connectLocal.destroy();
   server.stop(true);
   closeDb();
   process.exit(0);

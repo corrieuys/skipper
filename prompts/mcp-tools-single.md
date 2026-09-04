@@ -30,4 +30,4 @@ CRITICAL: Only call global-store tools when the task description or task templat
 NOT AVAILABLE to you (do NOT attempt these - they are not registered for a single agent):
 - Delegation (`delegate`, `delegate_batch`, `delegate_resume`, `list_delegations`) - you have no team to delegate to; do the work yourself.
 - Phase lifecycle (`complete_phase`, `regress_phase`) - you have no phases.
-- Consensus and recurring-task tools.
+- Recurring-task tools.

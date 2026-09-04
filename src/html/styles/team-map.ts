@@ -393,7 +393,6 @@ export function teamMapStyles(): string {
       color: var(--sk-text-muted);
     }
     .tm-chip--review { background: color-mix(in srgb, var(--sk-accent-warning) 15%, transparent); color: var(--sk-accent-warning); }
-    .tm-chip--consensus { background: color-mix(in srgb, var(--sk-accent-secondary) 15%, transparent); color: var(--sk-accent-secondary); }
     .tm-chip--slack { background: color-mix(in srgb, var(--sk-accent-tertiary) 15%, transparent); color: var(--sk-accent-tertiary); }
 
     /* Node tool rail — appears on hover, sits above the card. */

@@ -367,23 +367,6 @@ export function componentStyles(): string {
     .sk-phase-edit__review-label input[type="checkbox"] {
       margin-top: 2px;
     }
-    .sk-phase-edit__consensus {
-      font-size: var(--sk-text-xs);
-      color: var(--sk-text-muted);
-    }
-    .sk-phase-edit__consensus summary {
-      cursor: pointer;
-      font-size: 11px;
-      color: var(--sk-text-muted);
-      padding: var(--sk-space-1) 0;
-    }
-    .sk-phase-edit__consensus-fields {
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--sk-space-2);
-      padding: var(--sk-space-2) 0;
-      align-items: end;
-    }
     .sk-table--compact {
       font-size: var(--sk-text-xs);
     }

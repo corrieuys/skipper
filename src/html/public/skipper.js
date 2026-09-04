@@ -1658,19 +1658,6 @@
       };
       var reviewCb = el.querySelector('[data-phase-field="review"]');
       if (reviewCb && reviewCb.checked) phase.review = true;
-      var conDetails = el.querySelector(".sk-phase-edit__consensus");
-      if (conDetails && conDetails.open) {
-        var agentCount = el.querySelector('[data-phase-field="consensus_agent_count"]');
-        var strategy = el.querySelector('[data-phase-field="consensus_strategy"]');
-        var worktreeCb = el.querySelector('[data-phase-field="consensus_worktree"]');
-        var reviewer = el.querySelector('[data-phase-field="consensus_reviewer_agent_id"]');
-        phase.consensus = {
-          agent_count: parseInt(agentCount.value, 10) || 2,
-          strategy: strategy.value || "best_of",
-          worktree: worktreeCb ? worktreeCb.checked : false,
-        };
-        if (reviewer && reviewer.value) phase.consensus.reviewer_agent_id = reviewer.value;
-      }
       payload.phases.push(phase);
     });
     form.querySelectorAll(".sk-member-edit").forEach(function (el) {
@@ -1727,19 +1714,7 @@
       '<div><strong>Review gate</strong>' +
       '<span class="sk-inline-edit-form__hint" style="display:block;margin-top:2px;">Pause after this phase completes and wait for operator approval before advancing.</span>' +
       '</div></label></div>' +
-      '<details class="sk-phase-edit__consensus">' +
-      '<summary>Consensus settings</summary>' +
-      '<div class="sk-inline-edit-form__hint" style="margin-bottom:var(--sk-space-2);">Run multiple agents in parallel on this phase and merge or select the best result.</div>' +
-      '<div class="sk-phase-edit__consensus-fields">' +
-      '<div class="sk-inline-edit-form__field"><span class="sk-inline-edit-form__label">Agent count</span>' +
-      '<input type="number" data-phase-field="consensus_agent_count" value="2" min="1" max="10" class="sk-input sk-input--sm" style="width:70px;"></div>' +
-      '<div class="sk-inline-edit-form__field"><span class="sk-inline-edit-form__label">Strategy</span>' +
-      '<select data-phase-field="consensus_strategy" class="sk-select sk-select--sm"><option value="best_of">best_of</option><option value="majority">majority</option><option value="merge">merge</option></select></div>' +
-      '<label style="display:flex;align-items:center;gap:6px;font-size:var(--sk-text-xs);color:var(--sk-text-muted);align-self:end;padding-bottom:4px;">' +
-      '<input type="checkbox" data-phase-field="consensus_worktree"> Isolate in worktrees</label>' +
-      '<div class="sk-inline-edit-form__field"><span class="sk-inline-edit-form__label">Reviewer agent</span>' +
-      '<select data-phase-field="consensus_reviewer_agent_id" class="sk-select sk-select--sm"><option value="">— none —</option></select></div>' +
-      '</div></details></div>';
+      '</div>';
     container.appendChild(div);
   };
 

@@ -5,7 +5,7 @@
 | `manager.ts` | Team CRUD. Phase mgmt. Membership + constraints. Execution-shape resolution. Skipper enforced as entrypoint |
 | `team-input.ts` | `toTeamInput` — coerce raw create/update/import bodies (JSON or team-map form payloads) into `LocalTeamInput`. Shared by `/api/teams` and `/data/teams` |
 
-Phases live on team. Each phase names agents + optional consensus config.
+Phases live on team. Each phase carries a prompt + optional review gate.
 
 Each member may also carry `customTools` — operator-defined tool names granted to
 that agent on that team (`src/custom-tools`). This is the only route by which a

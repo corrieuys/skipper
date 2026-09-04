@@ -106,7 +106,7 @@ Skipper separates the **shape** of a workflow from the **detailed instructions**
 
 - a **template-level Skipper prompt** that applies across the whole task,
 - a **per-phase prompt** that either **appends to** or **replaces** the team's phase prompt (the `override_prompt` flag), and
-- per-phase **review** and **consensus** overrides, plus **hooks**.
+- per-phase **review** overrides, plus **hooks**.
 
 At runtime `resolvePhaseConfig()` layers these: **team base prompt → template override → task-level override**. This is where an operator writes the detailed instructions a generic team prompt deliberately leaves out — *which specific MCP tools an agent should call, which skills to invoke, what conventions and acceptance criteria apply, what to escalate on.*
 

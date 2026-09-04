@@ -6,7 +6,6 @@ import type { Task } from "../tasks/scheduler";
 import { agentTypeUsesInlinePrompt } from "../agents/types";
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
-import type { ConsensusManager } from "./consensus-manager";
 import type { Phase } from "../teams/manager";
 import type { OrchestrationState } from "./types";
 import { resolvePhaseConfig } from "./phase-config";
@@ -38,11 +37,6 @@ export class PhaseManager {
   // entire async run and is cleared in finally{} so failed runs don't lock the
   // task forever.
   private phaseCompleteInFlight: Set<string> = new Set();
-  private consensusManager: ConsensusManager | null = null;
-
-  setConsensusManager(cm: ConsensusManager): void {
-    this.consensusManager = cm;
-  }
 
   constructor(
     private readonly db: Database,
@@ -144,8 +138,8 @@ export class PhaseManager {
       // Delegate to advanceAndRespawn — single source of truth for
       // phase-advance + entrypoint respawn. It looks up the entrypoint's
       // session via getEntrypointSessionIdForTask so the next phase's Skipper
-      // resumes with conversation continuity. Also handles consensus fan-out
-      // and writes PHASE_START with the session_id baked in.
+      // resumes with conversation continuity, and writes PHASE_START with the
+      // session_id baked in.
       this.phaseCompleteHandled.add(dedupKey);
       await this.advanceAndRespawn(task, teamExec!.entrypoint_agent_id, phases);
       return "advanced";
@@ -306,21 +300,6 @@ export class PhaseManager {
   ): Promise<void> {
     const nextPhaseIndex = task.current_phase + 1;
     const resolvedNext = resolvePhaseConfig(phases[nextPhaseIndex], task.task_config as Record<string, unknown>);
-    const resolvedNextPhaseObj: Phase = { name: resolvedNext.name, prompt: resolvedNext.prompt, review: resolvedNext.review, consensus: resolvedNext.consensus ?? undefined };
-
-    // Consensus phase — delegate to ConsensusManager
-    if (resolvedNext.consensus && resolvedNext.consensus.agent_count >= 2) {
-      this.taskScheduler.advancePhase(task.id);
-      const updatedTask = this.taskScheduler.getTask(task.id)!;
-      await this.consensusManager?.startConsensusPhase({
-        task: updatedTask,
-        entrypointAgentId,
-        phase: resolvedNextPhaseObj,
-        phaseIndex: nextPhaseIndex,
-        totalPhases: phases.length,
-      });
-      return;
-    }
 
     const advanced = this.taskScheduler.advancePhase(task.id);
     const nextPhase = advanced.current_phase;

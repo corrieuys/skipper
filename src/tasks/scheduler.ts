@@ -19,7 +19,6 @@ export type TaskRuntimeState = "paused" | "blocked" | "review" | "working" | "qu
 
 export interface PhaseOverride {
   review?: boolean;
-  consensus?: import("../teams/manager").ConsensusConfig | null;
 }
 
 // Per-task config JSON (tasks.task_config). Input-pipeline knobs apply to every

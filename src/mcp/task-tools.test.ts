@@ -36,7 +36,6 @@ function deps(): DaemonDeps {
     phaseManager: {} as DaemonDeps["phaseManager"],
     escalationManager: {} as DaemonDeps["escalationManager"],
     artifactManager: new ArtifactManager(db),
-    consensusManager: {} as DaemonDeps["consensusManager"],
   };
 }
 

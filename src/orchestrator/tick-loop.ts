@@ -4,7 +4,6 @@ import type { TaskRunner } from "./task-runner";
 import type { RecoveryManager } from "./recovery-manager";
 import type { DelegationManager } from "./delegation-manager";
 import type { HealthMonitor } from "./health-monitor";
-import type { WorktreeManager } from "./worktree-manager";
 import type { EscalationManager } from "../escalations/manager";
 import type { IdlePokeManager } from "./idle-poke-manager";
 import type { TaskScheduler } from "../tasks/scheduler";
@@ -57,7 +56,6 @@ export class ReconciliationLoop {
     private readonly recoveryManager: RecoveryManager,
     private readonly delegationManager: DelegationManager,
     private readonly healthMonitor: HealthMonitor,
-    private readonly worktreeManager?: WorktreeManager,
     private readonly escalationManager?: EscalationManager,
     private readonly scheduledTaskProcessor?: () => void | Promise<void>,
     private readonly idlePokeManager?: IdlePokeManager,
@@ -85,7 +83,6 @@ export class ReconciliationLoop {
       { name: "escalation-recon",   fn: () => this.escalationManager?.reconcileOpenEscalationsForInactiveTasks(), intervalMs: 120_000 },
 
       // Infrequent: housekeeping
-      { name: "worktree-cleanup",   fn: () => this.worktreeManager?.cleanupStaleWorktrees(),        intervalMs: 300_000 },
       { name: "terminal-cleanup",   fn: () => this.cleanupOldTerminalOutputs(),                     intervalMs: 300_000 },
       { name: "log-file-rotate",    fn: () => this.rotateOversizedLogFile(),                        intervalMs: 300_000 },
       { name: "task-auto-delete",   fn: () => this.autoDeleteOldTasks(),                            intervalMs: 3_600_000 },

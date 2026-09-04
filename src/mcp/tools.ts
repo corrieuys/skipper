@@ -13,7 +13,6 @@ import type { RealtimeSessionManager } from "../orchestrator/realtime-session";
 import { isAbsolute, basename } from "node:path";
 import { readFileSync, statSync } from "node:fs";
 import { isCustomAgentType } from "../agents/types";
-import type { ConsensusManager } from "../orchestrator/consensus-manager";
 import type { GlobalStoreManager } from "../global-store/manager";
 import type { AgentIdentity, InternalAgentIdentity } from "./auth";
 import { eventBus } from "../events/bus";
@@ -38,7 +37,6 @@ export interface DaemonDeps {
   taskScheduler: TaskScheduler;
   escalationManager: EscalationManager;
   artifactManager: ArtifactManager;
-  consensusManager: ConsensusManager;
   globalStoreManager: GlobalStoreManager;
   /**
    * Input pipeline; `create_file_artifact` puts the agent's file on the task
@@ -64,8 +62,8 @@ export interface RegisterDaemonToolsOptions {
    * When true, this session is a SOLO run - a single agent OR a custom agent
    * assigned to run a whole task alone. It gets the notes/artifacts/escalation/
    * global-store surface plus `complete_task` (it owns its task end to end), but
-   * NOT delegation, phase-lifecycle (`complete_phase`/`regress_phase`), consensus,
-   * or the recurring-task pair. Composes with `isDelegated` (a solo agent runs as
+   * NOT delegation, phase-lifecycle (`complete_phase`/`regress_phase`), or the
+   * recurring-task pair. Composes with `isDelegated` (a solo agent runs as
    * a root, so `isDelegated` is false).
    *
    * Defaults to false.
@@ -133,7 +131,7 @@ export function registerDaemonTools(
   getIdentity: () => AgentIdentity | null,
   options?: RegisterDaemonToolsOptions,
 ): void {
-  const { db, delegationManager, phaseManager, taskScheduler, escalationManager, artifactManager, consensusManager, globalStoreManager } = deps;
+  const { db, delegationManager, phaseManager, taskScheduler, escalationManager, artifactManager, globalStoreManager } = deps;
   // Stateless over the db handle, so it is built here rather than threaded
   // through DaemonDeps and every construction site.
   const messageManager = new MessageManager(db);
@@ -968,49 +966,6 @@ export function registerDaemonTools(
       },
     );
   }
-
-  // ── Consensus (multi-agent only - omitted for single agents) ──
-  if (!options?.isSolo) {
-  server.tool(
-    "consensus_pick",
-    "Pick the best agent output in a consensus review",
-    { agent_short_id: z.string().describe("Short ID (first 8 chars) of the agent to pick") },
-    async ({ agent_short_id }) => {
-      const identity = getInternalIdentity();
-      if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
-
-      try {
-        await consensusManager.handleConsensusPick(identity.runtimeId, agent_short_id);
-
-        signalBridge.registerMcpAction(identity.runtimeId, "consensus_pick", agent_short_id);
-
-        return { content: [{ type: "text" as const, text: JSON.stringify({ status: "applied" }) }] };
-      } catch (err) {
-        return errorResult(err);
-      }
-    },
-  );
-
-  server.tool(
-    "consensus_merge",
-    "Merge the best parts of multiple agent outputs in a consensus review",
-    { diff: z.string().describe("Unified diff to apply to the main working directory") },
-    async ({ diff }) => {
-      const identity = getInternalIdentity();
-      if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
-
-      try {
-        await consensusManager.handleConsensusMerge(identity.runtimeId, diff);
-
-        signalBridge.registerMcpAction(identity.runtimeId, "consensus_merge", "merged");
-
-        return { content: [{ type: "text" as const, text: JSON.stringify({ status: "applied" }) }] };
-      } catch (err) {
-        return errorResult(err);
-      }
-    },
-  );
-  } // end consensus surface (single-agent gate)
 
   // Audience-tagged task-management tools. Most entries are external-only; the
   // recurring-task pair (list_recurring_tasks / run_recurring_task) is "both" +

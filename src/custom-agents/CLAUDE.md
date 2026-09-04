@@ -34,7 +34,7 @@ mutation; `index.ts` calls it once at boot.
 
 Custom types are `supports_stdin: false`, `supports_resume: true`, and
 `agentTypeUsesInlinePrompt` returns true for them (`agents/types.ts`), so every
-spawn site — task-runner, delegation, phase, consensus, idle-poke — already takes
+spawn site — task-runner, delegation, phase, idle-poke — already takes
 the `initialPrompt` branch and never calls `sendInput`. None of them know custom
 agents exist.
 

@@ -32,7 +32,6 @@ function makeDeps(): DaemonDeps {
     taskScheduler: {} as DaemonDeps["taskScheduler"],
     escalationManager: {} as DaemonDeps["escalationManager"],
     artifactManager: {} as DaemonDeps["artifactManager"],
-    consensusManager: {} as DaemonDeps["consensusManager"],
     globalStoreManager: new GlobalStoreManager(db),
   };
 }
@@ -88,7 +87,7 @@ describe("registerDaemonTools — role-based registration", () => {
     for (const tool of RECURRING_TOOLS) expect(child.registeredNames).not.toContain(tool);
   });
 
-  it("single-agent session: keeps complete_task + notes/artifacts/escalate, drops delegation/phase/consensus/recurring", () => {
+  it("single-agent session: keeps complete_task + notes/artifacts/escalate, drops delegation/phase/recurring", () => {
     const { server, registeredNames } = makeFakeMcpServer();
     registerDaemonTools(server as any, makeDeps(), () => null, { isSolo: true });
 
@@ -103,7 +102,7 @@ describe("registerDaemonTools — role-based registration", () => {
     // Dropped - no team, no phases, no multi-agent machinery.
     for (const tool of [
       "delegate", "delegate_batch", "delegate_resume", "list_delegations", "check_delegation", "check_delegation_group",
-      "complete_phase", "regress_phase", "consensus_pick", "consensus_merge",
+      "complete_phase", "regress_phase",
       "list_recurring_tasks", "run_recurring_task",
     ]) {
       expect(registeredNames).not.toContain(tool);

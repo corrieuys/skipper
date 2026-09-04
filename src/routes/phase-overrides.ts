@@ -1,11 +1,9 @@
-import type { ConsensusConfig } from "../teams/manager";
 import { getDb } from "../db/connection";
 
-export type PhaseOverride = { prompt?: string; review?: boolean; consensus?: ConsensusConfig | null };
+export type PhaseOverride = { prompt?: string; review?: boolean };
 
 const PROMPT_MODE_PREFIX = "phasePromptMode_";
 const REVIEW_PREFIX = "phaseReviewOverride_";
-const CONSENSUS_MODE_PREFIX = "phaseConsensusMode_";
 
 // Parse the per-phase override form fields emitted by taskPhaseConfigFragment
 // (src/html/pages/task-create.page.ts). Field names carry a sanitized phase name
@@ -50,28 +48,6 @@ export function parsePhaseOverridesFromForm(
       const val = typeof value === "string" ? value : "";
       if (val === "true") upsert(real(key.slice(REVIEW_PREFIX.length)), { review: true });
       else if (val === "false") upsert(real(key.slice(REVIEW_PREFIX.length)), { review: false });
-    } else if (key.startsWith(CONSENSUS_MODE_PREFIX) && key.length > CONSENSUS_MODE_PREFIX.length) {
-      submitted = true;
-      const safe = key.slice(CONSENSUS_MODE_PREFIX.length);
-      const mode = typeof value === "string" ? value : "";
-      if (mode === "disabled") {
-        upsert(real(safe), { consensus: null });
-      } else if (mode === "override") {
-        const countRaw = formData.get(`phaseConsensusAgentCount_${safe}`);
-        const strategyRaw = formData.get(`phaseConsensusStrategy_${safe}`);
-        const worktreeRaw = formData.get(`phaseConsensusWorktree_${safe}`);
-        const reviewerRaw = formData.get(`phaseConsensusReviewerAgentId_${safe}`);
-        const agent_count = Math.max(1, parseInt(typeof countRaw === "string" ? countRaw : "", 10) || 2);
-        const strategy: ConsensusConfig["strategy"] = strategyRaw === "merge" ? "merge" : "best_of";
-        const consensus: ConsensusConfig = {
-          agent_count,
-          strategy,
-          worktree: typeof worktreeRaw === "string" && worktreeRaw.length > 0,
-        };
-        const reviewer = typeof reviewerRaw === "string" ? reviewerRaw.trim() : "";
-        if (reviewer) consensus.reviewer_agent_id = reviewer;
-        upsert(real(safe), { consensus });
-      }
     }
   }
 

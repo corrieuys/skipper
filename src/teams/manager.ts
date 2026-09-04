@@ -11,18 +11,10 @@ export interface Team {
   updated_at: string;
 }
 
-export interface ConsensusConfig {
-  agent_count: number;
-  reviewer_agent_id?: string;
-  strategy: 'best_of' | 'merge';
-  worktree: boolean;
-}
-
 export interface Phase {
   name: string;
   prompt: string;
   review?: boolean;
-  consensus?: ConsensusConfig;
 }
 
 export interface TeamAgent {
@@ -157,26 +149,6 @@ export class TeamManager {
   updatePhases(teamId: string, phases: Phase[]): Team {
     const team = this.getTeam(teamId);
     if (!team) throw new Error(`Team not found: ${teamId}`);
-
-    for (const phase of phases) {
-      if (phase.consensus) {
-        const c = phase.consensus;
-        if (!Number.isInteger(c.agent_count) || c.agent_count < 2 || c.agent_count > 10) {
-          throw new Error(`Phase "${phase.name}": consensus.agent_count must be an integer between 2 and 10`);
-        }
-        if (!['majority', 'best_of', 'merge'].includes(c.strategy)) {
-          throw new Error(`Phase "${phase.name}": consensus.strategy must be 'majority', 'best_of', or 'merge'`);
-        }
-        if (c.reviewer_agent_id) {
-          const isMember = this.db
-            .prepare("SELECT id FROM team_agents WHERE team_id = ? AND agent_id = ?")
-            .get(teamId, c.reviewer_agent_id);
-          if (!isMember) {
-            throw new Error(`Phase "${phase.name}": consensus.reviewer_agent_id must be a team member`);
-          }
-        }
-      }
-    }
 
     this.db
       .prepare(

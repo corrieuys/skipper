@@ -156,12 +156,6 @@ export interface RealtimeAudioLockEvent {
   ownerLabel?: string;   // human label, e.g. "web" / "ios"
 }
 
-export interface ConsensusPhaseAdvanceEvent {
-  taskId: string;
-  entrypointAgentId: string;
-  nextPhaseIndex: number;
-}
-
 export interface TaskNeedsReviewChangedEvent {
   taskId: string;
   needsReview: boolean;
@@ -209,7 +203,6 @@ export interface EventMap {
   "realtime:session_state": [RealtimeSessionStateEvent];
   "realtime:timeline_updated": [RealtimeTimelineUpdatedEvent];
   "realtime:audio_lock": [RealtimeAudioLockEvent];
-  "consensus:phase_advance": [ConsensusPhaseAdvanceEvent];
   "task:needs_review_changed": [TaskNeedsReviewChangedEvent];
   "task:run_completed": [TaskRunCompletedEvent];
   "task:run_failed": [TaskRunFailedEvent];

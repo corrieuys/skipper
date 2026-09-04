@@ -47,7 +47,6 @@ function makeDeps(): DaemonDeps {
     taskScheduler: {} as DaemonDeps["taskScheduler"],
     escalationManager: escalationManagerStub,
     artifactManager: {} as DaemonDeps["artifactManager"],
-    consensusManager: {} as DaemonDeps["consensusManager"],
     globalStoreManager: new GlobalStoreManager(db),
   };
 }

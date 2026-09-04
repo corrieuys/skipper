@@ -39,15 +39,6 @@ function coercePhase(raw: unknown): TeamPhase | null {
     prompt: typeof p.prompt === "string" ? p.prompt : "",
   };
   if (typeof p.review === "boolean") phase.review = p.review;
-  if (p.consensus && typeof p.consensus === "object") {
-    const c = p.consensus as Record<string, unknown>;
-    phase.consensus = {
-      agent_count: typeof c.agent_count === "number" ? c.agent_count : 2,
-      strategy: typeof c.strategy === "string" ? c.strategy : "best_of",
-      worktree: !!c.worktree,
-      ...(typeof c.reviewer_agent_id === "string" ? { reviewer_agent_id: c.reviewer_agent_id } : {}),
-    };
-  }
   return phase;
 }
 

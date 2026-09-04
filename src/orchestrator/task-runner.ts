@@ -3,7 +3,6 @@ import type { AgentManager } from "../agents/manager";
 import type { PromptBuilder, AgentInfo, PhaseInfo } from "../agents/prompt-builder";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { TeamManager, Phase } from "../teams/manager";
-import type { ConsensusManager } from "./consensus-manager";
 import { agentTypeUsesInlinePrompt } from "../agents/types";
 import { logError } from "../logging";
 import type { OrchestrationState } from "./types";
@@ -23,12 +22,7 @@ export interface TaskWakeFeeder {
 }
 
 export class TaskRunner {
-  private consensusManager: ConsensusManager | null = null;
   private wakeFeeder: TaskWakeFeeder | null = null;
-
-  setConsensusManager(cm: ConsensusManager): void {
-    this.consensusManager = cm;
-  }
 
   setWakeFeeder(feeder: TaskWakeFeeder): void {
     this.wakeFeeder = feeder;
@@ -149,29 +143,15 @@ export class TaskRunner {
     const phases = teamExec.team.phases as Phase[];
     const startPhase = Math.max(0, startedTask.current_phase ?? 0);
     let phaseInfo: PhaseInfo | undefined;
-    let resolvedStartPhase: Phase | undefined;
     if (phases.length > 0) {
       const safePhase = Math.min(startPhase, phases.length - 1);
       const resolved = resolvePhaseConfig(phases[safePhase], startedTask.task_config as Record<string, unknown>);
-      resolvedStartPhase = { name: resolved.name, prompt: resolved.prompt, review: resolved.review, consensus: resolved.consensus ?? undefined };
       phaseInfo = {
         name: resolved.name,
         prompt: resolved.prompt,
         index: safePhase,
         total: phases.length,
       };
-    }
-
-    // Check if the starting phase is a consensus phase (using resolved config to respect overrides)
-    if (resolvedStartPhase?.consensus && resolvedStartPhase.consensus.agent_count >= 2) {
-      await this.consensusManager?.startConsensusPhase({
-        task: startedTask,
-        entrypointAgentId,
-        phase: resolvedStartPhase,
-        phaseIndex: startPhase,
-        totalPhases: phases.length,
-      });
-      return { processed: 1 };
     }
 
     const { prompt: basePrompt, noteIds } = this.promptBuilder.buildInitialPromptTracked({
@@ -192,7 +172,7 @@ export class TaskRunner {
 
     const usesInlinePrompt = typeDef ? agentTypeUsesInlinePrompt(typeDef) : false;
     // Agents spawn in the orchestrator's cwd (where Claude Code config/hooks live).
-    // The task's working_directory is communicated via the prompt and used for worktree creation.
+    // The task's working_directory is communicated via the prompt.
     const workingDir = process.cwd();
 
     // Set current_task_id BEFORE spawn so the manager can reference it

@@ -42,7 +42,7 @@ const RESERVED_NAMES = new Set([
   "list_delegations", "complete_phase", "regress_phase", "complete_task", "escalate",
   "check_escalation", "create_note", "list_notes", "create_artifact", "get_artifact",
   "list_artifacts", "post_message", "set_global_value", "get_global_value", "query_global_store",
-  "delete_global_value", "consensus_merge", "consensus_pick",
+  "delete_global_value",
   "slack_send_message", "slack_send_dm", "slack_read_channel",
   "read_file", "search_replace", "list_dir", "glob", "grep", "load_skill",
 ]);

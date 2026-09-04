@@ -49,7 +49,7 @@ A task is "assigned to a single agent" by setting `tasks.team_id = sa:<id>`. The
   skips the team roster + delegation block.
 - **tools** - `mcp/server.ts:isSingleAgentRuntime` (task's `team_id` starts with
   `sa:`) → `registerDaemonTools({ isSingleAgent: true })`: drops
-  delegation/consensus/phase/recurring, keeps `complete_task` + notes/artifacts/
+  delegation/phase/recurring, keeps `complete_task` + notes/artifacts/
   escalate/global-store. See [../mcp/CLAUDE.md](../mcp/CLAUDE.md).
 - **Slack** - a single-agent task carries no `local_teams` row, so
   `isSlackEnabledForTeam` would return false; `mcp/tools.ts` + `slack/push.ts`

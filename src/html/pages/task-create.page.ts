@@ -5,7 +5,6 @@ import { dictateButton } from "../fragments/dictate-button.fragment";
 import { renderScheduleMatrixEditor } from "../atoms/schedule-matrix";
 import { isExperimental } from "../../config/feature-flags";
 import type { TeamPhase } from "../../config/store";
-import type { ConsensusConfig } from "../../teams/manager";
 
 export interface TaskCreateTeam {
   id: string;
@@ -21,14 +20,14 @@ export interface TaskCreateViewModel {
   titleGeneratorConfigured: boolean;
 }
 
-export type TaskPhaseOverride = { prompt?: string; review?: boolean; consensus?: ConsensusConfig | null };
+export type TaskPhaseOverride = { prompt?: string; review?: boolean };
 
 // Per-task phase-override form, shown on the task form once a team is selected.
 // Emits suffixed field names (phasePromptMode_<safe>, phaseReviewOverride_<safe>, …)
 // keyed by a sanitized phase name; the create/update routes (src/routes/tasks.ts) map
 // the safe name back to the real phase name and write task_config.phase_overrides.
-// Scope: per-phase prompt + review gate + (experimental) consensus. The whole form
-// is collapsed by default (most tasks won't override) to keep the create form short.
+// Scope: per-phase prompt + review gate. The whole form is collapsed by default
+// (most tasks won't override) to keep the create form short.
 export function taskPhaseConfigFragment(
   teamPhases: TeamPhase[],
   existingOverrides: Record<string, TaskPhaseOverride>,
@@ -52,20 +51,6 @@ export function taskPhaseConfigFragment(
 
     const baseReviewText = (phase.review ?? false) ? "enabled" : "disabled";
 
-    let consensusMode = "";
-    let consensusConfig: ConsensusConfig | null = null;
-    if (existing && "consensus" in existing) {
-      if (existing.consensus === null) { consensusMode = "disabled"; anyOverride = true; }
-      else if (existing.consensus) { consensusMode = "override"; consensusConfig = existing.consensus; anyOverride = true; }
-    }
-    const showConsensusConfig = consensusMode === "override";
-
-    let baseConsensusText = "No parallel execution";
-    if (phase.consensus) {
-      const c = phase.consensus;
-      baseConsensusText = `Parallel: ${c.agent_count} agents, ${c.strategy}, worktree:${c.worktree ? "yes" : "no"}`;
-    }
-
     return `
     <div class="sk-form-group" style="border:1px solid var(--sk-border);border-radius:6px;padding:var(--sk-space-3);margin-bottom:var(--sk-space-3);">
       <h4 style="margin:0 0 var(--sk-space-3);">${escapeHtml(phase.name)}</h4>
@@ -83,7 +68,7 @@ export function taskPhaseConfigFragment(
         </div>
       </div>
 
-      <div style="margin-bottom:${isExperimental() ? "var(--sk-space-3)" : "0"};">
+      <div>
         <p class="sk-text-xs" style="color:var(--sk-text-muted);margin:0 0 var(--sk-space-1);">Base team setting: Review gate <strong>${baseReviewText}</strong></p>
         <label class="sk-label sk-text-xs">Review gate override:</label>
         <select name="phaseReviewOverride_${safe}" class="sk-select">
@@ -92,40 +77,6 @@ export function taskPhaseConfigFragment(
           <option value="false"${reviewValue === "false" ? " selected" : ""}>Disable review</option>
         </select>
       </div>
-
-      ${isExperimental() ? `<div>
-        <p class="sk-text-xs" style="color:var(--sk-text-muted);margin:0 0 var(--sk-space-1);">Base team setting: ${escapeHtml(baseConsensusText)}</p>
-        <label class="sk-label sk-text-xs">Parallel/consolidation override:</label>
-        <select name="phaseConsensusMode_${safe}" class="sk-select"
-                onchange="toggleTaskConsensusOverride(this, '${safe}')">
-          <option value=""${consensusMode === "" ? " selected" : ""}>Inherit from team</option>
-          <option value="override"${consensusMode === "override" ? " selected" : ""}>Override</option>
-          <option value="disabled"${consensusMode === "disabled" ? " selected" : ""}>Disable parallel execution</option>
-        </select>
-
-        <div id="task-consensus-config-${safe}" style="margin-top:var(--sk-space-2);display:${showConsensusConfig ? "block" : "none"};">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sk-space-2);margin-bottom:var(--sk-space-2);">
-            <label class="sk-label sk-text-xs">Agent count:
-              <input type="number" name="phaseConsensusAgentCount_${safe}" class="sk-input"
-                     value="${consensusConfig?.agent_count ?? 2}" min="1">
-            </label>
-            <label class="sk-label sk-text-xs">Strategy:
-              <select name="phaseConsensusStrategy_${safe}" class="sk-select">
-                <option value="best_of"${(!consensusConfig || consensusConfig.strategy === "best_of") ? " selected" : ""}>Best of N</option>
-                <option value="merge"${consensusConfig?.strategy === "merge" ? " selected" : ""}>Merge</option>
-              </select>
-            </label>
-          </div>
-          <label style="display:flex;align-items:center;gap:var(--sk-space-2);margin-bottom:var(--sk-space-2);cursor:pointer;">
-            <input type="checkbox" name="phaseConsensusWorktree_${safe}" value="on"${consensusConfig?.worktree ? " checked" : ""}>
-            Use worktree
-          </label>
-          <label class="sk-label sk-text-xs">Reviewer agent ID (optional):
-            <input type="text" name="phaseConsensusReviewerAgentId_${safe}" class="sk-input"
-                   value="${escapeHtml(consensusConfig?.reviewer_agent_id ?? "")}">
-          </label>
-        </div>
-      </div>` : ""}
     </div>`;
   }).join("");
 
@@ -139,10 +90,6 @@ export function taskPhaseConfigFragment(
     <script>
       function toggleTaskPromptOverride(select, safe) {
         var cfg = document.getElementById('task-prompt-config-' + safe);
-        if (cfg) cfg.style.display = select.value === 'override' ? 'block' : 'none';
-      }
-      function toggleTaskConsensusOverride(select, safe) {
-        var cfg = document.getElementById('task-consensus-config-' + safe);
         if (cfg) cfg.style.display = select.value === 'override' ? 'block' : 'none';
       }
     </script>

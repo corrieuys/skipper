@@ -109,10 +109,7 @@ export interface ActiveInstanceRow {
 export function fetchActiveInstanceRows(db: Database): ActiveInstanceRow[] {
   return db.prepare(
     `SELECT ai.id, ai.template_agent_id,
-            CASE WHEN json_valid(ai.state_metadata) AND json_extract(ai.state_metadata, '$.role') = 'consensus_reviewer'
-                 THEN COALESCE(a.name, ai.template_agent_id) || ' (Reviewer)'
-                 ELSE COALESCE(a.name, ai.template_agent_id)
-            END AS agent_name,
+            COALESCE(a.name, ai.template_agent_id) AS agent_name,
             ai.parent_instance_id, ai.root_instance_id, ai.status, ai.process_pid, ai.task_id,
             ai.input_tokens, ai.output_tokens,
             ai.cache_creation_tokens, ai.cache_read_tokens

@@ -2,6 +2,14 @@
 
 WebSocket push from server → browser. Used by dashboard polling-replacement + realtime task UI.
 
+Not all of the daemon's sockets live here. `types.ts:WSData` is the shared
+upgrade-payload union for every one of them (all registered in `index.ts` via
+`setWebSocketUpgradeHandlers` / `setWebSocketHandlers`): `ui-push` and
+`realtime` in this dir, `monkey` in [../monkey/CLAUDE.md](../monkey/CLAUDE.md),
+and `connect-local` - the inbound local consumer socket `GET /connect/local`
+(unauthenticated, loopback only), which lives in
+[../connect/CLAUDE.md](../connect/CLAUDE.md) (`local-endpoint.ts`).
+
 | file | use |
 |---|---|
 | `ui-push.ts` | `UIWebSocketManager` — broadcast fragment refreshes + notifications. Dual-format socket: `/ws/ui` (htmx OOB HTML) and `/ws/ui?format=json` (`broadcastJson` envelope `{event, resource, id, data, timestamp}` for machine clients). Both formats honor topic subscriptions. **JSON clients get a one-shot `dashboard:snapshot` on connect** (`buildDashboardSnapshotMessage`: tasks/instances/metrics/phase_indicator/activity) so they hydrate without a REST read — the terminal dashboard (`src/tui`) relies on this. Live JSON push `dashboard:activity` (parsed output feed incl. notes, debounced on `agent:output` + on `task:note_added`); `dashboard:phase-indicator` already carries `{task}`. **Activity feed is poke-driven:** on `agent:output` the v2 task view gets a tiny OOB `#mc-activity-poke-<taskId>` element (`pushV2ActivityPoke`), never a re-rendered feed; `skipper.js` fetches `/activity?after=<newest row id on screen>` and prepends. Heavy debounced renders (`pushLogEntries` 1000 rows, `pushRecentActivity`, `pushDashboardActivity`) skip their queries when no socket is subscribed to the topic (`hasClients`) |

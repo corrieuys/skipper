@@ -52,7 +52,7 @@ export function agentTypeUsesInlinePrompt(
 ): boolean {
   // Custom agents run inside the daemon and have no stdin at all — their prompt
   // is handed to the runner at spawn. Saying so here is what keeps every spawn
-  // site (task-runner, delegation, phase, consensus, idle-poke) on the
+  // site (task-runner, delegation, phase, idle-poke) on the
   // `initialPrompt` branch without any of them knowing custom agents exist.
   if (isCustomAgentType(typeDef.name)) return true;
 

@@ -916,10 +916,7 @@ function registerV2PageRoutes(): void {
   addRoute("GET", "/workspace/task/:id/agents", (_req, params) => {
     const instances = db.prepare(
       `SELECT ai.id, ai.template_agent_id,
-              CASE WHEN json_valid(ai.state_metadata) AND json_extract(ai.state_metadata, '$.role') = 'consensus_reviewer'
-                   THEN COALESCE(a.name, ai.template_agent_id) || ' (Reviewer)'
-                   ELSE COALESCE(a.name, ai.template_agent_id)
-              END AS agent_name,
+              COALESCE(a.name, ai.template_agent_id) AS agent_name,
               ai.parent_instance_id, ai.status, ai.process_pid, ai.task_id
        FROM agent_instances ai
        LEFT JOIN agents a ON a.id = ai.template_agent_id
@@ -1583,8 +1580,8 @@ function registerV2PageRoutes(): void {
   // ── Task-form fragments ──────────────────────────────────────────────────
 
   // Fragment: per-task phase overrides for a selected team (used by the task form
-  // #phase-config-slot). Renders review-gate + (experimental) consensus override
-  // controls per phase; submitted fields are parsed in src/routes/tasks.ts into
+  // #phase-config-slot). Renders review-gate + prompt override controls per phase;
+  // submitted fields are parsed in src/routes/tasks.ts into
   // task_config.phase_overrides.
   const { taskPhaseConfigFragment } = require("../html/pages/task-create.page");
   addRoute("GET", "/fragments/task-form/phase-config", (req) => {
@@ -1599,17 +1596,17 @@ function registerV2PageRoutes(): void {
     const teamRow = db.prepare("SELECT phases FROM teams WHERE id = ?").get(teamId) as { phases: string } | null;
     if (!teamRow) return html(`<div></div>`);
 
-    let teamPhases: Array<{ name: string; prompt?: string; review?: boolean; consensus?: unknown }> = [];
+    let teamPhases: Array<{ name: string; prompt?: string; review?: boolean }> = [];
     try { teamPhases = JSON.parse(teamRow.phases ?? "[]"); } catch { /* ignore */ }
 
-    let existingOverrides: Record<string, { prompt?: string; review?: boolean; consensus?: unknown }> = {};
+    let existingOverrides: Record<string, { prompt?: string; review?: boolean }> = {};
     if (taskId) {
       const taskRow = db.prepare("SELECT task_config FROM tasks WHERE id = ?").get(taskId) as { task_config: string } | null;
       if (taskRow?.task_config) {
         try {
           const cfg = JSON.parse(taskRow.task_config) as Record<string, unknown>;
           const po = cfg.phase_overrides;
-          if (po && typeof po === "object") existingOverrides = po as Record<string, { prompt?: string; review?: boolean; consensus?: unknown }>;
+          if (po && typeof po === "object") existingOverrides = po as Record<string, { prompt?: string; review?: boolean }>;
         } catch { /* ignore */ }
       }
     }

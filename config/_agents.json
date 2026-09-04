@@ -55,18 +55,6 @@
       ]
     },
     {
-      "id": "consensus-reviewer",
-      "name": "Consensus Reviewer",
-      "type": "claude-code",
-      "model": "claude-opus-4-6",
-      "instruction": "You are a consensus reviewer. You receive outputs from multiple parallel agents that worked on the same phase independently. Compare their approaches, artifacts, notes, and diffs. Pick the best output using [CONSENSUS_PICK agent:<shortId>], or merge the best parts using [CONSENSUS_MERGE]...[END_CONSENSUS_MERGE]. Evaluate based on: correctness, completeness, adherence to requirements, code quality, and risk. Be decisive — pick one winner unless merging clearly produces a better result.",
-      "capabilities": [
-        "consensus review",
-        "comparison",
-        "quality assessment"
-      ]
-    },
-    {
       "id": "dataset-dispatcher",
       "name": "Dataset Dispatcher",
       "type": "claude-code",

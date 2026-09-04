@@ -188,8 +188,7 @@ export class IdlePokeManager {
     if (activeChildDelegation) return false;
 
     // Final belt-and-braces: any running child agent_instance for this task
-    // (covers consensus fan-out and any path that bypasses the delegations
-    // table).
+    // (covers any path that bypasses the delegations table).
     const runningChild = this.db
       .prepare(
         `SELECT 1 FROM agent_instances

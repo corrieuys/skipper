@@ -480,23 +480,6 @@ CREATE TABLE IF NOT EXISTS agent_note_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_note_receipts_instance ON agent_note_receipts(agent_instance_id);
 
--- Consensus worktrees for parallel agent isolation
-CREATE TABLE IF NOT EXISTS consensus_worktrees (
-  id TEXT PRIMARY KEY,
-  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-  phase_index INTEGER NOT NULL,
-  delegation_group_id TEXT NOT NULL,
-  agent_instance_id TEXT NOT NULL,
-  worktree_path TEXT NOT NULL,
-  branch_name TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active'
-    CHECK (status IN ('active','completed','failed','cleaned')),
-  diff_snapshot TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  cleaned_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_consensus_worktrees_group ON consensus_worktrees(delegation_group_id);
-
 -- Scheduled recurring tasks
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
   id TEXT PRIMARY KEY,

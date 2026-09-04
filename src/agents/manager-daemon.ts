@@ -25,8 +25,6 @@ import { RecoveryManager } from "../orchestrator/recovery-manager";
 import { IdlePokeManager } from "../orchestrator/idle-poke-manager";
 import { HealthMonitor } from "../orchestrator/health-monitor";
 import { ArtifactManager } from "../orchestrator/artifact-manager";
-import { WorktreeManager } from "../orchestrator/worktree-manager";
-import { ConsensusManager } from "../orchestrator/consensus-manager";
 import { RealtimeSessionManager } from "../orchestrator/realtime-session";
 import type { OrchestrationState, PausedAgentSnapshot, TaskCheckpoint } from "../orchestrator/types";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
@@ -92,8 +90,6 @@ export class ManagerDaemon {
   private healthMonitor: HealthMonitor;
   private teamManager: TeamManager;
   private artifactManager: ArtifactManager;
-  private worktreeManager: WorktreeManager;
-  private consensusManager: ConsensusManager;
   private realtimeSessionManager: RealtimeSessionManager;
   private hookManager: HookManager;
   private scheduledTaskScheduler: ScheduledTaskScheduler;
@@ -177,35 +173,6 @@ export class ManagerDaemon {
       () => this.phaseManager.getPhaseCompleteHandled(),
     );
 
-    // Create WorktreeManager and ConsensusManager
-    this.worktreeManager = new WorktreeManager(this.db);
-    this.consensusManager = new ConsensusManager(
-      this.db,
-      this.agentManager,
-      promptBuilder,
-      this.taskScheduler,
-      this.worktreeManager,
-      this.artifactManager,
-      updateOrchestrationState,
-      writeCheckpoint,
-    );
-
-    // Wire consensus into PhaseManager and DelegationManager
-    this.phaseManager.setConsensusManager(this.consensusManager);
-    this.delegationManager.setConsensusGroupCheck((groupId) => this.worktreeManager.isConsensusGroup(groupId));
-
-    // Listen for consensus phase advance events
-    eventBus.on("consensus:phase_advance", (event) => {
-      const task = this.taskScheduler.getTask(event.taskId);
-      if (!task || task.status !== "active" || task.paused) return;
-      const teamExec = task.team_id ? this.teamManager.getTeamForExecution(task.team_id) : null;
-      if (!teamExec) return;
-      const phases = (teamExec.team.phases as { name: string; prompt: string }[]) ?? [];
-      this.phaseManager.advanceAndRespawn(task, event.entrypointAgentId, phases).catch((err) => {
-        logError(this.db, "consensus_phase_advance", { taskId: event.taskId }, err);
-      });
-    });
-
     // Create TaskRunner
     this.taskRunner = new TaskRunner(
       this.db,
@@ -216,7 +183,6 @@ export class ManagerDaemon {
       updateOrchestrationState,
       writeCheckpoint,
     );
-    this.taskRunner.setConsensusManager(this.consensusManager);
     // Queued wakes deliver pending input through the pipeline (teamless tasks)
     // or as an INPUT_FEED block appended to the standard spawn prompt.
     this.taskRunner.setWakeFeeder(this.realtimeSessionManager);
@@ -253,7 +219,6 @@ export class ManagerDaemon {
       this.recoveryManager,
       this.delegationManager,
       this.healthMonitor,
-      this.worktreeManager,
       this.escalationManager,
       () => this.processScheduledTasks(),
       this.idlePokeManager,
@@ -315,10 +280,6 @@ export class ManagerDaemon {
 
   getRealtimeSessionManager(): RealtimeSessionManager {
     return this.realtimeSessionManager;
-  }
-
-  getConsensusManager(): ConsensusManager {
-    return this.consensusManager;
   }
 
   listRuntimeSteeringOptions(templateAgentId: string): RuntimeSteeringOption[] {
@@ -1000,18 +961,6 @@ export class ManagerDaemon {
     }
 
     try {
-      // Consensus agent exit — handled by ConsensusManager
-      if (this.consensusManager.isConsensusInstance(event.agentId)) {
-        const handled = await this.consensusManager.handleConsensusAgentExit(event.agentId, event.code);
-        if (handled) return;
-      }
-
-      // Consensus reviewer exit
-      if (this.consensusManager.isReviewerInstance(event.agentId)) {
-        const handled = await this.consensusManager.handleReviewerExit(event.agentId, event.code);
-        if (handled) return;
-      }
-
       // Resolve runtime ID → task via agent_instances (supports parallel tasks).
       // Done early because the open-escalation gate below also needs the taskId.
       const taskId = this.resolveTaskIdForAgent(event.agentId);

@@ -8,9 +8,8 @@ import type { PhaseManager } from "../orchestrator/phase-manager";
 import type { RealtimeSessionManager } from "../orchestrator/realtime-session";
 import type { ClientMessage, ServerMessage, ConnectTool } from "./protocol";
 import { executeCommand } from "./commands";
-import { handleResourceRequest, type ResourceDeps } from "./resources";
-import { subscribeConnectEvents } from "./events";
-import { OutputTailManager } from "./output-tail";
+import type { ResourceDeps } from "./resources";
+import { ConsumerSession } from "./consumer-session";
 
 const MAX_BACKOFF_MS = 60_000;
 
@@ -22,8 +21,7 @@ export class ConnectClient {
   private backoffMs = 1_000;
   private running = false;
   private _connectionStatus: ConnectionStatus = "disabled";
-  private _eventUnsub: (() => void) | null = null;
-  private _outputTail: OutputTailManager | null = null;
+  private _session: ConsumerSession | null = null;
 
   private taskScheduler: TaskScheduler;
   private scheduledTaskScheduler: ScheduledTaskScheduler;
@@ -65,10 +63,8 @@ export class ConnectClient {
   stop(): void {
     this.running = false;
     this._connectionStatus = "disabled";
-    this._eventUnsub?.();
-    this._eventUnsub = null;
-    this._outputTail?.destroy();
-    this._outputTail = null;
+    this._session?.destroy();
+    this._session = null;
     this.clearReconnectTimer();
     if (this.ws) {
       this.ws.close();
@@ -80,7 +76,8 @@ export class ConnectClient {
     return this._connectionStatus;
   }
 
-  private get resourceDeps(): ResourceDeps {
+  /** Shared with the local consumer endpoint so ResourceDeps is built once. */
+  getResourceDeps(): ResourceDeps {
     return {
       taskScheduler: this.taskScheduler,
       scheduledTaskScheduler: this.scheduledTaskScheduler,
@@ -141,35 +138,26 @@ export class ConnectClient {
         const sender = (frame: string) => {
           if (ws.readyState === WebSocket.OPEN) ws.send(frame);
         };
-        this._eventUnsub?.();
-        this._eventUnsub = subscribeConnectEvents(sender);
         // Fresh per connection: the server replays output_subscribe frames for
         // still-wanted tasks after reconnect, so no tail state survives here.
-        this._outputTail?.destroy();
-        this._outputTail = new OutputTailManager(getDb(), sender);
+        this._session?.destroy();
+        this._session = new ConsumerSession(sender, this.getResourceDeps(), { db: getDb() });
       } else if (msg.type === "auth_error") {
         this._connectionStatus = "auth_failed";
         console.error("[connect] Auth rejected by server:", msg.message);
         ws.close();
-      } else if (msg.type === "ping") {
-        const pong: ClientMessage = { type: "pong" };
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(pong));
-      } else if (msg.type === "output_subscribe") {
-        this._outputTail?.handleSubscribe(msg.taskId);
-      } else if (msg.type === "output_unsubscribe") {
-        this._outputTail?.handleUnsubscribe(msg.taskId);
       } else if (msg.type === "command") {
         this.handleCommand(ws, msg.id, msg.tool, (msg.args ?? {}) as Record<string, unknown>);
-      } else if (msg.type === "request") {
-        this.handleRequest(ws, msg.id, msg.resource, msg.action, (msg.params ?? {}) as Record<string, unknown>);
+      } else {
+        // request / output_subscribe / output_unsubscribe / ping are consumer
+        // protocol and shared with the local endpoint.
+        this._session?.handleMessage(msg as unknown as Record<string, unknown>);
       }
     };
 
     ws.onclose = (event: CloseEvent) => {
-      this._eventUnsub?.();
-      this._eventUnsub = null;
-      this._outputTail?.destroy();
-      this._outputTail = null;
+      this._session?.destroy();
+      this._session = null;
       this.ws = null;
       if (event.code === 4001) {
         this.running = false;
@@ -197,22 +185,6 @@ export class ConnectClient {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(resultMsg));
     }
-  }
-
-  private handleRequest(ws: WebSocket, id: string, resource: string, action: string, params: Record<string, unknown>): void {
-    handleResourceRequest(resource, action, params, this.resourceDeps).then((result) => {
-      const responseMsg: ClientMessage = result.ok
-        ? { type: "response", id, ok: true, data: result.data }
-        : { type: "response", id, ok: false, error: result.error };
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(responseMsg));
-      }
-    }).catch((err) => {
-      const responseMsg: ClientMessage = { type: "response", id, ok: false, error: err instanceof Error ? err.message : String(err) };
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(responseMsg));
-      }
-    });
   }
 
   private scheduleReconnect(): void {

@@ -26,7 +26,6 @@ function registeredNames(isDelegated: boolean, taskId?: string): string[] {
     taskScheduler: {} as DaemonDeps["taskScheduler"],
     escalationManager: {} as DaemonDeps["escalationManager"],
     artifactManager: {} as DaemonDeps["artifactManager"],
-    consensusManager: {} as DaemonDeps["consensusManager"],
     globalStoreManager: new GlobalStoreManager(db),
   };
   // The Slack gate reads the task from the session identity, not from options.

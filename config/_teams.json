@@ -106,12 +106,6 @@
           "parent_agent_id": null
         },
         {
-          "agent_id": "consensus-reviewer",
-          "role": "consensus reviewer",
-          "level": 0,
-          "parent_agent_id": null
-        },
-        {
           "agent_id": "ff96ca77-3209-47c4-8660-0308d10a1363",
           "role": "qa and testing",
           "level": 1,

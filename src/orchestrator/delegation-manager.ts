@@ -131,12 +131,6 @@ interface DelegationGroupRow {
 }
 
 export class DelegationManager {
-  private isConsensusGroupFn: ((groupId: string) => boolean) | null = null;
-
-  setConsensusGroupCheck(fn: (groupId: string) => boolean): void {
-    this.isConsensusGroupFn = fn;
-  }
-
   constructor(
     private readonly db: Database,
     private readonly agentManager: AgentManager,
@@ -303,7 +297,7 @@ export class DelegationManager {
         label: item.label,
         noteLimit: item.noteLimit,
         attempt: 1,
-        workingDir: undefined, // Agents spawn in orchestrator cwd; task.working_directory is for worktrees
+        workingDir: undefined, // Agents spawn in orchestrator cwd unless a per-delegation override is set
         workingDirectoryOverride: item.workingDirectory,
       });
 
@@ -797,14 +791,6 @@ export class DelegationManager {
       instruction: childAgent.config.instruction,
     };
 
-    // Check if parent is a consensus agent — propagate shortId and worktree path
-    const consensusRow = this.db
-      .prepare("SELECT agent_instance_id, worktree_path FROM consensus_worktrees WHERE agent_instance_id = ? LIMIT 1")
-      .get(input.parentRuntimeId) as { agent_instance_id: string; worktree_path: string } | null;
-    const consensusShortId = consensusRow ? input.parentRuntimeId.slice(0, 8) : undefined;
-    // If parent is a consensus agent with a worktree, spawn child in that worktree
-    const consensusWorktreePath = consensusRow?.worktree_path || undefined;
-
     const { prompt, noteIds } = this.promptBuilder.buildDelegationPromptTracked({
       childAgent: childInfo,
       task: {
@@ -818,18 +804,15 @@ export class DelegationManager {
       },
       delegationPrompt: input.work,
       phase: this.getCurrentPhaseLabel(input.taskId),
-      consensusShortId,
-      consensusWorktree: !!consensusWorktreePath,
       noteLimit: input.noteLimit,
     }, input.childInstanceId);
     const usesInlinePrompt = childTypeDef ? agentTypeUsesInlinePrompt(childTypeDef) : false;
 
     try {
       await this.agentManager.spawnAgentInstance(input.childTemplateId, input.childInstanceId, {
-        // Worktree first: a consensus child working an isolated checkout must stay
-        // in it. Otherwise the delegation override, then the orchestrator cwd —
-        // where every agent runs unless told otherwise.
-        workingDir: consensusWorktreePath || input.workingDirectoryOverride || input.workingDir || process.cwd(),
+        // The delegation override, then the orchestrator cwd — where every agent
+        // runs unless told otherwise.
+        workingDir: input.workingDirectoryOverride || input.workingDir || process.cwd(),
         taskId: input.taskId,
         parentInstanceId: input.parentRuntimeId,
         rootInstanceId: input.rootInstanceId,
@@ -968,11 +951,6 @@ export class DelegationManager {
   }
 
   private finishDelegationGroup(group: DelegationGroupRow): void {
-    // Consensus groups are handled by ConsensusManager, not normal delegation routing
-    if (this.isConsensusGroupFn?.(group.id)) {
-      return;
-    }
-
     const delegations = this.db
       .prepare(
         `SELECT id, child_instance_id, child_agent_id, status, result, prompt
@@ -1147,32 +1125,6 @@ export class DelegationManager {
     }
   }
 
-  /**
-   * Work text for retrying a CONSENSUS instance. Those rows are not real
-   * delegations — the child is another instance of Skipper working the phase — and
-   * their `delegations.prompt` holds a display label, not the instructions. So the
-   * retry re-resolves the task's current phase prompt. Returns null for an ordinary
-   * delegation, where the stored prompt IS the work.
-   */
-  private consensusRetryWork(childInstanceId: string, taskId: string): string | null {
-    const isConsensus = this.db
-      .prepare("SELECT 1 FROM consensus_worktrees WHERE agent_instance_id = ? LIMIT 1")
-      .get(childInstanceId);
-    if (!isConsensus) return null;
-
-    const task = this.taskScheduler.getTask(taskId);
-    if (!task?.team_id) return null;
-    const teamRow = this.db
-      .prepare("SELECT phases FROM teams WHERE id = ?")
-      .get(task.team_id) as { phases: string } | null;
-    const phases = parseJsonOr<Array<{ name: string; prompt: string }> | undefined>(teamRow?.phases ?? "", undefined);
-    if (!phases || !Array.isArray(phases) || phases.length === 0) return null;
-    const idx = Math.min(Math.max(0, task.current_phase ?? 0), phases.length - 1);
-    const rawPhase = phases[idx];
-    if (!rawPhase) return null;
-    return resolvePhaseConfig(rawPhase, task.task_config as Record<string, unknown>).prompt;
-  }
-
   private tryRetryDelegation(delegation: Delegation): boolean | "pending" {
     const childInstanceId = delegation.child_instance_id;
     if (!childInstanceId) return false;
@@ -1216,9 +1168,7 @@ export class DelegationManager {
     const childAgent = this.agentManager.getAgent(row.template_agent_id);
     const childTypeDef = childAgent ? getAgentTypeDefinition(childAgent.type, this.db) : null;
     const canResume = !!row.session_id && !!childTypeDef?.supports_resume;
-    const work = canResume
-      ? RETRY_NUDGE_PROMPT
-      : this.consensusRetryWork(childInstanceId, row.task_id) ?? delegation.prompt;
+    const work = canResume ? RETRY_NUDGE_PROMPT : delegation.prompt;
 
     this.spawnChildInstance({
       taskId: row.task_id,

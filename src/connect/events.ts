@@ -22,12 +22,14 @@ const FORWARDED_EVENTS: readonly EventName[] = [
   "task:note_added",
   "task:message_posted",
   "task:needs_review_changed",
+  // Per-agent liveness: lets a client refresh the roster (which member is
+  // working) the moment an instance starts or exits, instead of polling.
+  "instance:state_changed",
   "escalation:created",
   "escalation:resolved",
   "artifact:created",
   "artifact:published",
   "artifact:unpublished",
-  "consensus:phase_advance",
   "delegation_group:progress",
   "realtime:trigger_fired",
   "realtime:session_state",
@@ -45,7 +47,7 @@ const TASK_FAT_EVENTS = new Set<EventName>([
   "task:wake_requested",
   "task:phase_changed",
   "task:needs_review_changed",
-  "consensus:phase_advance",
+  "instance:state_changed",
 ]);
 
 const ARTIFACT_FAT_EVENTS = new Set<EventName>([

@@ -58,7 +58,6 @@ beforeEach(() => {
     taskScheduler: {} as DaemonDeps["taskScheduler"],
     escalationManager: {} as DaemonDeps["escalationManager"],
     artifactManager,
-    consensusManager: {} as DaemonDeps["consensusManager"],
     globalStoreManager: new GlobalStoreManager(db),
     realtimeSessionManager: sessions,
   };

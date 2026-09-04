@@ -93,7 +93,8 @@ repo's GitHub Releases.
 
 ## Entry
 
-- `index.ts` — boot DB, build `ManagerDaemon`, register routes, start Bun server, SIGINT/SIGTERM shutdown. Reached via `bin/cli.ts serve`.
+- `index.ts` — boot DB, build `ManagerDaemon`, register routes + WebSocket upgrade handlers, start Bun server, SIGINT/SIGTERM shutdown. Reached via `bin/cli.ts serve`.
+- `GET /connect/local` — inbound consumer WebSocket for apps running on this machine (the native Mac client), speaking the same protocol as the Skipper Connect integrator's consumer socket. **Unauthenticated and loopback only**: the upgrade is refused (403) for any non-127.0.0.0/8 / non-`::1` peer, even when `SKIPPER_HOST` exposes the daemon. See [src/connect/CLAUDE.md](src/connect/CLAUDE.md).
 - `src/server.ts` — tiny router. `addRoute()`. static served from embedded `public/*` assets (uploaded wallpapers from the data dir)
 - `src/assets.ts` — embedded-asset access layer (`assetTextSync`, `assetFile`, `listAssets`, `isCompiledBinary`)
 
@@ -141,6 +142,7 @@ repo's GitHub Releases.
 | shared read queries (HTML + JSON + WS) | [src/data/CLAUDE.md](src/data/CLAUDE.md) |
 | global cross-task shared key/value store | [src/global-store/CLAUDE.md](src/global-store/CLAUDE.md) |
 | skipper connect (outbound WS to integrator, remote control + public artifact links) | [src/connect/CLAUDE.md](src/connect/CLAUDE.md) |
+| apple clients (SkipperMobile iOS + SkipperMac macOS, one shared SkipperCore package; both speak the Connect consumer protocol, locally over the loopback `/connect/local` socket) | `../skipper-apple/README.md` |
 | external config file readers (MCP, skills) | [src/config-readers/CLAUDE.md](src/config-readers/CLAUDE.md) |
 | prompt templates loaded at runtime | [prompts/CLAUDE.md](prompts/CLAUDE.md) |
 | JSON config snapshots | [config/CLAUDE.md](config/CLAUDE.md) |
