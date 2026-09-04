@@ -341,6 +341,21 @@ export async function handleResourceRequest(
           case "unapprove":
             // Send an approved (not-yet-running) task back to draft.
             return { ok: true, data: taskScheduler.unapproveTask(String(params.id ?? "")) };
+          case "set-autopilot": {
+            // Flip a task between autopilot (mode workflow) and operator-driven
+            // (conversational), mirroring the web header pill. Not allowed on a
+            // settled task — revive it with input first.
+            const id = String(params.id ?? "");
+            if (!id) return { ok: false, error: "id is required" };
+            const raw = params.on ?? params.autopilot;
+            const on = raw === true || raw === "true" || raw === "on" || raw === 1;
+            try {
+              const updated = taskScheduler.setAutopilot(id, on);
+              return { ok: true, data: { id, mode: updated.mode, autopilot: updated.autopilot } };
+            } catch (err) {
+              return { ok: false, error: err instanceof Error ? err.message : String(err) };
+            }
+          }
           case "update": {
             // Edit a task's title / description / assignee. Draft-only, via the
             // guarded domain method: an approved or running task is mid-flight
