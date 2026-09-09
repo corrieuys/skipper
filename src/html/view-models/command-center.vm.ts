@@ -1,5 +1,16 @@
 import type { Database } from "bun:sqlite";
 import { isTeamVisible } from "../../config/feature-flags";
+import { resolveMemoryScope } from "../../task-memory/scope";
+import type { TaskMemorySummary } from "../../task-memory/summary";
+
+function memoryFlags(db: Database, taskId: string): { memory_enabled: boolean; memory_mode: string } {
+  try {
+    const scope = resolveMemoryScope(db, taskId);
+    return { memory_enabled: scope.scopeId !== null, memory_mode: scope.mode };
+  } catch {
+    return { memory_enabled: false, memory_mode: "off" };
+  }
+}
 import {
   getBoolSetting,
   SETTING_SKIPPER_CONNECT_ENABLED, getStringSetting, SETTING_SKIPPER_CONNECT_KEY,
@@ -39,6 +50,10 @@ export interface TaskSummary {
   display_status: string;
   /** Task mode: workflow | conversational. */
   mode: string;
+  /** Per-task memory on (one-off toggle, or the recurring series' mode for a run). */
+  memory_enabled: boolean;
+  /** off | run | shared (resolved via task-memory/scope.ts). */
+  memory_mode: string;
   /** Paused flag on active tasks ('paused' is no longer a status). */
   paused: boolean;
   /** True when the task result carries an error (settled-with-error = old "failed"). */
@@ -53,6 +68,11 @@ export interface TaskSummary {
   result_summary: string | null;
   needs_review: number;
   source_scheduled_task_id: string | null;
+  /** Stored star for the sidebar Favorites board. */
+  starred: boolean;
+  /** Lucide icon id + hex tint, shown in the sidebar and lists. */
+  icon: string | null;
+  icon_color: string | null;
   /** True when the task has an open escalation or a pending phase review — drives the sidebar attention dot. */
   has_attention: boolean;
   /** Number of open escalations on the task — drives the task-header escalation label. */
@@ -89,6 +109,13 @@ export interface ScheduledTaskSummary {
   global_store_instructions?: string | null;
   /** Parsed per-task config (e.g. the Slack slash-command binding). Detail view only. */
   task_config?: Record<string, unknown>;
+  /** Shared memory summary (series scope). Detail view only, experimental. */
+  memory_summary?: TaskMemorySummary | null;
+  /** Stored star for the sidebar Favorites board. */
+  starred?: number;
+  /** Lucide icon id + hex tint. */
+  icon?: string | null;
+  icon_color?: string | null;
 }
 
 export interface CommandCenterViewModel {
@@ -104,7 +131,7 @@ export interface CommandCenterViewModel {
   /** Last 5 runs per recurring task, newest first — the v2 sidebar run strip. */
   scheduledRuns: Record<string, ScheduledRunRow[]>;
   recentTasks: Array<{ id: string; title: string; status: string; completed_at: string | null }>;
-  teams: Array<{ id: string; name: string }>;
+  teams: Array<{ id: string; name: string; icon?: string | null; icon_color?: string | null }>;
   escalationCount: number;
   daemonState: string;
   daemonUptime: number;
@@ -227,6 +254,7 @@ export function buildCommandCenterViewModel(
       status: t.status,
       display_status: t.display_status ?? t.status,
       mode: t.mode ?? "workflow",
+      ...memoryFlags(db, t.id),
       paused: !!t.paused,
       result_has_error: taskResultHasError(t.result),
       task_type: t.task_type,
@@ -238,6 +266,9 @@ export function buildCommandCenterViewModel(
       result_summary: resultSummary,
       needs_review: t.needs_review ?? 0,
       source_scheduled_task_id: t.source_scheduled_task_id ?? null,
+      starred: !!(t.starred ?? 0),
+      icon: t.icon ?? null,
+      icon_color: t.icon_color ?? null,
       has_attention: t.needs_review === 1 || (openEscalationCounts.get(t.id) ?? 0) > 0,
       open_escalation_count: openEscalationCounts.get(t.id) ?? 0,
       tokens: tokensByTask[t.id] ?? { input: 0, output: 0, cache_creation: 0, cache_read: 0 },

@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   source_scheduled_task_id TEXT,             -- links spawned runs back to their scheduled_tasks row
   run_input TEXT,                            -- optional per-run operator input injected into the prompt (manual "Run Now")
   wake_requested_at TEXT,                    -- pending wake marker: queue starts/resumes the root when a slot frees
+  starred INTEGER NOT NULL DEFAULT 0,         -- sidebar Favorites board (indexed)
+  icon TEXT,                                 -- Lucide icon id (kebab-case)
+  icon_color TEXT,                           -- hex tint for the icon
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   approved_at TEXT,
   started_at TEXT,
@@ -85,6 +88,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at);
+-- idx_tasks_starred is created in legacy-migrations.ts (after the schema runs).
 
 -- Task checkpoints for long-running tasks
 CREATE TABLE IF NOT EXISTS task_checkpoints (
@@ -511,10 +515,14 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   -- spawned run's root prompt; doubles as the explicit authorization the
   -- global-store MCP tools require. NULL = no instructions.
   global_store_instructions TEXT,
+  starred INTEGER NOT NULL DEFAULT 0,         -- star + Lucide icon identity (same as tasks)
+  icon TEXT,
+  icon_color TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_status_next ON scheduled_tasks(status, next_run_at);
+-- idx_scheduled_tasks_starred is created in legacy-migrations.ts.
 
 -- Typed key-value app settings (mutable runtime state, not JSON config)
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -677,3 +685,31 @@ CREATE TABLE IF NOT EXISTS custom_tools (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Per-task memory (see src/task-memory): operator-facing exchanges copied with
+-- author + timestamp + embedding, queried by agents via query_task_memory.
+CREATE TABLE IF NOT EXISTS task_memory (
+  id TEXT PRIMARY KEY,
+  -- Owner: 'task:<id>' (one-off task or per-run mode) or 'series:<scheduled_task_id>'
+  -- (shared across a recurring task's runs). Rows belong to the scope, not the
+  -- run: no FK on task_id, so recurring-run retention cannot erase shared memory.
+  scope_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  -- Run title + start time captured at write time, so attribution survives run deletion.
+  run_label TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('message', 'input', 'summary', 'note')),
+  author TEXT NOT NULL CHECK (author IN ('agent', 'user')),
+  agent_id TEXT,
+  content TEXT NOT NULL,
+  ref_id TEXT NOT NULL,
+  embedding BLOB,
+  embedding_model TEXT,
+  -- Soft delete by an agent (delete_task_memory): hidden from queries, kept for audit.
+  deleted_at TEXT,
+  deleted_by TEXT,
+  delete_reason TEXT,
+  created_at TEXT NOT NULL
+);
+-- Indexes live in migrations/0025_task_memory.sql (fresh DBs) and the
+-- legacy-migrations rebuild (v1 DBs): this file runs before either, and an
+-- index on scope_id would fail against a v1 table that lacks the column.

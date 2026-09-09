@@ -28,6 +28,7 @@ import { ESCALATION_TEXT_LIMIT, SLACK_ESCALATION_SOFT_LIMIT } from "../slack/blo
 import { stampTaskSlackOrigin, readTaskSlackOrigin } from "../slack/slash-command";
 import { registerTaskTools } from "./task-tools";
 import { MessageManager, MESSAGE_MAX_LENGTH } from "../messages/manager";
+import { DEFAULT_QUERY_LIMIT, type TaskMemoryManager } from "../task-memory/manager";
 
 export interface DaemonDeps {
   db: Database;
@@ -46,6 +47,12 @@ export interface DaemonDeps {
   realtimeSessionManager?: Pick<RealtimeSessionManager, "ingestAgentArtifact">;
   /** Unified input entry (daemon.inputTask): text into any task, waking it if idle. */
   inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>;
+  /**
+   * Per-task memory + keyword search (`query_task_memory`, `search_task_content`).
+   * Optional so test harnesses need not build one; the tools then report that
+   * memory is unavailable.
+   */
+  taskMemoryManager?: TaskMemoryManager;
 }
 
 export interface RegisterDaemonToolsOptions {
@@ -179,6 +186,89 @@ export function registerDaemonTools(
       }],
     };
   }
+
+  // ── Task memory + content search ─────────────────────────
+  server.tool(
+    "query_task_memory",
+    "Semantic search over this task's memory: operator input, audio summaries, agent messages, and notes, each stamped with time and author. Only works when memory is enabled for the task. Call it soon after you start or resume to learn what earlier agents did and what the operator asked.",
+    {
+      query: z.string().describe("What you want to know, in plain language"),
+      limit: z.number().optional().describe(`Number of entries to return (default ${DEFAULT_QUERY_LIMIT}, max 50)`),
+      author: z.enum(["agent", "user"]).optional().describe("Only entries from agents, or only from the operator"),
+      kind: z.enum(["message", "input", "summary", "note"]).optional().describe("Only one kind of entry"),
+      scope: z.enum(["run", "series"]).optional().describe("Shared recurring memory only: 'series' (default) searches every run, 'run' only this run"),
+      since: z.string().optional().describe("Only entries at or after this timestamp (ISO 8601 or 'YYYY-MM-DD HH:MM:SS')"),
+      run_id: z.string().optional().describe("Only entries recorded on this run (a task id from a previous hit's run.id)"),
+    },
+    async ({ query, limit, author, kind, scope, since, run_id }) => {
+      const identity = getInternalIdentity();
+      if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
+      if (!identity.taskId) return { content: [{ type: "text" as const, text: "Error: no active task" }] };
+      const memory = deps.taskMemoryManager;
+      if (!memory) return { content: [{ type: "text" as const, text: "Error: task memory is not available on this daemon" }] };
+      try {
+        const hits = await memory.query({ taskId: identity.taskId, query, limit, author, kind, scope, since, runId: run_id });
+        const entries = hits.map((h) => ({
+          id: h.id,
+          at: h.created_at,
+          author: h.author,
+          kind: h.kind,
+          agent: h.agent_name ?? h.agent_id ?? null,
+          run: h.run,
+          content: h.content,
+          score: h.score,
+        }));
+        return { content: [{ type: "text" as const, text: JSON.stringify({ count: entries.length, order: "oldest_first", entries }) }] };
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.tool(
+    "delete_task_memory",
+    "Remove one task-memory entry that you have found to be wrong, contradictory, or obsolete. Soft delete: the entry disappears from queries and the daemon records a note on the task with your reason so the operator can see it. Do not delete entries just because they are old.",
+    {
+      id: z.string().describe("The entry id from a query_task_memory hit"),
+      reason: z.string().describe("Why the entry is wrong or stale (specific, one or two sentences)"),
+    },
+    async ({ id, reason }) => {
+      const identity = getInternalIdentity();
+      if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
+      if (!identity.taskId) return { content: [{ type: "text" as const, text: "Error: no active task" }] };
+      const memory = deps.taskMemoryManager;
+      if (!memory) return { content: [{ type: "text" as const, text: "Error: task memory is not available on this daemon" }] };
+      try {
+        const result = memory.deleteEntry({ id, taskId: identity.taskId, agentId: identity.templateAgentId, reason });
+        return { content: [{ type: "text" as const, text: JSON.stringify({ id: result.id, status: "deleted", note_id: result.noteId }) }] };
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.tool(
+    "search_task_content",
+    "Keyword search over one source on this task: notes, artifacts (latest version of each), or operator messages. Returns matching entries with a snippet, best match first. Always available; no memory toggle needed.",
+    {
+      source: z.enum(["notes", "artifacts", "messages"]).describe("Which store to search"),
+      query: z.string().describe("Keywords to look for (all words are matched case-insensitively)"),
+      limit: z.number().optional().describe(`Number of entries to return (default ${DEFAULT_QUERY_LIMIT}, max 50)`),
+    },
+    async ({ source, query, limit }) => {
+      const identity = getInternalIdentity();
+      if (!identity) return { content: [{ type: "text" as const, text: "Error: agent not authenticated" }] };
+      if (!identity.taskId) return { content: [{ type: "text" as const, text: "Error: no active task" }] };
+      const memory = deps.taskMemoryManager;
+      if (!memory) return { content: [{ type: "text" as const, text: "Error: content search is not available on this daemon" }] };
+      try {
+        const hits = memory.searchContent({ taskId: identity.taskId, source, query, limit });
+        return { content: [{ type: "text" as const, text: JSON.stringify({ count: hits.length, entries: hits }) }] };
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
 
   // ── Notes ────────────────────────────────────────────────
   server.tool(

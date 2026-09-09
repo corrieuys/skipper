@@ -11,6 +11,7 @@ import { eventBus } from "../events/bus";
 import { logError } from "../logging";
 import { updateInstanceStatus } from "../agents/instance-status";
 import { resolvePhaseConfig } from "./phase-config";
+import type { TaskWakeFeeder } from "./task-runner";
 
 const CHILD_RETRY_LIMIT = 1;
 const DELEGATION_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
@@ -141,6 +142,17 @@ export class DelegationManager {
     private readonly writeCheckpoint: (taskId: string, type: string, snapshot?: Record<string, unknown>) => void,
     private readonly getPhaseCompleteHandled: () => Set<string>,
   ) { }
+
+  /**
+   * Same input pipeline the task-runner wake path uses. Injected so a parent
+   * resuming from a delegation result can also carry any operator input that
+   * arrived while the delegation was open — see `routeResultToParent`.
+   */
+  private wakeFeeder: TaskWakeFeeder | null = null;
+
+  setWakeFeeder(feeder: TaskWakeFeeder): void {
+    this.wakeFeeder = feeder;
+  }
 
   async handleDelegation(
     parentRuntimeId: string,
@@ -1027,11 +1039,23 @@ export class DelegationManager {
     const enrichment = taskId && typeof this.promptBuilder.buildNotesEnrichmentBlock === "function"
       ? this.promptBuilder.buildNotesEnrichmentBlock(taskId, parentRuntimeId)
       : { text: "", noteIds: [] };
-    const enrichedPayload = enrichment.text ? `${enrichment.text}\n${payload}` : payload;
+    // Drain any operator input that arrived while this delegation was open.
+    // Without this, mid-delegation input stays unfed (`fed_to_skipper=0`,
+    // "queued for agent") until the whole run settles and a fresh run starts —
+    // so the resuming parent can reach its conclusion on stale context, never
+    // seeing the instruction. Riding it along on the resume payload mirrors the
+    // notes enrichment above and marks it delivered on the same commit.
+    const pendingFeed = taskId ? (this.wakeFeeder?.consumePendingFeed(taskId) ?? null) : null;
+
+    let enrichedPayload = enrichment.text ? `${enrichment.text}\n${payload}` : payload;
+    if (pendingFeed) {
+      enrichedPayload = `${enrichedPayload}\n${pendingFeed.text}`;
+    }
     const markDelivered = (): void => {
       if (enrichment.noteIds.length > 0 && typeof this.promptBuilder.recordNoteDelivery === "function") {
         this.promptBuilder.recordNoteDelivery(parentRuntimeId, enrichment.noteIds);
       }
+      pendingFeed?.commit();
     };
 
     const runningParent = this.agentManager.getRunningAgent(parentRuntimeId);

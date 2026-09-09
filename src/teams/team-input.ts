@@ -89,10 +89,17 @@ function coerceTeamConfig(body: Record<string, unknown>, existing?: LocalTeamCon
   let skipperCustomTools: string[] | undefined = existing?.skipperCustomTools;
   let mode: "workflow" | "conversational" | "regular" | "realtime" | undefined = existing?.mode;
   let realtime = existing?.realtime;
+  // Raw strings; validated at render time (entityIcon/lucideSvg drop an unknown
+  // id, sanitizeColor clamps the hex), so no html-layer import is needed here.
+  let icon: string | undefined = existing?.icon;
+  let iconColor: string | undefined = existing?.iconColor;
+  const asTrimmed = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 
   if (body.config && typeof body.config === "object") {
     const c = body.config as Record<string, unknown>;
     if ("mode" in c) mode = c.mode === "realtime" || c.mode === "conversational" ? "conversational" : "workflow";
+    if ("icon" in c) icon = asTrimmed(c.icon);
+    if ("iconColor" in c) iconColor = asTrimmed(c.iconColor);
     if ("realtime" in c && c.realtime && typeof c.realtime === "object") {
       const r = c.realtime as Record<string, unknown>;
       realtime = {
@@ -122,11 +129,17 @@ function coerceTeamConfig(body: Record<string, unknown>, existing?: LocalTeamCon
     const raw = typeof body.slash_command === "string" ? body.slash_command.trim() : "";
     slashCommand = raw ? normalizeSlashCommand(raw) : undefined;
   }
+  // Flat form fields (the team-map posts JSON with a nested config, but support
+  // flat too for imports/forms).
+  if ("icon" in body) icon = asTrimmed(body.icon);
+  if ("iconColor" in body) iconColor = asTrimmed(body.iconColor);
   const config: LocalTeamConfig = { slackEnabled };
   if (mode) config.mode = mode;
   if (realtime) config.realtime = realtime;
   if (slashCommand) config.slashCommand = slashCommand;
   if (skipperCustomTools && skipperCustomTools.length > 0) config.skipperCustomTools = skipperCustomTools;
+  if (icon) config.icon = icon;
+  if (iconColor) config.iconColor = iconColor;
   return config;
 }
 

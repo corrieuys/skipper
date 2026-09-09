@@ -9,7 +9,6 @@ import { signalTextSnippet } from "./signal-utils";
 import { buildMcpSpawnOverrides, injectDaemonMcpServer, cleanupMcpTempFiles, restoreMcpConfigFiles, type McpRestoreFile, type McpSpawnOverrides } from "./mcp-spawn-helper";
 import { getCustomAgentByType, isCustomAgentType } from "../custom-agents/store";
 import { InProcessHandle, NOOP_STDIN, runCustomAgent } from "../custom-agents/runner";
-import { isSoloAgentId } from "./solo";
 import { signalBridge } from "../mcp/signal-bridge";
 import { getStringSetting } from "../config/app-settings";
 import { SETTING_SKIPPER_AGENT_TYPE, SETTING_SKIPPER_MODEL } from "../config/model-settings";
@@ -920,10 +919,6 @@ export class AgentManager {
       prompt,
       sessionId: runningAgent.sessionId,
       daemonPort,
-      // A custom agent assigned to run a task SOLO (entrypoint id `ca:<id>`) must
-      // be able to close its own task even if its definition did not tick the
-      // lifecycle tools - the runner auto-includes the solo essentials.
-      solo: isSoloAgentId(runningAgent.templateAgentId),
     }, handle)
       .then((result) => {
         // Session id is what keys the conversation history for the next resume.
@@ -1158,8 +1153,23 @@ export class AgentManager {
 
     const prompt = truncatePrompt(input, agentId, this.db, "sendInput");
 
-    runningAgent.stdin.write(prompt + "\n");
-    runningAgent.stdin.flush();
+    // Bun.FileSink.write()/flush() return `number | Promise<number>`. Under
+    // backpressure the pipe drains asynchronously, so a broken pipe (EPIPE —
+    // the subprocess exited before/while we wrote) surfaces as a REJECTED
+    // PROMISE, not a synchronous throw. An unhandled rejection crashes the
+    // whole daemon, escaping the caller's synchronous try/catch. Attach a
+    // catch so the failure stays local to this write; the synchronous EPIPE
+    // path still throws to the caller, which fails just that task.
+    const swallowAsyncWriteError = (result: unknown): void => {
+      if (result instanceof Promise) {
+        result.catch((err) => {
+          logError(this.db, "agent.send_input_async", { agentId, runtimeId: resolvedId }, err);
+        });
+      }
+    };
+
+    swallowAsyncWriteError(runningAgent.stdin.write(prompt + "\n"));
+    swallowAsyncWriteError(runningAgent.stdin.flush());
 
     if (closeStdin) {
       runningAgent.stdin.end();

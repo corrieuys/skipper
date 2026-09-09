@@ -6,12 +6,22 @@ import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { getConnectPublicBase, getPublicArtifactUrl, getWebhookTriggerUrl } from "../connect/public-links";
 import { listAssignableTeams } from "../config/teams";
 import { isTeamVisible, isExperimental } from "../config/feature-flags";
+import type { TaskMemoryPanelData } from "../html/fragments/task-memory-config.fragment";
+
+// Set by index.ts once the task-memory managers exist; the /config page reads
+// the embeddings settings + local server status through it.
+let taskMemoryPanelProvider: (() => TaskMemoryPanelData) | null = null;
+export function setTaskMemoryPanelProvider(provider: () => TaskMemoryPanelData): void {
+  taskMemoryPanelProvider = provider;
+}
 import { taskTimelineFragment } from "../html/fragments/task-timeline.fragment";
 // Activity feed paging: rows per page, and the cap on one live "after" pull.
 const ACTIVITY_PAGE_SIZE = 100;
 const ACTIVITY_LIVE_LIMIT = 500;
 import { artifactListFragment, fileArtifactIcon } from "../html/fragments/artifact-list.fragment";
 import { formatBytes } from "../orchestrator/artifact-files";
+import { scopeSummary, taskMemorySummary } from "../task-memory/summary";
+import { readSeriesMemoryConfig, seriesScopeId } from "../task-memory/scope";
 import { listPreferences, setPreference } from "../notifications/store";
 import { NOTIFICATION_EVENTS, type NotificationEventKey } from "../notifications/types";
 import { listKeys } from "./api-keys";
@@ -848,6 +858,11 @@ function registerV2PageRoutes(): void {
     }
     // Public trigger URL for the webhook panel; null until connect is configured.
     st.webhook_url = getWebhookTriggerUrl(db, { id: st.id, webhook_key: st.webhook_key ?? null });
+    // Series memory summary for the Memory panel (experimental).
+    if (isExperimental()) {
+      const cfg = readSeriesMemoryConfig(st.task_config);
+      st.memory_summary = scopeSummary(db, seriesScopeId(st.id), { enabled: cfg.mode === "shared", mode: cfg.mode, retentionDays: cfg.retentionDays });
+    }
     // Unified picker: any visible team can run a recurring task.
     const teams = listAssignableTeams();
     const runs = db.prepare(
@@ -898,6 +913,52 @@ function registerV2PageRoutes(): void {
     const { taskMainContent, renderDraftEdit } = require("../html/pages/command-center.page");
     if (task.status === "draft") return html(renderDraftEdit(task, vm.teams));
     return html(taskMainContent(vm, task));
+  });
+
+  // Inline task name + icon editor for the task-view header (any status). The
+  // pencil swaps this into the identity slot; Save posts to /api/tasks/:id/identity,
+  // Cancel re-fetches the display fragment below. Both swap ONLY the identity slot.
+  addRoute("GET", "/fragments/tasks/:id/identity-edit", (_req, params) => {
+    const { TaskScheduler } = require("../tasks/scheduler");
+    const task = new TaskScheduler(db).getTask(params.id);
+    if (!task) return html("");
+    const { renderTaskIdentityEdit } = require("../html/pages/command-center.page");
+    return html(renderTaskIdentityEdit(task));
+  });
+
+  // Display (non-edit) identity cluster — used to restore the slot on Cancel.
+  addRoute("GET", "/fragments/tasks/:id/identity", (_req, params) => {
+    const vm = buildCommandCenterViewModel(db, { includeTaskId: params.id });
+    const task = vm.allTasks.find((t: any) => t.id === params.id);
+    if (!task) return html("");
+    const { taskHeaderIdentity } = require("../html/pages/command-center.page");
+    return html(taskHeaderIdentity(task));
+  });
+
+  // Save the task's name + icon regardless of status, then swap back ONLY the
+  // header identity slot (htmx outerHTML). Deliberately NO event / no #mc-main
+  // re-render: renaming must not refresh the view (same rule as starring). The
+  // sidebar picks up the new name/icon on its next natural render.
+  addRoute("POST", "/api/tasks/:id/identity", async (req, params) => {
+    const { TaskScheduler } = require("../tasks/scheduler");
+    const scheduler = new TaskScheduler(db);
+    if (!scheduler.getTask(params.id)) return Response.json({ error: "Task not found" }, { status: 404 });
+    const formData = await req.formData();
+    const titleRaw = formData.get("title");
+    const title = typeof titleRaw === "string" ? titleRaw.trim() : "";
+    if (!title) return Response.json({ error: "title is required" }, { status: 400 });
+    const { sanitizeIcon } = require("../html/atoms/lucide");
+    const { sanitizeColor } = require("../html/atoms/creature");
+    const rawIcon = formData.get("icon");
+    const icon = sanitizeIcon(typeof rawIcon === "string" ? rawIcon : null);
+    const rawColor = formData.get("iconColor");
+    const iconColor = icon ? sanitizeColor(typeof rawColor === "string" ? rawColor : null) : null;
+    scheduler.setIdentity(params.id, title, icon, iconColor);
+    const updated = scheduler.getTask(params.id)!;
+    const { taskHeaderIdentity, renderSidebarOob } = require("../html/pages/command-center.page");
+    // Swap the header identity slot + refresh only the sidebar (OOB) so the new
+    // name/icon show in the row without re-rendering the task view.
+    return html(taskHeaderIdentity(updated as any) + renderSidebarOob(db));
   });
 
   // Phase strip fragment — polled by dashboard so phase status updates without a page reload
@@ -962,10 +1023,21 @@ function registerV2PageRoutes(): void {
     const afterId = num(url.searchParams.get("after"));
     const { parseTerminalActivity, activityLoadMoreSentinel } = require("../html/pages/command-center.page");
 
+    // A batch can be non-empty yet render to NO items: frames the summariser
+    // drops (keepalives, binary fragments, unhandled provider shapes). In that
+    // case parseTerminalActivity returns its "No activity yet" placeholder — fine
+    // for a cold render, but the incremental paths PREPEND/APPEND into a feed that
+    // already has rows, so injecting that placeholder stacks a spurious empty
+    // state on every poke. Gate on RENDERED items (data-sk-activity-row), not the
+    // raw row count.
+    const hasRenderedItems = (markup: string): boolean => markup.includes("data-sk-activity-row");
+
     if (afterId != null) {
       const rows = fetchTaskOutputPage(db, params.id, { afterId, limit: ACTIVITY_LIVE_LIMIT });
-      // Nothing new → nothing to prepend (the empty-state div would stack up).
-      return html(rows.length === 0 ? "" : parseTerminalActivity(rows));
+      // Nothing new (or nothing that renders) → nothing to prepend.
+      if (rows.length === 0) return html("");
+      const body = parseTerminalActivity(rows);
+      return html(hasRenderedItems(body) ? body : "");
     }
 
     const rows = fetchTaskOutputPage(db, params.id, { beforeId, limit: ACTIVITY_PAGE_SIZE });
@@ -975,7 +1047,13 @@ function registerV2PageRoutes(): void {
     const body = parseTerminalActivity(rows);
     const oldest = rows[rows.length - 1]!.id;
     const more = rows.length >= ACTIVITY_PAGE_SIZE ? activityLoadMoreSentinel(params.id, oldest) : "";
-    return html(body + more);
+    // Cold render with rows that all dropped → show the empty state once; an older
+    // page (beforeId set) that all dropped → show nothing but keep the sentinel so
+    // scrolling reaches older, renderable rows.
+    const rendered = hasRenderedItems(body)
+      ? body
+      : (beforeId == null ? `<div class="mc-activity__empty">No activity recorded</div>` : "");
+    return html(rendered + more);
   });
 
   // One raw output frame for the activity detail modal (rows no longer embed it).
@@ -1077,6 +1155,28 @@ function registerV2PageRoutes(): void {
     const fmtTok = (t: number) => t >= 1000 ? (t / 1000).toFixed(t >= 100000 ? 0 : 1) + "k" : String(t);
 
     const esc = escapeHtml;
+
+    // Per-task memory (experimental): what is stored and how big it is.
+    let memoryRow = "";
+    if (isExperimental()) {
+      const mem = taskMemorySummary(db, task.id);
+      const kinds = Object.entries(mem.by_kind).map(([k, n]) => `${n} ${k}`).join(", ");
+      const authors = Object.entries(mem.by_author).map(([a, n]) => `${n} ${a}`).join(", ");
+      const model = mem.models.length > 0 ? mem.models.map((m) => m.replace(/^local:|^custom:/, "")).join(", ") : null;
+      const detail = mem.entries === 0
+        ? (mem.enabled ? "no entries yet" : "")
+        : `${mem.entries} entries, ${mem.vectors} vectors${mem.pending > 0 ? ` (${mem.pending} pending)` : ""}${mem.dims ? `, ${mem.dims} dims` : ""}${model ? ` &middot; ${esc(model)}` : ""}`
+          + ` &middot; ${formatBytes(mem.total_bytes)} <span class="sk-muted">(text ${formatBytes(mem.content_bytes)}, vectors ${formatBytes(mem.vector_bytes)})</span>`;
+      const breakdown = mem.entries > 0 ? `<div class="sk-muted sk-text-xs" style="margin-top:2px;">${esc(kinds)}${authors ? ` &middot; ${esc(authors)}` : ""}</div>` : "";
+      const state = !mem.enabled ? "Off"
+        : mem.mode === "shared" ? `Shared across ${mem.runs} run${mem.runs === 1 ? "" : "s"}${task.source_scheduled_task_id ? ` (<a href="/?scheduled=${esc(task.source_scheduled_task_id)}">recurring task</a>)` : ""}`
+        : "On";
+      const deletedNote = mem.deleted > 0 ? ` <span class="sk-muted sk-text-xs">&middot; ${mem.deleted} deleted by agents</span>` : "";
+      const clearBtn = mem.entries > 0 && !task.source_scheduled_task_id
+        ? ` <button type="button" class="sk-btn sk-btn--sm sk-btn--danger" style="margin-left:var(--sk-space-2);" hx-post="/api/tasks/${esc(task.id)}/memory/clear" hx-swap="none" hx-confirm="Delete this task's memory entries? Notes and messages stay; only the memory copy is removed.">Clear</button>`
+        : "";
+      memoryRow = `<tr><td class="sk-muted">Memory</td><td>${state}${detail ? ` <span class="sk-text-xs">&middot; ${detail}</span>` : ""}${deletedNote}${clearBtn}${breakdown}</td></tr>`;
+    }
     const agentRows = rows.map(r => {
       const fromCell = r.parent_name
         ? `<span class="sk-muted sk-text-xs">&larr; ${esc(r.parent_name)}</span>`
@@ -1109,7 +1209,26 @@ function registerV2PageRoutes(): void {
     // tab panel) and the panels are flex-shrink:0 so they never get squashed;
     // the agents table additionally caps its own body at ~10 rows and scrolls
     // internally.
+    const { iconIdentityPicker, iconIdentityPickerScript } = require("../html/atoms/icon-identity-picker");
     return html(`<div style="flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:var(--sk-space-3);">
+      <div class="sk-panel" style="flex-shrink:0;">
+        <div class="sk-panel__header"><span class="sk-panel__title">Name &amp; Icon</span></div>
+        <div class="sk-panel__body">
+          <form hx-post="/api/tasks/${esc(task.id)}/identity" hx-target="#mc-task-identity-${esc(task.id)}" hx-swap="outerHTML"
+                hx-on::after-request="if(event.detail.successful){Skipper.modal.close('tc-details-modal');}">
+            <div class="sk-form-group">
+              <label class="sk-label">Name</label>
+              <input type="text" name="title" class="sk-input" value="${esc(task.title)}" required>
+            </div>
+            <div class="sk-form-group">
+              <label class="sk-label">Icon</label>
+              ${iconIdentityPicker({ icon: task.icon, color: task.icon_color, nameIcon: "icon", nameColor: "iconColor" })}
+            </div>
+            <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm">Save</button>
+          </form>
+          ${iconIdentityPickerScript()}
+        </div>
+      </div>
       <div class="sk-panel" style="flex-shrink:0;">
         <div class="sk-panel__header"><span class="sk-panel__title">Task Info</span></div>
         <div class="sk-panel__body--flush">
@@ -1119,6 +1238,7 @@ function registerV2PageRoutes(): void {
             <tr><td class="sk-muted">Team</td><td>${esc(task.team_name ?? "Unassigned")}</td></tr>
             <tr><td class="sk-muted">Mode</td><td>${esc(task.mode ?? "workflow")}</td></tr>
             <tr><td class="sk-muted">Phase</td><td>${task.current_phase + 1}</td></tr>
+            ${memoryRow}
             <tr><td class="sk-muted">Created</td><td>${formatTimestamp(task.created_at)}</td></tr>
             ${task.completed_at ? `<tr><td class="sk-muted">Completed</td><td>${formatTimestamp(task.completed_at)}</td></tr>` : ""}
             ${subTotal.n > 0 ? `<tr><td class="sk-muted">Internal sub-agents</td><td>${subTotal.n} <span class="sk-muted">(${fmtTok(subTotal.tok)} tokens, not shown in the agent tree)</span></td></tr>` : ""}
@@ -1278,6 +1398,7 @@ function registerV2PageRoutes(): void {
       apiKeys: listKeys(),
       modelSettings: getModelSettingsView(db),
       slack: isExperimental() ? getSlackConfigView(db) : undefined,
+      taskMemory: isExperimental() ? taskMemoryPanelProvider?.() : undefined,
       autoUpdate: {
         enabled: isAutoUpdateEnabled(db),
         currentVersion: APP_VERSION,

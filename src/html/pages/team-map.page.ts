@@ -3,6 +3,7 @@ import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
 import { isExperimental } from "../../config/feature-flags";
 import { agentIdentityPicker, agentIdentityPickerScript } from "../atoms/agent-identity-picker";
+import { iconIdentityPicker, iconIdentityPickerScript } from "../atoms/icon-identity-picker";
 import { AGENT_COLORS, CREATURE_IDS } from "../atoms/creature";
 import type { LocalTeam } from "../../teams/local-teams";
 
@@ -186,6 +187,9 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       // not rendered its apply path must LEAVE the stored value alone rather than
       // read a missing field as "cleared".
       var EXPERIMENTAL = ${isExperimental() ? "true" : "false"};
+      // Server-rendered icon picker markup (Lucide grid + search + color swatches),
+      // injected into the team settings modal and seeded via window.SkipperIcons.
+      var ICON_PICKER_HTML = ${JSON.stringify(iconIdentityPicker({}))};
       var AGENT_COLORS = ${JSON.stringify(AGENT_COLORS)};
       var CREATURE_CHOICES = ${JSON.stringify(CREATURE_IDS.filter((c) => c !== "captain"))};
       function randomIdentity(){
@@ -765,6 +769,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         var body =
           '<div class="tm-field"><label class="sk-label">Team name</label>' +
             '<input class="sk-input" data-f="name" type="text" value="' + esc(TEAM.name) + '" placeholder="e.g. Feature Strike Team"></div>' +
+          '<div class="tm-field"><label class="sk-label">Icon</label>' + ICON_PICKER_HTML + '</div>' +
           (EXPERIMENTAL ?
           '<div class="tm-sub">' +
             '<div class="tm-field"><label class="sk-label">Autopilot default</label>' +
@@ -804,11 +809,21 @@ export function teamMapPage(vm: TeamMapViewModel): string {
 
         var isCreate = !TEAM.id;
         openModal(isCreate ? 'New team' : 'Team settings', body, doneFooter(isCreate ? 'Create team' : null), function(){
+          // Seed + render the icon picker with the team's stored icon/color.
+          var ip = modalBody.querySelector('[data-icon-identity]');
+          if (ip && window.SkipperIcons) window.SkipperIcons.set(ip, cfg.icon || '', cfg.iconColor || '');
           wireFooter(function(){
             var name = modalBody.querySelector('[data-f="name"]').value.trim();
             if (!name) { flashError('A team needs a name.'); return false; }
             TEAM.name = name;
             TEAM.config = TEAM.config || {};
+            // Icon is core (not experimental) — collect it before the gate below.
+            var ipRoot = modalBody.querySelector('[data-icon-identity]');
+            if (ipRoot && window.SkipperIcons) {
+              var iv = window.SkipperIcons.read(ipRoot);
+              TEAM.config.icon = iv.icon || '';
+              TEAM.config.iconColor = iv.icon ? iv.color : '';
+            }
             // Not rendered → leave the stored mode/Slack settings untouched.
             if (!EXPERIMENTAL) return;
             TEAM.config.mode = modalBody.querySelector('[data-f="team_mode"]').value === 'conversational' ? 'conversational' : 'workflow';
@@ -898,5 +913,6 @@ export function teamMapPage(vm: TeamMapViewModel): string {
     </script>
     <template id="tm-identity-tpl">${agentIdentityPicker({ experimental: isExperimental() })}</template>
     ${agentIdentityPickerScript()}
+    ${iconIdentityPickerScript()}
   `, "/teams");
 }

@@ -1,4 +1,5 @@
 import { dictateButton } from "./fragments/dictate-button.fragment";
+import { isExperimental } from "../config/feature-flags";
 
 export function dashboardInlineTaskCreationFragment(
     _teams: { id: string; name: string; }[]): string {
@@ -51,7 +52,11 @@ export function dashboardInlineTaskCreationFragment(
           <input type="checkbox" id="dashboard-inline-autopilot" checked
             onchange="document.getElementById('dashboard-inline-mode').value=this.checked?'workflow':'conversational';">
           <input type="hidden" name="mode" id="dashboard-inline-mode" value="workflow">
-        </label>
+        </label>${isExperimental() ? `
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="Keep a searchable memory of input, messages, and notes that agents can query.">
+          <input type="checkbox" name="memoryEnabled" value="1">
+          <span class="muted">Memory</span>
+        </label>` : ""}
         <div id="task-form-team-slot" style="display:contents;"
           hx-get="/fragments/task-form/team?context=inline"
           hx-trigger="load"

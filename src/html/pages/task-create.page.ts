@@ -4,6 +4,7 @@ import { escapeHtml } from "../atoms/escape-html";
 import { dictateButton } from "../fragments/dictate-button.fragment";
 import { renderScheduleMatrixEditor } from "../atoms/schedule-matrix";
 import { isExperimental } from "../../config/feature-flags";
+import { iconIdentityPicker, iconIdentityPickerScript } from "../atoms/icon-identity-picker";
 import type { TeamPhase } from "../../config/store";
 
 export interface TaskCreateTeam {
@@ -128,6 +129,15 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
               <input type="text" name="title" class="sk-input" placeholder="${titlePlaceholder}"${titleRequired} autofocus>
             </div>
             <div class="sk-form-group">
+              <details class="sk-collapse-field">
+                <summary class="sk-label" style="cursor:pointer;list-style:none;">
+                  <span class="sk-collapse-field__caret">&#x25B6;</span> Icon
+                  <span style="font-weight:normal;font-size:0.72rem;color:var(--muted);">(optional — shown in the sidebar and lists)</span>
+                </summary>
+                <div style="margin-top:var(--sk-space-2);">${iconIdentityPicker({ nameIcon: "icon", nameColor: "iconColor" })}</div>
+              </details>
+            </div>
+            <div class="sk-form-group">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--sk-space-2);">
                 <label class="sk-label" style="margin-bottom:0;">Description</label>
                 ${dictateButton("textarea[name=description]")}
@@ -150,6 +160,14 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
                 <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
                   On: the team drives the task to the end of its phases. Off: the task waits for your input between turns.
                 </div>
+                ${isExperimental() ? `
+                <label class="sk-label" style="display:flex;align-items:center;gap:var(--sk-space-2);cursor:pointer;margin-top:var(--sk-space-3);">
+                  <input type="checkbox" name="memoryEnabled" value="1">
+                  Memory
+                </label>
+                <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
+                  Keep a searchable memory of your input, audio summaries, agent messages, and notes that every agent on the task can query.
+                </div>` : ""}
               </div>
               <div class="sk-form-group" style="flex:1;">
                 <label class="sk-label">Schedule</label>
@@ -174,6 +192,25 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
               hx-target="this"
               hx-swap="innerHTML"></div>
             <div id="schedule-fields" style="display:none;">
+              ${isExperimental() ? `
+              <div class="sk-form-row" style="gap:var(--sk-space-3);">
+                <div class="sk-form-group" style="flex:1;">
+                  <label class="sk-label">Memory across runs</label>
+                  <select name="memoryMode" class="sk-select">
+                    <option value="off" selected>Off</option>
+                    <option value="run">Per run (each run its own memory)</option>
+                    <option value="shared">Shared across runs</option>
+                  </select>
+                  <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
+                    Shared: every run can query what earlier runs recorded. Replaces the Memory checkbox for recurring tasks.
+                  </div>
+                </div>
+                <div class="sk-form-group" style="width:170px;">
+                  <label class="sk-label">Keep entries for (days)</label>
+                  <input type="number" name="memoryRetentionDays" class="sk-input" min="0" step="1" value="0" placeholder="0 = indefinitely">
+                </div>
+              </div>
+              <div class="sk-muted sk-text-xs" style="margin:calc(-1 * var(--sk-space-2)) 0 var(--sk-space-3);">Keep entries for: shared memory only. Entries older than this are dropped when new ones are written. 0 keeps them indefinitely.</div>` : ""}
               <div class="sk-form-group">
                 <label class="sk-label">Schedule</label>
                 <select name="scheduleMode" class="sk-select" style="max-width:220px;">
@@ -250,5 +287,6 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
         </div>
       </div>
     </div>
+    ${iconIdentityPickerScript()}
   `, "/tasks");
 }

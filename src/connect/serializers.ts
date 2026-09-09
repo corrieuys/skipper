@@ -4,6 +4,8 @@ import type { EscalationData, TaskData } from "../html/components";
 import { deriveDisplayStatus } from "../tasks/status";
 import type { ArtifactItem, EscalationItem, MessageItem, NoteItem, TaskDetailItem, TaskListItem, TimelineArtifactRef, TimelineEntryItem } from "./protocol";
 import { getPublicArtifactUrl } from "./public-links";
+import { taskMemorySummary } from "../task-memory/summary";
+import { resolveMemoryScope } from "../task-memory/scope";
 
 /**
  * Projections shared by fat connect events (events.ts) and the state snapshot
@@ -18,7 +20,21 @@ export function projectTask(db: Database, row: TaskData, phaseCount: number | nu
     wake_requested_at?: string | null;
     started_at?: string | null;
     mode?: string | null;
+    starred?: number | boolean | null;
+    icon?: string | null;
+    icon_color?: string | null;
   };
+  // task_config itself never crosses the wire; only the resolved memory scope
+  // does (a run follows its recurring series, see task-memory/scope.ts).
+  let memoryEnabled = false;
+  let memoryMode = "off";
+  try {
+    const scope = resolveMemoryScope(db, row.id);
+    memoryEnabled = scope.scopeId !== null;
+    memoryMode = scope.mode;
+  } catch {
+    /* projection must never throw on a memory lookup */
+  }
   const display = deriveDisplayStatus(db, {
     id: row.id,
     status: row.status,
@@ -39,11 +55,16 @@ export function projectTask(db: Database, row: TaskData, phaseCount: number | nu
     display_status: display,
     mode,
     paused: !!r.paused,
+    memory_enabled: memoryEnabled,
+    memory_mode: memoryMode,
     team_id: row.team_id ?? null,
     team_name: row.team_name ?? null,
     current_phase: row.current_phase,
     phase_count: phaseCount,
     needs_review: !!row.needs_review,
+    starred: !!r.starred,
+    icon: r.icon ?? null,
+    icon_color: r.icon_color ?? null,
     created_at: row.created_at,
     updated_at: (row as unknown as { updated_at?: string | null }).updated_at ?? null,
     started_at: (row as unknown as { started_at?: string | null }).started_at ?? null,
@@ -84,7 +105,13 @@ export function toTaskDetailItem(db: Database, taskId: string): TaskDetailItem |
     settled_at: r.settled_at ?? null,
     regression_count: r.regression_count ?? 0,
     phases: task.phases ?? null,
+    memory_summary: memorySummaryOrNull(db, taskId),
   };
+}
+
+function memorySummaryOrNull(db: Database, taskId: string) {
+  const summary = taskMemorySummary(db, taskId);
+  return summary.enabled || summary.entries > 0 ? summary : null;
 }
 
 /** All tasks projected, with team phase counts resolved in one extra query. */

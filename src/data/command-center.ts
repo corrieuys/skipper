@@ -28,6 +28,11 @@ export interface CommandCenterTaskRow {
   task_config: string | null;
   team_name: string | null;
   source_scheduled_task_id: string | null;
+  /** Stored star (0/1) for the sidebar Favorites board. */
+  starred?: number;
+  /** Lucide icon id + hex tint. */
+  icon?: string | null;
+  icon_color?: string | null;
 }
 
 /**
@@ -41,6 +46,7 @@ export function fetchCommandCenterTasks(db: Database, includeTaskId?: string): C
     `SELECT t.id, t.title, t.description, t.status, t.current_phase, t.team_id, t.mode, t.paused, t.needs_review,
             t.working_directory, t.created_at, t.completed_at, t.result, t.task_config,
             t.source_scheduled_task_id, t.wake_requested_at, t.started_at,
+            t.starred, t.icon, t.icon_color,
             tm.name AS team_name
      FROM tasks t LEFT JOIN teams tm ON tm.id = t.team_id
      WHERE t.source_scheduled_task_id IS NULL
@@ -168,10 +174,20 @@ export function fetchTeamPhasesById(db: Database): Record<string, { name: string
 }
 
 /** Teams selectable for standard-task drafts: everything except the Real Time team. */
-export function fetchStandardTaskTeams(db: Database): Array<{ id: string; name: string }> {
+export interface TaskTeamRow { id: string; name: string; icon: string | null; icon_color: string | null; }
+
+export function fetchStandardTaskTeams(db: Database): TaskTeamRow[] {
   const rtTeam = db.prepare("SELECT id FROM teams WHERE lower(name) = 'real time' LIMIT 1").get() as { id: string } | undefined;
-  return (db.prepare("SELECT id, name FROM teams ORDER BY name").all() as Array<{ id: string; name: string }>)
-    .filter((t) => !rtTeam || t.id !== rtTeam.id);
+  // The team icon lives in the runtime local_teams.team_config JSON (id matches
+  // the flattened shared teams row); pull it here so the sidebar can render it.
+  const rows = db.prepare(
+    `SELECT t.id, t.name,
+            json_extract(lt.team_config, '$.icon') AS icon,
+            json_extract(lt.team_config, '$.iconColor') AS icon_color
+     FROM teams t LEFT JOIN local_teams lt ON lt.id = t.id
+     ORDER BY t.name`,
+  ).all() as TaskTeamRow[];
+  return rows.filter((t) => !rtTeam || t.id !== rtTeam.id);
 }
 
 export function fetchOpenEscalationTaskIds(db: Database): Set<string> {
@@ -232,6 +248,9 @@ export interface ScheduledTaskRow {
   next_run_at: string | null;
   last_run_at: string | null;
   created_at: string;
+  starred?: number;
+  icon?: string | null;
+  icon_color?: string | null;
 }
 
 export function fetchScheduledTaskRows(db: Database): ScheduledTaskRow[] {
@@ -239,6 +258,7 @@ export function fetchScheduledTaskRows(db: Database): ScheduledTaskRow[] {
     return db.prepare(
       `SELECT st.id, st.title, st.description, st.team_id, st.schedule_unit, st.schedule_amount,
               st.schedule_matrix, st.status, st.next_run_at, st.last_run_at, st.created_at,
+              st.starred, st.icon, st.icon_color,
               tm.name AS team_name
        FROM scheduled_tasks st LEFT JOIN teams tm ON tm.id = st.team_id
        ORDER BY CASE st.status WHEN 'approved' THEN 0 ELSE 1 END, st.created_at DESC`,

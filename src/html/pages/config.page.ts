@@ -8,6 +8,7 @@ import { agentIdentityPicker, agentIdentityPickerScript } from "../atoms/agent-i
 import type { NotificationPreference } from "../../notifications/store";
 import type { ModelChoice, AgentTypeOption } from "../../config/model-settings";
 import type { SlackConfigView } from "../../config/slack-settings";
+import { taskMemoryPanel, type TaskMemoryPanelData } from "../fragments/task-memory-config.fragment";
 
 export interface ConfigPageViewModel {
   notificationPreferences: NotificationPreference[];
@@ -29,6 +30,8 @@ export interface ConfigPageViewModel {
     options: AgentTypeOption[];
   };
   slack?: SlackConfigView;
+  /** Task memory embeddings settings + local server status (experimental). */
+  taskMemory?: TaskMemoryPanelData;
   autoUpdate: {
     enabled: boolean;
     currentVersion: string;
@@ -216,6 +219,8 @@ export function configPage(vm: ConfigPageViewModel): string {
       ${modelSettingsPanel(vm.modelSettings)}
 
       ${isExperimental() ? skipperCharacterPanel(vm.skipperIdentity) : ""}
+
+      ${isExperimental() && vm.taskMemory ? taskMemoryPanel(vm.taskMemory) : ""}
 
       <!-- Sound Notifications Section -->
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">

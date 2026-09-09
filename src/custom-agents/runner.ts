@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "crypto";
-import { generateText, stepCountIs, type ModelMessage, type Tool } from "ai";
+import { APICallError, generateText, RetryError, stepCountIs, type ModelMessage, type Tool } from "ai";
 import { logError } from "../logging";
 import { buildModel } from "./model";
 import { connectMcpTools, daemonToolName } from "./mcp-tools";
@@ -36,32 +36,7 @@ export interface CustomAgentRunInput {
   sessionId: string | null;
   /** Port the daemon's own MCP endpoint is listening on. */
   daemonPort: number;
-  /**
-   * True when this custom agent is running a task SOLO (entrypoint of a
-   * team-of-one). The runner then auto-includes the solo essential daemon tools
-   * (complete_task, escalate, notes, artifacts) so the sole executor can close
-   * its own task even if its definition did not enable them. The daemon still
-   * gates by session role, so only tools it offers a solo session are connected.
-   */
-  solo?: boolean;
 }
-
-/**
- * Daemon tools a solo custom agent needs to function as the sole executor of a
- * task, regardless of what its definition ticked. All are in the daemon's solo
- * (single-agent) tool profile, so connecting them is safe.
- */
-const SOLO_ESSENTIAL_TOOLS = [
-  "complete_task",
-  "escalate",
-  "post_message",
-  "create_note",
-  "list_notes",
-  "create_artifact",
-  "create_file_artifact",
-  "list_artifacts",
-  "get_artifact",
-] as const;
 
 export interface CustomAgentRunResult {
   exitCode: number;
@@ -168,7 +143,6 @@ export async function runCustomAgent(input: CustomAgentRunInput, handle: InProce
     const daemonToolNames = Array.from(new Set([
       ...agent.enabledMcpTools,
       ...customToolNames,
-      ...(input.solo ? SOLO_ESSENTIAL_TOOLS : []),
     ]));
 
     if (daemonToolNames.length > 0) {
@@ -296,7 +270,7 @@ export async function runCustomAgent(input: CustomAgentRunInput, handle: InProce
     return { exitCode: truncated ? 1 : 0, sessionId };
   } catch (err) {
     const aborted = handle.abort.signal.aborted;
-    const message = err instanceof Error ? err.message : String(err);
+    const message = describeRunError(err);
     if (!aborted) logError(db, "custom_agent.run", { runtimeId, agentId: agent.id }, err);
     host.ingestSyntheticStderr(
       runtimeId,
@@ -309,6 +283,29 @@ export async function runCustomAgent(input: CustomAgentRunInput, handle: InProce
     // every path — a cancelled run that skipped it would leave servers behind.
     if (closeServers) await closeServers().catch(() => {});
   }
+}
+
+/**
+ * Turn a thrown model-call error into a message that names the actual cause.
+ *
+ * `generateText` retries transient failures, so what surfaces is a `RetryError`
+ * whose own `.message` is only "Failed after N attempts. Last error: …" — the
+ * useful part is the `lastError` it wraps. And when that is an `APICallError`,
+ * its `.message` is just the top-level line the provider chose ("Provider
+ * returned error" is OpenRouter's generic wrapper); the reason the upstream
+ * actually gave — no credits, model offline, an unsupported parameter, a 5xx —
+ * lives in `responseBody`. Both are dropped if we log only `err.message`, which
+ * is exactly the dead-end an operator hits. Unwrap one, then the other.
+ */
+function describeRunError(err: unknown): string {
+  const root = RetryError.isInstance(err) ? err.lastError : err;
+  if (APICallError.isInstance(root)) {
+    const status = root.statusCode ? ` (HTTP ${root.statusCode})` : "";
+    const body = root.responseBody?.trim();
+    return `${root.message}${status}${body ? ` — ${body.slice(0, 1000)}` : ""}`;
+  }
+  if (root instanceof Error) return root.message;
+  return String(root);
 }
 
 /**

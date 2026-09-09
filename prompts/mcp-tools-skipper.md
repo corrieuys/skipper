@@ -10,6 +10,11 @@ Notes & artifacts (use freely):
 - `mcp__skipper-daemon__list_artifacts({ kind?, name_prefix?, limit? })`
 - `mcp__skipper-daemon__get_artifact({ name, version? })`
 
+Task memory & search:
+- `mcp__skipper-daemon__search_task_content({ source, query, limit? })` — keyword search over one source on this task: `notes`, `artifacts` (latest version of each), or `messages` (operator messages). Best match first with a snippet; `limit` defaults to 10. Always available.
+- `mcp__skipper-daemon__query_task_memory({ query, limit?, author?, kind?, scope?, since?, run_id? })` — semantic search over the task's memory (operator input, audio summaries, agent messages, notes; timestamped and tagged agent/user). Only works when the prompt carries a TASK MEMORY: ENABLED block; otherwise it returns an error. `limit` defaults to 10.
+- `mcp__skipper-daemon__delete_task_memory({ id, reason })` — soft-delete one memory entry you found wrong or stale (id from a query hit). The daemon notes the deletion on the task. Only with the TASK MEMORY block present.
+
 Escalation (use when you need human input):
 - `mcp__skipper-daemon__create_escalation({ ... })` and its companions
 

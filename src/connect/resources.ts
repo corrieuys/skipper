@@ -1,4 +1,7 @@
 import type { TaskScheduler } from "../tasks/scheduler";
+import type { TaskMemoryManager } from "../task-memory/manager";
+import { isMemoryMode, readSeriesMemoryConfig, resolveMemoryScope, seriesScopeId, taskScopeId } from "../task-memory/scope";
+import { scopeSummary } from "../task-memory/summary";
 import type { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { isValidScheduleMatrix, type ScheduleMatrix } from "../tasks/scheduled-scheduler";
 import type { EscalationManager } from "../escalations/manager";
@@ -18,7 +21,7 @@ import { eventBus } from "../events/bus";
 import { looksLikeHtml } from "../html/atoms/sniff-html";
 import { CONNECT_PROTOCOL_VERSION, type StateSnapshot, CONNECT_FEATURES } from "./protocol";
 import { getPublicArtifactUrl } from "./public-links";
-import { fetchArtifactItem, fetchTimelineEntryItem, snapshotOpenEscalations, snapshotTasks, snapshotTimelineEntries, toTaskDetailItem } from "./serializers";
+import { fetchArtifactItem, fetchTimelineEntryItem, snapshotOpenEscalations, snapshotTasks, snapshotTimelineEntries, toTaskDetailItem, toTaskListItem } from "./serializers";
 import { fetchTaskOutputPage } from "../data/queries";
 import {
   listLocalTeams,
@@ -190,9 +193,31 @@ export interface ResourceDeps {
   inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>;
   /** Kill a task's live agent process trees (settle/cancel parity with the web routes). */
   killTaskRuntimes?: (taskId: string) => void;
+  /** Per-task memory: `tasks/set-memory` / `recurring/set-memory` backfill through it, clear actions delete through it. */
+  taskMemory?: Pick<TaskMemoryManager, "backfill" | "backfillSeries" | "clearScope" | "prune">;
 }
 
 export type ResourceResult = { ok: true; data: unknown } | { ok: false; error: string };
+
+/** Series memory projection for `recurring/list` + `recurring/set-memory`. */
+function recurringMemoryFields(db: ReturnType<typeof getDb>, seriesId: string) {
+  const row = db.prepare("SELECT task_config FROM scheduled_tasks WHERE id = ?").get(seriesId) as { task_config: string | null } | null;
+  let config: Record<string, unknown> = {};
+  try { config = row?.task_config ? JSON.parse(row.task_config) as Record<string, unknown> : {}; } catch { config = {}; }
+  const cfg = readSeriesMemoryConfig(config);
+  return {
+    memoryMode: cfg.mode,
+    memoryRetentionDays: cfg.retentionDays,
+    memorySummary: cfg.mode === "shared"
+      ? scopeSummary(db, seriesScopeId(seriesId), { enabled: true, mode: cfg.mode, retentionDays: cfg.retentionDays })
+      : null,
+  };
+}
+
+/** Wire booleans arrive as true / "true" / "on" / 1 / "1". */
+function isTruthyFlag(raw: unknown): boolean {
+  return raw === true || raw === "true" || raw === "on" || raw === 1 || raw === "1";
+}
 
 export async function handleResourceRequest(
   resource: string,
@@ -309,7 +334,7 @@ export async function handleResourceRequest(
             // Input-pipeline numeric config (window seconds etc.) still accepted
             // from older clients; lands in task_config as before. Phase overrides
             // are deliberately not accepted over Connect.
-            let taskConfig: Record<string, number> | undefined;
+            let taskConfig: Record<string, number | boolean> | undefined;
             if (params.taskConfig && typeof params.taskConfig === "object") {
               const cfg = params.taskConfig as Record<string, unknown>;
               const out: Record<string, number> = {};
@@ -318,6 +343,10 @@ export async function handleResourceRequest(
                 if (Number.isFinite(v)) out[key] = v;
               }
               if (Object.keys(out).length) taskConfig = out;
+            }
+            // Per-task memory at create time (the web form's Memory checkbox).
+            if (isTruthyFlag(params.memoryEnabled ?? params.memory_enabled)) {
+              taskConfig = { ...(taskConfig ?? {}), memory_enabled: true };
             }
             const createdTask = taskScheduler.createTask({
               title,
@@ -341,6 +370,51 @@ export async function handleResourceRequest(
           case "unapprove":
             // Send an approved (not-yet-running) task back to draft.
             return { ok: true, data: taskScheduler.unapproveTask(String(params.id ?? "")) };
+          case "set-memory": {
+            // Flip per-task memory (task_config.memory_enabled), mirroring the
+            // web Memory pill: turning it on copies the task's existing notes,
+            // messages, and operator input into memory (backfill). Replies with
+            // the projected task so the client patches its store directly.
+            const id = String(params.id ?? "");
+            if (!id) return { ok: false, error: "id is required" };
+            const on = isTruthyFlag(params.on ?? params.memory ?? params.enabled);
+            try {
+              const target = taskScheduler.getTask(id);
+              if (target?.source_scheduled_task_id) {
+                return { ok: false, error: "Memory for a recurring run is set on the recurring task (recurring/set-memory), not on the run" };
+              }
+              taskScheduler.setMemoryEnabled(id, on);
+              const backfilled = on ? (deps.taskMemory?.backfill(id) ?? 0) : 0;
+              return { ok: true, data: { task: toTaskDetailItem(db, id), memory_enabled: on, backfilled } };
+            } catch (err) {
+              return { ok: false, error: err instanceof Error ? err.message : String(err) };
+            }
+          }
+          case "star": {
+            // Toggle (or set) a task's stored star for the client Favorites view.
+            // `on` sets an explicit value; omit it to flip. Replies with the
+            // projected task so the caller patches its store. Deliberately emits
+            // NO event (starring must not trigger a re-render on any client — the
+            // web star self-swaps); other clients pick it up on their next read.
+            const id = String(params.id ?? "");
+            if (!id) return { ok: false, error: "id is required" };
+            const task = taskScheduler.getTask(id);
+            if (!task) return { ok: false, error: "Task not found" };
+            const raw = params.on ?? params.starred;
+            const next = raw === undefined || raw === null ? !task.starred : isTruthyFlag(raw);
+            taskScheduler.setStarred(id, next);
+            return { ok: true, data: { task: toTaskListItem(db, id), starred: next } };
+          }
+          case "clear-memory": {
+            // Hard-delete the task's memory scope (a run clears its series'
+            // shared scope). Notes and messages are untouched.
+            const id = String(params.id ?? "");
+            if (!id) return { ok: false, error: "id is required" };
+            if (!taskScheduler.getTask(id)) return { ok: false, error: "Task not found" };
+            const scope = resolveMemoryScope(db, id);
+            const cleared = deps.taskMemory?.clearScope(scope.scopeId ?? taskScopeId(id)) ?? 0;
+            return { ok: true, data: { id, cleared } };
+          }
           case "set-autopilot": {
             // Flip a task between autopilot (mode workflow) and operator-driven
             // (conversational), mirroring the web header pill. Not allowed on a
@@ -682,8 +756,12 @@ export async function handleResourceRequest(
             scheduleAmount: s.schedule_amount ?? null,
             scheduleMatrix: s.schedule_matrix ?? null,
             status: s.status,
+            starred: !!(s.starred ?? 0),
+            icon: s.icon ?? null,
+            iconColor: s.icon_color ?? null,
             nextRunAt: s.next_run_at ?? null,
             lastRunAt: s.last_run_at ?? null,
+            ...recurringMemoryFields(db, s.id),
             runs: (runsBy[s.id] ?? []).map((r) => ({
               id: r.id,
               title: r.title,
@@ -693,6 +771,33 @@ export async function handleResourceRequest(
             })),
           }));
           return { ok: true, data: series };
+        }
+        if (action === "set-memory") {
+          // Series memory: mode off | run | shared (+ retention days). Shared
+          // backfills every run still in the DB; runs read the series live, so
+          // this applies to runs already in flight. Mirrors POST /api/scheduled-tasks/:id/memory.
+          const id = String(params.id ?? "");
+          if (!id) return { ok: false, error: "id is required" };
+          if (!scheduledTaskScheduler.getScheduledTask(id)) return { ok: false, error: "Recurring task not found" };
+          const modeRaw = params.mode ?? params.memoryMode;
+          if (modeRaw !== undefined && !isMemoryMode(modeRaw)) return { ok: false, error: "mode must be off, run, or shared" };
+          const daysRaw = params.retentionDays ?? params.retention_days;
+          const retentionDays = daysRaw === undefined || daysRaw === "" || daysRaw === null ? undefined : Number(daysRaw);
+          try {
+            const updated = scheduledTaskScheduler.setMemoryConfig(id, { mode: modeRaw as never, retentionDays });
+            let backfilled = 0;
+            if (updated.task_config.memory_mode === "shared") backfilled = deps.taskMemory?.backfillSeries(id) ?? 0;
+            return { ok: true, data: { id, ...recurringMemoryFields(db, id), backfilled } };
+          } catch (err) {
+            return { ok: false, error: err instanceof Error ? err.message : String(err) };
+          }
+        }
+        if (action === "clear-memory") {
+          const id = String(params.id ?? "");
+          if (!id) return { ok: false, error: "id is required" };
+          if (!scheduledTaskScheduler.getScheduledTask(id)) return { ok: false, error: "Recurring task not found" };
+          const cleared = deps.taskMemory?.clearScope(seriesScopeId(id)) ?? 0;
+          return { ok: true, data: { id, cleared } };
         }
         if (action === "update") {
           // Edit a recurring series in place, mirroring the create form:

@@ -9,6 +9,9 @@ ALLOWED:
 - `mcp__skipper-daemon__create_file_artifact({ name, path, description? })` — attach a file you generated on disk (screenshot, photo, PDF, archive, any binary) to the task. Pass the absolute `path`; the daemon copies it into the artifact store. Use `create_artifact` for text you can write inline.
 - `mcp__skipper-daemon__list_artifacts({ kind?, name_prefix?, limit? })` — discover artifacts on this task.
 - `mcp__skipper-daemon__get_artifact({ name, version? })` — read a specific artifact.
+- `mcp__skipper-daemon__search_task_content({ source, query, limit? })` — keyword search over one source on this task: `notes`, `artifacts` (latest version of each), or `messages`. Best match first with a snippet; `limit` defaults to 10.
+- `mcp__skipper-daemon__query_task_memory({ query, limit?, author?, kind?, scope?, since?, run_id? })` — semantic search over the task's memory (operator input, audio summaries, agent messages, notes; timestamped, tagged agent/user). Only works when your prompt carries a TASK MEMORY: ENABLED block. `limit` defaults to 10.
+- `mcp__skipper-daemon__delete_task_memory({ id, reason })` — soft-delete one memory entry you found wrong or stale (id from a query hit). The daemon notes the deletion on the task. Only with the TASK MEMORY block present.
 - `mcp__skipper-daemon__create_escalation({ question })` — surface a question to the human user. Call this DIRECTLY when you need operator input. The orchestrator queues your escalation, pauses the task, and resumes your run with `[USER_RESPONSE] ...` once the operator answers.
 
 Global store — cross-task shared state (use ONLY when explicitly instructed):

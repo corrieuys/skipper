@@ -12,9 +12,15 @@ import { registerDictationRoutes } from "./src/routes/dictation";
 import { registerCustomAgentRoutes } from "./src/routes/custom-agents";
 import { registerSingleAgentRoutes } from "./src/routes/single-agents";
 import { registerCustomToolRoutes } from "./src/routes/custom-tools";
+import { registerTaskMemoryRoutes, buildTaskMemoryPanelData } from "./src/routes/task-memory";
+import { setTaskMemoryPanelProvider } from "./src/routes/pages";
+import { TaskMemoryManager } from "./src/task-memory/manager";
+import { EmbeddingServerManager } from "./src/task-memory/local-server";
+import { resolveEmbedder } from "./src/task-memory/embeddings";
 import { registerCustomAgentTypes } from "./src/custom-agents/store";
 import { ManagerDaemon } from "./src/agents/manager-daemon";
 import { initializeDatabase, closeDb, getDb } from "./src/db/connection";
+import { logError } from "./src/logging";
 import { tryUpgradeRealtimeWs, realtimeWsHandlers } from "./src/routes/realtime-ws";
 import { UIWebSocketManager } from "./src/ws/ui-push";
 import { NotificationManager } from "./src/notifications/manager";
@@ -51,6 +57,14 @@ const notificationManager = new NotificationManager(getDb(), uiPush);
 // Monkey pet engine
 const monkeyEngine = new MonkeyEngine(getDb(), getGregDb());
 
+// Per-task memory: bus listeners copy exchanges into task_memory and embed
+// them through whichever endpoint the config page selects (the managed local
+// llama-server by default). Agents read it via the query_task_memory tool.
+const embeddingServer = new EmbeddingServerManager();
+const taskMemory = new TaskMemoryManager(getDb(), {
+  resolveEmbedder: () => resolveEmbedder(getDb(), embeddingServer),
+});
+
 // MCP server for agent-to-daemon structured communication
 const mcpServer = new DaemonMcpServer(getDb(), {
   db: getDb(),
@@ -63,6 +77,7 @@ const mcpServer = new DaemonMcpServer(getDb(), {
   globalStoreManager: new GlobalStoreManager(getDb()),
   realtimeSessionManager: daemon.getRealtimeSessionManager(),
   inputTask: (taskId, text, source) => daemon.inputTask(taskId, text, source),
+  taskMemoryManager: taskMemory,
 });
 const whisperManager = new WhisperManager();
 
@@ -92,6 +107,10 @@ registerCustomAgentRoutes();
 registerSingleAgentRoutes();
 // Custom tools (experimental): operator-defined tools executed by the daemon.
 registerCustomToolRoutes();
+// Task memory (experimental): per-task toggle + embeddings settings and the
+// managed local server's download/start/stop.
+registerTaskMemoryRoutes({ db: getDb(), scheduler: daemon.getTaskScheduler(), scheduledScheduler: daemon.getScheduledTaskScheduler(), taskMemory, embeddingServer });
+setTaskMemoryPanelProvider(() => buildTaskMemoryPanelData({ db: getDb(), taskMemory, embeddingServer }));
 
 // MCP protocol routes (Streamable HTTP transport)
 const mcpHandler = (req: Request) => mcpServer.handleRequest(req);
@@ -131,6 +150,7 @@ const connectClient = initConnectClient(
   daemon.getRealtimeSessionManager(),
   (taskId, text, source) => daemon.inputTask(taskId, text, source),
   (taskId) => killRunningRuntimesForTask(taskId, daemon),
+  taskMemory,
 );
 
 // Local consumer WebSocket for apps on this machine (Mac app). Unauthenticated
@@ -172,6 +192,7 @@ let stopUpdateRestart: (() => void) | null = null;
 async function startup() {
   await daemon.start();
   monkeyEngine.start();
+  taskMemory.start();
 
   const db = getDb();
   // Reconcile the recorded version vs the running one: queues the "app updated"
@@ -210,6 +231,8 @@ function shutdown() {
   mcpServer.close();
   notificationManager.destroy();
   daemon.stop();
+  taskMemory.stop();
+  embeddingServer.stop();
   whisperManager.stop(getDb());
   uiPush.destroy();
   connectLocal.destroy();
@@ -220,3 +243,22 @@ function shutdown() {
 
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+
+// Last-resort backstop: keep the daemon alive on a stray async failure. The
+// daemon coordinates many concurrent tasks, so one unhandled rejection or
+// uncaught error (e.g. an EPIPE surfacing from a dead agent's stdin flush)
+// taking down the whole process would kill every other running task. Log it
+// and stay up. logError is guarded because getDb() may not be ready at the
+// very earliest boot, and the handler itself must never throw.
+function logFatal(kind: string, err: unknown): void {
+  const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
+  console.error(`[${kind}]`, message);
+  try {
+    logError(getDb(), `process.${kind}`, {}, err instanceof Error ? err : new Error(message));
+  } catch {
+    /* db not ready or logging failed — console line above is the record */
+  }
+}
+
+process.on("unhandledRejection", (reason) => logFatal("unhandledRejection", reason));
+process.on("uncaughtException", (err) => logFatal("uncaughtException", err));

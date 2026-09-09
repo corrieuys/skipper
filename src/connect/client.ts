@@ -31,6 +31,7 @@ export class ConnectClient {
   private realtimeSessionManager: RealtimeSessionManager;
   private inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>;
   private killTaskRuntimes?: (taskId: string) => void;
+  private taskMemory?: ResourceDeps["taskMemory"];
 
   constructor(
     taskScheduler: TaskScheduler,
@@ -41,6 +42,7 @@ export class ConnectClient {
     realtimeSessionManager: RealtimeSessionManager,
     inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>,
     killTaskRuntimes?: (taskId: string) => void,
+    taskMemory?: ResourceDeps["taskMemory"],
   ) {
     this.taskScheduler = taskScheduler;
     this.scheduledTaskScheduler = scheduledTaskScheduler;
@@ -50,6 +52,7 @@ export class ConnectClient {
     this.realtimeSessionManager = realtimeSessionManager;
     this.inputTask = inputTask;
     this.killTaskRuntimes = killTaskRuntimes;
+    this.taskMemory = taskMemory;
   }
 
   start(): void {
@@ -87,6 +90,7 @@ export class ConnectClient {
       realtimeSessionManager: this.realtimeSessionManager,
       inputTask: this.inputTask,
       killTaskRuntimes: this.killTaskRuntimes,
+      taskMemory: this.taskMemory,
     };
   }
 
@@ -217,8 +221,9 @@ export function initConnectClient(
   realtimeSessionManager: RealtimeSessionManager,
   inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>,
   killTaskRuntimes?: (taskId: string) => void,
+  taskMemory?: ResourceDeps["taskMemory"],
 ): ConnectClient {
-  _connectClient = new ConnectClient(taskScheduler, scheduledTaskScheduler, escalationManager, artifactManager, phaseManager, realtimeSessionManager, inputTask, killTaskRuntimes);
+  _connectClient = new ConnectClient(taskScheduler, scheduledTaskScheduler, escalationManager, artifactManager, phaseManager, realtimeSessionManager, inputTask, killTaskRuntimes, taskMemory);
   return _connectClient;
 }
 

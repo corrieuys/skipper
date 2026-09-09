@@ -347,6 +347,97 @@ describe("connect tasks read/list projections + v3 actions", () => {
     expect((again as { ok: false; error: string }).error).toContain("not paused");
   });
 
+  it("tasks/set-memory flips the flag, backfills on enable, and the projection carries it", async () => {
+    const id = seedTask("active");
+    const backfilled: string[] = [];
+    const d = taskDeps({ taskMemory: { backfill: (taskId: string) => { backfilled.push(taskId); return 2; } } });
+
+    const before = await handleResourceRequest("tasks", "read", { id }, d);
+    expect(before.ok && (before.data as { memory_enabled: boolean }).memory_enabled).toBe(false);
+
+    const on = await handleResourceRequest("tasks", "set-memory", { id, on: "true" }, d);
+    expect(on.ok).toBe(true);
+    if (!on.ok) return;
+    const onData = on.data as { task: { memory_enabled: boolean }; memory_enabled: boolean; backfilled: number };
+    expect(onData.memory_enabled).toBe(true);
+    expect(onData.backfilled).toBe(2);
+    expect(onData.task.memory_enabled).toBe(true);
+    expect(backfilled).toEqual([id]);
+
+    const listed = await handleResourceRequest("tasks", "list", {}, d);
+    expect(listed.ok && (listed.data as { memory_enabled: boolean }[])[0]!.memory_enabled).toBe(true);
+
+    const off = await handleResourceRequest("tasks", "set-memory", { id, on: false }, d);
+    expect(off.ok && (off.data as { memory_enabled: boolean; backfilled: number }).backfilled).toBe(0);
+    expect(backfilled.length).toBe(1);
+    const after = await handleResourceRequest("tasks", "read", { id }, d);
+    expect(after.ok && (after.data as { memory_enabled: boolean }).memory_enabled).toBe(false);
+
+    const missing = await handleResourceRequest("tasks", "set-memory", { on: true }, d);
+    expect(missing.ok).toBe(false);
+  });
+
+  it("recurring/set-memory sets the series mode, backfills runs, and runs refuse tasks/set-memory", async () => {
+    const db = getDb();
+    db.prepare("INSERT INTO teams (id, name) VALUES ('team-r', 'Rec Team')").run();
+    db.prepare("INSERT INTO scheduled_tasks (id, title, team_id, working_directory, status) VALUES ('ser-1', 'Nightly', 'team-r', '/tmp', 'approved')").run();
+    db.prepare("INSERT INTO tasks (id, title, team_id, status, working_directory, source_scheduled_task_id) VALUES ('run-1', 'Nightly (1)', 'team-r', 'active', '/tmp', 'ser-1')").run();
+    const backfilled: string[] = [];
+    const cleared: string[] = [];
+    const d = taskDeps({
+      scheduledTaskScheduler: new ScheduledTaskScheduler(db),
+      taskMemory: {
+        backfill: () => 0,
+        backfillSeries: (id: string) => { backfilled.push(id); return 4; },
+        clearScope: (scope: string) => { cleared.push(scope); return 2; },
+        prune: () => 0,
+      },
+    });
+
+    const refused = await handleResourceRequest("tasks", "set-memory", { id: "run-1", on: true }, d);
+    expect(refused.ok).toBe(false);
+    expect(!refused.ok && refused.error).toContain("recurring/set-memory");
+
+    const set = await handleResourceRequest("recurring", "set-memory", { id: "ser-1", mode: "shared", retentionDays: 30 }, d);
+    expect(set.ok).toBe(true);
+    if (!set.ok) return;
+    expect(set.data).toMatchObject({ id: "ser-1", memoryMode: "shared", memoryRetentionDays: 30, backfilled: 4 });
+    expect(backfilled).toEqual(["ser-1"]);
+
+    const listed = await handleResourceRequest("recurring", "list", {}, d);
+    expect(listed.ok && (listed.data as { memoryMode: string; memorySummary: unknown }[])[0]).toMatchObject({ memoryMode: "shared" });
+    expect(listed.ok && (listed.data as { memorySummary: { scope_id: string } }[])[0]!.memorySummary.scope_id).toBe("series:ser-1");
+
+    // The run now reads shared + the detail summary says so.
+    const run = await handleResourceRequest("tasks", "read", { id: "run-1" }, d);
+    expect(run.ok && (run.data as { memory_enabled: boolean; memory_summary: { mode: string } }).memory_enabled).toBe(true);
+    expect(run.ok && (run.data as { memory_summary: { mode: string } }).memory_summary.mode).toBe("shared");
+
+    const bad = await handleResourceRequest("recurring", "set-memory", { id: "ser-1", mode: "sometimes" }, d);
+    expect(bad.ok).toBe(false);
+
+    const clr = await handleResourceRequest("recurring", "clear-memory", { id: "ser-1" }, d);
+    expect(clr.ok && (clr.data as { cleared: number }).cleared).toBe(2);
+    const runClr = await handleResourceRequest("tasks", "clear-memory", { id: "run-1" }, d);
+    expect(runClr.ok).toBe(true);
+    expect(cleared).toEqual(["series:ser-1", "series:ser-1"]);
+  });
+
+  it("tasks/create accepts memoryEnabled and the projection reflects it", async () => {
+    const db = getDb();
+    db.prepare("INSERT INTO teams (id, name) VALUES ('team-m', 'Mem Team')").run();
+    const d = taskDeps();
+    const created = await handleResourceRequest("tasks", "create", { title: "with memory", teamId: "team-m", memoryEnabled: "on" }, d);
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const row = db.prepare("SELECT task_config FROM tasks WHERE title = 'with memory'").get() as { task_config: string };
+    expect(JSON.parse(row.task_config).memory_enabled).toBe(true);
+    const plain = await handleResourceRequest("tasks", "create", { title: "no memory", teamId: "team-m" }, d);
+    expect(plain.ok).toBe(true);
+    const row2 = db.prepare("SELECT task_config FROM tasks WHERE title = 'no memory'").get() as { task_config: string };
+    expect(JSON.parse(row2.task_config).memory_enabled).toBeUndefined();
+  });
+
   it("retired v2 actions error and name their replacement", async () => {
     const id = seedTask("active");
     const cases: Array<[string, string]> = [

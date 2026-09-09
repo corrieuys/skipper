@@ -22,6 +22,17 @@ SQLite via `bun:sqlite`. Split architecture.
 
 ## Migrations
 
+Latest: `0025_task_memory.sql` (`task_memory` table, scope-owned, no FK; see [../task-memory/CLAUDE.md](../task-memory/CLAUDE.md)). The v1 shape (FK to tasks) is rebuilt by `legacy-migrations.ts:migrateTaskMemoryScope`.
+
+**Icon + star** (`starred` indexed + `icon` Lucide id + `icon_color` hex on `tasks`
+and `scheduled_tasks`) live in the schema CREATE plus `legacy-migrations.ts`, NOT a
+numbered migration: the `idx_*_starred` index references the new column, and
+`runSchema` runs before numbered migrations (an index in the schema fails on an
+existing DB lacking the column) while a numbered ALTER that duplicates a
+fresh-schema column rolls the whole file back (skipping its CREATE INDEX). So the
+`ensureColumn` + guarded `CREATE INDEX` sit together in the post-schema legacy pass.
+Team icons live in `local_teams.team_config` JSON (no column).
+
 Add new file `00X_<name>.sql` under `migrations/`. Applied on init in numeric order.
 
 Schema + migration `.sql` are **embedded assets** (read via `assetTextSync`, not

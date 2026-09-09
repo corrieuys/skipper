@@ -40,6 +40,16 @@ export const MCP_TOOL_GROUPS: McpToolGroup[] = [
     ],
   },
   {
+    key: "memory",
+    label: "Task memory and search",
+    hint: "Recall what happened earlier on the task. Memory needs the task's memory toggle; keyword search always works.",
+    tools: [
+      { name: "query_task_memory", label: "Query task memory", description: "Semantic search over the task's input, messages, and notes." },
+      { name: "delete_task_memory", label: "Delete memory entry", description: "Soft-delete a wrong or stale memory entry, with a reason noted on the task." },
+      { name: "search_task_content", label: "Search task content", description: "Keyword search over notes, artifacts, or messages." },
+    ],
+  },
+  {
     key: "operator",
     label: "Talking to the operator",
     hint: "Escalate blocks a run until a human answers; a message never interrupts.",

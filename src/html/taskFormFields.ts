@@ -1,4 +1,5 @@
 import { type TeamOptionData, type TaskData, escapeHtml } from "./components";
+import { isExperimental } from "../config/feature-flags";
 
 
 export function taskFormFields(
@@ -26,5 +27,9 @@ export function taskFormFields(
       <span>Autopilot</span>
       <input type="hidden" name="mode" value="${mode}">
     </label>
+    ${isExperimental() ? `<label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="Keep a searchable memory of input, messages, and notes that agents can query.">
+      <input type="checkbox" name="memoryEnabled" value="1"${(task as { task_config?: { memory_enabled?: boolean } } | undefined)?.task_config?.memory_enabled ? " checked" : ""}>
+      <span>Memory</span>
+    </label>` : ""}
   </div>`;
 }

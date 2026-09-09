@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { isMemoryMode, type MemoryMode } from "../task-memory/scope";
 import { parseJsonOr } from "../db/json";
 import { getDb } from "../db/connection";
 import { normalizeSlashCommand, type SlackOrigin } from "../slack/slash-command";
@@ -91,6 +92,10 @@ export interface ScheduledTask {
    * spawned run's root prompt via the run task's task_config.
    */
   global_store_instructions: string | null;
+  /** Stored star + Lucide icon id + hex tint, same identity fields as tasks. */
+  starred: boolean;
+  icon: string | null;
+  icon_color: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -112,6 +117,9 @@ interface ScheduledTaskRow {
   webhook_debounce_minutes: number | null;
   webhook_last_event_at: string | null;
   global_store_instructions: string | null;
+  starred: number;
+  icon: string | null;
+  icon_color: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -136,6 +144,9 @@ function rowToScheduledTask(row: ScheduledTaskRow): ScheduledTask {
     webhook_debounce_minutes: row.webhook_debounce_minutes ?? 1,
     webhook_last_event_at: row.webhook_last_event_at ?? null,
     global_store_instructions: row.global_store_instructions ?? null,
+    starred: !!(row.starred ?? 0),
+    icon: row.icon ?? null,
+    icon_color: row.icon_color ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -154,6 +165,9 @@ export interface CreateScheduledTaskInput {
   // Global-store usage contract, injected into every spawned run's prompt.
   globalStoreInstructions?: string;
   taskConfig?: Record<string, unknown>;
+  // Lucide icon id (kebab-case) + hex tint — sanitize at the route layer.
+  icon?: string | null;
+  iconColor?: string | null;
 }
 
 export interface UpdateScheduledTaskInput {
@@ -170,6 +184,8 @@ export interface UpdateScheduledTaskInput {
   // submits the field, matching the description semantics).
   globalStoreInstructions?: string;
   taskConfig?: Record<string, unknown>;
+  icon?: string | null;
+  iconColor?: string | null;
 }
 
 export class ScheduledTaskScheduler {
@@ -190,8 +206,8 @@ export class ScheduledTaskScheduler {
 
     this.db
       .prepare(
-        `INSERT INTO scheduled_tasks (id, title, description, team_id, working_directory, schedule_unit, schedule_amount, schedule_matrix, global_store_instructions, task_config)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO scheduled_tasks (id, title, description, team_id, working_directory, schedule_unit, schedule_amount, schedule_matrix, global_store_instructions, task_config, icon, icon_color)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -204,6 +220,8 @@ export class ScheduledTaskScheduler {
         input.scheduleMatrix ? JSON.stringify(input.scheduleMatrix) : null,
         input.globalStoreInstructions?.trim() ? input.globalStoreInstructions.trim() : null,
         taskConfig,
+        input.icon ?? null,
+        input.iconColor ?? null,
       );
 
     return this.getScheduledTask(id)!;
@@ -355,11 +373,15 @@ export class ScheduledTaskScheduler {
       throw new Error("A scheduled task uses either an interval or a weekly schedule, not both");
     }
 
+    // Undefined = field not submitted (keep stored); null = explicit clear.
+    const icon = input.icon !== undefined ? input.icon : task.icon;
+    const iconColor = input.iconColor !== undefined ? input.iconColor : task.icon_color;
+
     this.db
       .prepare(
         `UPDATE scheduled_tasks
          SET title = ?, description = ?, team_id = ?, working_directory = ?,
-             schedule_unit = ?, schedule_amount = ?, schedule_matrix = ?, global_store_instructions = ?, task_config = ?, updated_at = datetime('now')
+             schedule_unit = ?, schedule_amount = ?, schedule_matrix = ?, global_store_instructions = ?, task_config = ?, icon = ?, icon_color = ?, updated_at = datetime('now')
          WHERE id = ?`,
       )
       .run(
@@ -372,10 +394,26 @@ export class ScheduledTaskScheduler {
         scheduleMatrix ? JSON.stringify(scheduleMatrix) : null,
         input.globalStoreInstructions?.trim() ? input.globalStoreInstructions.trim() : null,
         taskConfig,
+        icon,
+        iconColor,
         id,
       );
 
     return this.getScheduledTask(id)!;
+  }
+
+  /** Toggle a recurring task's stored star (sidebar Favorites board). */
+  setStarred(id: string, starred: boolean): void {
+    this.db
+      .prepare("UPDATE scheduled_tasks SET starred = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(starred ? 1 : 0, id);
+  }
+
+  /** Set (or clear) a recurring task's icon + tint. Pre-sanitized by the caller. */
+  setIcon(id: string, icon: string | null, iconColor: string | null): void {
+    this.db
+      .prepare("UPDATE scheduled_tasks SET icon = ?, icon_color = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(icon, iconColor, id);
   }
 
   approveScheduledTask(id: string): ScheduledTask {
@@ -424,6 +462,35 @@ export class ScheduledTaskScheduler {
     if (!task) throw new Error(`Scheduled task not found: ${id}`);
 
     this.db.prepare("DELETE FROM scheduled_tasks WHERE id = ?").run(id);
+    // Shared memory is owned by the series, not its runs (no FK): sweep it here.
+    this.db.prepare("DELETE FROM task_memory WHERE scope_id = ?").run(`series:${id}`);
+  }
+
+  /**
+   * Per-series memory setting (`task_config.memory_mode` off | run | shared and
+   * `memory_retention_days`, 0 = keep). Allowed in any status, like
+   * `setSlashCommand`: it does not touch the schedule. Runs read the series
+   * live (see task-memory/scope.ts), so this applies to runs already in flight.
+   */
+  setMemoryConfig(id: string, input: { mode?: MemoryMode; retentionDays?: number }): ScheduledTask {
+    const task = this.getScheduledTask(id);
+    if (!task) throw new Error(`Scheduled task not found: ${id}`);
+    const config: Record<string, unknown> = { ...task.task_config };
+    if (input.mode !== undefined) {
+      if (!isMemoryMode(input.mode)) throw new Error(`Invalid memory mode: ${String(input.mode)}`);
+      if (input.mode === "off") delete config.memory_mode;
+      else config.memory_mode = input.mode;
+    }
+    if (input.retentionDays !== undefined) {
+      const days = Math.floor(Number(input.retentionDays));
+      if (!Number.isFinite(days) || days < 0) throw new Error("retentionDays must be 0 or a positive number of days");
+      if (days === 0) delete config.memory_retention_days;
+      else config.memory_retention_days = days;
+    }
+    this.db
+      .prepare("UPDATE scheduled_tasks SET task_config = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(JSON.stringify(config), id);
+    return this.getScheduledTask(id)!;
   }
 
   getDueScheduledTasks(): ScheduledTask[] {

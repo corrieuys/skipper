@@ -59,6 +59,26 @@ export function migrateLegacySchema(database: Database): void {
   ensureColumn(database, "task_artifacts", "height", "INTEGER");
   ensureColumn(database, "task_artifacts", "source", "TEXT");
   ensureColumn(database, "realtime_timeline", "artifact_id", "TEXT");
+  // Icon + star identity on tasks and recurring tasks (sidebar Favorites board).
+  // Kept here rather than a numbered migration because the index references a NEW
+  // column: runSchema runs BEFORE numbered migrations (so an index in the schema
+  // fails on an existing DB that lacks the column), and a numbered ALTER that
+  // duplicates a fresh-schema column rolls the whole file back (skipping its
+  // CREATE INDEX). This post-schema legacy pass adds the columns (idempotent) then
+  // the index together. The index is guarded on the table so the first single-mode
+  // legacy pass (which runs before the schema creates the table) is a clean no-op.
+  ensureColumn(database, "tasks", "starred", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(database, "tasks", "icon", "TEXT");
+  ensureColumn(database, "tasks", "icon_color", "TEXT");
+  ensureColumn(database, "scheduled_tasks", "starred", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(database, "scheduled_tasks", "icon", "TEXT");
+  ensureColumn(database, "scheduled_tasks", "icon_color", "TEXT");
+  if (tableExists(database, "tasks")) {
+    database.exec("CREATE INDEX IF NOT EXISTS idx_tasks_starred ON tasks(starred, created_at)");
+  }
+  if (tableExists(database, "scheduled_tasks")) {
+    database.exec("CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_starred ON scheduled_tasks(starred, created_at)");
+  }
   migrateAgentConfigGoalToInstruction(database);
   migrateTeamAgentsDropSkills(database);
   migrateTeamAgentsDropMaxComplexity(database);
@@ -68,6 +88,7 @@ export function migrateLegacySchema(database: Database): void {
   migrateTasksArchivedToSettled(database);
   migrateTaskArtifactsUploadKind(database);
   migrateRealtimeTimelineFileEntries(database);
+  migrateTaskMemoryScope(database);
 }
 
 function tableSql(database: Database, tableName: string): string | null {
@@ -538,4 +559,48 @@ function migrateAgentConfigGoalToInstruction(database: Database): void {
      WHERE json_valid(config)
        AND json_type(config, '$.goal') IS NOT NULL;
   `);
+}
+
+// task_memory v1 (uncommitted dev builds) keyed rows on the run task with an
+// FK cascade. v2 keys them on a scope ('task:<id>' / 'series:<id>') owned by the
+// task or the recurring series, with no FK, plus soft-delete + run_label
+// columns. Guarded on the stored CREATE still referencing tasks(id).
+function migrateTaskMemoryScope(database: Database): void {
+  if (!tableExists(database, "task_memory")) return;
+  const row = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'task_memory'")
+    .get() as { sql: string | null } | null;
+  if (!row?.sql || !/REFERENCES\s+tasks/i.test(row.sql)) return;
+
+  database.exec("PRAGMA foreign_keys = OFF");
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS task_memory_new (
+        id TEXT PRIMARY KEY,
+        scope_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        run_label TEXT,
+        kind TEXT NOT NULL CHECK (kind IN ('message', 'input', 'summary', 'note')),
+        author TEXT NOT NULL CHECK (author IN ('agent', 'user')),
+        agent_id TEXT,
+        content TEXT NOT NULL,
+        ref_id TEXT NOT NULL,
+        embedding BLOB,
+        embedding_model TEXT,
+        deleted_at TEXT,
+        deleted_by TEXT,
+        delete_reason TEXT,
+        created_at TEXT NOT NULL
+      );
+      INSERT INTO task_memory_new (id, scope_id, task_id, kind, author, agent_id, content, ref_id, embedding, embedding_model, created_at)
+      SELECT id, 'task:' || task_id, task_id, kind, author, agent_id, content, ref_id, embedding, embedding_model, created_at FROM task_memory;
+      DROP TABLE task_memory;
+      ALTER TABLE task_memory_new RENAME TO task_memory;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_task_memory_scope_ref ON task_memory(scope_id, ref_id);
+      CREATE INDEX IF NOT EXISTS idx_task_memory_scope_time ON task_memory(scope_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_task_memory_task ON task_memory(task_id);
+    `);
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
 }

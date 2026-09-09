@@ -186,6 +186,10 @@ export class ManagerDaemon {
     // Queued wakes deliver pending input through the pipeline (teamless tasks)
     // or as an INPUT_FEED block appended to the standard spawn prompt.
     this.taskRunner.setWakeFeeder(this.realtimeSessionManager);
+    // Same feeder lets a parent resuming from a delegation result carry any
+    // operator input that arrived while the delegation was open, instead of
+    // deferring it to a whole new run.
+    this.delegationManager.setWakeFeeder(this.realtimeSessionManager);
 
     // Create HealthMonitor
     this.healthMonitor = new HealthMonitor(

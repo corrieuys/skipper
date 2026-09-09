@@ -98,6 +98,10 @@ export interface LocalTeamConfig {
    * `customTools` list, so its grant lives here.
    */
   skipperCustomTools?: string[];
+  /** Lucide icon id (kebab-case) shown for this team in the sidebar/lists. */
+  icon?: string;
+  /** Hex tint for the team icon (mirrors the agent color palette). */
+  iconColor?: string;
 }
 
 /** Canonical mode for a raw stored value ('regular'/'realtime' are legacy aliases). */

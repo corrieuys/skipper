@@ -1,5 +1,5 @@
 import { addRoute } from "../server";
-import { hxRedirect } from "./utils";
+import { hxRedirect, htmlResponse, parseRequestBody } from "./utils";
 import { ScheduledTaskScheduler, isValidScheduleMatrix } from "../tasks/scheduled-scheduler";
 import type { ScheduleUnit, ScheduleMatrix } from "../tasks/scheduled-scheduler";
 import type { ManagerDaemon } from "../agents/manager-daemon";
@@ -7,6 +7,17 @@ import { parsePhaseOverridesFromForm } from "./phase-overrides";
 import { getDb } from "../db/connection";
 import { normalizeSlashCommand } from "../slack/slash-command";
 import { findSlashCommandConflict } from "../slack/bindings";
+import { sanitizeIcon } from "../html/atoms/lucide";
+import { sanitizeColor } from "../html/atoms/creature";
+
+/** Read the icon picker's two form fields into a stored {icon, iconColor} pair. */
+function parseIconFields(formData: FormData): { icon: string | null; iconColor: string | null } {
+  const rawIcon = formData.get("icon");
+  const icon = sanitizeIcon(typeof rawIcon === "string" ? rawIcon : null);
+  if (!icon) return { icon: null, iconColor: null };
+  const rawColor = formData.get("iconColor");
+  return { icon, iconColor: sanitizeColor(typeof rawColor === "string" ? rawColor : null) };
+}
 
 
 
@@ -99,6 +110,7 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       taskConfig.slashCommand = slashCommand;
     }
 
+    const createIcon = parseIconFields(formData);
     const scheduler = getScheduler();
     const task = scheduler.createScheduledTask({
       title: String(title).trim(),
@@ -110,6 +122,8 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       scheduleMatrix: scheduleMatrixVal,
       globalStoreInstructions: typeof globalStoreInstructions === "string" && globalStoreInstructions.trim() ? globalStoreInstructions.trim() : undefined,
       taskConfig: Object.keys(taskConfig).length > 0 ? taskConfig : undefined,
+      icon: createIcon.icon,
+      iconColor: createIcon.iconColor,
     });
 
     const shouldAutoApprove = autoApproveRaw === "1" || autoApproveRaw === "true";
@@ -120,6 +134,26 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
     }
 
     return hxRedirect(`/?scheduled=${task.id}`);
+  });
+
+  // Toggle (or set) a recurring task's stored star for the sidebar Favorites board.
+  addRoute("POST", "/api/scheduled-tasks/:id/star", async (req, params) => {
+    const id = params?.id;
+    if (!id) return Response.json({ error: "id required" }, { status: 400 });
+    const scheduler = getScheduler();
+    const task = scheduler.getScheduledTask(id);
+    if (!task) return Response.json({ error: "Recurring task not found" }, { status: 404 });
+    const body = await parseRequestBody<Record<string, string>>(req).catch(() => ({} as Record<string, string>));
+    const raw = body.starred;
+    const next = raw === undefined || raw === "" ? !task.starred : (raw === "1" || raw === "true" || raw === "on");
+    scheduler.setStarred(id, next);
+    if (req.headers.get("HX-Request")) {
+      // OOB-only (the button uses hx-swap="none"): the sidebar re-render carries the
+      // new star state. No main swap, no page refresh.
+      const { renderSidebarOob } = require("../html/pages/command-center.page");
+      return htmlResponse(renderSidebarOob(getDb()));
+    }
+    return Response.json({ ok: true, starred: next });
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/update", async (req, params) => {
@@ -176,6 +210,17 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
       }
     }
 
+    // Series memory (experimental): the edit form always submits memoryMode.
+    const memoryModeRaw = formData.get("memoryMode");
+    if (memoryModeRaw !== null) {
+      if (memoryModeRaw === "run" || memoryModeRaw === "shared") taskConfig.memory_mode = memoryModeRaw;
+      else delete taskConfig.memory_mode;
+      const days = Number(formData.get("memoryRetentionDays") ?? 0);
+      if (Number.isFinite(days) && days > 0) taskConfig.memory_retention_days = Math.floor(days);
+      else delete taskConfig.memory_retention_days;
+    }
+
+    const icon = parseIconFields(formData);
     try {
       scheduler.updateScheduledTask(id, {
         title: String(title).trim(),
@@ -187,6 +232,8 @@ export function registerScheduledTaskRoutes(daemon?: ManagerDaemon): void {
         scheduleMatrix: scheduleMatrixVal,
         globalStoreInstructions: typeof globalStoreInstructions === "string" && globalStoreInstructions.trim() ? globalStoreInstructions.trim() : undefined,
         taskConfig: Object.keys(taskConfig).length > 0 ? taskConfig : undefined,
+        icon: icon.icon,
+        iconColor: icon.iconColor,
       });
     } catch (err) {
       return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });

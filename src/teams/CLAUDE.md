@@ -48,6 +48,14 @@ flattened into the shared config `teams`/`team_agents` at boot + on mutation. Th
 `slashCommand` (`findTeamBySlashCommand`), binding a Slack slash command that
 creates + auto-approves a task on this team. See [../slack/CLAUDE.md](../slack/CLAUDE.md).
 
+`team_config` also carries the team **icon**: `icon` (a Lucide icon id) + `iconColor`
+(hex), edited on the team map's Team settings modal (core, not experimental — a
+shared `icon-identity-picker` seeded via `window.SkipperIcons`), coerced in
+`team-input.ts:coerceTeamConfig`, and surfaced to the sidebar Teams board by
+`data/command-center.ts:fetchStandardTaskTeams` (which `json_extract`s it from
+`local_teams.team_config`). Raw strings are stored; the render layer
+(`html/atoms/lucide:entityIcon`) validates the id and clamps the color.
+
 `team_config` also carries the team **mode**: `mode: 'workflow' | 'conversational'`
 (absent = workflow; legacy stored values `'regular'`/`'realtime'` are read as
 aliases via `normalizeTeamMode`, predicate `isConversationalTeam`). The mode

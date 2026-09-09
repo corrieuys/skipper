@@ -26,7 +26,9 @@ events, `tasks/list`, `tasks/read`, action replies) uses the unified model:
 | `display_status` | derived: `draft` / `queued` / `working` / `idle` / `paused` / `review` / `blocked` / `completed` / `failed` |
 | `mode` | `workflow` (autopilot on) / `conversational` (operator drives) |
 | `paused` | boolean flag on an active task |
+| `memory_enabled` / `memory_mode` | resolved memory scope (one-off toggle, or the recurring series' `off` / `run` / `shared`; see [../task-memory/CLAUDE.md](../task-memory/CLAUDE.md)) |
 | `needs_review` | boolean review gate |
+| `starred` / `icon` / `icon_color` | stored star (Favorites) + Lucide icon id + hex tint; `RecurringSeriesItem` carries `starred`/`icon`/`iconColor` too |
 
 Dropped in v3: `task_type`, `iteration_count`, `unified_status`, and the legacy
 `draft/approved/running/...` status mapping (`legacyStatusFor` is gone from the
@@ -35,7 +37,13 @@ Completed, or Failed when its result carries an `.error`.
 
 **tasks actions:** `list`, `read`, `create`, `update`, `delete`, `approve`,
 `unapprove`, `input`, `pause`, `resume-from-pause`, `revive`, `settle`,
-`cancel`, `run-recurring`. `input` is the ONLY way text reaches a task (draft
+`cancel`, `run-recurring`, `set-autopilot`, `set-memory`, `star`. All live under the
+`tasks` resource, so the integrator's task wildcard scope covers them without a
+scope-map change. `star { id, on? }` toggles (or sets) the task's stored star for
+the client Favorites view and replies `{ task: TaskListItem, starred }`. It emits
+NO event (starring must not trigger a re-render on any client — the web star
+self-swaps); the caller patches from the reply's `task`, and other clients pick it
+up on their next read. `input` is the ONLY way text reaches a task (draft
 appends to the description, settled auto-revives + wakes, a review gate treats
 it as the review response, idle wakes through the queue, busy accumulates).
 `settle` finishes without an error (Completed), `cancel` settles with
@@ -91,6 +99,27 @@ lists the `timeline` feature.
 **realtime input:** `clientId` names the owner of the single-writer recording
 lock, so it is required for `acquire`, `release` and audio `ingest` only. A
 `format: 'text'` ingest is sessionless and needs no `clientId`.
+
+**task memory over connect:** `connect:capabilities` lists the `task_memory`
+feature. Recurring series: `recurring/list` rows carry `memoryMode`
+(off | run | shared), `memoryRetentionDays` and `memorySummary` (shared only);
+`recurring/set-memory { id, mode?, retentionDays? }` sets them (shared backfills
+every run and replies `backfilled`), `recurring/clear-memory { id }` hard-deletes
+the series scope. A run's memory is decided by its series, so `tasks/set-memory`
+on a run returns an error naming `recurring/set-memory`; `tasks/clear-memory
+{ id }` clears the task's scope (a run's = its series' shared scope). Both live
+under the same resources as their siblings, so the task wildcard scope still
+covers them. `tasks/create` takes `memoryEnabled` (true / "true" / "on" / 1) to
+start a task with memory on; `tasks/set-memory { id, on }` flips it later and
+replies `{ task: TaskDetailItem, memory_enabled, backfilled }` (turning it on
+copies the task's existing notes, messages, and operator input in; `backfilled`
+is the count). Every task projection carries `memory_enabled`, and the flip
+emits a same-status `task:state_changed` fat event so clients patch the pill.
+The projection only ever ships the flag, never `task_config`. `tasks/read` adds
+`memory_summary` (`TaskMemorySummary` from `task-memory/summary.ts`: mode,
+scope_id, runs, entries, vectors, pending, deleted, models, dims,
+content/vector/total bytes, by_kind, by_author, oldest/newest, retention_days);
+null when memory is off and nothing is stored.
 
 ## File artifacts (operator uploads)
 

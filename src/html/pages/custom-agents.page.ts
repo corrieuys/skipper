@@ -202,6 +202,11 @@ export interface ImportableServer {
  * on save means unchanged, matching the custom agent's API key.
  */
 export function mcpServersPanel(servers: McpServerRecord[], importable: ImportableServer[]): string {
+  // Secret env/header values never leave the server: mask each present value to
+  // the same `__stored__` marker the JSON API uses, so an untouched field round-
+  // trips to "keep the stored value" on update (`updateMcpServer` keepBlanks).
+  const mask = (o: Record<string, string>) =>
+    Object.fromEntries(Object.entries(o).map(([k, v]) => [k, v ? "__stored__" : ""]));
   const row = (s: McpServerRecord) => {
     const target = s.transport === "stdio"
       ? `${escapeHtml(s.command)}${s.args.length ? " " + escapeHtml(s.args.join(" ")) : ""}`
@@ -209,12 +214,21 @@ export function mcpServersPanel(servers: McpServerRecord[], importable: Importab
     const status = s.catalogueError
       ? `<span class="sk-text-xs" style="color:var(--sk-danger,#f87171);">${escapeHtml(s.catalogueError)}</span>`
       : `<span class="sk-muted sk-text-xs">${s.toolCatalogue.length} tool(s)${s.catalogueRefreshedAt ? ` · ${escapeHtml(s.catalogueRefreshedAt)}` : ""}</span>`;
+    // The stored slug rides along so a rename on edit keeps the existing slug —
+    // agents grant tools as `slug__tool`, so re-deriving it from the new name
+    // would silently orphan every grant.
+    const editPayload = {
+      id: s.id, slug: s.slug, name: s.name, transport: s.transport,
+      command: s.command, args: s.args, url: s.url,
+      env: mask(s.env), headers: mask(s.headers),
+    };
     return `<tr>
       <td><code class="sk-text-xs">${escapeHtml(s.slug)}</code><div class="sk-muted sk-text-xs">${escapeHtml(s.name)}</div></td>
       <td class="sk-text-xs">${escapeHtml(s.transport)}</td>
       <td class="sk-text-xs" style="word-break:break-all;">${target}</td>
       <td>${status}</td>
       <td style="white-space:nowrap;">
+        <button type="button" class="sk-btn sk-btn--sm" data-edit='${escapeHtml(JSON.stringify(editPayload))}'>Edit</button>
         <button class="sk-btn sk-btn--sm" hx-post="/api/custom-agent-servers/${escapeHtml(s.id)}/refresh"
           hx-target="#sk-mcp-servers-panel" hx-swap="outerHTML">Refresh</button>
         <button class="sk-btn sk-btn--sm sk-btn--danger" hx-delete="/api/custom-agent-servers/${escapeHtml(s.id)}"
@@ -245,7 +259,7 @@ export function mcpServersPanel(servers: McpServerRecord[], importable: Importab
         : `<p class="sk-muted sk-text-xs" style="margin:0;">No MCP servers registered.</p>`}
 
       <details class="ca-fold" id="mcp-add-fold">
-        <summary>+ Add server</summary>
+        <summary id="mcp-fold-summary">+ Add server</summary>
         <form id="sk-mcp-server-form" class="ca-fold__body">
           <div class="ca-row2">
             <div><label class="sk-label" for="mcp-name">Name</label>
@@ -272,8 +286,9 @@ export function mcpServersPanel(servers: McpServerRecord[], importable: Importab
             <p class="ca-hint">Values may use <code>\${ENV_VAR}</code> to read from the daemon's environment instead of storing a secret here.</p>
           </div>
           <div class="ca-actions">
-            <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Add server</button>
-            <span class="sk-muted sk-text-xs">Saving connects to the server and reads its tools.</span>
+            <button type="submit" id="mcp-submit" class="sk-btn sk-btn--sm sk-btn--primary">Add server</button>
+            <button type="button" id="mcp-cancel-edit" class="sk-btn sk-btn--sm" style="display:none;">Cancel</button>
+            <span class="sk-muted sk-text-xs">Saving connects to the server and reads its tools. Leave a masked value blank to keep it.</span>
           </div>
         </form>
       </details>
@@ -298,6 +313,24 @@ export function mcpServersPanel(servers: McpServerRecord[], importable: Importab
 
       var transport = document.getElementById('mcp-transport');
       var pairs = document.getElementById('mcp-pairs');
+      var submitBtn = document.getElementById('mcp-submit');
+      var cancelBtn = document.getElementById('mcp-cancel-edit');
+      var summary = document.getElementById('mcp-fold-summary');
+
+      function resetToAdd(){
+        delete form.dataset.editId;
+        delete form.dataset.editSlug;
+        document.getElementById('mcp-name').value = '';
+        document.getElementById('mcp-command').value = '';
+        document.getElementById('mcp-url').value = '';
+        pairs.innerHTML = '';
+        transport.value = 'stdio';
+        syncTransport();
+        submitBtn.textContent = 'Add server';
+        cancelBtn.style.display = 'none';
+        summary.textContent = '+ Add server';
+      }
+      cancelBtn.addEventListener('click', resetToAdd);
 
       function syncTransport(){
         var stdio = transport.value === 'stdio';
@@ -332,6 +365,7 @@ export function mcpServersPanel(servers: McpServerRecord[], importable: Importab
           if (k) kv[k] = row.querySelector('[data-v]').value;
         });
         var stdio = transport.value === 'stdio';
+        var editId = form.dataset.editId;
         var body = {
           name: document.getElementById('mcp-name').value.trim(),
           transport: transport.value,
@@ -341,27 +375,58 @@ export function mcpServersPanel(servers: McpServerRecord[], importable: Importab
           env: stdio ? kv : {},
           headers: stdio ? {} : kv
         };
-        var btn = form.querySelector('button[type=submit]');
+        // On edit, carry id + the stored slug so the update targets this row and
+        // never re-derives the slug from a changed name.
+        if (editId) { body.id = editId; body.slug = form.dataset.editSlug || ''; }
+        var url = editId
+          ? '/api/custom-agent-servers/' + encodeURIComponent(editId) + '/update'
+          : '/api/custom-agent-servers';
+        var idle = editId ? 'Save changes' : 'Add server';
+        var btn = submitBtn;
         btn.disabled = true; btn.textContent = 'Connecting…';
-        fetch('/api/custom-agent-servers', {
+        fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'HX-Request': 'true' },
           body: JSON.stringify(body)
         }).then(function(r){ return r.text().then(function(t){ return { ok: r.ok, text: t }; }); })
           .then(function(res){
             if (!res.ok) {
-              btn.disabled = false; btn.textContent = 'Add server';
+              btn.disabled = false; btn.textContent = idle;
               var msg; try { msg = JSON.parse(res.text).error; } catch (e) { msg = res.text; }
-              window.alert(msg || 'Could not add the server');
+              window.alert(msg || 'Could not save the server');
               return;
             }
             document.getElementById('sk-mcp-servers-panel').outerHTML = res.text;
           });
       });
 
+      Array.prototype.forEach.call(document.querySelectorAll('[data-edit]'), function(btn){
+        btn.addEventListener('click', function(){
+          var s = JSON.parse(btn.dataset.edit);
+          var fold = document.getElementById('mcp-add-fold');
+          if (fold) fold.open = true;
+          form.dataset.editId = s.id;
+          form.dataset.editSlug = s.slug || '';
+          document.getElementById('mcp-name').value = s.name || '';
+          transport.value = s.transport;
+          syncTransport();
+          document.getElementById('mcp-command').value = s.transport === 'stdio'
+            ? [s.command].concat(s.args || []).join(' ') : '';
+          document.getElementById('mcp-url').value = s.transport === 'stdio' ? '' : (s.url || '');
+          pairs.innerHTML = '';
+          var kv = s.transport === 'stdio' ? (s.env || {}) : (s.headers || {});
+          Object.keys(kv).forEach(function(k){ addPair(k, kv[k]); });
+          submitBtn.textContent = 'Save changes';
+          cancelBtn.style.display = '';
+          summary.textContent = 'Edit server';
+          document.getElementById('mcp-name').scrollIntoView({ block: 'center' });
+        });
+      });
+
       Array.prototype.forEach.call(document.querySelectorAll('[data-import]'), function(btn){
         btn.addEventListener('click', function(){
           var s = JSON.parse(btn.dataset.import);
+          resetToAdd();
           var fold = document.getElementById('mcp-add-fold');
           if (fold) fold.open = true;
           document.getElementById('mcp-name').value = s.name;

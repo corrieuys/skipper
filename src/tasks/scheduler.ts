@@ -36,6 +36,8 @@ export interface TaskConfig {
   summarizer_agent_id?: string;
   /** Extra delegation-eligible agents beyond the team roster. */
   assigned_agent_ids?: string[];
+  /** Per-task memory (src/task-memory): copy exchanges + embed; agents query via query_task_memory. */
+  memory_enabled?: boolean;
 }
 
 /** @deprecated transitional alias — realtime tasks merged into the unified model. */
@@ -61,6 +63,9 @@ export interface Task {
   source_scheduled_task_id: string | null;
   run_input: string | null;
   wake_requested_at: string | null;
+  starred: boolean;
+  icon: string | null;
+  icon_color: string | null;
   created_at: string;
   approved_at: string | null;
   started_at: string | null;
@@ -87,6 +92,9 @@ interface TaskRow {
   source_scheduled_task_id: string | null;
   run_input: string | null;
   wake_requested_at: string | null;
+  starred: number;
+  icon: string | null;
+  icon_color: string | null;
   created_at: string;
   approved_at: string | null;
   started_at: string | null;
@@ -117,6 +125,9 @@ function rowToTask(row: TaskRow): Task {
     source_scheduled_task_id: row.source_scheduled_task_id ?? null,
     run_input: row.run_input ?? null,
     wake_requested_at: row.wake_requested_at ?? null,
+    starred: !!(row.starred ?? 0),
+    icon: row.icon ?? null,
+    icon_color: row.icon_color ?? null,
     created_at: row.created_at,
     approved_at: row.approved_at,
     started_at: row.started_at,
@@ -133,6 +144,9 @@ export interface CreateTaskInput {
   workingDirectory: string;
   mode?: TaskMode;
   taskConfig?: TaskConfig;
+  /** Lucide icon id (kebab-case) + hex tint — sanitize at the route layer. */
+  icon?: string | null;
+  iconColor?: string | null;
 }
 
 export interface UpdateTaskInput {
@@ -142,6 +156,8 @@ export interface UpdateTaskInput {
   workingDirectory?: string;
   mode?: TaskMode;
   taskConfig?: TaskConfig;
+  icon?: string | null;
+  iconColor?: string | null;
 }
 
 const LIVE_INSTANCE_STATUSES = "('running', 'waiting_delegation', 'pending')";
@@ -161,14 +177,50 @@ export class TaskScheduler {
 
     this.db
       .prepare(
-        `INSERT INTO tasks (id, title, description, team_id, working_directory, mode, task_config)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (id, title, description, team_id, working_directory, mode, task_config, icon, icon_color)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, input.title, input.description ?? null, input.teamId ?? null, workingDirectory, mode, taskConfig);
+      .run(id, input.title, input.description ?? null, input.teamId ?? null, workingDirectory, mode, taskConfig, input.icon ?? null, input.iconColor ?? null);
 
     eventBus.emit("task:created", { taskId: id });
 
     return this.getTask(id)!;
+  }
+
+  /**
+   * Toggle a task's stored star (sidebar Favorites board). Deliberately emits NO
+   * event: the star control self-swaps (htmx outerHTML) for instant feedback, and
+   * a WS re-render on every star would flash/scroll-reset the page — starring must
+   * not refresh the view. The Favorites board picks up the change on the next
+   * natural render.
+   */
+  setStarred(id: string, starred: boolean): void {
+    this.db
+      .prepare("UPDATE tasks SET starred = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(starred ? 1 : 0, id);
+  }
+
+  /**
+   * Rename + set icon in one write, WITHOUT emitting any event. The task-header
+   * editor swaps only its own identity slot (htmx), so a WS re-render would
+   * needlessly refresh the whole view — renaming must not refresh the page (same
+   * rule as starring). The new name/icon reach the sidebar on the next natural
+   * render. Pre-sanitized by the caller.
+   */
+  setIdentity(id: string, title: string, icon: string | null, iconColor: string | null): void {
+    this.db
+      .prepare("UPDATE tasks SET title = ?, icon = ?, icon_color = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(title, icon, iconColor, id);
+  }
+
+  /** Set (or clear) a task's icon + tint. Pre-sanitized by the caller. */
+  setIcon(id: string, icon: string | null, iconColor: string | null): void {
+    const task = this.getTask(id);
+    if (!task) return;
+    this.db
+      .prepare("UPDATE tasks SET icon = ?, icon_color = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(icon, iconColor, id);
+    eventBus.emit("task:state_changed", { taskId: id, previousStatus: task.status, newStatus: task.status });
   }
 
   /**
@@ -258,11 +310,14 @@ export class TaskScheduler {
     const taskConfig = input.taskConfig ? JSON.stringify(input.taskConfig) : JSON.stringify(task.task_config);
 
     const workingDirectory = input.workingDirectory?.trim() ?? task.working_directory;
+    // Undefined = field not submitted (keep stored); null = explicit clear.
+    const icon = input.icon !== undefined ? input.icon : task.icon;
+    const iconColor = input.iconColor !== undefined ? input.iconColor : task.icon_color;
 
     this.db
       .prepare(
         `UPDATE tasks
-         SET title = ?, description = ?, team_id = ?, working_directory = ?, mode = ?, task_config = ?, updated_at = datetime('now')
+         SET title = ?, description = ?, team_id = ?, working_directory = ?, mode = ?, task_config = ?, icon = ?, icon_color = ?, updated_at = datetime('now')
          WHERE id = ?`,
       )
       .run(
@@ -272,6 +327,8 @@ export class TaskScheduler {
         workingDirectory,
         mode,
         taskConfig,
+        icon,
+        iconColor,
         id,
       );
 
@@ -367,6 +424,9 @@ export class TaskScheduler {
       this.db.prepare("DELETE FROM escalations WHERE task_id = ?").run(id);
       this.db.prepare("DELETE FROM events WHERE task_id = ?").run(id);
       this.db.prepare("DELETE FROM task_messages WHERE task_id = ?").run(id);
+      // Memory rows have no FK (a shared series scope outlives its runs); a
+      // one-off / per-run scope goes with the task, series rows stay.
+      this.db.prepare("DELETE FROM task_memory WHERE scope_id = ?").run(`task:${id}`);
 
       // Clear any stale pointer from agents table.
       this.db.prepare("UPDATE agents SET current_task_id = NULL WHERE current_task_id = ?").run(id);
@@ -616,6 +676,23 @@ export class TaskScheduler {
     this.db
       .prepare("UPDATE tasks SET mode = ?, updated_at = datetime('now') WHERE id = ?")
       .run(on ? "workflow" : "conversational", id);
+    eventBus.emit("task:state_changed", { taskId: id, previousStatus: task.status, newStatus: task.status });
+    return this.getTask(id)!;
+  }
+
+  /**
+   * Flip per-task memory (task_config.memory_enabled). Only the flag: the
+   * caller (TaskMemoryManager via the route) backfills existing rows when it
+   * turns on. Same-status state_changed so task views re-render the pill.
+   */
+  setMemoryEnabled(id: string, on: boolean): Task {
+    const task = this.requireTask(id);
+    const config: Record<string, unknown> = { ...(task.task_config as Record<string, unknown>) };
+    if (on) config.memory_enabled = true;
+    else delete config.memory_enabled;
+    this.db
+      .prepare("UPDATE tasks SET task_config = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(JSON.stringify(config), id);
     eventBus.emit("task:state_changed", { taskId: id, previousStatus: task.status, newStatus: task.status });
     return this.getTask(id)!;
   }

@@ -16,6 +16,8 @@ export const CONNECT_PROTOCOL_VERSION = 3;
  * keys the integrator web app already reads from REST task rows, and never
  * includes heavy fields (result, orchestration_state, description, task_config).
  */
+import type { TaskMemorySummary } from "../task-memory/summary";
+
 export interface TaskListItem {
   id: string;
   title: string;
@@ -27,11 +29,20 @@ export interface TaskListItem {
   mode: string;
   /** Paused flag on active tasks ('paused' is no longer a stored status). */
   paused: boolean;
+  /** Per-task memory on: a one-off task's toggle (tasks/set-memory) or, for a run, its recurring series' mode. */
+  memory_enabled: boolean;
+  /** off | run | shared (a run's comes from its series; see recurring/set-memory). */
+  memory_mode: string;
   team_id: string | null;
   team_name: string | null;
   current_phase: number;
   phase_count: number | null;
   needs_review: boolean;
+  /** Stored star; clients pin these in a Favorites view. Flip with tasks/star. */
+  starred: boolean;
+  /** Lucide icon id (kebab-case) + hex tint, or null. Shown in lists. */
+  icon: string | null;
+  icon_color: string | null;
   created_at: string;
   updated_at: string | null;
   /** When the task most recently entered `running` (null until it first runs).
@@ -61,6 +72,8 @@ export interface TaskDetailItem extends TaskListItem {
   regression_count: number;
   /** The assigned team's phase list, when the task has a team. */
   phases: { name: string; prompt: string; review?: boolean }[] | null;
+  /** Per-task memory counts + stored sizes; null when memory is off and nothing is stored. */
+  memory_summary: TaskMemorySummary | null;
 }
 
 /** One run of a recurring task, for the recurring series' run strip. */
@@ -83,6 +96,10 @@ export interface RecurringSeriesItem {
   scheduleAmount: number | null;
   scheduleMatrix: string | null;
   status: string;
+  /** Stored star + Lucide icon id + hex tint, mirroring TaskListItem. */
+  starred: boolean;
+  icon: string | null;
+  iconColor: string | null;
   nextRunAt: string | null;
   lastRunAt: string | null;
   runs: RecurringRunItem[];
@@ -197,7 +214,7 @@ export interface ArtifactItem {
  * `state/snapshot`, because a consumer that connects later never sees the
  * one-shot event.
  */
-export const CONNECT_FEATURES = ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files"] as const;
+export const CONNECT_FEATURES = ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files", "task_memory"] as const;
 
 export interface StateSnapshot {
   protocolVersion: number;

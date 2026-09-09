@@ -5,6 +5,8 @@ import { renderInlineMarkdown } from "../atoms/render-inline-markdown";
 import { formatTimestamp } from "../atoms/format-timestamp";
 import { terminalJsonSummary, stripThinking, classifyPlainTerminalLine } from "../terminalJsonSummary";
 import { isExperimental } from "../../config/feature-flags";
+import { readSeriesMemoryConfig } from "../../task-memory/scope";
+import { formatBytes } from "../../orchestrator/artifact-files";
 import {
   statusChip,
   modeChip,
@@ -15,6 +17,9 @@ import {
   taskResultHasError,
 } from "../fragments/status-chip.fragment";
 import { isSoloTeamId } from "../../agents/solo";
+import { entityIcon, lucideSvg } from "../atoms/lucide";
+import { iconIdentityPicker, iconIdentityPickerScript } from "../atoms/icon-identity-picker";
+import { starButtonFragment } from "../fragments/star-button.fragment";
 import { parseScheduleMatrix } from "../../tasks/scheduled-scheduler";
 import { renderScheduleMatrixEditor, renderScheduleMatrixView, countMatrixHours } from "../atoms/schedule-matrix";
 import type { CommandCenterViewModel, TaskSummary, ScheduledTaskSummary } from "../view-models/command-center.vm";
@@ -27,6 +32,54 @@ function headerTitle(title: string): string {
   const short = t.length > 40 ? t.slice(0, 40) + "…" : t;
   const attr = t.length > 40 ? ` title="${escapeHtml(t)}"` : "";
   return `<span class="mc-task-header__title"${attr}>${escapeHtml(short)}</span>`;
+}
+
+/**
+ * The task header's identity cluster: chosen icon (if any) + title + an edit
+ * pencil (swaps in the inline name/icon editor, see the /fragments/tasks/:id/
+ * identity-edit route) + the star toggle. Rendered in an id'd slot so the edit
+ * fragment can swap it in place.
+ */
+export function taskHeaderIdentity(task: TaskSummary, opts: { oob?: boolean } = {}): string {
+  const eid = escapeHtml(task.id);
+  const icon = task.icon
+    ? `<span class="mc-task-header__icon">${entityIcon(task.icon, task.icon_color, { size: 18 })}</span>`
+    : "";
+  // When oob, this renders as an out-of-band swap: it updates the open task's
+  // header identity slot (if that task is on screen), else htmx ignores it.
+  const oob = opts.oob ? ` hx-swap-oob="true"` : "";
+  return `<span class="mc-task-header__identity" id="mc-task-identity-${eid}"${oob}>
+    ${icon}
+    ${headerTitle(task.title)}
+    <button type="button" class="mc-task-header__edit"
+      hx-get="/fragments/tasks/${eid}/identity-edit" hx-target="#mc-task-identity-${eid}" hx-swap="outerHTML"
+      title="Edit name & icon" aria-label="Edit name and icon">${lucideSvg("pencil", { size: 13, color: "#8b93a7" })}</button>
+    ${starButtonFragment(task.id, task.starred, "task")}
+  </span>`;
+}
+
+/**
+ * Inline editor swapped into the header identity slot by the edit pencil. Saves
+ * title + icon for a task in ANY status (POST /api/tasks/:id/identity re-renders
+ * the whole task view into #mc-main); Cancel re-fetches the task view to discard.
+ * Carries its own picker script (idempotent) since it arrives via an htmx swap.
+ */
+export function renderTaskIdentityEdit(task: TaskSummary): string {
+  const eid = escapeHtml(task.id);
+  return `<span class="mc-task-header__identity mc-task-header__identity--edit" id="mc-task-identity-${eid}">
+    <form class="mc-identity-edit" hx-post="/api/tasks/${eid}/identity"
+      hx-target="#mc-task-identity-${eid}" hx-swap="outerHTML">
+      <input type="text" name="title" class="sk-input sk-input--sm mc-identity-edit__title" value="${escapeHtml(task.title)}" required aria-label="Task name" autofocus>
+      <details class="mc-identity-edit__icon">
+        <summary title="Choose an icon">${lucideSvg(task.icon ?? "image", { size: 15, color: task.icon_color ?? "#8b93a7" })}</summary>
+        <div class="mc-identity-edit__picker">${iconIdentityPicker({ icon: task.icon, color: task.icon_color, nameIcon: "icon", nameColor: "iconColor" })}</div>
+      </details>
+      <button type="submit" class="sk-btn sk-btn--primary sk-btn--sm">Save</button>
+      <button type="button" class="sk-btn sk-btn--sm"
+        hx-get="/fragments/tasks/${eid}/identity" hx-target="#mc-task-identity-${eid}" hx-swap="outerHTML">Cancel</button>
+    </form>
+    ${iconIdentityPickerScript()}
+  </span>`;
 }
 
 interface ScheduledTaskOverride {
@@ -154,17 +207,43 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
   const agentsBody = soloTeams.length > 0
     ? soloGroups : `<div class="tc-team__empty">No agents yet</div>`;
 
+  // Favorites board: every starred task + starred recurring task, newest first.
+  // allTasks is already created_at DESC. Toggling a star emits task:state_changed,
+  // so the whole sidebar (this board included) re-renders live.
+  const favTasks = vm.allTasks.filter(t => t.starred);
+  const favRecurring = vm.scheduledTasks.filter(st => !!st.starred);
+  const favCount = favTasks.length + favRecurring.length;
+  const favoritesBody = favCount > 0
+    ? `${favTasks.map(t => sidebarItem(t, activeId)).join("")}
+       ${favRecurring.map(st => renderRecurringSeries(st, vm.scheduledRuns[st.id] ?? [], activeId)).join("")}`
+    : `<div class="tc-team__empty">No starred tasks yet. Tap the star on any task to pin it here.</div>`;
+
   return `<div class="tc-side">
     <div class="tc-tabs" role="tablist">
       ${tab("latest", "Latest", 0, true)}
+      ${tab("favorites", "Favorites", favCount, false)}
       ${tab("teams", "Teams", regularTeams.length, false)}
       ${tab("agents", "Agents", soloTeams.length, false)}
     </div>
     ${board("latest", latestBody, true)}
+    ${board("favorites", favoritesBody, false)}
     ${board("teams", teamsBody, false)}
     ${board("agents", agentsBody, false)}
     <a class="tc-history" href="/tasks">Task history &rarr;</a>
   </div>`;
+}
+
+/**
+ * An out-of-band swap that refreshes ONLY the sidebar list (`#mc-sidebar-list`),
+ * mirroring the WS ui-push path. Appended to the star route responses so
+ * favoriting updates the Favorites board live WITHOUT re-rendering `#mc-main`
+ * (the task view stays put — no page refresh). activeId is null, matching the WS
+ * refresh; the client re-applies board/active state on swap.
+ */
+export function renderSidebarOob(db: unknown): string {
+  const { buildCommandCenterViewModel } = require("../view-models/command-center.vm");
+  const vm = buildCommandCenterViewModel(db);
+  return `<div id="mc-sidebar-list" class="mc-sidebar__list" hx-swap-oob="outerHTML">${renderSidebarListBody(vm, null)}</div>`;
 }
 
 function tab(key: string, label: string, count: number, active: boolean): string {
@@ -253,7 +332,7 @@ export function pickTeamLandingTask(tasks: TaskSummary[]): TaskSummary | null {
   return [...tasks].sort((a, b) => rank(a) - rank(b))[0] ?? null;
 }
 
-function renderTeamGroup(team: { id: string; name: string }, tasks: TaskSummary[], activeId: string | null): string {
+function renderTeamGroup(team: { id: string; name: string; icon?: string | null; icon_color?: string | null }, tasks: TaskSummary[], activeId: string | null): string {
   const hasActive = tasks.some(t => t.id === activeId);
   const hasRunning = tasks.some(t => t.display_status === "working");
   const attention = tasks.filter(t => t.has_attention).length;
@@ -286,7 +365,9 @@ function renderTeamGroup(team: { id: string; name: string }, tasks: TaskSummary[
     <summary>
       <div class="tc-team__head">
         <span class="tc-team__caret">&#x25B6;</span>
-        <span class="tc-team__dot${hasRunning ? " tc-team__dot--running" : ""}"></span>
+        ${team.icon
+          ? `<span class="mc-sidebar__item-icon">${entityIcon(team.icon, team.icon_color, { size: 15 })}</span>`
+          : `<span class="tc-team__dot${hasRunning ? " tc-team__dot--running" : ""}"></span>`}
         ${nameHtml}
         ${attention > 0 ? `<span class="tc-team__count" title="Needs your input">${attention}</span>` : ""}
         ${team.id ? `<a class="tc-team__add" href="/tasks/new?team=${escapeHtml(team.id)}"
@@ -311,13 +392,18 @@ function sidebarItem(t: TaskSummary, activeId: string | null): string {
   const isActive = t.id === activeId;
   const display = displayStatusOf(t);
   const isRunning = display === "working";
+  // A chosen icon replaces the status dot; the tint comes from the task's color.
+  const lead = t.icon
+    ? `<span class="mc-sidebar__item-icon">${entityIcon(t.icon, t.icon_color, { size: 15 })}</span>`
+    : `<span class="mc-sidebar__item-dot mc-sidebar__item-dot--${displayDotClass(display, t.result_has_error)}"></span>`;
   return `<a href="/?task=${escapeHtml(t.id)}"
       class="mc-sidebar__item${isActive ? " mc-sidebar__item--active" : ""}${isRunning ? " mc-sidebar__item--running" : ""}"
       hx-get="/workspace/task/${escapeHtml(t.id)}" hx-target="#mc-main" hx-swap="innerHTML" hx-push-url="/?task=${escapeHtml(t.id)}">
-    <span class="mc-sidebar__item-dot mc-sidebar__item-dot--${displayDotClass(display, t.result_has_error)}"></span>
+    ${lead}
     ${sidebarTitle(t.title)}
     ${t.has_attention ? '<span class="mc-sidebar__item-attention" title="Needs your input (escalation or review)"></span>' : ""}
     ${modeChip(t.mode, { compact: true })}
+    ${starButtonFragment(t.id, t.starred, "task")}
     <span class="mc-sidebar__item-time">${t.completed_at ? formatTimestamp(t.completed_at) : formatTimestamp(t.created_at)}</span>
   </a>`;
 }
@@ -390,10 +476,15 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
   return `
     <div class="mc-task-header">
       <span class="mc-node__indicator mc-node__indicator--pending"></span>
-      ${headerTitle(task.title)}
+      <span class="mc-task-header__identity">
+        ${task.icon ? `<span class="mc-task-header__icon">${entityIcon(task.icon, task.icon_color, { size: 18 })}</span>` : ""}
+        ${headerTitle(task.title)}
+        ${starButtonFragment(task.id, task.starred, "task")}
+      </span>
       <span class="sk-badge sk-badge--draft">draft</span>
       <div class="mc-task-header__actions">
         ${renderAutopilotToggle(task)}
+        ${renderMemoryToggle(task)}
         <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/approve" hx-swap="none">Approve</button>
         <button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/tasks/${eid}" hx-swap="none" hx-confirm="Delete this draft?">Delete</button>
       </div>
@@ -406,6 +497,15 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
             <div class="sk-form-group">
               <label class="sk-label">Title</label>
               <input type="text" name="title" class="sk-input" value="${escapeHtml(task.title)}" required>
+            </div>
+            <div class="sk-form-group">
+              <details class="sk-collapse-field"${task.icon ? " open" : ""}>
+                <summary class="sk-label" style="cursor:pointer;list-style:none;">
+                  <span class="sk-collapse-field__caret">&#x25B6;</span> Icon
+                  <span style="font-weight:normal;font-size:0.72rem;color:var(--muted);">(optional)</span>
+                </summary>
+                <div style="margin-top:var(--sk-space-2);">${iconIdentityPicker({ icon: task.icon, color: task.icon_color, nameIcon: "icon", nameColor: "iconColor" })}</div>
+              </details>
             </div>
             <div class="sk-form-group">
               <label class="sk-label">Description</label>
@@ -436,6 +536,7 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
         </div>
       </div>
     </div>
+    ${iconIdentityPickerScript()}
   `;
 }
 
@@ -513,7 +614,7 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
     <!-- Task header: full width above timeline + rail -->
     <div class="mc-task-header mc-task-header--with-phases${isWorking ? " mc-task-header--running" : ""}">
       <span class="mc-node__indicator mc-node__indicator--${displayIndicatorClass(display, task.result_has_error)}"></span>
-      ${headerTitle(task.title)}
+      ${taskHeaderIdentity(task)}
       ${escalationHeaderSlot(task.id, task.open_escalation_count)}
       <div class="mc-task-header__scroll">
         ${phaseStepper ? `<div class="mc-task-header__phases">${phaseStepper}</div>` : ""}
@@ -525,7 +626,11 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
             hx-swap="innerHTML"></div>
         </div>` : ""}
       </div>
-      <div class="mc-task-header__actions">${actions}</div>
+      <div class="mc-task-header__actions">
+        <button type="button" class="sk-btn sk-btn--sm" onclick="Skipper.modal.open('tc-details-modal')"
+          hx-get="/workspace/task/${eid}/details" hx-target="#tc-details-modal-body" hx-swap="innerHTML">Details</button>
+        ${actions}
+      </div>
     </div>
 
     <!-- Composer (text + audio): the unified input, available on every active
@@ -569,10 +674,6 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
           <div id="mc-activity-poke-${eid}" data-sk-activity-poke="${eid}" hidden></div>
           <div class="mc-activity__feed" id="mc-activity-feed-${eid}" data-activity-filter="messages" data-sk-activity-feed="${eid}"
             hx-get="/workspace/task/${eid}/activity" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading...</span></div>
-        </div>
-        <div class="tc-rail__more">
-          <a onclick="Skipper.modal.open('tc-details-modal')"
-             hx-get="/workspace/task/${eid}/details" hx-target="#tc-details-modal-body" hx-swap="innerHTML">Details &amp; agents</a>
         </div>
       </aside>
     </div>
@@ -647,15 +748,45 @@ function renderAutopilotToggle(task: Pick<TaskSummary, "id" | "mode">): string {
     <span class="tc-autopilot__dot"></span>Autopilot</button>`;
 }
 
+/**
+ * Memory pill beside the autopilot one (experimental). Reflects
+ * task_config.memory_enabled; clicking posts the flipped value to
+ * /api/tasks/:id/memory, which backfills on enable and HX-redirects back.
+ */
+function renderMemoryToggle(task: Pick<TaskSummary, "id" | "memory_enabled" | "memory_mode" | "source_scheduled_task_id">): string {
+  if (!isExperimental()) return "";
+  const eid = escapeHtml(task.id);
+  const on = task.memory_enabled;
+  if (task.source_scheduled_task_id) {
+    // A run's memory is decided by its recurring task; the pill links there.
+    const shared = task.memory_mode === "shared";
+    const label = shared ? "Shared memory" : "Memory";
+    const title = on
+      ? (shared ? "Memory shared across every run of this recurring task. Set on the recurring task." : "Memory on for this run. Set on the recurring task.")
+      : "Memory off. Set on the recurring task.";
+    return `<a class="tc-autopilot${on ? " tc-autopilot--on" : ""}" href="/?scheduled=${escapeHtml(task.source_scheduled_task_id)}" title="${title}" style="text-decoration:none;">
+      <span class="tc-autopilot__dot"></span>${label}</a>`;
+  }
+  const title = on
+    ? "Memory on: input, messages, and notes are recorded for agents to query. Click to turn off."
+    : "Memory off. Click to record input, messages, and notes for agents to query (existing entries are copied in).";
+  return `<button type="button" class="tc-autopilot${on ? " tc-autopilot--on" : ""}"
+      hx-post="/api/tasks/${eid}/memory" hx-vals='{"on":"${on ? "false" : "true"}"}' hx-swap="none"
+      title="${title}" aria-pressed="${on}">
+    <span class="tc-autopilot__dot"></span>Memory</button>`;
+}
+
 function renderActions(task: TaskSummary, needsReview?: boolean): string {
   const eid = escapeHtml(task.id);
   const btns: string[] = [];
   if (task.status === "draft") {
     btns.push(renderAutopilotToggle(task));
+    btns.push(renderMemoryToggle(task));
     btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/approve" hx-swap="none">Approve</button>`);
     btns.push(`<button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/tasks/${eid}" hx-swap="none" hx-confirm="Delete this draft?">Delete</button>`);
   } else if (task.status === "active") {
     btns.push(renderAutopilotToggle(task));
+    btns.push(renderMemoryToggle(task));
     if (needsReview) {
       btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/approve-phase" hx-swap="none">Approve Phase</button>`);
     }
@@ -667,6 +798,7 @@ function renderActions(task: TaskSummary, needsReview?: boolean): string {
     } else {
       btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${eid}/pause" hx-swap="none" hx-confirm="Pause this task? All its agents and their subprocesses will be stopped; you can resume later.">Pause</button>`);
     }
+    btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${eid}/complete" hx-swap="none" hx-confirm="Mark this task complete? Any live agents will be stopped and the task moves to done." title="Finish this task now. Stops any live agents and marks it complete; sending input revives it.">Complete</button>`);
     btns.push(`<button class="sk-btn sk-btn--danger sk-btn--sm" hx-post="/api/tasks/${eid}/cancel" hx-swap="none" hx-confirm="Cancel this task? Any live agents will be stopped.">Cancel</button>`);
   } else if (task.status === "settled") {
     btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/resume" hx-swap="none" title="Reactivate this task and wake the agent from where it left off. Notes, artifacts, and checkpoints are intact.">Resume</button>`);
@@ -950,6 +1082,8 @@ export function renderScheduledTaskDetail(
 
       ${renderWebhookPanel(st)}
 
+      ${isExperimental() ? renderSeriesMemoryPanel(st) : ""}
+
       ${isExperimental() ? `
       <div class="sk-panel" style="margin-top:var(--sk-space-3);">
         <div class="sk-panel__header"><span class="sk-panel__title">Slack Slash Command</span></div>
@@ -980,6 +1114,78 @@ export function renderScheduledTaskDetail(
       </div>
     </div>
   `;
+}
+
+/** Series memory fields shared by the draft edit form. */
+function renderSeriesMemoryFields(st: ScheduledTaskSummary): string {
+  const cfg = readSeriesMemoryConfig(st.task_config);
+  const opt = (v: string, label: string) => `<option value="${v}"${cfg.mode === v ? " selected" : ""}>${label}</option>`;
+  return `
+            <div class="sk-form-row" style="gap:var(--sk-space-3);">
+              <div class="sk-form-group" style="flex:1;">
+                <label class="sk-label">Memory across runs</label>
+                <select name="memoryMode" class="sk-select">
+                  ${opt("off", "Off")}${opt("run", "Per run (each run its own memory)")}${opt("shared", "Shared across runs")}
+                </select>
+                <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
+                  Shared: every run can query what earlier runs recorded, and the memory outlives the runs themselves.
+                </div>
+              </div>
+              <div class="sk-form-group" style="width:170px;">
+                <label class="sk-label">Keep entries for (days)</label>
+                <input type="number" name="memoryRetentionDays" class="sk-input" min="0" step="1" value="${cfg.retentionDays}" placeholder="0 = indefinitely">
+              </div>
+            </div>
+            <div class="sk-muted sk-text-xs" style="margin:calc(-1 * var(--sk-space-2)) 0 var(--sk-space-3);">Keep entries for: shared memory only. Entries older than this are dropped when new ones are written. 0 keeps them indefinitely.</div>`;
+}
+
+/**
+ * Memory panel on the approved recurring-task detail: the series mode
+ * (off / per run / shared), retention, what is stored, and Clear memory.
+ * Posts to /api/scheduled-tasks/:id/memory, which backfills every run when the
+ * mode becomes shared. Memory is owned by the series, so it outlives the runs
+ * that recurring-run retention deletes.
+ */
+function renderSeriesMemoryPanel(st: ScheduledTaskSummary): string {
+  const eid = escapeHtml(st.id);
+  const cfg = readSeriesMemoryConfig(st.task_config);
+  const mem = st.memory_summary ?? null;
+  const opt = (v: string, label: string) => `<option value="${v}"${cfg.mode === v ? " selected" : ""}>${label}</option>`;
+  let summary = "";
+  if (mem && (mem.entries > 0 || mem.deleted > 0)) {
+    const model = mem.models.map((m) => m.replace(/^local:|^custom:/, "")).join(", ");
+    summary = `<div class="sk-text-xs" style="margin-top:var(--sk-space-3);">
+        Shared across ${mem.runs} run${mem.runs === 1 ? "" : "s"} &middot; ${mem.entries} entries, ${mem.vectors} vectors${mem.pending > 0 ? ` (${mem.pending} pending)` : ""}${mem.dims ? `, ${mem.dims} dims` : ""}${model ? ` &middot; ${escapeHtml(model)}` : ""}
+        &middot; ${formatBytes(mem.total_bytes)} <span class="sk-muted">(text ${formatBytes(mem.content_bytes)}, vectors ${formatBytes(mem.vector_bytes)})</span>${mem.deleted > 0 ? ` &middot; ${mem.deleted} deleted by agents` : ""}
+        ${mem.oldest_at ? `<div class="sk-muted" style="margin-top:2px;">${formatTimestamp(mem.oldest_at)} to ${formatTimestamp(mem.newest_at ?? mem.oldest_at)}</div>` : ""}
+      </div>`;
+  } else if (cfg.mode === "shared") {
+    summary = `<div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-3);">No entries yet.</div>`;
+  }
+  return `
+      <div class="sk-panel" style="margin-top:var(--sk-space-3);">
+        <div class="sk-panel__header"><span class="sk-panel__title">Memory</span></div>
+        <div class="sk-panel__body" style="padding:var(--sk-space-4);">
+          <div class="sk-muted sk-text-sm" style="margin-bottom:var(--sk-space-2);">
+            What runs of this task remember. <strong>Shared</strong> lets every run query what earlier runs recorded (entries carry their run and time); the memory belongs to this recurring task and stays when old runs are deleted. <strong>Per run</strong> gives each run its own memory. Agents read it with <code>query_task_memory</code>; they never write to it.
+          </div>
+          <form hx-post="/api/scheduled-tasks/${eid}/memory" hx-swap="none" style="display:flex;gap:var(--sk-space-3);align-items:flex-end;flex-wrap:wrap;">
+            <div class="sk-form-group" style="flex:1;min-width:220px;margin:0;">
+              <label class="sk-label">Memory across runs</label>
+              <select name="mode" class="sk-select">${opt("off", "Off")}${opt("run", "Per run (each run its own memory)")}${opt("shared", "Shared across runs")}</select>
+            </div>
+            <div class="sk-form-group" style="width:170px;margin:0;">
+              <label class="sk-label">Keep entries for (days)</label>
+              <input type="number" name="retention_days" class="sk-input" min="0" step="1" value="${cfg.retentionDays}" placeholder="0 = indefinitely">
+            </div>
+            <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Save</button>
+            ${mem && (mem.entries > 0 || mem.deleted > 0) ? `<button type="button" class="sk-btn sk-btn--danger sk-btn--sm" hx-post="/api/scheduled-tasks/${eid}/memory/clear" hx-swap="none"
+              hx-confirm="Delete every memory entry of this recurring task? Runs keep their notes and messages; only the memory copy is removed.">Clear memory</button>` : ""}
+          </form>
+          <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-2);">Keep entries for: shared memory only. Entries older than this are dropped when new ones are written. 0 keeps them indefinitely.</div>
+          ${summary}
+        </div>
+      </div>`;
 }
 
 /**
@@ -1080,6 +1286,7 @@ function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: s
                 Injected into every run's prompt; authorizes Skipper to use the global store for state shared across runs.
               </div>
             </div>
+            ${isExperimental() ? renderSeriesMemoryFields(st) : ""}
             ${isExperimental() ? `
             <div class="sk-form-group">
               <label class="sk-label">Slack Slash Command</label>

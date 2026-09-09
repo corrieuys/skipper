@@ -17,7 +17,24 @@ import { parsePhaseOverridesFromForm } from "./phase-overrides";
 import { parseScheduleFields } from "./scheduled-tasks";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { isTaskTitleGeneratorConfigured } from "../config/model-settings";
+import { isExperimental } from "../config/feature-flags";
 import { ensureTaskTitle } from "../tasks/title-generator";
+import { sanitizeIcon } from "../html/atoms/lucide";
+import { sanitizeColor } from "../html/atoms/creature";
+
+/**
+ * Read the icon picker's two form fields into a stored {icon, iconColor} pair.
+ * `icon` is a Lucide id validated against the known set (unknown ⇒ null, which
+ * also clears the color). The picker always submits both fields, so an absent or
+ * empty `icon` means "no icon".
+ */
+function parseIconFields(formData: FormData): { icon: string | null; iconColor: string | null } {
+  const rawIcon = formData.get("icon");
+  const icon = sanitizeIcon(typeof rawIcon === "string" ? rawIcon : null);
+  if (!icon) return { icon: null, iconColor: null };
+  const rawColor = formData.get("iconColor");
+  return { icon, iconColor: sanitizeColor(typeof rawColor === "string" ? rawColor : null) };
+}
 
 function escapeHtmlText(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -168,6 +185,14 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       if (Object.keys(recurringOverrides).length > 0) recurringConfig.phase_overrides = recurringOverrides;
 
       const globalStoreInstructionsRaw = formData.get("globalStoreInstructions");
+      // Series memory (experimental): off | run | shared, plus a retention window.
+      const memoryModeRaw = formData.get("memoryMode");
+      if (isExperimental() && (memoryModeRaw === "run" || memoryModeRaw === "shared")) {
+        recurringConfig.memory_mode = memoryModeRaw;
+        const days = Number(formData.get("memoryRetentionDays") ?? 0);
+        if (Number.isFinite(days) && days > 0) recurringConfig.memory_retention_days = Math.floor(days);
+      }
+      const recurringIcon = parseIconFields(formData);
       const scheduledScheduler = new ScheduledTaskScheduler();
       const scheduled = scheduledScheduler.createScheduledTask({
         title: titleStr,
@@ -179,6 +204,8 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         scheduleMatrix: scheduleMatrixVal,
         globalStoreInstructions: typeof globalStoreInstructionsRaw === "string" && globalStoreInstructionsRaw.trim() ? globalStoreInstructionsRaw.trim() : undefined,
         taskConfig: Object.keys(recurringConfig).length > 0 ? recurringConfig : undefined,
+        icon: recurringIcon.icon,
+        iconColor: recurringIcon.iconColor,
       });
 
       if (shouldAutoApprove && scheduled.team_id) {
@@ -209,12 +236,18 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         taskConfig = JSON.parse(taskConfigRaw);
       } catch { /* ignore */ }
     }
+    // Per-task memory toggle (experimental checkbox on the create forms).
+    const memoryRaw = formData.get("memoryEnabled");
+    if (isExperimental() && (memoryRaw === "1" || memoryRaw === "true" || memoryRaw === "on")) {
+      taskConfig = { ...(taskConfig ?? {}), memory_enabled: true };
+    }
 
     try {
       const db = getDb();
       let resolvedTeamId = typeof teamId === "string" && teamId.trim() ? teamId.trim() : findDefaultTaskTeamId(db, mode);
 
       const finalDescription = typeof description === "string" && description.trim() ? description.trim() : undefined;
+      const { icon, iconColor } = parseIconFields(formData);
 
       let created = scheduler.createTask({
         title: titleStr,
@@ -223,6 +256,8 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         workingDirectory,
         mode,
         taskConfig,
+        icon,
+        iconColor,
       });
 
       // Blank title: generate one from the description asynchronously so the
@@ -299,6 +334,14 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
           taskConfig = typeof body.taskConfig === "string" ? JSON.parse(body.taskConfig) : body.taskConfig;
         } catch { /* ignore */ }
       }
+      // Icon fields are optional on edit: absent ⇒ keep stored; present ⇒ set
+      // (an empty/unknown icon clears both, sanitized here).
+      let icon: string | null | undefined;
+      let iconColor: string | null | undefined;
+      if ("icon" in body || "iconColor" in body) {
+        icon = sanitizeIcon(body.icon);
+        iconColor = icon ? sanitizeColor(body.iconColor) : null;
+      }
       const updated = scheduler.updateTask(params.id, {
         title: body.title,
         description: body.description,
@@ -306,6 +349,8 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         workingDirectory: body.workingDirectory,
         mode,
         taskConfig,
+        icon,
+        iconColor,
       });
 
       if (req.headers.get("HX-Request")) {
@@ -351,6 +396,13 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         updates.push("working_directory = ?");
         values.push(workingDirectory.trim());
       }
+      // The icon picker always submits both hidden fields, so their presence means
+      // "set" (an empty/unknown icon clears both, sanitized here).
+      if (formData.has("icon") || formData.has("iconColor")) {
+        const { icon, iconColor } = parseIconFields(formData);
+        updates.push("icon = ?", "icon_color = ?");
+        values.push(icon, iconColor);
+      }
 
       // Collect per-task phase overrides (prompt / review gate).
       // See src/routes/phase-overrides.ts.
@@ -391,6 +443,30 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       const message = err instanceof Error ? err.message : "Internal error";
       return Response.json({ error: message }, { status: 400 });
     }
+  });
+
+  // Toggle (or explicitly set) a task's stored star for the sidebar Favorites
+  // board. Body `starred` (1/0/true/false) sets an explicit value; omit it to
+  // flip the current state. Returns the new value; the emitted task:state_changed
+  // re-renders the sidebar live.
+  addRoute("POST", "/api/tasks/:id/star", async (req, params) => {
+    const task = scheduler.getTask(params.id);
+    if (!task) return Response.json({ error: "Task not found" }, { status: 404 });
+    const body = await parseRequestBody<Record<string, string>>(req).catch(() => ({} as Record<string, string>));
+    const raw = body.starred;
+    const next = raw === undefined || raw === "" ? !task.starred : (raw === "1" || raw === "true" || raw === "on");
+    scheduler.setStarred(params.id, next);
+    if (req.headers.get("HX-Request")) {
+      // OOB-only (the button uses hx-swap="none"): refresh the sidebar list (so the
+      // Favorites board + every row's star update) and the open task's header
+      // identity slot (so a header star flips too). No main swap, no #mc-main
+      // re-render — no page refresh, no stray star.
+      const { renderSidebarOob, taskHeaderIdentity } = require("../html/pages/command-center.page");
+      const updated = scheduler.getTask(params.id);
+      const headerOob = updated ? taskHeaderIdentity(updated as any, { oob: true }) : "";
+      return htmlResponse(renderSidebarOob(getDb()) + headerOob);
+    }
+    return Response.json({ ok: true, starred: next });
   });
 
   addRoute("POST", "/api/tasks/:id/approve", (_req, params) => {

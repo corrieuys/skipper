@@ -6,6 +6,7 @@ import { getSkipperConfig, getEntrypointAgentId } from "./skipper";
 import type { ArtifactManager } from "../orchestrator/artifact-manager";
 import { buildSkillsPromptAddition } from "../config-readers/skills";
 import { assetTextSync } from "../assets";
+import { resolveMemoryScope } from "../task-memory/scope";
 import { isExperimental } from "../config/feature-flags";
 import { isSlackConfigured } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
@@ -42,6 +43,8 @@ const CAVEMAN_STYLE_GUIDANCE = [
   "- Do NOT use caveman style for delegation text, delegation prompts, or other messages sent to agents; delegations must remain in regular clear language.",
 ].join("\n");
 const ARTIFACT_HTML = loadPrompt("artifact-html.md");
+const TASK_MEMORY = loadPrompt("task-memory.md");
+const TASK_MEMORY_SHARED = loadPrompt("task-memory-shared.md");
 // File-based prompts as fallback defaults
 const SKIPPER_PROMPT_DEFAULT = loadPrompt("skipper.md");
 // System prompt for a single agent - a standalone executor that runs a whole
@@ -328,6 +331,11 @@ export class PromptBuilder {
     }
     parts.push("");
 
+    // Per-task memory (task_config.memory_enabled): tell the agent the store
+    // exists and to read it early. Injected only when on, so an agent is never
+    // pointed at a tool that will refuse it.
+    this.appendTaskMemoryBlock(parts, options.task.id);
+
     parts.push(ARTIFACT_HTML);
     parts.push("");
 
@@ -548,6 +556,8 @@ export class PromptBuilder {
     parts.push(ARTIFACT_HTML);
     parts.push("");
 
+    this.appendTaskMemoryBlock(parts, options.task.id);
+
     // Skills guidance
     const skillsAddition = buildSkillsPromptAddition(options.childAgent.type);
     if (skillsAddition) {
@@ -618,6 +628,25 @@ export class PromptBuilder {
     } catch {
       return true;
     }
+  }
+
+  /**
+   * Per-task memory (task-memory/scope.ts): the block naming the query/delete
+   * tools, injected only when the task's scope is on so an agent is never
+   * pointed at a tool that will refuse it; the shared-scope addendum when the
+   * memory spans a recurring series' runs.
+   */
+  private appendTaskMemoryBlock(parts: string[], taskId: string): void {
+    let scope: ReturnType<typeof resolveMemoryScope>;
+    try {
+      scope = resolveMemoryScope(this.db, taskId);
+    } catch {
+      return;
+    }
+    if (!scope.scopeId) return;
+    parts.push(TASK_MEMORY);
+    if (scope.mode === "shared") parts.push(TASK_MEMORY_SHARED);
+    parts.push("");
   }
 
   private getGlobalStoreInstructions(taskId: string): string | null {

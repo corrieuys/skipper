@@ -115,11 +115,15 @@ export function missionControlStyles(): string {
       transition: background 0.1s;
       text-decoration: none;
       color: inherit;
+      /* Reserve the active-accent width on every item so selecting one never
+         shifts its content right by the border width (no layout glitch when
+         switching selection). Only the color changes on --active. */
+      border-left: 2px solid transparent;
     }
     .mc-sidebar__item:hover { background: var(--sk-surface-2); color: inherit; }
     .mc-sidebar__item--active {
       background: var(--sk-surface-2);
-      border-left: 2px solid var(--sk-accent-primary);
+      border-left-color: var(--sk-accent-primary);
     }
     .mc-sidebar__item-dot {
       width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
@@ -132,6 +136,21 @@ export function missionControlStyles(): string {
     .mc-sidebar__item-dot--draft { background: var(--sk-surface-4); }
     .mc-sidebar__item-dot--active { background: var(--sk-accent-tertiary); }
     .mc-sidebar__item-dot--settled { background: var(--sk-surface-4); }
+    /* A chosen icon replaces the status dot; it carries its own tint via inline color. */
+    .mc-sidebar__item-icon {
+      flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 16px;
+    }
+    /* Star toggle: quiet until hover/active, sits inline in the row. */
+    .sk-star {
+      flex-shrink: 0; padding: 2px; min-height: 0; line-height: 0; cursor: pointer;
+      background: none; border: none; border-radius: var(--sk-radius-sm);
+      opacity: 0; transition: opacity 0.1s ease, background 0.1s ease;
+    }
+    .mc-sidebar__item:hover .sk-star,
+    .tc-team__head:hover .sk-star,
+    .sk-star--active { opacity: 1; }
+    .sk-star:hover { background: var(--sk-surface-3); }
     .mc-sidebar__item-title {
       flex: 1;
       font-size: var(--sk-text-sm);
@@ -293,6 +312,33 @@ export function missionControlStyles(): string {
       color: var(--sk-text);
       font-size: var(--sk-text-base);
       flex: 1;
+    }
+    /* Header identity cluster: icon + title + edit pencil + star. */
+    .mc-task-header__identity { display: inline-flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+    .mc-task-header__icon { flex: none; display: inline-flex; align-items: center; color: var(--sk-text); }
+    .mc-task-header__edit {
+      flex: none; padding: 3px; min-height: 0; line-height: 0; cursor: pointer; border: none;
+      background: none; border-radius: var(--sk-radius-sm); color: var(--sk-text-subtle);
+      opacity: 0; transition: opacity 0.1s ease, background 0.1s ease;
+    }
+    .mc-task-header:hover .mc-task-header__edit { opacity: 1; }
+    .mc-task-header__edit:hover { background: var(--sk-surface-3); color: var(--sk-text); }
+    /* Star is always visible in the header (not hover-gated like sidebar rows). */
+    .mc-task-header .sk-star { opacity: 1; }
+    /* Inline name + icon editor (swapped into the identity slot). */
+    .mc-identity-edit { display: flex; align-items: center; gap: var(--sk-space-2); flex: 1; min-width: 0; }
+    .mc-identity-edit__title { flex: 1; min-width: 140px; font-weight: 600; }
+    .mc-identity-edit__icon { position: relative; flex: none; }
+    .mc-identity-edit__icon > summary {
+      list-style: none; cursor: pointer; display: inline-flex; align-items: center; color: var(--sk-text);
+      padding: 5px; border: 1px solid var(--sk-border); border-radius: var(--sk-radius-sm); background: var(--sk-surface-2);
+    }
+    .mc-identity-edit__icon > summary::-webkit-details-marker { display: none; }
+    .mc-identity-edit__picker {
+      position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; width: 320px;
+      padding: var(--sk-space-3); background: var(--sk-surface-1);
+      border: 1px solid var(--sk-border); border-radius: var(--sk-radius-md);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
     }
     .mc-task-header__actions {
       display: flex;
