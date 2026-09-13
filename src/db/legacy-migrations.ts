@@ -88,6 +88,7 @@ export function migrateLegacySchema(database: Database): void {
   migrateTasksArchivedToSettled(database);
   migrateTaskArtifactsUploadKind(database);
   migrateRealtimeTimelineFileEntries(database);
+  migrateRealtimeTimelineTranscriptEntries(database);
   migrateTaskMemoryScope(database);
 }
 
@@ -188,6 +189,51 @@ function migrateRealtimeTimelineFileEntries(database: Database): void {
           id TEXT PRIMARY KEY,
           task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
           entry_type TEXT NOT NULL CHECK (entry_type IN ('summary', 'text', 'error', 'image', 'file')),
+          content TEXT NOT NULL,
+          source_segment_ids TEXT NOT NULL DEFAULT '[]',
+          fed_to_skipper INTEGER NOT NULL DEFAULT 0,
+          artifact_id TEXT,
+          priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('normal', 'high')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+      database.exec(`INSERT INTO realtime_timeline_new (${columns}) SELECT ${columns} FROM realtime_timeline;`);
+      database.exec("DROP TABLE realtime_timeline;");
+      database.exec("ALTER TABLE realtime_timeline_new RENAME TO realtime_timeline;");
+      database.exec("CREATE INDEX IF NOT EXISTS idx_realtime_timeline_task_fed ON realtime_timeline(task_id, fed_to_skipper, created_at);");
+      database.exec("CREATE INDEX IF NOT EXISTS idx_realtime_timeline_task_time ON realtime_timeline(task_id, created_at);");
+      database.exec("COMMIT");
+    } catch (err) {
+      database.exec("ROLLBACK");
+      throw err;
+    }
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+// Raw transcripts in the input timeline: `entry_type` gains 'transcript' (the
+// summary-off path writes the cleaned transcript as its own type instead of
+// posing as a 'summary'). Same rebuild; guard is the stored CREATE lacking
+// 'transcript'. Runs after the file-entries rebuild, so every column exists.
+function migrateRealtimeTimelineTranscriptEntries(database: Database): void {
+  const sql = tableSql(database, "realtime_timeline");
+  if (!sql || sql.includes("'transcript'")) return;
+
+  const columns = [
+    "id", "task_id", "entry_type", "content", "source_segment_ids", "fed_to_skipper",
+    "artifact_id", "priority", "created_at",
+  ].join(", ");
+
+  database.exec("PRAGMA foreign_keys = OFF");
+  try {
+    database.exec("BEGIN");
+    try {
+      database.exec(`
+        CREATE TABLE realtime_timeline_new (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          entry_type TEXT NOT NULL CHECK (entry_type IN ('summary', 'text', 'error', 'image', 'file', 'transcript')),
           content TEXT NOT NULL,
           source_segment_ids TEXT NOT NULL DEFAULT '[]',
           fed_to_skipper INTEGER NOT NULL DEFAULT 0,

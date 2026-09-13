@@ -17,8 +17,11 @@ import { listAssignableTeams } from "../config/teams";
 import { isTaskTitleGeneratorConfigured } from "../config/model-settings";
 import { ensureTaskTitle } from "../tasks/title-generator";
 import { getDb } from "../db/connection";
+import { clampCadenceSeconds } from "../realtime/config";
 import { eventBus } from "../events/bus";
 import { looksLikeHtml } from "../html/atoms/sniff-html";
+import { sanitizeIcon } from "../html/atoms/lucide";
+import { sanitizeColor } from "../html/atoms/creature";
 import { CONNECT_PROTOCOL_VERSION, type StateSnapshot, CONNECT_FEATURES } from "./protocol";
 import { getPublicArtifactUrl } from "./public-links";
 import { fetchArtifactItem, fetchTimelineEntryItem, snapshotOpenEscalations, snapshotTasks, snapshotTimelineEntries, toTaskDetailItem, toTaskListItem } from "./serializers";
@@ -119,6 +122,10 @@ function connectCustomAgentRow(a: CustomAgent) {
     maxSteps: a.maxSteps,
     temperature: a.temperature,
     hasKey: (a.apiKey ?? "").trim() !== "",
+    // Identity so a client can render the orb: hex tint + creature character id
+    // (null character falls back to the cube).
+    color: a.color ?? null,
+    character: a.character ?? null,
   };
 }
 
@@ -344,6 +351,16 @@ export async function handleResourceRequest(
               }
               if (Object.keys(out).length) taskConfig = out;
             }
+            // Per-task audio settings: `summaryEnabled` true/false overrides the
+            // global transcript-summary default (absent = global); `windowSeconds`
+            // (or taskConfig.window_seconds above) sets the chunk cadence.
+            const summaryRaw = params.summaryEnabled ?? params.summary_enabled;
+            if (summaryRaw === true || summaryRaw === false || summaryRaw === "true" || summaryRaw === "false") {
+              taskConfig = { ...(taskConfig ?? {}), summary_enabled: summaryRaw === true || summaryRaw === "true" };
+            }
+            if (params.windowSeconds != null && Number.isFinite(Number(params.windowSeconds))) {
+              taskConfig = { ...(taskConfig ?? {}), window_seconds: clampCadenceSeconds(params.windowSeconds) };
+            }
             // Per-task memory at create time (the web form's Memory checkbox).
             if (isTruthyFlag(params.memoryEnabled ?? params.memory_enabled)) {
               taskConfig = { ...(taskConfig ?? {}), memory_enabled: true };
@@ -393,9 +410,9 @@ export async function handleResourceRequest(
           case "star": {
             // Toggle (or set) a task's stored star for the client Favorites view.
             // `on` sets an explicit value; omit it to flip. Replies with the
-            // projected task so the caller patches its store. Deliberately emits
-            // NO event (starring must not trigger a re-render on any client — the
-            // web star self-swaps); other clients pick it up on their next read.
+            // projected task so the caller patches its store immediately, and
+            // scheduler.setStarred emits a same-status task:state_changed so every
+            // OTHER client (web + apps) patches the star live off the fat event.
             const id = String(params.id ?? "");
             if (!id) return { ok: false, error: "id is required" };
             const task = taskScheduler.getTask(id);
@@ -404,6 +421,22 @@ export async function handleResourceRequest(
             const next = raw === undefined || raw === null ? !task.starred : isTruthyFlag(raw);
             taskScheduler.setStarred(id, next);
             return { ok: true, data: { task: toTaskListItem(db, id), starred: next } };
+          }
+          case "set-icon": {
+            // Author a task's Lucide icon + hex tint, mirroring the web icon
+            // picker (POST /api/tasks/:id/identity). `icon` is validated against
+            // the known Lucide set; an empty or unknown icon clears both (and the
+            // color is only kept when an icon is set). Backs through the ungated
+            // scheduler.setIcon, which emits task:state_changed so every client
+            // reconciles the new identity off the fat task projection. Replies
+            // with the projected task so the caller patches its store directly.
+            const id = String(params.id ?? "");
+            if (!id) return { ok: false, error: "id is required" };
+            if (!taskScheduler.getTask(id)) return { ok: false, error: "Task not found" };
+            const icon = sanitizeIcon(params.icon ?? params.iconId ?? null);
+            const iconColor = icon ? sanitizeColor(params.iconColor ?? params.color ?? null) : null;
+            taskScheduler.setIcon(id, icon, iconColor);
+            return { ok: true, data: { task: toTaskListItem(db, id), icon, iconColor } };
           }
           case "clear-memory": {
             // Hard-delete the task's memory scope (a run clears its series'

@@ -25,7 +25,10 @@ export interface PhaseOverride {
 // task (audio input is always available); most are optional overrides of the
 // global transcription settings.
 export interface TaskConfig {
+  /** Per-task audio chunk cadence in seconds; overrides the global realtime cadence. */
   window_seconds?: number;
+  /** Per-task transcript summary: true/false override the global default; absent = global. */
+  summary_enabled?: boolean;
   summary_cadence_seconds?: number;
   trigger_min_confidence?: number;
   max_pending_windows?: number;
@@ -195,9 +198,16 @@ export class TaskScheduler {
    * natural render.
    */
   setStarred(id: string, starred: boolean): void {
+    const task = this.getTask(id);
+    if (!task) return;
     this.db
       .prepare("UPDATE tasks SET starred = ?, updated_at = datetime('now') WHERE id = ?")
       .run(starred ? 1 : 0, id);
+    // Same-status state_changed so every client patches the star live (sidebar
+    // row + header), matching setAutopilot/setIcon. The web star also self-swaps
+    // optimistically; the resulting fragment re-render is idempotent. Remote
+    // clients (apps) only learn of a star through this fat event.
+    eventBus.emit("task:state_changed", { taskId: id, previousStatus: task.status, newStatus: task.status });
   }
 
   /**
@@ -698,8 +708,17 @@ export class TaskScheduler {
   }
 
   /** settled -> active. New input auto-revives through this. */
+  /**
+   * Bring a settled task back to active. An autopilot (workflow) task with
+   * phases also restarts at phase 0: a completed run parks at its LAST phase,
+   * and reviving it there would hand Skipper the final phase's objective again
+   * under DRIVE MODE, which it immediately reports as done — the run would
+   * settle again before the new input is acted on. Restarting the phases
+   * makes the revive a fresh pass over the workflow with the input in the
+   * feed. A conversational task keeps its phase (the operator drives it).
+   */
   reviveTask(id: string): Task {
-    this.requireTaskStatus(id, "settled", "revive settled tasks");
+    const task = this.requireTaskStatus(id, "settled", "revive settled tasks");
 
     const changes = this.db
       .prepare(
@@ -712,13 +731,51 @@ export class TaskScheduler {
       throw new Error(`Task ${id} was concurrently modified`);
     }
 
+    const restartPhases = task.mode === "workflow" && task.current_phase > 0 && this.phaseCount(task.team_id) > 0;
+    if (restartPhases) {
+      this.db.prepare("UPDATE tasks SET current_phase = 0, updated_at = datetime('now') WHERE id = ?").run(id);
+    }
+    // A revived workflow run starts a FRESH root session. Resuming the old
+    // entrypoint session would (a) carry the memory of having completed the
+    // task, so DRIVE MODE re-completes it, and (b) on a long-lived task force
+    // claude-code to compact a huge stale transcript first, which has been seen
+    // to fail (compact_error) and exit 1 before the new input is read. Prior
+    // notes, artifacts and delegation summaries still reach the fresh root
+    // through the prompt; child sessions stay resumable.
+    if (task.mode === "workflow") {
+      this.db
+        .prepare("UPDATE agent_instances SET session_id = NULL WHERE task_id = ? AND parent_instance_id IS NULL AND session_id IS NOT NULL")
+        .run(id);
+    }
+
     const updated = this.getTask(id)!;
     eventBus.emit("task:state_changed", {
       taskId: id,
       previousStatus: "settled",
       newStatus: "active",
     });
+    if (restartPhases) {
+      eventBus.emit("task:phase_changed", {
+        taskId: id,
+        previousPhase: task.current_phase,
+        newPhase: 0,
+        direction: "regress",
+      });
+    }
     return updated;
+  }
+
+  /** Number of phases on the task's team (0 for solo / teamless tasks). */
+  private phaseCount(teamId: string | null): number {
+    if (!teamId) return 0;
+    const row = this.db.prepare("SELECT phases FROM teams WHERE id = ?").get(teamId) as { phases: string | null } | null;
+    if (!row?.phases) return 0;
+    try {
+      const phases = JSON.parse(row.phases) as unknown[];
+      return Array.isArray(phases) ? phases.length : 0;
+    } catch {
+      return 0;
+    }
   }
 
   /**

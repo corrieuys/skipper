@@ -2,6 +2,35 @@
 
 AI agent orchestrator. Spawn external CLI agents (claude-code, codex, opencode, grok). Route stdout signals via event bus. Tick-loop daemon coords multi-agent tasks. Real-time tasks support audio/text + transcription.
 
+## UI update contract (READ before adding any task control or button)
+
+Every surface (web command center, iOS/macOS apps over Connect, TUI) renders
+from a store that is reconciled by DOMAIN EVENTS, not by the action that made
+the change. Two rules, no exceptions without the operator's explicit sign-off.
+This is the default for EVERY new feature; do not wait to be told.
+
+1. **Every state mutation emits a fat event.** Any route/action/tool that
+   changes task state (autopilot/mode, star, icon, title, memory, pause, phase,
+   status, ...) MUST emit a domain event carrying the changed entity's
+   projection (`task:state_changed` with the task; same-status is fine) so every
+   open surface patches itself. Web bus fan-out is [src/ws/ui-push.ts](src/ws/ui-push.ts);
+   Connect fat events are [src/connect/events.ts](src/connect/events.ts) (both
+   forward the same bus events). A mutation with no event is a bug: the acting
+   client's OTHER views and every other client go stale.
+
+2. **A button never refreshes the whole UI.** The control that triggered the
+   change updates IN PLACE. Web: return the re-rendered control for an htmx
+   self-swap (`hx-target="this" hx-swap="outerHTML"`), never an `HX-Redirect` or
+   a full `#mc-main` re-render. Apps: patch the store row and let the observing
+   view re-render just that element; never trigger a screen reload. A full-view
+   refresh is only for real status TRANSITIONS (draft/active/settled), never a
+   same-status toggle (see the `previousStatus !== newStatus` guard in ui-push.ts).
+
+When you add a task-level control, wire BOTH: it emits/uses the event so all
+surfaces reconcile, AND it updates its own element with no page/view refresh. If
+a client renders a control from a held/local copy instead of the store, fix the
+client to read the store; never paper over it with a manual refresh.
+
 ## Run
 
 ```sh
@@ -125,7 +154,7 @@ repo's GitHub Releases.
 | JSON config store, feature flags, app settings | [src/config/CLAUDE.md](src/config/CLAUDE.md) |
 | HTTP route handlers | [src/routes/CLAUDE.md](src/routes/CLAUDE.md) |
 | server-rendered HTML (pages, panels, fragments) | [src/html/CLAUDE.md](src/html/CLAUDE.md) |
-| terminal dashboard TUI (`skipper dashboard`, attaches to a running daemon) | [src/tui/CLAUDE.md](src/tui/CLAUDE.md) |
+| terminal dashboard TUI (`skipper dashboard [--local | --server <name>]`: interactive operator console over `/connect/local` or a Skipper Connect remote; create/edit/import/control tasks + teams) | [src/tui/CLAUDE.md](src/tui/CLAUDE.md) |
 | event bus | [src/events/CLAUDE.md](src/events/CLAUDE.md) |
 | WS push to UI | [src/ws/CLAUDE.md](src/ws/CLAUDE.md) |
 | task CRUD + lifecycle | [src/tasks/CLAUDE.md](src/tasks/CLAUDE.md) |
@@ -194,7 +223,8 @@ A run settles via `completeRun`/`failRun`: the task moves to stored status
 `settled` (emits `task:run_completed`/`task:run_failed` + state_changed). The
 word "settled" never surfaces in UX either — a settled task just presents as
 **Completed** or **Failed** (`display_status`), and sending input revives it
-(`daemon.inputTask` auto-revives + wakes). `settleTask` remains the
+(`daemon.inputTask` auto-revives + wakes; an autopilot task with phases restarts
+at phase 0 so the run is a fresh pass with the input, not a re-settle). `settleTask` remains the
 internal/cancel transition; retention sweeps settled tasks.
 
 **Unified input** replaces iterate/retry/resume/realtime-input:

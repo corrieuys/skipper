@@ -133,3 +133,5 @@ queries; only a frame that is still too big, or was never JSON, gets the hard
 byte cut plus the "frame truncated" marker. The event still carries the full
 text. Before this, one long task stored 340MB of unrenderable base64 chunk
 fragments; the retention sweep (`log_retention_hours`) removes old rows either way.
+
+**Exit failure reason.** When a workflow root exits non-zero and the run fails, `handleAgentExit` appends the provider's own error from the instance's stdout stream (`lastProviderError`: a claude-code `system/status` `compact_error`, or an `is_error` result text) to the `Agent exited with code N` message, so a failed auto-compaction or auth refresh is named in the task result instead of a bare exit code.

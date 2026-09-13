@@ -18,6 +18,7 @@ import type { AgentIdentity, InternalAgentIdentity } from "./auth";
 import { eventBus } from "../events/bus";
 import { z } from "zod";
 import { signalBridge } from "./signal-bridge";
+import { assetTextSync } from "../assets";
 import { registerCustomTools } from "../custom-tools/registration";
 import { isExperimental } from "../config/feature-flags";
 import { isSlackConfigured, getSlackDefaultChannel } from "../config/slack-settings";
@@ -1072,6 +1073,34 @@ export function registerDaemonTools(
     db,
     runtimeId: identity?.type === "internal" ? identity.runtimeId : (options?.runtimeId ?? null),
   });
+
+  registerReferencePrompts(server);
+}
+
+/**
+ * Reference prompts exposed to every MCP session (internal + external), fetched
+ * with the standard MCP prompts/list + prompts/get. These are documentation, not
+ * behaviour: they carry no arguments and read a static embedded markdown file.
+ * `team_config` explains how teams, phases, approvals, and agent config work so
+ * a client knows what a team it assigns a task to will do.
+ */
+export function registerReferencePrompts(server: McpServer): void {
+  server.registerPrompt(
+    "team_config",
+    {
+      title: "Skipper team configuration",
+      description:
+        "How Skipper teams work: teams, phases, review-gate approvals, agent config, modes/autopilot, and the task lifecycle. Team setup itself is web-only and not exposed over MCP.",
+    },
+    () => ({
+      messages: [
+        {
+          role: "user" as const,
+          content: { type: "text" as const, text: assetTextSync("prompts/mcp-team-config.md") },
+        },
+      ],
+    }),
+  );
 }
 
 /**
@@ -1085,4 +1114,5 @@ export function registerExternalTools(
   getIdentity: () => AgentIdentity | null,
 ): void {
   registerTaskTools(server, deps, getIdentity, "external");
+  registerReferencePrompts(server);
 }

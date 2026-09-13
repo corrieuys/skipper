@@ -1105,7 +1105,11 @@ export class ManagerDaemon {
         return;
       } else {
         try {
-          this.taskScheduler.failRun(taskId, `Agent exited with code ${event.code}`);
+          // Name the real reason when the provider reported one in its stream
+          // (claude-code: a failed auto-compaction on resume, e.g. an auth
+          // refresh error) instead of a bare exit code.
+          const detail = this.lastProviderError(event.agentId);
+          this.taskScheduler.failRun(taskId, `Agent exited with code ${event.code}${detail ? `: ${detail}` : ""}`);
         } catch (err) {
           logError(this.db, "agent_exit_fail_task", { agentId: event.agentId, taskId: taskId, exitCode: event.code }, err);
         }
@@ -1146,6 +1150,31 @@ export class ManagerDaemon {
       }
     } catch (err) {
       logError(this.db, "agent_exit_handler", { agentId: event.agentId, method: "handleAgentExit" }, err);
+    }
+  }
+
+  /**
+   * The last provider-reported error in an instance's stdout stream, if any:
+   * claude-code `system/status` frames carry `compact_error` when the
+   * auto-compaction that precedes a resume fails, and `result` frames carry
+   * `is_error` + `result` text. Null when the stream shows no such frame.
+   */
+  private lastProviderError(agentId: string): string | null {
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT COALESCE(json_extract(data, '$.compact_error'),
+                           CASE WHEN json_extract(data, '$.is_error') = 1 THEN json_extract(data, '$.result') END) AS err
+           FROM terminal_outputs
+           WHERE agent_id = ? AND stream = 'stdout' AND json_valid(data)
+             AND (json_extract(data, '$.compact_error') IS NOT NULL OR json_extract(data, '$.is_error') = 1)
+           ORDER BY id DESC LIMIT 1`,
+        )
+        .get(agentId) as { err: string | null } | null;
+      const err = row?.err?.trim();
+      return err ? err.slice(0, 300) : null;
+    } catch {
+      return null;
     }
   }
 

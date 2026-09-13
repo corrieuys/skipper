@@ -12,9 +12,10 @@ export function dashboardRealtimeTimelineFragment(
     return timeline.entries
         .map((entry) => {
             const kind = entry.entry_type === "error" ? "event"
-                : entry.entry_type === "summary" ? "tool"
+                : entry.entry_type === "summary" || entry.entry_type === "transcript" ? "tool"
                 : "message";
             const kindLabel = entry.entry_type === "summary" ? "sum"
+                : entry.entry_type === "transcript" ? "trn"
                 : entry.entry_type === "error" ? "err"
                 : "txt";
             const preview = entry.content.length > 200

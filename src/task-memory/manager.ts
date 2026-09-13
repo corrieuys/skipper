@@ -369,13 +369,13 @@ export class TaskMemoryManager {
     });
   }
 
-  /** Only operator text input and audio summaries; images, files, and errors are not memory. */
+  /** Only operator text input and audio summaries/transcripts; images, files, and errors are not memory. */
   recordTimelineEntry(entryId: string, createdAt?: string): boolean {
     const row = this.db
       .prepare("SELECT id, task_id, entry_type, content, created_at FROM realtime_timeline WHERE id = ?")
       .get(entryId) as { id: string; task_id: string; entry_type: string; content: string; created_at: string } | null;
     if (!row) return false;
-    if (row.entry_type !== "text" && row.entry_type !== "summary") return false;
+    if (row.entry_type !== "text" && row.entry_type !== "summary" && row.entry_type !== "transcript") return false;
     const target = this.target(row.task_id);
     if (!target) return false;
     return this.record({
@@ -428,7 +428,7 @@ export class TaskMemoryManager {
     for (const n of notes) if (this.recordNote(n.id)) added++;
     const messages = this.db.prepare("SELECT id FROM task_messages WHERE task_id = ? ORDER BY created_at").all(taskId) as { id: string }[];
     for (const m of messages) if (this.recordMessage(m.id)) added++;
-    const entries = this.db.prepare("SELECT id FROM realtime_timeline WHERE task_id = ? AND entry_type IN ('text', 'summary') ORDER BY created_at").all(taskId) as { id: string }[];
+    const entries = this.db.prepare("SELECT id FROM realtime_timeline WHERE task_id = ? AND entry_type IN ('text', 'summary', 'transcript') ORDER BY created_at").all(taskId) as { id: string }[];
     for (const e of entries) if (this.recordTimelineEntry(e.id)) added++;
     return added;
   }

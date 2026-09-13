@@ -1,6 +1,4 @@
-import type { PaneId } from "./types";
-
-/** A rectangle in terminal cells. x,y are 1-based (ANSI cursor coords). */
+/** A rectangle in screen cells. x,y are 0-based. */
 export interface Rect {
   x: number;
   y: number;
@@ -8,66 +6,81 @@ export interface Rect {
   h: number;
 }
 
+export type LayoutMode = "triple" | "double" | "single";
+
 export interface Layout {
-  header: Rect;
-  panes: Record<PaneId, Rect>;
-  footer: Rect;
-  mode: "rail" | "stacked";
+  mode: LayoutMode;
+  header: Rect; // 2 rows: brand/metrics + filter tabs
+  footer: Rect; // 1 row: keys + toast
+  rail: Rect | null; // task list
+  main: Rect; // task detail (or whichever single view is active)
+  feed: Rect | null; // global live feed column
 }
 
-const MIN_H = 3;
-const RAIL_MIN_COLS = 100;
-const RAIL_MIN_ROWS = 18;
+const HEADER_H = 2;
+const FOOTER_H = 1;
+const TRIPLE_MIN_COLS = 150;
+const DOUBLE_MIN_COLS = 96;
+const MIN_BODY_H = 6;
 
 const clampN = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(v, Math.max(lo, hi)));
 
 /**
  * Pure layout: terminal size → rectangles. No I/O.
  *
- *   rail    (cols >= 100, rows >= 18): a left rail (tasks over agents) beside a
- *           big OUTPUT feed, with a full-width MILESTONES strip along the bottom.
- *   stacked (everything smaller):      OUTPUT (big) → agents → tasks → milestones.
- *
- * OUTPUT dominates in both — the live agent feed is the point of the view.
+ *   triple (cols >= 150): rail | detail | live feed
+ *   double (cols >= 96):  rail | detail          (feed is a detail tab)
+ *   single (smaller):     one full-width view, Tab cycles rail/detail/feed
  */
 export function computeLayout(cols: number, rows: number): Layout {
   const w = Math.max(cols, 1);
   const h = Math.max(rows, 1);
-  const header: Rect = { x: 1, y: 1, w, h: 1 };
-  const footer: Rect = { x: 1, y: h, w, h: 1 };
-  const bodyY = 2;
-  const bodyH = Math.max(h - 2, MIN_H);
+  const header: Rect = { x: 0, y: 0, w, h: Math.min(HEADER_H, h) };
+  const footer: Rect = { x: 0, y: h - 1, w, h: FOOTER_H };
+  const bodyY = header.h;
+  const bodyH = Math.max(h - header.h - FOOTER_H, Math.min(MIN_BODY_H, h));
 
-  if (w >= RAIL_MIN_COLS && h >= RAIL_MIN_ROWS) {
-    // Left rail (tasks over agents) beside a full-height OUTPUT feed.
-    const railW = clampN(Math.round(w * 0.3), 28, 42);
-    const mainW = w - railW;
-    const tasksH = clampN(Math.round(bodyH * 0.42), 3, bodyH - 3);
-    const agentsH = Math.max(bodyH - tasksH, MIN_H);
+  if (w >= TRIPLE_MIN_COLS) {
+    const railW = clampN(Math.round(w * 0.26), 34, 48);
+    const feedW = clampN(Math.round(w * 0.3), 40, 64);
+    const mainW = w - railW - feedW;
     return {
-      mode: "rail",
+      mode: "triple",
       header,
       footer,
-      panes: {
-        tasks: { x: 1, y: bodyY, w: railW, h: tasksH },
-        agents: { x: 1, y: bodyY + tasksH, w: railW, h: agentsH },
-        output: { x: railW + 1, y: bodyY, w: mainW, h: bodyH },
-      },
+      rail: { x: 0, y: bodyY, w: railW, h: bodyH },
+      main: { x: railW, y: bodyY, w: mainW, h: bodyH },
+      feed: { x: railW + mainW, y: bodyY, w: feedW, h: bodyH },
     };
   }
-
-  // Stacked: output (big) → agents → tasks.
-  const agentsH = clampN(Math.round(bodyH * 0.22), MIN_H, bodyH);
-  const tasksH = clampN(Math.round(bodyH * 0.2), MIN_H, bodyH);
-  const outputH = Math.max(bodyH - agentsH - tasksH, MIN_H);
+  if (w >= DOUBLE_MIN_COLS) {
+    const railW = clampN(Math.round(w * 0.34), 32, 46);
+    return {
+      mode: "double",
+      header,
+      footer,
+      rail: { x: 0, y: bodyY, w: railW, h: bodyH },
+      main: { x: railW, y: bodyY, w: w - railW, h: bodyH },
+      feed: null,
+    };
+  }
   return {
-    mode: "stacked",
+    mode: "single",
     header,
     footer,
-    panes: {
-      output: { x: 1, y: bodyY, w, h: outputH },
-      agents: { x: 1, y: bodyY + outputH, w, h: agentsH },
-      tasks: { x: 1, y: bodyY + outputH + agentsH, w, h: tasksH },
-    },
+    rail: null,
+    main: { x: 0, y: bodyY, w, h: bodyH },
+    feed: null,
   };
+}
+
+/** Centered modal rect of the requested size, clamped inside the screen. */
+export function centered(cols: number, rows: number, wantW: number, wantH: number): Rect {
+  const w = Math.max(Math.min(wantW, cols - 2), Math.min(20, cols));
+  const h = Math.max(Math.min(wantH, rows - 2), Math.min(5, rows));
+  return { x: Math.max(Math.floor((cols - w) / 2), 0), y: Math.max(Math.floor((rows - h) / 2), 0), w, h };
+}
+
+export function inset(r: Rect, dx: number, dy: number = dx): Rect {
+  return { x: r.x + dx, y: r.y + dy, w: Math.max(r.w - dx * 2, 0), h: Math.max(r.h - dy * 2, 0) };
 }

@@ -179,8 +179,9 @@ function inputEntryHtml(e: InputEntryRow): string {
   if ((e.entry_type === "image" || e.entry_type === "file") && e.artifact_id) {
     return uploadEntryHtml(e, pending);
   }
-  const who = e.entry_type === "summary" ? "Audio" : "You";
-  const kind = e.entry_type === "summary" ? "transcript" : "input";
+  const audio = e.entry_type === "summary" || e.entry_type === "transcript";
+  const who = audio ? "Audio" : "You";
+  const kind = e.entry_type === "summary" ? "summary" : e.entry_type === "transcript" ? "transcript" : "input";
   return `<div class="tc-entry tc-entry--input">
     <div class="tc-entry__meta">
       <div class="tc-av tc-av--you">${who === "Audio" ? "&#127908;" : "Y"}</div>

@@ -7,7 +7,9 @@
  * (draft | active | settled) and `display_status` carries the presentation
  * state; task_type, iteration_count and unified_status are gone, as are the
  * legacy verbs (iterate/retry/resume/reopen/complete) and the legacy team
- * modes (regular/realtime).
+ * modes (regular/realtime). Later v3 additions (additive verbs + read fields,
+ * no version bump): `tasks/set-autopilot`, `tasks/set-icon`, and `color` /
+ * `character` on the custom-agent read projection.
  */
 export const CONNECT_PROTOCOL_VERSION = 3;
 
@@ -153,6 +155,7 @@ export interface TimelineEntryItem {
   taskId: string;
   /**
    * 'text' = typed operator input, 'summary' = audio transcript digest,
+   * 'transcript' = raw audio transcript (summary off),
    * 'error' = pipeline error, 'image' / 'file' = a file artifact, either an
    * operator upload or one an agent attached (see `artifact.source` /
    * `artifact.authorName`; `content` is then the caption, else the filename).

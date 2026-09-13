@@ -1,5 +1,4 @@
 import type { Database } from "bun:sqlite";
-import { isTeamVisible } from "../../config/feature-flags";
 import { resolveMemoryScope } from "../../task-memory/scope";
 import type { TaskMemorySummary } from "../../task-memory/summary";
 
@@ -224,7 +223,7 @@ export function buildCommandCenterViewModel(
 
   // Teams for draft editing — exclude the Real Time team (it's only selectable
   // through the real-time task flow, not for standard task edits).
-  const teams = fetchStandardTaskTeams(db).filter((t) => isTeamVisible(t.id));
+  const teams = fetchStandardTaskTeams(db);
 
   // Escalation count + per-task open-escalation set (drives the sidebar
   // attention dot alongside pending phase reviews).

@@ -242,7 +242,9 @@
     connectWs(taskId);
 
     // Cap flush interval at 60 s; respect the server's cadence if provided
-    var flushMs = Math.min((cadenceSeconds || 30), 60) * 1000;
+    // Chunk cadence comes from the task's effective setting (per-task window,
+    // else the global realtime config); clamp to the server's supported range.
+    var flushMs = Math.max(5, Math.min((cadenceSeconds || 60), 600)) * 1000;
 
     // Configure overlap (number of 1-second chunks to retain between flushes)
     overlapCount = Math.max(0, Math.floor(overlapSeconds || 5));

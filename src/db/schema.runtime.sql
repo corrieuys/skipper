@@ -369,7 +369,7 @@ CREATE TABLE IF NOT EXISTS notification_preferences (
 CREATE TABLE IF NOT EXISTS realtime_timeline (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-  entry_type TEXT NOT NULL CHECK (entry_type IN ('summary', 'text', 'error', 'image', 'file')),
+  entry_type TEXT NOT NULL CHECK (entry_type IN ('summary', 'text', 'error', 'image', 'file', 'transcript')),
   content TEXT NOT NULL,
   source_segment_ids TEXT NOT NULL DEFAULT '[]',  -- JSON array of task_input_streams IDs that produced this
   fed_to_skipper INTEGER NOT NULL DEFAULT 0,       -- 0 = not yet fed, 1 = fed

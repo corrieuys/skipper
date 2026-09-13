@@ -275,7 +275,12 @@ export function registerDataTaskRoutes(
       }
       if (task.status === "settled") {
         scheduler.reviveTask(params.id);
-        scheduler.requestWake(params.id);
+        // Only autopilot (workflow) resumes driving on a bare Resume; a
+        // conversational task waits idle for the next input to wake it (mirrors
+        // POST /api/tasks/:id/resume).
+        if (task.mode !== "conversational") {
+          scheduler.requestWake(params.id);
+        }
         return ok({ id: params.id, status: "active" });
       }
       return err("Task is not paused or settled", 409);

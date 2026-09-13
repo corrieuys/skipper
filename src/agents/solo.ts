@@ -7,7 +7,6 @@ import {
   removeAgent,
   removeTeam,
 } from "../config/store";
-import { registerVisibleLocalTeam, unregisterVisibleLocalTeam } from "../config/feature-flags";
 
 // ---------------------------------------------------------------------------
 // Solo run context.
@@ -95,7 +94,6 @@ function toSharedTeam(spec: SoloAgentSpec): TeamDefinition {
 export function projectSoloIntoMaps(spec: SoloAgentSpec): void {
   setAgent(toSharedAgent(spec));
   setTeam(toSharedTeam(spec));
-  registerVisibleLocalTeam(soloProjectedId(spec.prefix, spec.id));
 }
 
 function configSchema(db: Database): string {
@@ -153,7 +151,6 @@ export function removeSoloFromShared(db: Database, prefix: string, id: string): 
   const projectedId = soloProjectedId(prefix, id);
   removeTeam(projectedId);
   removeAgent(projectedId);
-  unregisterVisibleLocalTeam(projectedId);
   try {
     const schema = configSchema(db);
     db.prepare(`DELETE FROM ${schema}.team_agents WHERE team_id = ?`).run(projectedId);

@@ -342,6 +342,11 @@ export function missionControlStyles(): string {
     }
     .mc-task-header__actions {
       display: flex;
+      /* Center on the cross axis so pills and buttons share a baseline. Without
+         it the row stretches, and a fixed-height tc-autopilot pill (and an
+         anchor vs button stretching differently) drifts off the min-height
+         sk-btn buttons next to it. */
+      align-items: center;
       gap: var(--sk-space-2);
       /* Pinned to the far right; never shrinks, never scrolls out of view. */
       flex: 0 0 auto;

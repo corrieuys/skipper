@@ -160,6 +160,23 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
                 <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
                   On: the team drives the task to the end of its phases. Off: the task waits for your input between turns.
                 </div>
+                <div class="sk-form-row" style="margin-top:var(--sk-space-3);gap:var(--sk-space-3);">
+                  <div class="sk-form-group" style="flex:1;">
+                    <label class="sk-label" for="task-create-summary">Transcript summary</label>
+                    <select id="task-create-summary" name="summaryEnabled" class="sk-select">
+                      <option value="" selected>Use global setting</option>
+                      <option value="true">On: summarize each audio chunk</option>
+                      <option value="false">Off: raw transcript to the timeline</option>
+                    </select>
+                  </div>
+                  <div class="sk-form-group" style="width:160px;">
+                    <label class="sk-label" for="task-create-window">Chunk seconds</label>
+                    <input type="number" id="task-create-window" name="windowSeconds" class="sk-input" min="5" max="600" placeholder="global">
+                  </div>
+                </div>
+                <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
+                  Audio recording settings for this task. Blank = the Real-time transcription defaults on the config page.
+                </div>
                 ${isExperimental() ? `
                 <label class="sk-label" style="display:flex;align-items:center;gap:var(--sk-space-2);cursor:pointer;margin-top:var(--sk-space-3);">
                   <input type="checkbox" name="memoryEnabled" value="1">

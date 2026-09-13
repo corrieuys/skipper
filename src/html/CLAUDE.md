@@ -55,27 +55,31 @@ views share the same shell.
   (the pinned grid column + hover-overlay width both read that var) and persists
   it as `mcSidebarW` (`Skipper.sidebar.restoreWidth` re-applies on load).
 - **Task view** (`taskMainContent`): full-width task header (stepper, orbs,
-  lifecycle actions keyed on the unified model: draft Approve/Delete, active
-  Pause|Resume + Cancel (+ Unapprove while queued, Approve Phase on review),
-  settled Resume + Delete; neither "archive" nor "settled" surfaces as a word. Draft + active
-  header carries the **identity cluster** (`taskHeaderIdentity`): the task's chosen
-  Lucide icon + title + an edit pencil (swaps in `renderTaskIdentityEdit` → `POST
-  /api/tasks/:id/identity`, which writes title + icon for ANY status via the silent
-  `scheduler.setIdentity` and swaps back ONLY the identity slot; Cancel restores it
-  from `GET /fragments/tasks/:id/identity`) + an always-visible **star**
-  (`starButtonFragment`). Both renaming and starring emit NO event and never
-  re-render `#mc-main` — neither must refresh the view. Starring self-swaps the
-  button AND appends an OOB refresh of ONLY `#mc-sidebar-list` (`renderSidebarOob`,
-  mirroring the WS ui-push) so the Favorites board updates live without touching the
-  task view; renaming updates the sidebar on its next natural render. Name + icon
-  are also editable from the **Details** modal (a Name & Icon panel that saves via
-  the same `/api/tasks/:id/identity` and auto-closes). The header actions carry a
-  **Details** button (opens `tc-details-modal` with `/workspace/task/:id/details` —
-  moved here from the old rail footer link). Draft + active
-  headers also carry the quiet **Autopilot pill** (`renderAutopilotToggle`,
-  `.tc-autopilot`, posts the flipped value to `POST /api/tasks/:id/autopilot`,
-  which HX-redirects back to the task view)), then the shared
-  **composer + record bar**
+  lifecycle actions keyed on the unified model, collapsed into a single
+  **Actions dropdown** (`renderActionsMenu`, shared `[data-sk-dropdown]`
+  toggle): draft Approve/Delete, active Pause|Resume + Complete + Cancel
+  (+ Unapprove while queued, Approve Phase on review), settled Resume + Delete;
+  neither "archive" nor "settled" surfaces as a word. The header has NO status
+  indicator dot (removed), so the icon/title sit at the left edge. The
+  **identity cluster** (`taskHeaderIdentity`) is just the task's chosen Lucide
+  icon + title + an always-visible **star** (`starButtonFragment`); there is no
+  inline edit pencil. Name + icon are edited only from the **Details** modal's
+  Name & Icon panel (saves via `POST /api/tasks/:id/identity`, auto-closes).
+  (`renderTaskIdentityEdit` + `GET /fragments/tasks/:id/identity-edit` remain but
+  are no longer wired to a header trigger.) Both renaming and starring emit NO
+  event and never re-render `#mc-main`. Starring self-swaps the button AND
+  appends an OOB refresh of ONLY `#mc-sidebar-list` (`renderSidebarOob`) so the
+  Favorites board updates live; renaming updates the sidebar on its next natural
+  render. The **Details** button (opens `tc-details-modal` with
+  `/workspace/task/:id/details`) sits at the **far right** of the header actions.
+  Draft + active headers also carry the **Autopilot toggle button**
+  (`renderAutopilotToggle`, `.tc-autopilot-btn`: a real `.sk-btn` that goes green
+  with a ticked checkbox when on, neutral + empty box when off; posts the flipped
+  value to `POST /api/tasks/:id/autopilot`, HX-redirects back). The old memory
+  pill is gone from the header; memory is toggled from the Details modal's
+  Task Info row (experimental). The **phase stepper is hidden once the task is
+  settled** (completed/failed) since there are no live phases to advance. Then
+  the shared **composer + record bar**
   (`renderTaskComposer`, posts text to `POST /api/tasks/:id/input`; shown on
   EVERY active task, any mode, AND on settled tasks, where the placeholder says
   input continues the task (posting revives it) and the record button is

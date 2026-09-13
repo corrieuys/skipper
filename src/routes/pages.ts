@@ -5,7 +5,7 @@ import { looksLikeHtml } from "../html/atoms/sniff-html";
 import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { getConnectPublicBase, getPublicArtifactUrl, getWebhookTriggerUrl } from "../connect/public-links";
 import { listAssignableTeams } from "../config/teams";
-import { isTeamVisible, isExperimental } from "../config/feature-flags";
+import { isExperimental } from "../config/feature-flags";
 import type { TaskMemoryPanelData } from "../html/fragments/task-memory-config.fragment";
 
 // Set by index.ts once the task-memory managers exist; the /config page reads
@@ -1175,7 +1175,12 @@ function registerV2PageRoutes(): void {
       const clearBtn = mem.entries > 0 && !task.source_scheduled_task_id
         ? ` <button type="button" class="sk-btn sk-btn--sm sk-btn--danger" style="margin-left:var(--sk-space-2);" hx-post="/api/tasks/${esc(task.id)}/memory/clear" hx-swap="none" hx-confirm="Delete this task's memory entries? Notes and messages stay; only the memory copy is removed.">Clear</button>`
         : "";
-      memoryRow = `<tr><td class="sk-muted">Memory</td><td>${state}${detail ? ` <span class="sk-text-xs">&middot; ${detail}</span>` : ""}${deletedNote}${clearBtn}${breakdown}</td></tr>`;
+      // Memory is toggled here (moved off the task header). A recurring run's
+      // memory is governed by its series, so it links out instead of toggling.
+      const toggleBtn = task.source_scheduled_task_id
+        ? ` <a class="sk-btn sk-btn--sm" style="margin-left:var(--sk-space-2);" href="/?scheduled=${esc(task.source_scheduled_task_id)}">Set on recurring task</a>`
+        : ` <button type="button" class="sk-btn sk-btn--sm${mem.enabled ? " sk-btn--primary" : ""}" style="margin-left:var(--sk-space-2);" hx-post="/api/tasks/${esc(task.id)}/memory" hx-vals='{"on":"${mem.enabled ? "false" : "true"}"}' hx-swap="none" title="${mem.enabled ? "Memory on: input, messages, and notes are recorded for agents to query. Click to turn off." : "Memory off. Click to record input, messages, and notes for agents to query (existing entries are copied in)."}">${mem.enabled ? "Turn off" : "Turn on"}</button>`;
+      memoryRow = `<tr><td class="sk-muted">Memory</td><td>${state}${detail ? ` <span class="sk-text-xs">&middot; ${detail}</span>` : ""}${deletedNote}${toggleBtn}${clearBtn}${breakdown}</td></tr>`;
     }
     const agentRows = rows.map(r => {
       const fromCell = r.parent_name
@@ -1284,8 +1289,7 @@ function registerV2PageRoutes(): void {
   });
 
   addRoute("GET", "/tasks/new", (req) => {
-    const teams = (db.prepare("SELECT id, name FROM teams ORDER BY name").all() as Array<{ id: string; name: string }>)
-      .filter(t => isTeamVisible(t.id));
+    const teams = db.prepare("SELECT id, name FROM teams ORDER BY name").all() as Array<{ id: string; name: string }>;
     const escalationCount = getOpenEscalationCount(db);
     const { isTaskTitleGeneratorConfigured } = require("../config/model-settings");
     // A sidebar "+" opens /tasks/new?team=<id> to pre-select that team/agent.
@@ -1405,6 +1409,11 @@ function registerV2PageRoutes(): void {
         availableVersion: getStringSetting(db, SETTING_UPDATE_AVAILABLE_VERSION, "") || null,
       },
       skipperIdentity: getSkipperIdentity(db),
+      realtime: (() => {
+        const { getRealtimeConfig, CADENCE_MIN_SECONDS, CADENCE_MAX_SECONDS } = require("../realtime/config");
+        const rt = getRealtimeConfig(db);
+        return { cadenceSeconds: rt.cadence_seconds, summaryEnabled: rt.summary_enabled, cadenceMin: CADENCE_MIN_SECONDS, cadenceMax: CADENCE_MAX_SECONDS };
+      })(),
     }));
   });
 

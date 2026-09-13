@@ -39,6 +39,8 @@ export interface ConfigPageViewModel {
   };
   /** Skipper's own orb identity (experimental config section). */
   skipperIdentity: { color: string; character: string };
+  /** Real-time transcription: audio chunk cadence + summarize-or-raw default. */
+  realtime: { cadenceSeconds: number; summaryEnabled: boolean; cadenceMin: number; cadenceMax: number };
 }
 
 /** One provider (agent type) + model row for a subsystem. Model list is filtered
@@ -177,6 +179,41 @@ export function configPage(vm: ConfigPageViewModel): string {
         font-size: var(--sk-text-base);
         letter-spacing: 0.06em;
       }
+      /* Collapsible sections: each panel body is hidden until its header is
+         clicked. Default = collapsed (no .sk-open), applied in CSS so there is
+         no expanded flash before the script runs, and htmx-swapped panels
+         (API Keys) start collapsed too. A caret in the header shows the state.
+         Interactive header controls (Purge Now etc.) are excluded from the
+         toggle by the click delegate below. */
+      :where(.sk-config) .sk-panel__header {
+        cursor: pointer;
+        user-select: none;
+      }
+      :where(.sk-config) .sk-panel__header::after {
+        content: "";
+        flex: none;
+        margin-left: var(--sk-space-2);
+        width: 0.45rem;
+        height: 0.45rem;
+        border-right: 2px solid var(--sk-text-muted);
+        border-bottom: 2px solid var(--sk-text-muted);
+        transform: rotate(45deg);
+        transition: transform 0.15s ease;
+      }
+      :where(.sk-config) .sk-panel.sk-open .sk-panel__header::after {
+        transform: rotate(-135deg);
+      }
+      :where(.sk-config) .sk-panel:not(.sk-open) .sk-panel__header {
+        border-bottom: none;
+      }
+      :where(.sk-config) .sk-panel > .sk-panel__body,
+      :where(.sk-config) .sk-panel > .sk-panel__body--flush {
+        display: none;
+      }
+      :where(.sk-config) .sk-panel.sk-open > .sk-panel__body,
+      :where(.sk-config) .sk-panel.sk-open > .sk-panel__body--flush {
+        display: block;
+      }
     </style>
     <div class="sk-container sk-config">
       <div class="sk-page-header">
@@ -277,6 +314,34 @@ export function configPage(vm: ConfigPageViewModel): string {
         </div>
       </div>
 
+      <!-- Real-time transcription -->
+      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
+        <div class="sk-panel__header">
+          <span class="sk-panel__title">Real-time transcription</span>
+        </div>
+        <div class="sk-panel__body">
+          <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
+            Recorded audio is cut into chunks of this many seconds; each chunk is transcribed when it lands. Summarize on: a summarizer agent condenses
+            each chunk into a timeline digest before the task's agent sees it. Summarize off: the raw transcript goes straight onto the timeline as a
+            <strong>transcript</strong> entry. Both can be overridden per task on the create form.
+          </p>
+          <div class="sk-flex sk-items-center sk-gap-3" style="margin-bottom:var(--sk-space-3);">
+            <label class="sk-muted sk-text-xs" style="width:150px;" for="rt-cfg-cadence">Chunk cadence (seconds):</label>
+            <input type="number" id="rt-cfg-cadence" name="cadence_seconds" min="${vm.realtime.cadenceMin}" max="${vm.realtime.cadenceMax}" value="${vm.realtime.cadenceSeconds}"
+              class="sk-input sk-input--sm" style="width:80px;"
+              hx-post="/api/realtime/config" hx-trigger="change" hx-swap="none" hx-include="this">
+          </div>
+          <div class="sk-flex sk-items-center sk-gap-3">
+            <label class="sk-muted sk-text-xs" style="width:150px;" for="rt-cfg-summary">Summarize transcript:</label>
+            <select id="rt-cfg-summary" name="summary_enabled" class="sk-select sk-select--sm" style="width:auto;"
+              hx-post="/api/realtime/config" hx-trigger="change" hx-swap="none" hx-include="this">
+              <option value="true"${vm.realtime.summaryEnabled ? " selected" : ""}>On (summarizer digest)</option>
+              <option value="false"${vm.realtime.summaryEnabled ? "" : " selected"}>Off (raw transcript to timeline)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       <!-- Task Auto-Delete Section (experimental only) -->
       ${isExperimental() ? `
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
@@ -354,6 +419,33 @@ export function configPage(vm: ConfigPageViewModel): string {
 
       <!-- Slack Integration Section (experimental only) -->
       ${isExperimental() && vm.slack ? slackPanel(vm.slack) : ""}
+
+      <script>(function(){
+        var root = document.querySelector('.sk-config');
+        if (!root) return;
+        // Open state is kept in memory keyed by section title so an htmx swap
+        // (API Keys create/delete replaces its whole panel) does not silently
+        // recollapse an open section and hide the one-time key reveal.
+        var open = {};
+        function titleOf(p){ var t = p.querySelector('.sk-panel__title'); return t ? t.textContent.trim() : ''; }
+        function apply(){
+          root.querySelectorAll('.sk-panel').forEach(function(p){
+            p.classList.toggle('sk-open', !!open[titleOf(p)]);
+          });
+        }
+        root.addEventListener('click', function(e){
+          var h = e.target.closest('.sk-panel__header');
+          if (!h || !root.contains(h)) return;
+          // Let buttons/inputs/links in the header do their job without toggling.
+          if (e.target.closest('button, a, input, select, textarea, label')) return;
+          var p = h.closest('.sk-panel');
+          if (!p) return;
+          var t = titleOf(p);
+          open[t] = !open[t];
+          p.classList.toggle('sk-open', open[t]);
+        });
+        document.body.addEventListener('htmx:afterSwap', apply);
+      })();</script>
     </div>
   `, "/config");
 }

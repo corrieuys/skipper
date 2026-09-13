@@ -5,6 +5,8 @@ import { renderInlineMarkdown } from "../atoms/render-inline-markdown";
 import { formatTimestamp } from "../atoms/format-timestamp";
 import { terminalJsonSummary, stripThinking, classifyPlainTerminalLine } from "../terminalJsonSummary";
 import { isExperimental } from "../../config/feature-flags";
+import { getDb } from "../../db/connection";
+import { getRealtimeConfig, clampCadenceSeconds } from "../../realtime/config";
 import { readSeriesMemoryConfig } from "../../task-memory/scope";
 import { formatBytes } from "../../orchestrator/artifact-files";
 import {
@@ -12,7 +14,6 @@ import {
   modeChip,
   displayStatusOf,
   displayDotClass,
-  displayIndicatorClass,
   displayRunSquareClass,
   taskResultHasError,
 } from "../fragments/status-chip.fragment";
@@ -35,10 +36,9 @@ function headerTitle(title: string): string {
 }
 
 /**
- * The task header's identity cluster: chosen icon (if any) + title + an edit
- * pencil (swaps in the inline name/icon editor, see the /fragments/tasks/:id/
- * identity-edit route) + the star toggle. Rendered in an id'd slot so the edit
- * fragment can swap it in place.
+ * The task header's identity cluster: chosen icon (if any) + title + the star
+ * toggle. Rendered in an id'd slot so an OOB swap can update it in place.
+ * Editing name/icon lives on the Details modal, not an inline header pencil.
  */
 export function taskHeaderIdentity(task: TaskSummary, opts: { oob?: boolean } = {}): string {
   const eid = escapeHtml(task.id);
@@ -51,9 +51,6 @@ export function taskHeaderIdentity(task: TaskSummary, opts: { oob?: boolean } = 
   return `<span class="mc-task-header__identity" id="mc-task-identity-${eid}"${oob}>
     ${icon}
     ${headerTitle(task.title)}
-    <button type="button" class="mc-task-header__edit"
-      hx-get="/fragments/tasks/${eid}/identity-edit" hx-target="#mc-task-identity-${eid}" hx-swap="outerHTML"
-      title="Edit name & icon" aria-label="Edit name and icon">${lucideSvg("pencil", { size: 13, color: "#8b93a7" })}</button>
     ${starButtonFragment(task.id, task.starred, "task")}
   </span>`;
 }
@@ -484,7 +481,6 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
       <span class="sk-badge sk-badge--draft">draft</span>
       <div class="mc-task-header__actions">
         ${renderAutopilotToggle(task)}
-        ${renderMemoryToggle(task)}
         <button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/approve" hx-swap="none">Approve</button>
         <button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/tasks/${eid}" hx-swap="none" hx-confirm="Delete this draft?">Delete</button>
       </div>
@@ -547,9 +543,21 @@ export function renderDraftEdit(task: TaskSummary, _teams?: Array<{ id: string; 
  * text composer stays live (posting input revives the task); recording needs an
  * active task, so the record button is disabled until input revives it.
  */
-export function renderTaskComposer(taskId: string, opts: { settled?: boolean } = {}): string {
+/** Effective audio chunk cadence + overlap for the record button: per-task window_seconds, else the global realtime config. */
+function composerAudioSettings(task: { task_config?: Record<string, unknown> }): { cadenceSeconds: number; overlapSeconds: number } {
+  const rt = getRealtimeConfig(getDb());
+  const win = task.task_config?.window_seconds;
+  return {
+    cadenceSeconds: win != null && Number.isFinite(Number(win)) ? clampCadenceSeconds(win, rt.cadence_seconds) : rt.cadence_seconds,
+    overlapSeconds: rt.overlap_seconds,
+  };
+}
+
+export function renderTaskComposer(taskId: string, opts: { settled?: boolean; cadenceSeconds?: number; overlapSeconds?: number } = {}): string {
   const eid = escapeHtml(taskId);
   const settled = opts.settled === true;
+  const cadence = Math.max(5, Math.min(600, Math.floor(opts.cadenceSeconds ?? 60)));
+  const overlap = Math.max(0, Math.min(15, Math.floor(opts.overlapSeconds ?? 5)));
   const placeholder = settled ? "Send input to continue this task..." : "Type a message or instruction...";
   const recordBtn = settled
     ? `<button id="btn-start-recording" class="sk-btn sk-btn--sm" disabled
@@ -558,7 +566,7 @@ export function renderTaskComposer(taskId: string, opts: { settled?: boolean } =
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
           Record
         </button>`
-    : `<button id="btn-start-recording" onclick="startRealtimeAudio('${eid}', 60, 5)" class="sk-btn sk-btn--sm" title="Start audio recording (auto-starts whisper)" style="display:inline-flex;align-items:center;gap:0.35rem;">
+    : `<button id="btn-start-recording" onclick="startRealtimeAudio('${eid}', ${cadence}, ${overlap})" class="sk-btn sk-btn--sm" title="Start audio recording (auto-starts whisper)" style="display:inline-flex;align-items:center;gap:0.35rem;">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
           Record
         </button>`;
@@ -599,8 +607,11 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
   const isActive = task.status === "active";
   const isWorking = display === "working";
   const needsReview = mission?.needsReview ?? false;
-  const phaseStepper = mission && mission.phases.length > 0 ? renderPhaseStepper(mission.phases, task.id, isWorking) : "";
-  const actions = renderActions(task, needsReview);
+  // A settled (completed / failed) task has no live phases to advance, so the
+  // stepper would show meaningless numbered dots. Hide it once settled.
+  const phaseStepper = task.status !== "settled" && mission && mission.phases.length > 0
+    ? renderPhaseStepper(mission.phases, task.id, isWorking) : "";
+  const showAutopilot = task.status === "draft" || task.status === "active";
 
   const showResult = (task.status === "settled" || display === "idle") && task.result_summary;
   const resultHtml = showResult ? `
@@ -613,7 +624,6 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
   return `
     <!-- Task header: full width above timeline + rail -->
     <div class="mc-task-header mc-task-header--with-phases${isWorking ? " mc-task-header--running" : ""}">
-      <span class="mc-node__indicator mc-node__indicator--${displayIndicatorClass(display, task.result_has_error)}"></span>
       ${taskHeaderIdentity(task)}
       ${escalationHeaderSlot(task.id, task.open_escalation_count)}
       <div class="mc-task-header__scroll">
@@ -627,16 +637,17 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
         </div>` : ""}
       </div>
       <div class="mc-task-header__actions">
+        ${showAutopilot ? renderAutopilotToggle(task) : ""}
+        ${renderActionsMenu(task, needsReview)}
         <button type="button" class="sk-btn sk-btn--sm" onclick="Skipper.modal.open('tc-details-modal')"
           hx-get="/workspace/task/${eid}/details" hx-target="#tc-details-modal-body" hx-swap="innerHTML">Details</button>
-        ${actions}
       </div>
     </div>
 
     <!-- Composer (text + audio): the unified input, available on every active
          task and every settled task. Input wakes an idle task, answers a review
          gate, accumulates while agents are busy, or revives a settled task. -->
-    ${isActive ? renderTaskComposer(task.id) : task.status === "settled" ? renderTaskComposer(task.id, { settled: true }) : ""}
+    ${isActive ? renderTaskComposer(task.id, composerAudioSettings(task)) : task.status === "settled" ? renderTaskComposer(task.id, { settled: true }) : ""}
 
     ${attention}
 
@@ -736,75 +747,61 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
  * which HX-redirects back to the task view. Rendered on draft + active tasks
  * only (the route rejects settled tasks).
  */
-function renderAutopilotToggle(task: Pick<TaskSummary, "id" | "mode">): string {
+export function renderAutopilotToggle(task: Pick<TaskSummary, "id" | "mode">): string {
   const eid = escapeHtml(task.id);
   const on = task.mode !== "conversational";
   const title = on
     ? "Autopilot on: the team drives the task to the end of its phases. Click to switch to manual."
     : "Autopilot off: the task waits for your input between turns. Click to switch to autopilot.";
-  return `<button type="button" class="tc-autopilot${on ? " tc-autopilot--on" : ""}"
-      hx-post="/api/tasks/${eid}/autopilot" hx-vals='{"on":"${on ? "false" : "true"}"}' hx-swap="none"
+  // A proper button: green with a ticked checkbox when on, neutral + empty box
+  // when off. The check glyph swaps so the state reads without relying on colour.
+  // Swaps ONLY itself (outerHTML) so toggling mode never re-renders the view;
+  // the route returns this same button re-rendered for the new state.
+  const mark = on ? "&#x2713;" : "";
+  return `<button type="button" class="sk-btn sk-btn--sm tc-autopilot-btn${on ? " tc-autopilot-btn--on" : ""}"
+      hx-post="/api/tasks/${eid}/autopilot" hx-vals='{"on":"${on ? "false" : "true"}"}' hx-target="this" hx-swap="outerHTML"
       title="${title}" aria-pressed="${on}">
-    <span class="tc-autopilot__dot"></span>Autopilot</button>`;
+    <span class="tc-autopilot-btn__box" aria-hidden="true">${mark}</span>Autopilot</button>`;
 }
 
 /**
- * Memory pill beside the autopilot one (experimental). Reflects
- * task_config.memory_enabled; clicking posts the flipped value to
- * /api/tasks/:id/memory, which backfills on enable and HX-redirects back.
+ * Lifecycle actions collapsed into a single "Actions" dropdown (uses the shared
+ * [data-sk-dropdown] toggle in skipper.js). Keeps the header row uncluttered:
+ * approve/delete for a draft, pause/resume/complete/cancel (+ unapprove /
+ * approve-phase) while active, resume/delete once settled. The autopilot toggle
+ * and Details button live outside this menu, in the header actions row.
  */
-function renderMemoryToggle(task: Pick<TaskSummary, "id" | "memory_enabled" | "memory_mode" | "source_scheduled_task_id">): string {
-  if (!isExperimental()) return "";
+function renderActionsMenu(task: TaskSummary, needsReview?: boolean): string {
   const eid = escapeHtml(task.id);
-  const on = task.memory_enabled;
-  if (task.source_scheduled_task_id) {
-    // A run's memory is decided by its recurring task; the pill links there.
-    const shared = task.memory_mode === "shared";
-    const label = shared ? "Shared memory" : "Memory";
-    const title = on
-      ? (shared ? "Memory shared across every run of this recurring task. Set on the recurring task." : "Memory on for this run. Set on the recurring task.")
-      : "Memory off. Set on the recurring task.";
-    return `<a class="tc-autopilot${on ? " tc-autopilot--on" : ""}" href="/?scheduled=${escapeHtml(task.source_scheduled_task_id)}" title="${title}" style="text-decoration:none;">
-      <span class="tc-autopilot__dot"></span>${label}</a>`;
-  }
-  const title = on
-    ? "Memory on: input, messages, and notes are recorded for agents to query. Click to turn off."
-    : "Memory off. Click to record input, messages, and notes for agents to query (existing entries are copied in).";
-  return `<button type="button" class="tc-autopilot${on ? " tc-autopilot--on" : ""}"
-      hx-post="/api/tasks/${eid}/memory" hx-vals='{"on":"${on ? "false" : "true"}"}' hx-swap="none"
-      title="${title}" aria-pressed="${on}">
-    <span class="tc-autopilot__dot"></span>Memory</button>`;
-}
-
-function renderActions(task: TaskSummary, needsReview?: boolean): string {
-  const eid = escapeHtml(task.id);
-  const btns: string[] = [];
+  const items: string[] = [];
+  const item = (attrs: string, label: string, danger = false) =>
+    `<button type="button" class="sk-dropdown__item${danger ? " sk-dropdown__item--danger" : ""}" ${attrs}>${label}</button>`;
   if (task.status === "draft") {
-    btns.push(renderAutopilotToggle(task));
-    btns.push(renderMemoryToggle(task));
-    btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/approve" hx-swap="none">Approve</button>`);
-    btns.push(`<button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/tasks/${eid}" hx-swap="none" hx-confirm="Delete this draft?">Delete</button>`);
+    items.push(item(`hx-post="/api/tasks/${eid}/approve" hx-swap="none"`, "Approve"));
+    items.push(item(`hx-delete="/api/tasks/${eid}" hx-swap="none" hx-confirm="Delete this draft?"`, "Delete", true));
   } else if (task.status === "active") {
-    btns.push(renderAutopilotToggle(task));
-    btns.push(renderMemoryToggle(task));
     if (needsReview) {
-      btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/approve-phase" hx-swap="none">Approve Phase</button>`);
+      items.push(item(`hx-post="/api/tasks/${eid}/approve-phase" hx-swap="none"`, "Approve Phase"));
     }
     if (displayStatusOf(task) === "queued") {
-      btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${eid}/unapprove" hx-swap="none" title="Send the task back to draft (only before its first run starts).">Unapprove</button>`);
+      items.push(item(`hx-post="/api/tasks/${eid}/unapprove" hx-swap="none" title="Send the task back to draft (only before its first run starts)."`, "Unapprove"));
     }
     if (task.paused) {
-      btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/resume" hx-swap="none" title="Respawn agents and continue from where the task was paused.">Resume</button>`);
+      items.push(item(`hx-post="/api/tasks/${eid}/resume" hx-swap="none" title="Respawn agents and continue from where the task was paused."`, "Resume"));
     } else {
-      btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${eid}/pause" hx-swap="none" hx-confirm="Pause this task? All its agents and their subprocesses will be stopped; you can resume later.">Pause</button>`);
+      items.push(item(`hx-post="/api/tasks/${eid}/pause" hx-swap="none" hx-confirm="Pause this task? All its agents and their subprocesses will be stopped; you can resume later."`, "Pause"));
     }
-    btns.push(`<button class="sk-btn sk-btn--sm" hx-post="/api/tasks/${eid}/complete" hx-swap="none" hx-confirm="Mark this task complete? Any live agents will be stopped and the task moves to done." title="Finish this task now. Stops any live agents and marks it complete; sending input revives it.">Complete</button>`);
-    btns.push(`<button class="sk-btn sk-btn--danger sk-btn--sm" hx-post="/api/tasks/${eid}/cancel" hx-swap="none" hx-confirm="Cancel this task? Any live agents will be stopped.">Cancel</button>`);
+    items.push(item(`hx-post="/api/tasks/${eid}/complete" hx-swap="none" hx-confirm="Mark this task complete? Any live agents will be stopped and the task moves to done."`, "Complete"));
+    items.push(item(`hx-post="/api/tasks/${eid}/cancel" hx-swap="none" hx-confirm="Cancel this task? Any live agents will be stopped."`, "Cancel", true));
   } else if (task.status === "settled") {
-    btns.push(`<button class="sk-btn sk-btn--primary sk-btn--sm" hx-post="/api/tasks/${eid}/resume" hx-swap="none" title="Reactivate this task and wake the agent from where it left off. Notes, artifacts, and checkpoints are intact.">Resume</button>`);
-    btns.push(`<button class="sk-btn sk-btn--danger sk-btn--sm" hx-delete="/api/tasks/${eid}" hx-swap="none" hx-confirm="Delete this task and all its data?">Delete</button>`);
+    items.push(item(`hx-post="/api/tasks/${eid}/resume" hx-swap="none" title="Reactivate this task and wake the agent from where it left off. Notes, artifacts, and checkpoints are intact."`, "Resume"));
+    items.push(item(`hx-delete="/api/tasks/${eid}" hx-swap="none" hx-confirm="Delete this task and all its data?"`, "Delete", true));
   }
-  return btns.join("");
+  if (items.length === 0) return "";
+  return `<div class="sk-dropdown mc-task-header__menu" data-sk-dropdown>
+    <button type="button" class="sk-btn sk-btn--sm" aria-haspopup="true">Actions <span aria-hidden="true" style="font-size:0.7em;">&#x25BE;</span></button>
+    <div class="sk-dropdown__menu">${items.join("")}</div>
+  </div>`;
 }
 
 // Warning-tinted status pill matching the escalation card's badge slot.

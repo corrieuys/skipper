@@ -5,6 +5,8 @@ import type { DaemonDeps } from "./tools";
 import type { Task } from "../tasks/scheduler";
 import { ScheduledTaskScheduler, type ScheduledTask } from "../tasks/scheduled-scheduler";
 import { TeamManager } from "../teams/manager";
+import { toTeamInput } from "../teams/team-input";
+import { createLocalTeam, updateLocalTeam, getLocalTeam } from "../teams/local-teams";
 import { readTaskSlackOrigin } from "../slack/slash-command";
 
 /**
@@ -395,6 +397,122 @@ const TASK_TOOLS: TaskToolSpec[] = [
         .map((t) => ({ id: t.id, name: t.name }))
         .sort((a, b) => a.name.localeCompare(b.name));
       return ok(teams);
+    },
+  },
+  {
+    name: "create_team",
+    description:
+      "Create a new team (a reusable execution shape: a crew of agents + optional phases). The team is created immediately and can be assigned to a task via team_id on create_task. 'Skipper' is the implicit root of every team, so do NOT add it as a member. Use list_teams afterwards, or the returned id, to reference it.",
+    audience: "external",
+    schema: {
+      name: z.string().describe("Team name"),
+      agents: z
+        .array(
+          z.object({
+            name: z.string().describe("Agent display name (e.g. 'tester')"),
+            type: z
+              .string()
+              .describe("Agent provider/type: a raw CLI (claude-code, codex, opencode, grok)"),
+            model: z.string().optional().describe("Model id for the provider (e.g. claude-sonnet-5); omit for the provider default"),
+            role: z.string().optional().describe("Free-text role label (no hierarchy)"),
+            instruction: z.string().optional().describe("Standing instruction for this agent on this team"),
+          }),
+        )
+        .optional()
+        .describe("Crew members. Omit or empty for a Skipper-only team."),
+      phases: z
+        .array(
+          z.object({
+            name: z.string().describe("Phase name"),
+            prompt: z.string().optional().describe("Phase prompt"),
+            review: z.boolean().optional().describe("Whether the phase ends at a review gate"),
+          }),
+        )
+        .optional()
+        .describe("Ordered phases (0..n). Omit for a phaseless team."),
+      mode: z
+        .enum(["workflow", "conversational"])
+        .optional()
+        .describe("Default autopilot for tasks on this team: workflow (system drives phases) or conversational (operator drives). Defaults to workflow."),
+    },
+    handler: ({ name, agents, phases, mode }, deps) => {
+      // Single coercion path shared with the web /api/teams route: build the raw
+      // body and run it through toTeamInput (assigns agent ids, validates types,
+      // builds config), then createLocalTeam (validates + flattens into shared).
+      const input = toTeamInput({
+        name,
+        agents: agents ?? [],
+        phases: phases ?? [],
+        ...(mode ? { config: { mode } } : {}),
+      });
+      const team = createLocalTeam(deps.db, input);
+      return ok({
+        id: team.id,
+        name: team.name,
+        agents: team.agents.map((a) => ({ id: a.id, name: a.name, type: a.type, model: a.model })),
+        phases: team.phases.map((p) => p.name),
+      });
+    },
+  },
+  {
+    name: "update_team",
+    description:
+      "Update an existing team by id. Only the fields you pass are changed; omitted fields keep their current values. Passing `agents` or `phases` REPLACES the whole list (send the full desired set, not a delta). Do not add 'skipper' as a member; it is implicit.",
+    audience: "external",
+    schema: {
+      team_id: z.string().describe("Team id to update (use list_teams)"),
+      name: z.string().optional().describe("New team name"),
+      agents: z
+        .array(
+          z.object({
+            name: z.string().describe("Agent display name"),
+            type: z.string().describe("Agent provider/type (claude-code, codex, opencode, grok)"),
+            model: z.string().optional().describe("Model id (e.g. claude-sonnet-5)"),
+            role: z.string().optional().describe("Free-text role label"),
+            instruction: z.string().optional().describe("Standing instruction for this agent"),
+          }),
+        )
+        .optional()
+        .describe("Full replacement crew. Omit to keep the current crew."),
+      phases: z
+        .array(
+          z.object({
+            name: z.string().describe("Phase name"),
+            prompt: z.string().optional().describe("Phase prompt"),
+            review: z.boolean().optional().describe("Whether the phase ends at a review gate"),
+          }),
+        )
+        .optional()
+        .describe("Full replacement phases (0..n). Omit to keep the current phases."),
+      mode: z
+        .enum(["workflow", "conversational"])
+        .optional()
+        .describe("New default autopilot mode. Omit to keep the current mode."),
+    },
+    handler: ({ team_id, name, agents, phases, mode }, deps) => {
+      const existing = getLocalTeam(deps.db, team_id);
+      if (!existing) throw new Error(`Team not found: ${team_id}`);
+      // Merge over the current team: an omitted field is preserved, a provided
+      // agents/phases list replaces wholesale. Same coercion + flatten path as
+      // the web /api/teams update, with existing.config passed so slack/icon/etc
+      // survive.
+      const input = toTeamInput(
+        {
+          id: team_id,
+          name: name ?? existing.name,
+          agents: agents ?? existing.agents,
+          phases: phases ?? existing.phases,
+          config: { ...(mode ? { mode } : {}) },
+        },
+        { existingConfig: existing.config },
+      );
+      const team = updateLocalTeam(deps.db, team_id, input);
+      return ok({
+        id: team.id,
+        name: team.name,
+        agents: team.agents.map((a) => ({ id: a.id, name: a.name, type: a.type, model: a.model })),
+        phases: team.phases.map((p) => p.name),
+      });
     },
   },
   {

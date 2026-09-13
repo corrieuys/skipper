@@ -10,6 +10,7 @@ import type { ManagerDaemon } from "../agents/manager-daemon";
 import { ArtifactManager, artifactToJson } from "../orchestrator/artifact-manager";
 import { PRIMARY_ARTIFACT_LIST_VARIANT, artifactListFragment } from "../html/fragments/artifact-list.fragment";
 import { eventBus } from "../events/bus";
+import { clampCadenceSeconds } from "../realtime/config";
 import { htmlResponse, parseRequestBody, hxRedirect } from "./utils";
 import { noteItemFragment } from "../html/dashboardNotesFragment";
 import { getRealtimeTeamId } from "../config/teams";
@@ -236,6 +237,17 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         taskConfig = JSON.parse(taskConfigRaw);
       } catch { /* ignore */ }
     }
+    // Per-task audio settings (create form): transcript summary on/off override
+    // and the chunk cadence; blank keeps the global realtime defaults.
+    const summaryRaw = formData.get("summaryEnabled");
+    if (summaryRaw === "true" || summaryRaw === "false") {
+      taskConfig = { ...(taskConfig ?? {}), summary_enabled: summaryRaw === "true" };
+    }
+    const windowRaw = formData.get("windowSeconds");
+    if (typeof windowRaw === "string" && windowRaw.trim()) {
+      const n = Number(windowRaw);
+      if (Number.isFinite(n)) taskConfig = { ...(taskConfig ?? {}), window_seconds: clampCadenceSeconds(n) };
+    }
     // Per-task memory toggle (experimental checkbox on the create forms).
     const memoryRaw = formData.get("memoryEnabled");
     if (isExperimental() && (memoryRaw === "1" || memoryRaw === "true" || memoryRaw === "on")) {
@@ -427,6 +439,10 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         values.push(new Date().toISOString());
         values.push(params.id);
         db.prepare(`UPDATE tasks SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+        // UI update contract: a same-status state_changed carries the fresh task
+        // projection to every surface (web sidebar, apps, TUI) so an edit on an
+        // active or settled task is not invisible until the next reload.
+        eventBus.emit("task:state_changed", { taskId: params.id, previousStatus: task.status, newStatus: task.status });
       }
 
       const shouldApprove = formData.get("approve") === "1";
@@ -553,7 +569,10 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       const on = raw === true || raw === "true" || raw === "on" || raw === "1";
       const updated = scheduler.setAutopilot(params.id, on);
       if (req.headers.get("HX-Request")) {
-        return hxRedirect(`/?task=${params.id}`);
+        // Swap only the button in place (it targets itself); toggling autopilot
+        // must not re-render the whole task view.
+        const { renderAutopilotToggle } = require("../html/pages/command-center.page");
+        return htmlResponse(renderAutopilotToggle({ id: params.id, mode: on ? "workflow" : "conversational" }));
       }
       return Response.json({ ok: true, autopilot: updated.autopilot });
     } catch (err: unknown) {
@@ -619,7 +638,13 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         scheduler.resumeFromPause(params.id);
       } else if (task.status === "settled") {
         scheduler.reviveTask(params.id);
-        scheduler.requestWake(params.id);
+        // Autopilot (workflow) keeps driving, so wake it to resume the phases.
+        // A conversational task has no pending input on a bare Resume, so leave
+        // it idle and let the next operator input wake it (inputTask wakes) —
+        // spawning the agent with nothing to do just burns a turn.
+        if (task.mode !== "conversational") {
+          scheduler.requestWake(params.id);
+        }
       } else {
         return Response.json({ error: "Task is not paused or settled" }, { status: 409 });
       }

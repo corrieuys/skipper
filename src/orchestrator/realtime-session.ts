@@ -6,7 +6,7 @@ import type { AgentManager } from "../agents/manager";
 import type { TaskScheduler } from "../tasks/scheduler";
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
-import { getRealtimeConfig } from "../realtime/config";
+import { getRealtimeConfig, clampCadenceSeconds } from "../realtime/config";
 import { createTranscriptionAdapter, stripFillerMarkers } from "../realtime/transcription";
 import { getSkipperConfig, getEntrypointAgentId } from "../agents/skipper";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
@@ -372,8 +372,6 @@ export class RealtimeSessionManager {
       throw new Error("Session already active for this task");
     }
 
-    const config = getRealtimeConfig(this.db);
-
     // Initialize pipeline state
     this.db
       .prepare(
@@ -397,13 +395,14 @@ export class RealtimeSessionManager {
     };
     this.sessions.set(taskId, session);
 
-    // Start cadence timer
-    console.log(`[realtime-session] startSession: task=${taskId} cadence=${config.cadence_seconds}s`);
+    // Start cadence timer (per-task window_seconds, else the global cadence)
+    const cadenceSeconds = this.effectiveCadenceSeconds(taskId);
+    console.log(`[realtime-session] startSession: task=${taskId} cadence=${cadenceSeconds}s`);
     session.cadenceTimer = setInterval(() => {
       this.processCadenceTick(taskId).catch((err) => {
         logError(this.db, "realtime.cadence_tick", { taskId }, err);
       });
-    }, config.cadence_seconds * 1000);
+    }, cadenceSeconds * 1000);
 
     eventBus.emit("realtime:session_state", { taskId, state: "active" });
     return { session_id: taskId, state: "active" };
@@ -489,7 +488,7 @@ export class RealtimeSessionManager {
 
   private isLockStale(session: ActiveSession, now: number): boolean {
     if (!session.recordingOwner || session.recordingActivityAt == null) return true;
-    const cadenceMs = getRealtimeConfig(this.db).cadence_seconds * 1000;
+    const cadenceMs = this.effectiveCadenceSeconds(session.taskId) * 1000;
     const ttl = Math.max(30_000, 2 * cadenceMs);
     return now - session.recordingActivityAt > ttl;
   }
@@ -972,9 +971,39 @@ export class RealtimeSessionManager {
     return fallback;
   }
 
+  /**
+   * Effective audio chunk cadence for a task: `task_config.window_seconds`
+   * (clamped) when set, else the global realtime cadence.
+   */
+  effectiveCadenceSeconds(taskId: string): number {
+    const global = getRealtimeConfig(this.db).cadence_seconds;
+    const cfg = this.getRealtimeTaskConfig(taskId);
+    return cfg.window_seconds != null && Number.isFinite(Number(cfg.window_seconds)) ? clampCadenceSeconds(cfg.window_seconds, global) : global;
+  }
+
+  /**
+   * Whether transcribed windows are summarized (true) or fed raw as
+   * `transcript` timeline entries (false). Per-task `summary_enabled` wins,
+   * else the team's `realtime.summaryEnabled` (any local team), else the
+   * global realtime default.
+   */
+  summaryEnabledFor(taskId: string): boolean {
+    const cfg = this.getRealtimeTaskConfig(taskId);
+    if (typeof cfg.summary_enabled === "boolean") return cfg.summary_enabled;
+    const teamRow = this.db.prepare("SELECT team_id FROM tasks WHERE id = ?").get(taskId) as { team_id: string | null } | null;
+    if (teamRow?.team_id) {
+      const team = getLocalTeam(this.db, teamRow.team_id);
+      const teamSetting = team?.config?.realtime?.summaryEnabled;
+      if (typeof teamSetting === "boolean") return teamSetting;
+    }
+    return getRealtimeConfig(this.db).summary_enabled;
+  }
+
   private getRealtimeTaskConfig(taskId: string): {
     summarizer_agent_id?: string;
     assigned_agent_ids?: string[];
+    window_seconds?: number;
+    summary_enabled?: boolean;
   } {
     const taskRow = this.db
       .prepare("SELECT task_config FROM tasks WHERE id = ?")
@@ -1000,7 +1029,7 @@ export class RealtimeSessionManager {
     if (!team || (teamMode !== "realtime" && teamMode !== "conversational")) return null;
     const rt = team.config.realtime;
     return {
-      enabled: rt?.summaryEnabled !== false, // absent = enabled
+      enabled: this.summaryEnabledFor(taskId),
       provider: rt?.summaryProvider,
       model: rt?.summaryModel,
     };
@@ -1067,10 +1096,9 @@ export class RealtimeSessionManager {
       return;
     }
 
-    // Per-team real-time config: an operator may disable the summary entirely, in
-    // which case feed the raw transcript instead of spawning a summarizer.
-    const summaryCfg = this.getRealtimeSummaryConfig(taskId);
-    if (summaryCfg && summaryCfg.enabled === false) {
+    // Summary off (per task, else team, else global): feed the raw transcript
+    // straight onto the timeline instead of spawning a summarizer.
+    if (!this.summaryEnabledFor(taskId)) {
       this.createRawTranscriptTimeline(taskId, ready);
       return;
     }
@@ -1149,6 +1177,9 @@ export class RealtimeSessionManager {
     // Per-team summary provider/model override (real-time teams). Absent → the
     // summarizer agent's own committed type/model (legacy default, e.g. the
     // built-in realtime-summarizer on claude-sonnet-4-6).
+    // Provider/model override for the summarizer comes from the team's
+    // real-time config (enabled/disabled was already decided above).
+    const summaryCfg = this.getRealtimeSummaryConfig(taskId);
     const overrideProvider = summaryCfg?.provider?.trim() || undefined;
     const overrideModel = summaryCfg?.model?.trim() || undefined;
     const summarizerType = overrideProvider
@@ -1306,10 +1337,10 @@ export class RealtimeSessionManager {
     this.db
       .prepare(
         `INSERT INTO realtime_timeline (id, task_id, entry_type, content, source_segment_ids)
-         VALUES (?, ?, 'summary', ?, ?)`,
+         VALUES (?, ?, 'transcript', ?, ?)`,
       )
       .run(timelineId, taskId, concatenated, JSON.stringify(segmentIds));
-    this.emitTimelineUpdated(taskId, timelineId, "summary");
+    this.emitTimelineUpdated(taskId, timelineId, "transcript");
     // Same rule as the summarizer path: a timeline entry schedules its own
     // delivery instead of waiting for a cadence tick that may never come.
     this.requestFeed(taskId);
@@ -1571,8 +1602,6 @@ export class RealtimeSessionManager {
       throw new Error("Session already active for this task");
     }
 
-    const config = getRealtimeConfig(this.db);
-
     // Initialize pipeline state (ON CONFLICT UPDATE for resume case)
     this.db
       .prepare(
@@ -1597,12 +1626,13 @@ export class RealtimeSessionManager {
     this.sessions.set(taskId, session);
 
     // Start cadence timer
-    console.log(`[realtime-session] resumeSession: task=${taskId} cadence=${config.cadence_seconds}s seq=${session.sequenceCounter}`);
+    const cadenceSeconds = this.effectiveCadenceSeconds(taskId);
+    console.log(`[realtime-session] resumeSession: task=${taskId} cadence=${cadenceSeconds}s seq=${session.sequenceCounter}`);
     session.cadenceTimer = setInterval(() => {
       this.processCadenceTick(taskId).catch((err) => {
         logError(this.db, "realtime.cadence_tick", { taskId }, err);
       });
-    }, config.cadence_seconds * 1000);
+    }, cadenceSeconds * 1000);
 
     eventBus.emit("realtime:session_state", { taskId, state: "active" });
     return { session_id: taskId, state: "active" };

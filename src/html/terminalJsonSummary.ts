@@ -175,3 +175,96 @@ function prettyToolResult(raw: string): string {
         return trimmed;
     }
 }
+
+// ---------------------------------------------------------------------------
+// One raw terminal line → a feed row. Shared by the web dashboard's Recent
+// Activity JSON (src/ws/dashboard-activity.ts) and the terminal dashboard's
+// per-task output tail, so both classify + summarize every provider's stdout
+// shape identically. Pure: no DB, no HTML.
+// ---------------------------------------------------------------------------
+
+export type TerminalLineKind = "message" | "tool" | "event";
+
+/** Parse a JSON-object line; null for plain text or malformed JSON. */
+export function parseTerminalJsonLine(line: string): Record<string, unknown> | null {
+  if (!line.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(line);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Pure plumbing frames that carry no user-facing signal — dropped from feeds. */
+export function isNoiseTerminalEvent(parsed: Record<string, unknown>): boolean {
+  const type = typeof parsed.type === "string" ? parsed.type : "";
+  if (type === "rate_limit_event") return true;
+  if (type === "system") {
+    // Keep task notifications; drop hook/init/session lifecycle chatter.
+    const subtype = typeof parsed.subtype === "string" ? parsed.subtype : "";
+    return subtype !== "task_notification";
+  }
+  return false;
+}
+
+export function classifyTerminalLine(
+  stream: string,
+  data: string,
+  parsed: Record<string, unknown> | null,
+): TerminalLineKind {
+  if (!parsed) return classifyPlainTerminalLine(stream, data);
+  const type = typeof parsed.type === "string" ? parsed.type : "";
+  const item = parsed.item && typeof parsed.item === "object" ? (parsed.item as Record<string, unknown>) : null;
+  const itemType = item && typeof item.type === "string" ? item.type : "";
+  const message = parsed.message && typeof parsed.message === "object" ? (parsed.message as Record<string, unknown>) : null;
+  const content = message?.content;
+
+  if (itemType === "command_execution" || itemType === "tool_call" || itemType === "tool_result" || itemType === "tool_use" || type.includes("tool")) {
+    return "tool";
+  }
+  if (Array.isArray(content)) {
+    const hasTool = content.some((b) => {
+      if (!b || typeof b !== "object") return false;
+      const bt = (b as Record<string, unknown>).type;
+      return bt === "tool_use" || bt === "tool_result";
+    });
+    if (hasTool) return "tool";
+  }
+  if (
+    type === "assistant" || type === "user" || type === "message" ||
+    itemType === "agent_message" || itemType === "text" ||
+    typeof parsed.result === "string" ||
+    ((type === "text" || type === "thought") && typeof parsed.data === "string") ||
+    (type === "text" && !!(parsed.part as Record<string, unknown> | undefined)?.text) ||
+    (item && typeof item.text === "string" && itemType !== "command_execution")
+  ) {
+    return "message";
+  }
+  return "event";
+}
+
+/**
+ * Classify + summarize one raw stdout/stderr line. Returns null when the line
+ * carries nothing worth showing (noise frames, unknown JSON shapes, empty
+ * text) — callers drop it rather than dumping raw JSON into a feed.
+ */
+export function summarizeTerminalLine(stream: string, raw: string): { kind: TerminalLineKind; text: string } | null {
+  const data = raw.trim();
+  if (!data) return null;
+  const parsed = parseTerminalJsonLine(data);
+  let text: string;
+  if (parsed) {
+    if (isNoiseTerminalEvent(parsed)) return null;
+    const summary = terminalJsonSummary(parsed);
+    if (!summary) return null;
+    text = summary;
+  } else {
+    text = data.length > 200 ? data.slice(0, 200) + "…" : data;
+  }
+  const kind = classifyTerminalLine(stream, data, parsed);
+  if (kind === "message") text = stripThinking(text);
+  text = text.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  return { kind, text };
+}

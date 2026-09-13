@@ -1,53 +1,81 @@
 import { createInterface } from "node:readline";
-import { ansi } from "./render/terminal";
+import { allServers, loadServers, saveServers, localServer, type ServerConfig } from "./servers";
 
-export type TransportChoice = "local" | "connect";
+const ESC = "\x1b[";
+const bold = (s: string) => `${ESC}1m${s}${ESC}0m`;
+const dim = (s: string) => `${ESC}38;5;245m${s}${ESC}0m`;
+const cyan = (s: string) => `${ESC}38;5;44m${s}${ESC}0m`;
+const yellow = (s: string) => `${ESC}38;5;220m${s}${ESC}0m`;
 
 /**
- * Pre-flight menu shown before the full-screen view takes over. Lets the
- * operator pick where the dashboard reads from. Runs on the normal screen
- * (no alt buffer yet) with line input, so it works over pipes and SSH.
- *
- * `connectAvailable` is false until the Connect transport ships; picking it
- * then prints why and re-prompts.
+ * Pre-flight server picker, on the normal screen before the alt buffer takes
+ * over (plain line input, works over SSH). Lists the local daemon plus every
+ * saved Skipper Connect remote; `a` adds one, `d` deletes one. The last pick
+ * is remembered and offered as the default.
  */
-export async function selectTransport(opts: {
-  connectAvailable: boolean;
-  defaultChoice?: TransportChoice;
-}): Promise<TransportChoice> {
-  const def = opts.defaultChoice ?? "local";
+export async function selectServer(): Promise<ServerConfig> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const ask = (q: string): Promise<string> => new Promise((res) => rl.question(q, res));
-
   try {
-    process.stdout.write(
-      `\n${ansi.bold}${ansi.white}Skipper Dashboard${ansi.reset}\n` +
-        `${ansi.gray}Where should the dashboard connect?${ansi.reset}\n\n` +
-        `  ${ansi.cyan}1${ansi.reset}) local     ${ansi.gray}this machine's running daemon${ansi.reset}\n` +
-        `  ${ansi.cyan}2${ansi.reset}) connect   ${ansi.gray}a remote instance via Skipper Connect${
-          opts.connectAvailable ? "" : " (not available yet)"
-        }${ansi.reset}\n\n`,
-    );
-
     for (;;) {
-      const answer = (await ask(`  choice [${def === "local" ? "1" : "2"}]: `)).trim().toLowerCase();
-      const choice: TransportChoice | null =
-        answer === "" ? def : answer === "1" || answer === "local" ? "local" : answer === "2" || answer === "connect" ? "connect" : null;
-
-      if (choice === null) {
-        process.stdout.write(`  ${ansi.yellow}enter 1 or 2${ansi.reset}\n`);
+      const file = loadServers();
+      const servers = allServers();
+      const defIdx = Math.max(0, servers.findIndex((s) => s.id === file.activeId));
+      process.stdout.write(
+        `\n${bold("Skipper bridge")}  ${dim("where should the dashboard connect?")}\n\n` +
+          servers
+            .map((s, i) => `  ${cyan(String(i + 1))}) ${s.name.padEnd(22)} ${dim(s.kind === "local" ? `this machine · ${s.baseURL}` : `remote · ${s.baseURL}`)}`)
+            .join("\n") +
+          `\n\n  ${cyan("a")}) add a remote (Skipper Connect)${file.servers.length ? `   ${cyan("d")}) delete a remote` : ""}\n\n`,
+      );
+      const answer = (await ask(`  choice [${defIdx + 1}]: `)).trim().toLowerCase();
+      if (answer === "") return remember(servers[defIdx]!);
+      if (answer === "a") {
+        const added = await addRemote(ask);
+        if (added) return remember(added);
         continue;
       }
-      if (choice === "connect" && !opts.connectAvailable) {
-        process.stdout.write(
-          `  ${ansi.yellow}Connect mode is not available yet — it needs the integrator's\n` +
-            `  client API, which is not part of this build. Use local.${ansi.reset}\n\n`,
-        );
+      if (answer === "d" && file.servers.length) {
+        const which = (await ask("  delete which number? ")).trim();
+        const target = servers[Number(which) - 1];
+        if (target && target.kind === "remote") {
+          saveServers({ servers: file.servers.filter((s) => s.id !== target.id), activeId: file.activeId === target.id ? null : file.activeId });
+          process.stdout.write(`  ${dim(`removed ${target.name}`)}\n`);
+        }
         continue;
       }
-      return choice;
+      const n = Number(answer);
+      const pick = servers.find((s, i) => i + 1 === n || s.name.toLowerCase() === answer);
+      if (pick) return remember(pick);
+      process.stdout.write(`  ${yellow("enter a number, a, or d")}\n`);
     }
   } finally {
     rl.close();
   }
+}
+
+async function addRemote(ask: (q: string) => Promise<string>): Promise<ServerConfig | null> {
+  process.stdout.write(`\n  ${dim("A remote is a Skipper Connect integrator. Paste the integrator key from its dashboard; it is stored in your data dir (0600).")}\n`);
+  const name = (await ask("  name: ")).trim();
+  if (!name) return null;
+  const baseURL = (await ask("  url (https://…): ")).trim();
+  if (!/^(https?|wss?):\/\//i.test(baseURL)) {
+    process.stdout.write(`  ${yellow("url must start with https:// (or http:// for a dev worker)")}\n`);
+    return null;
+  }
+  const integratorKey = (await ask("  integrator key: ")).trim();
+  if (!integratorKey) {
+    process.stdout.write(`  ${yellow("a remote needs a key")}\n`);
+    return null;
+  }
+  const server: ServerConfig = { id: crypto.randomUUID(), name, kind: "remote", baseURL: baseURL.replace(/\/+$/, ""), integratorKey };
+  const file = loadServers();
+  saveServers({ servers: [...file.servers, server], activeId: server.id });
+  return server;
+}
+
+function remember(s: ServerConfig): ServerConfig {
+  const file = loadServers();
+  saveServers({ servers: file.servers, activeId: s.id });
+  return s.kind === "local" ? localServer() : s;
 }

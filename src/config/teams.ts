@@ -1,5 +1,4 @@
 import { getDb } from "../db/connection";
-import { isTeamVisible } from "./feature-flags";
 const REALTIME_TEAM_NAME = "real time";
 
 export interface TeamOption {
@@ -33,11 +32,11 @@ export function setRealtimeTeamId(teamId: string): void {
  * mode is only the autopilot DEFAULT for new tasks — any team runs any task,
  * so pickers must never split by mode.
  */
+/** Every team a task can be assigned to: local teams plus custom/single agents projected as solo teams. */
 export function listAssignableTeams(): TeamOption[] {
-  const all = getDb()
+  return getDb()
     .prepare("SELECT id, name FROM teams ORDER BY name")
     .all() as TeamOption[];
-  return all.filter((t) => isTeamVisible(t.id));
 }
 
 export function listAllTeams(): TeamOption[] {

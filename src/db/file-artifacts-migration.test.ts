@@ -117,3 +117,45 @@ describe("file artifact migrations", () => {
     expect(tl).toContain("artifact_id");
   });
 });
+
+describe("transcript entry migration", () => {
+  it("rebuilds a realtime_timeline whose CHECK lacks 'transcript' and keeps rows", () => {
+    const path = "test-transcript-migration.db";
+    try { unlinkSync(path); } catch { /* ignore */ }
+    const db = new Database(path);
+    try {
+      db.exec(`
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'active', 'settled')),
+          mode TEXT NOT NULL DEFAULT 'workflow',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO tasks (id, title, status) VALUES ('t1', 'T', 'active');
+        CREATE TABLE realtime_timeline (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          entry_type TEXT NOT NULL CHECK (entry_type IN ('summary', 'text', 'error', 'image', 'file')),
+          content TEXT NOT NULL,
+          source_segment_ids TEXT NOT NULL DEFAULT '[]',
+          fed_to_skipper INTEGER NOT NULL DEFAULT 0,
+          artifact_id TEXT,
+          priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('normal', 'high')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO realtime_timeline (id, task_id, entry_type, content) VALUES ('e1', 't1', 'summary', 'old digest');
+      `);
+      expect(() => db.exec("INSERT INTO realtime_timeline (id, task_id, entry_type, content) VALUES ('e0', 't1', 'transcript', 'x')")).toThrow();
+      initializeDatabase(db);
+      const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE name = 'realtime_timeline'").get() as { sql: string }).sql;
+      expect(sql).toContain("'transcript'");
+      expect((db.prepare("SELECT content FROM realtime_timeline WHERE id = 'e1'").get() as { content: string }).content).toBe("old digest");
+      db.exec("INSERT INTO realtime_timeline (id, task_id, entry_type, content) VALUES ('e2', 't1', 'transcript', 'raw words')");
+      expect((db.prepare("SELECT COUNT(*) AS n FROM realtime_timeline").get() as { n: number }).n).toBe(2);
+    } finally {
+      db.close();
+      try { unlinkSync(path); } catch { /* ignore */ }
+    }
+  });
+});

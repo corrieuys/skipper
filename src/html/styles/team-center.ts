@@ -96,24 +96,43 @@ export function teamCenterStyles(): string {
     }
     .tc-history:hover { color: var(--sk-text); }
 
-    /* ── Task header: quiet autopilot pill ──
+    /* ── Task header: autopilot toggle button ──
        Reflects task.mode (workflow = on); clicking flips it via
-       POST /api/tasks/:id/autopilot. */
-    .tc-autopilot {
-      display: inline-flex; align-items: center; gap: 5px;
-      height: var(--sk-btn-height-sm, 24px); padding: 0 9px;
-      border: 1px solid var(--sk-border); border-radius: 999px;
-      background: transparent; cursor: pointer;
-      font-size: var(--sk-text-xs); font-weight: 500;
-      color: var(--sk-text-subtle);
+       POST /api/tasks/:id/autopilot. Reads as a real button: a ticked checkbox
+       + green fill when on, an empty box + neutral chrome when off. Built on
+       .sk-btn so it shares the header row's button metrics. */
+    .tc-autopilot-btn { gap: 6px; }
+    .tc-autopilot-btn__box {
+      width: 13px; height: 13px; flex: none;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid currentColor; border-radius: 3px;
+      font-size: 11px; line-height: 1; font-weight: 700;
     }
-    .tc-autopilot:hover { color: var(--sk-text-muted); border-color: var(--sk-border-strong, var(--sk-border)); }
-    .tc-autopilot__dot {
-      width: 6px; height: 6px; border-radius: 50%;
-      background: var(--sk-surface-4); flex: none;
+    /* On = green fill. The accent-tertiary green is light (e.g. #b0ff96), so
+       white text is unreadable on it; derive a dark green text from the same
+       accent (mostly black) for contrast that holds across themes. */
+    .tc-autopilot-btn--on {
+      background: var(--sk-accent-tertiary);
+      border-color: var(--sk-accent-tertiary);
+      color: color-mix(in srgb, var(--sk-accent-tertiary) 22%, #000);
     }
-    .tc-autopilot--on { color: var(--sk-text-muted); }
-    .tc-autopilot--on .tc-autopilot__dot { background: var(--sk-accent-tertiary); }
+    .tc-autopilot-btn--on:hover {
+      background: color-mix(in srgb, var(--sk-accent-tertiary) 85%, #fff);
+      border-color: color-mix(in srgb, var(--sk-accent-tertiary) 85%, #fff);
+      color: color-mix(in srgb, var(--sk-accent-tertiary) 22%, #000);
+    }
+    .tc-autopilot-btn--on .tc-autopilot-btn__box { border-color: currentColor; }
+
+    /* Header lifecycle actions dropdown: menu items are <button>s carrying the
+       htmx verbs, so reset them to look like the shared .sk-dropdown__item. */
+    .mc-task-header__menu .sk-dropdown__menu { left: auto; right: 0; }
+    .sk-dropdown__item {
+      width: 100%; text-align: left; background: none;
+      border: none; cursor: pointer;
+      font-family: inherit; font-size: var(--sk-text-sm);
+    }
+    .sk-dropdown__item--danger { color: var(--sk-accent-danger); }
+    .sk-dropdown__item--danger:hover { background: var(--sk-surface-4); color: var(--sk-accent-danger); }
 
     /* ── Sidebar: expandable team groups ── */
     details.tc-team > summary { list-style: none; }

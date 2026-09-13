@@ -7,8 +7,11 @@ export interface RealtimeConfig {
   openai_transcription_model: string;
   summarization_model: string;
   summary_max_tokens: number;
+  /** Audio chunk cadence: how many seconds of audio each transcription window holds (5..600). */
   cadence_seconds: number;
   overlap_seconds: number;
+  /** Global default: summarize transcribed windows with the summarizer agent (true) or feed the raw transcript (false). Per-task `summary_enabled` overrides. */
+  summary_enabled: boolean;
 }
 
 const DEFAULTS: RealtimeConfig = {
@@ -19,7 +22,18 @@ const DEFAULTS: RealtimeConfig = {
   summary_max_tokens: 500,
   cadence_seconds: 60,
   overlap_seconds: 5,
+  summary_enabled: true,
 };
+
+export const CADENCE_MIN_SECONDS = 5;
+export const CADENCE_MAX_SECONDS = 600;
+
+/** Clamp a chunk cadence into the supported range; non-numbers fall back to the default. */
+export function clampCadenceSeconds(v: unknown, fallback = DEFAULTS.cadence_seconds): number {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(CADENCE_MIN_SECONDS, Math.min(CADENCE_MAX_SECONDS, n));
+}
 
 export function getRealtimeConfig(db?: Database): RealtimeConfig {
   const database = db ?? getDb();
@@ -48,8 +62,10 @@ export function getRealtimeConfig(db?: Database): RealtimeConfig {
           parseInt(row.value, 10) || DEFAULTS.summary_max_tokens;
         break;
       case "cadence_seconds":
-        config.cadence_seconds =
-          parseInt(row.value, 10) || DEFAULTS.cadence_seconds;
+        config.cadence_seconds = clampCadenceSeconds(row.value, DEFAULTS.cadence_seconds);
+        break;
+      case "summary_enabled":
+        config.summary_enabled = !(row.value === "false" || row.value === "0" || row.value === "off");
         break;
       case "overlap_seconds": {
         const val = parseInt(row.value, 10);

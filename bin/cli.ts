@@ -7,7 +7,7 @@
  *   skipper stop               SIGTERM the recorded pid (SIGKILL fallback)
  *   skipper restart
  *   skipper status             pid liveness + /health probe
- *   skipper dashboard          full-screen terminal dashboard (attaches to a running daemon)
+ *   skipper dashboard          interactive terminal dashboard (local daemon or a Skipper Connect remote)
  *   skipper logs [-f]          print (or follow) the daemon log
  *   skipper update [--beta]    self-update to the latest (or latest prerelease) release
  *   skipper serve | run        run the server in the foreground (what `start` execs)
@@ -290,7 +290,8 @@ Usage:
   skipper stop               Stop the background server
   skipper restart [--experimental]   Restart the background server
   skipper status             Show running state + health
-  skipper dashboard [--local]   Open the full-screen terminal dashboard (needs a running daemon)
+  skipper dashboard [--local | --server <name>]   Open the interactive terminal dashboard
+                             (local daemon, or a saved Skipper Connect remote; no flag = picker)
   skipper logs [-f]          Print (or follow with -f) the server log
   skipper serve [--experimental]     Run the server in the foreground
   skipper update [--beta]    Update to the latest release (--beta includes prereleases)
@@ -339,8 +340,9 @@ async function main(): Promise<void> {
     case "dashboard":
     case "tui": {
       const { runDashboard } = await import("../src/tui/run");
-      const forceLocal = process.argv.includes("--local");
-      await runDashboard({ transport: forceLocal ? "local" : undefined });
+      const serverFlag = process.argv.indexOf("--server");
+      const server = process.argv.includes("--local") ? "local" : serverFlag !== -1 ? process.argv[serverFlag + 1] : undefined;
+      await runDashboard({ server });
       break;
     }
     case "logs":

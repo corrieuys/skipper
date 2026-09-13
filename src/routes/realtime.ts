@@ -9,7 +9,7 @@ import {
   fetchRealtimePipelineStatus,
   EMPTY_PIPELINE_COUNTS,
 } from "../data/realtime";
-import { getRealtimeConfig, updateRealtimeConfig } from "../realtime/config";
+import { getRealtimeConfig, clampCadenceSeconds, updateRealtimeConfig } from "../realtime/config";
 import type { RealtimeConfig } from "../realtime/config";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 import {
@@ -317,9 +317,15 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       const cadenceSeconds = formData.get("cadence_seconds");
       if (cadenceSeconds !== null) {
         const val = parseInt(cadenceSeconds.toString(), 10);
-        if (!isNaN(val) && val >= 5) {
-          updates.cadence_seconds = val;
+        if (!isNaN(val)) {
+          updates.cadence_seconds = clampCadenceSeconds(val);
         }
+      }
+      // Rendered as a select (always present), so absence means "not submitted".
+      const summaryEnabled = formData.get("summary_enabled");
+      if (summaryEnabled !== null) {
+        const v = summaryEnabled.toString();
+        updates.summary_enabled = !(v === "false" || v === "0" || v === "off");
       }
       const transcriptionProvider = formData.get("transcription_provider");
       if (transcriptionProvider !== null) {
@@ -345,7 +351,9 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
 
     const config = updateRealtimeConfig(updates);
 
-    if (req.headers.get("HX-Request")) {
+    // The config panel's inputs post with hx-swap="none" (in-place, no reload);
+    // a full-form legacy submit still gets the redirect.
+    if (req.headers.get("HX-Request") && !req.headers.get("HX-Trigger")?.startsWith("rt-cfg-")) {
       return hxRedirect("/config");
     }
     return Response.json(config);

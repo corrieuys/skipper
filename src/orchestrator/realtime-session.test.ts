@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { ArtifactManager } from "./artifact-manager";
 import { RealtimeSessionManager } from "./realtime-session";
+import { updateRealtimeConfig } from "../realtime/config";
 import { unlinkSync } from "fs";
 
 const TEST_DB = "test-realtime-session.db";
@@ -386,11 +387,11 @@ describe("RealtimeSessionManager", () => {
 
       const timeline = db
         .prepare(
-          "SELECT * FROM realtime_timeline WHERE task_id = ? AND entry_type = 'summary'",
+          "SELECT * FROM realtime_timeline WHERE task_id = ? AND entry_type = 'transcript'",
         )
         .get(taskId) as Record<string, unknown> | null;
       expect(timeline).not.toBeNull();
-      expect(timeline!.entry_type).toBe("summary");
+      expect(timeline!.entry_type).toBe("transcript");
       expect((timeline!.content as string)).toContain(
         "The customer asked about billing.",
       );
@@ -421,10 +422,10 @@ describe("RealtimeSessionManager", () => {
       );
       expect(artifact).toBeNull();
 
-      // But the timeline entry should still exist
+      // But the timeline entry should still exist (raw path = 'transcript')
       const timeline = db
         .prepare(
-          "SELECT * FROM realtime_timeline WHERE task_id = ? AND entry_type = 'summary'",
+          "SELECT * FROM realtime_timeline WHERE task_id = ? AND entry_type = 'transcript'",
         )
         .get(taskId) as Record<string, unknown> | null;
       expect(timeline).not.toBeNull();
@@ -504,7 +505,7 @@ describe("RealtimeSessionManager", () => {
         // the entrypoint to deliver the raw transcript - that is expected).
         expect(spawns.filter((s) => s.id === "realtime-summarizer").length).toBe(0);
         const entry = db
-          .prepare("SELECT content FROM realtime_timeline WHERE task_id = ? AND entry_type = 'summary'")
+          .prepare("SELECT content FROM realtime_timeline WHERE task_id = ? AND entry_type = 'transcript'")
           .get(taskId) as { content: string } | null;
         expect(entry).not.toBeNull();
         expect(entry!.content).toContain("billing question");
@@ -1030,5 +1031,96 @@ describe("RealtimeSessionManager", () => {
       sessionManager.closeSession(t1);
       expect(sessionManager.getActiveSessionCount()).toBe(1);
     });
+  });
+});
+
+describe("RealtimeSessionManager transcription settings", () => {
+  let db: Database;
+  let artifactManager: ArtifactManager;
+  const TEST_DB = "test-realtime-settings.db";
+
+  beforeEach(() => {
+    db = new Database(TEST_DB);
+    initializeDatabase(db);
+    artifactManager = new ArtifactManager(db);
+  });
+
+  afterEach(() => {
+    db.close();
+    try { unlinkSync(TEST_DB); } catch { /* ignore */ }
+  });
+
+  it("resolves the chunk cadence: per-task window_seconds (clamped) else the global value", () => {
+    const mgr = new RealtimeSessionManager(db, artifactManager);
+    try {
+      updateRealtimeConfig({ cadence_seconds: 45 }, db);
+      const globalTask = seedRealtimeTaskWithoutTeam(db, "task-cad-global");
+      const perTask = seedRealtimeTaskWithoutTeam(db, "task-cad-task", { window_seconds: 20 });
+      const tooSmall = seedRealtimeTaskWithoutTeam(db, "task-cad-small", { window_seconds: 1 });
+      expect(mgr.effectiveCadenceSeconds(globalTask)).toBe(45);
+      expect(mgr.effectiveCadenceSeconds(perTask)).toBe(20);
+      expect(mgr.effectiveCadenceSeconds(tooSmall)).toBe(5);
+    } finally {
+      mgr.dispose();
+    }
+  });
+
+  it("resolves the summary switch: task override, then team, then global", () => {
+    const mgr = new RealtimeSessionManager(db, artifactManager);
+    try {
+      // Global default on.
+      const plain = seedRealtimeTaskWithoutTeam(db, "task-sum-global");
+      expect(mgr.summaryEnabledFor(plain)).toBe(true);
+      updateRealtimeConfig({ summary_enabled: false }, db);
+      expect(mgr.summaryEnabledFor(plain)).toBe(false);
+      // Task override beats the global.
+      const forcedOn = seedRealtimeTaskWithoutTeam(db, "task-sum-on", { summary_enabled: true });
+      expect(mgr.summaryEnabledFor(forcedOn)).toBe(true);
+      // Team setting beats the global (any team mode, here workflow) but loses to the task.
+      db.prepare("INSERT OR IGNORE INTO teams (id, name) VALUES ('wf-team', 'Builders')").run();
+      db.prepare(
+        `INSERT INTO local_teams (id, name, skipper_prompt, hooks, phases, agents, team_config, created_at, updated_at)
+         VALUES ('wf-team', 'Builders', '', '[]', '[]', '[]', ?, datetime('now'), datetime('now'))`,
+      ).run(JSON.stringify({ mode: "workflow", realtime: { summaryEnabled: true } }));
+      db.prepare("INSERT INTO tasks (id, title, team_id, status, mode, task_config) VALUES ('task-sum-team', 'T', 'wf-team', 'active', 'workflow', '{}')").run();
+      expect(mgr.summaryEnabledFor("task-sum-team")).toBe(true);
+      db.prepare("UPDATE tasks SET task_config = ? WHERE id = 'task-sum-team'").run(JSON.stringify({ summary_enabled: false }));
+      expect(mgr.summaryEnabledFor("task-sum-team")).toBe(false);
+    } finally {
+      mgr.dispose();
+    }
+  });
+
+  it("feeds the raw transcript as a 'transcript' entry when the task turns the summary off", async () => {
+    const spawns: string[] = [];
+    const agentManager = {
+      getRunningAgent: () => undefined,
+      clearSessionId: () => {},
+      getEffectiveRootTypeDef: () => null,
+      getTemplateAgentId: () => null,
+      getAgent: () => null,
+      getEntrypointSessionIdForTask: () => null,
+      sendInput: () => {},
+      spawnAgent: async (id: string) => {
+        spawns.push(id);
+        return { id: "runtime-" + id, process: { pid: 1 } };
+      },
+    } as unknown as RealtimeSessionManager["agentManager"];
+    const mgr = new RealtimeSessionManager(db, artifactManager, agentManager);
+    try {
+      const taskId = seedRealtimeTaskWithoutTeam(db, "task-raw-off", { summary_enabled: false });
+      db.prepare(
+        `INSERT INTO task_input_streams (id, task_id, source_type, content_type, content_body, sequence, transcription_status, transcribed_text)
+         VALUES (?, ?, 'audio', 'audio/wav', 'raw', 1, 'transcribed', 'ship it on friday')`,
+      ).run(crypto.randomUUID(), taskId);
+      mgr.startSession(taskId);
+      await mgr.processCadenceTick(taskId);
+      expect(spawns.filter((s) => s === "realtime-summarizer")).toEqual([]);
+      const entry = db.prepare("SELECT entry_type, content FROM realtime_timeline WHERE task_id = ?").get(taskId) as { entry_type: string; content: string } | null;
+      expect(entry?.entry_type).toBe("transcript");
+      expect(entry?.content).toContain("ship it on friday");
+    } finally {
+      mgr.dispose();
+    }
   });
 });

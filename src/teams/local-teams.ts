@@ -14,7 +14,6 @@ import {
 } from "../config/store";
 import { isCustomAgentType } from "../agents/types";
 import { getCustomAgentByType } from "../custom-agents/store";
-import { registerVisibleLocalTeam, unregisterVisibleLocalTeam } from "../config/feature-flags";
 import { normalizeSlashCommand } from "../slack/slash-command";
 import { getSingleAgent, isSingleAgentRefType, singleAgentIdFromRefType } from "../single-agents/store";
 
@@ -294,7 +293,6 @@ export function flattenLocalTeamIntoMaps(team: LocalTeam): void {
     setAgent(toSharedAgent(team.id, a));
   }
   setTeam(toSharedTeam(team));
-  registerVisibleLocalTeam(team.id);
 }
 
 /**
@@ -439,7 +437,6 @@ export function removeLocalTeamFromShared(db: Database, teamId: string): void {
     }
   }
   removeTeam(teamId);
-  unregisterVisibleLocalTeam(teamId);
   try {
     deleteTeamFromSharedTables(db, teamId, authorIds);
   } catch {

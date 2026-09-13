@@ -2,6 +2,14 @@
 
 Skipper Connect: outbound WebSocket from the daemon to a remote integrator service. The operator must supply the remote URL; there is no built-in default. The integrator remote-controls this instance over the socket. The daemon exposes exactly one inbound socket, `GET /connect/local` (`local-endpoint.ts`), for clients on this machine; it is unauthenticated and loopback only. Credentials (key + URL) live in runtime `app_settings` (see `src/config/app-settings.ts`); connect stays disabled until both are set. The instance global id (gid) is not stored: it is derived from the connect key's JWT payload via `gidFromConnectKey()` in `public-links.ts` (unverified decode; the integrator is authoritative and routes by the gid it verifies itself).
 
+**UI update contract (see root [CLAUDE.md](../../CLAUDE.md)):** every task-state
+mutation action MUST emit a fat event (via `events.ts`, carrying the entity
+projection) so all connected apps reconcile from the store; the app updates the
+control in place, never reloads the view. When a `tasks/*` action changes state,
+confirm it emits `task:state_changed` (or a more specific event) with the task
+projection. An action that only replies to the caller leaves every other
+surface, and the caller's own other views, stale.
+
 | file | use |
 |---|---|
 | `client.ts` | `ConnectClient` - WS connect/auth/reconnect w/ backoff. Handles `auth_ok`/`auth_error`/`command` itself and hands every other frame to a `ConsumerSession`. `getResourceDeps()` exposes the one `ResourceDeps` object, built here and shared with the local endpoint (wired in `index.ts`) |
@@ -37,13 +45,20 @@ Completed, or Failed when its result carries an `.error`.
 
 **tasks actions:** `list`, `read`, `create`, `update`, `delete`, `approve`,
 `unapprove`, `input`, `pause`, `resume-from-pause`, `revive`, `settle`,
-`cancel`, `run-recurring`, `set-autopilot`, `set-memory`, `star`. All live under the
+`cancel`, `run-recurring`, `set-autopilot`, `set-memory`, `set-icon`, `star`. All live under the
 `tasks` resource, so the integrator's task wildcard scope covers them without a
-scope-map change. `star { id, on? }` toggles (or sets) the task's stored star for
-the client Favorites view and replies `{ task: TaskListItem, starred }`. It emits
-NO event (starring must not trigger a re-render on any client — the web star
-self-swaps); the caller patches from the reply's `task`, and other clients pick it
-up on their next read. `input` is the ONLY way text reaches a task (draft
+scope-map change. `set-icon { id, icon?, iconColor? }` authors the task's Lucide
+icon + hex tint (mirrors the web icon picker / POST /api/tasks/:id/identity):
+`icon` is validated against the known Lucide set, an empty or unknown icon clears
+both, and the color is kept only when an icon is set. It backs through the ungated
+`scheduler.setIcon` (works in any status), emits a same-status `task:state_changed`
+fat event so every client reconciles, and replies `{ task: TaskListItem, icon,
+iconColor }`. `star { id, on? }` toggles (or sets) the task's stored star for
+the client Favorites view and replies `{ task: TaskListItem, starred }`. Like
+set-icon/set-autopilot it backs through `scheduler.setStarred`, which emits a
+same-status `task:state_changed` fat event so every open surface reconciles the
+star live (the acting client may also patch optimistically from the reply's
+`task`); the web star additionally self-swaps its own button. `input` is the ONLY way text reaches a task (draft
 appends to the description, settled auto-revives + wakes, a review gate treats
 it as the review response, idle wakes through the queue, busy accumulates).
 `settle` finishes without an error (Completed), `cancel` settles with
@@ -110,7 +125,10 @@ on a run returns an error naming `recurring/set-memory`; `tasks/clear-memory
 { id }` clears the task's scope (a run's = its series' shared scope). Both live
 under the same resources as their siblings, so the task wildcard scope still
 covers them. `tasks/create` takes `memoryEnabled` (true / "true" / "on" / 1) to
-start a task with memory on; `tasks/set-memory { id, on }` flips it later and
+start a task with memory on, plus the audio settings `summaryEnabled` (true/false
+override of the global transcript-summary default; absent = global) and
+`windowSeconds` (chunk cadence, 5..600; `taskConfig.window_seconds` still works);
+`timeline/list` entries gain `entryType: 'transcript'` for raw transcripts; `tasks/set-memory { id, on }` flips it later and
 replies `{ task: TaskDetailItem, memory_enabled, backfilled }` (turning it on
 copies the task's existing notes, messages, and operator input in; `backfilled`
 is the count). Every task projection carries `memory_enabled`, and the flip
@@ -141,6 +159,15 @@ ships a `body` (its `description` is the caption). Actions on the `artifacts` re
 Sessions are in-memory on the daemon and expire after 2 idle minutes. The
 integrator scope map (`skipper-connect/src/protocol.ts`) puts `upload-*` under
 `artifacts:write` and `read-bytes` under `artifacts:read`. Protocol version stays 3.
+
+## Custom agent identity
+
+`agents/list` and `agents/read` (experimental-gated, like the web agents page)
+project each custom agent with `color` (hex tint) and `character` (creature id,
+null = cube fallback) alongside the existing fields, so a client can render the
+agent orb and edit its identity. `agents/create` and `agents/update` already
+accept `color` / `character` params; the read projection now round-trips them.
+Single (CLI) agents have no identity and carry neither field.
 
 ## Public artifact links
 

@@ -1,63 +1,93 @@
 import { describe, it, expect } from "bun:test";
-import { parseEnvelope } from "./local";
+import { mapConnectEvent, parseDashboardFrame, toTask } from "./local";
 
-describe("parseEnvelope", () => {
-  it("parses a dashboard snapshot into a snapshot event", () => {
+const taskWire = {
+  id: "t1",
+  title: "A",
+  status: "active",
+  display_status: "working",
+  mode: "workflow",
+  paused: false,
+  memory_enabled: true,
+  memory_mode: "run",
+  team_id: "team",
+  team_name: "Team",
+  current_phase: 2,
+  phase_count: 4,
+  needs_review: false,
+  starred: true,
+  icon: "rocket",
+  icon_color: "#fff",
+  created_at: "2026-09-01 10:00:00",
+  updated_at: null,
+  started_at: "2026-09-01 10:01:00",
+  source_scheduled_task_id: null,
+};
+
+describe("mapConnectEvent", () => {
+  it("turns fat task events into task patches", () => {
+    const ev = mapConnectEvent("task:state_changed", { taskId: "t1", previousStatus: "active", newStatus: "active", task: taskWire });
+    expect(ev?.kind).toBe("task");
+    if (ev?.kind !== "task") throw new Error("wrong kind");
+    expect(ev.task.starred).toBe(true);
+    expect(ev.task.current_phase).toBe(2);
+    expect(ev.task.icon).toBe("rocket");
+  });
+
+  it("maps a deletion to task_deleted even without a projection", () => {
+    expect(mapConnectEvent("task:state_changed", { taskId: "t1", previousStatus: "draft", newStatus: "deleted" })).toEqual({ kind: "task_deleted", taskId: "t1" });
+  });
+
+  it("maps escalations, notes, messages, timeline entries and artifacts", () => {
+    expect(mapConnectEvent("escalation:created", { escalationId: "e1", escalation: { id: "e1", taskId: "t1", agentId: "a", status: "open", question: "?", createdAt: "x" } })?.kind).toBe("escalation");
+    expect(mapConnectEvent("escalation:resolved", { escalationId: "e1", taskId: "t1" })).toEqual({ kind: "escalation_resolved", escalationId: "e1", taskId: "t1" });
+    expect(mapConnectEvent("task:note_added", { noteId: "n1", note: { id: "n1", taskId: "t1", content: "hi", createdAt: "x" } })?.kind).toBe("note");
+    expect(mapConnectEvent("task:message_posted", { messageId: "m1", message: { id: "m1", taskId: "t1", content: "hi", createdAt: "x" } })?.kind).toBe("message");
+    const tl = mapConnectEvent("realtime:timeline_updated", { entryId: "x", entry: { id: "x", taskId: "t1", entryType: "image", content: "", fedToSkipper: false, createdAt: "x", artifact: { name: "shot.png" } } });
+    if (tl?.kind !== "timeline") throw new Error("wrong kind");
+    expect(tl.entry.artifactName).toBe("shot.png");
+    expect(mapConnectEvent("artifact:created", { artifactId: "a1", artifact: { id: "a1", taskId: "t1", name: "plan", kind: "doc", version: 1, createdAt: "x", storage: "inline" } })?.kind).toBe("artifact");
+  });
+
+  it("ignores events it does not render and fat events missing their projection", () => {
+    expect(mapConnectEvent("realtime:audio_lock", {})).toBeNull();
+    expect(mapConnectEvent("task:created", { taskId: "t1" })).toBeNull();
+    expect(mapConnectEvent("connect:capabilities", { protocolVersion: 3, features: ["snapshot"] })).toEqual({ kind: "capabilities", protocolVersion: 3, features: ["snapshot"] });
+  });
+});
+
+describe("parseDashboardFrame", () => {
+  it("splits a dashboard snapshot into roster, activity and metrics lanes", () => {
     const raw = JSON.stringify({
-      event: "snapshot",
       resource: "dashboard:snapshot",
       data: {
-        tasks: [{ id: "t1", title: "A", status: "running", task_type: "standard", created_at: "2026-08-27 10:00:00" }],
-        running_instances: [{ id: "a1", template_agent_name: "claude", task_id: "t1", task_title: "A", status: "running", updated_at: "2026-08-27 10:01:00" }],
-        metrics: { running: 1, queued: 0, completed: 2, failed: 0, activeAgentCount: 1 },
-        activity: [{ agent_id: "a1", agent_name: "claude", kind: "note", text: "plan approved", stream: "note", created_at: "2026-08-27 10:01:30" }],
-        phase_indicator: { id: "t1", title: "A", status: "running", current_phase: 1, needs_review: 0, phases: [{ name: "Scope" }, { name: "Build" }, { name: "Verify" }] },
+        running_instances: [{ id: "i1", template_agent_name: "claude", task_id: "t1", task_title: "A", status: "running" }],
+        activity: [{ agent_id: "i1", agent_name: "claude", kind: "weird", text: "x" }],
+        metrics: { running: 1, completed: 2 },
       },
     });
-    const ev = parseEnvelope(raw);
-    expect(ev?.kind).toBe("snapshot");
-    if (ev?.kind !== "snapshot") throw new Error("wrong kind");
-    expect(ev.snapshot.tasks[0]?.title).toBe("A");
-    expect(ev.snapshot.agents[0]?.template_agent_name).toBe("claude");
-    expect(ev.snapshot.metrics.completed).toBe(2);
-    expect(ev.snapshot.activity[0]?.kind).toBe("note");
-    expect(ev.snapshot.phase?.current).toBe(1);
-    expect(ev.snapshot.phase?.total).toBe(3);
-    expect(ev.snapshot.phase?.phaseName).toBe("Build");
+    const evs = parseDashboardFrame(raw);
+    expect(evs.map((e) => e.kind)).toEqual(["agents", "activity", "metrics"]);
+    const act = evs[1];
+    if (act?.kind !== "activity") throw new Error("wrong kind");
+    expect(act.activity[0]?.kind).toBe("event"); // unknown kinds default to event
   });
 
-  it("maps live resource frames to their event kinds", () => {
-    expect(parseEnvelope(JSON.stringify({ resource: "dashboard:tasks", data: { tasks: [] } }))?.kind).toBe("tasks");
-    expect(parseEnvelope(JSON.stringify({ resource: "dashboard:instances", data: { running_instances: [] } }))?.kind).toBe("agents");
-    expect(parseEnvelope(JSON.stringify({ resource: "dashboard:activity", data: { activity: [] } }))?.kind).toBe("activity");
-    expect(parseEnvelope(JSON.stringify({ resource: "dashboard:phase-indicator", data: { task: null } }))?.kind).toBe("phase");
-    expect(parseEnvelope(JSON.stringify({ resource: "dashboard:metrics", data: { running: 3 } }))?.kind).toBe("metrics");
+  it("maps live frames and drops heartbeats / unknown resources", () => {
+    expect(parseDashboardFrame(JSON.stringify({ resource: "dashboard:instances", data: { running_instances: [] } }))[0]?.kind).toBe("agents");
+    expect(parseDashboardFrame(JSON.stringify({ resource: "dashboard:metrics", data: { running: 3 } }))[0]?.kind).toBe("metrics");
+    expect(parseDashboardFrame(JSON.stringify({ type: "ping" }))).toEqual([]);
+    expect(parseDashboardFrame(JSON.stringify({ resource: "dashboard:tasks", data: {} }))).toEqual([]);
+    expect(parseDashboardFrame("nope")).toEqual([]);
   });
+});
 
-  it("defaults unknown activity kinds to 'event' and keeps note", () => {
-    const ev = parseEnvelope(JSON.stringify({ resource: "dashboard:activity", data: { activity: [{ agent_id: "a1", text: "x", kind: "weird" }, { agent_id: "a2", text: "y", kind: "note" }] } }));
-    if (ev?.kind !== "activity") throw new Error("wrong kind");
-    expect(ev.activity[0]?.kind).toBe("event");
-    expect(ev.activity[1]?.kind).toBe("note");
-  });
-
-  it("maps a null phase task to null", () => {
-    const ev = parseEnvelope(JSON.stringify({ resource: "dashboard:phase-indicator", data: { task: null } }));
-    if (ev?.kind !== "phase") throw new Error("wrong kind");
-    expect(ev.phase).toBeNull();
-  });
-
-  it("ignores heartbeats and unknown frames", () => {
-    expect(parseEnvelope(JSON.stringify({ type: "ping" }))).toBeNull();
-    expect(parseEnvelope(JSON.stringify({ resource: "task:notes", data: {} }))).toBeNull();
-    expect(parseEnvelope("not json")).toBeNull();
-    expect(parseEnvelope("")).toBeNull();
-  });
-
-  it("tolerates missing fields with safe defaults", () => {
-    const ev = parseEnvelope(JSON.stringify({ resource: "dashboard:metrics", data: {} }));
-    if (ev?.kind !== "metrics") throw new Error("wrong kind");
-    expect(ev.metrics.running).toBe(0);
-    expect(ev.metrics.activeAgentCount).toBe(0);
+describe("toTask", () => {
+  it("fills safe defaults for a sparse projection", () => {
+    const t = toTask({ id: "x" });
+    expect(t.display_status).toBe("");
+    expect(t.mode).toBe("workflow");
+    expect(t.phase_count).toBeNull();
+    expect(t.starred).toBe(false);
   });
 });

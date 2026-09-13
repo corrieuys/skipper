@@ -450,6 +450,71 @@ describe("settleTask / reviveTask", () => {
     expect(unarchived.settled_at).toBeNull();
   });
 
+  it("restarts a completed autopilot task at phase 0 on revive and announces the phase change", () => {
+    const teamId = "team-revive-phases";
+    db.prepare("INSERT INTO teams (id, name, phases) VALUES (?, ?, ?)").run(
+      teamId,
+      "Phased",
+      JSON.stringify([{ name: "Plan", prompt: "p" }, { name: "Build", prompt: "b" }, { name: "Ship", prompt: "s" }]),
+    );
+    const id = startedTask(teamId);
+    db.prepare("UPDATE tasks SET current_phase = 2 WHERE id = ?").run(id);
+    scheduler.completeRun(id, { output: "done" });
+    const phaseEvents: TaskPhaseChangedEvent[] = [];
+    const onPhase = (e: TaskPhaseChangedEvent) => phaseEvents.push(e);
+    eventBus.on("task:phase_changed", onPhase);
+    try {
+      const revived = scheduler.reviveTask(id);
+      expect(revived.status).toBe("active");
+      expect(revived.current_phase).toBe(0);
+      expect(phaseEvents).toEqual([{ taskId: id, previousPhase: 2, newPhase: 0, direction: "regress" }]);
+    } finally {
+      eventBus.off("task:phase_changed", onPhase);
+    }
+  });
+
+  it("clears the root session on revive of a workflow task so the next run starts fresh, and keeps child sessions", () => {
+    const id = startedTask();
+    createAgent(db, "root-agent");
+    createAgent(db, "child-agent");
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status, session_id) VALUES ('root-1', ?, 'root-agent', 'completed', 'sess-root')").run(id);
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status, session_id, parent_instance_id) VALUES ('child-1', ?, 'child-agent', 'completed', 'sess-child', 'root-1')").run(id);
+    scheduler.completeRun(id);
+    scheduler.reviveTask(id);
+    const sessions = db.prepare("SELECT id, session_id FROM agent_instances WHERE task_id = ? ORDER BY id").all(id) as Array<{ id: string; session_id: string | null }>;
+    expect(sessions).toEqual([
+      { id: "child-1", session_id: "sess-child" },
+      { id: "root-1", session_id: null },
+    ]);
+  });
+
+  it("keeps the root session on revive of a conversational task", () => {
+    const conv = scheduler.createTask({ title: "Conv", teamId: createTeam(db, "team-conv-sess"), workingDirectory: "", mode: "conversational" });
+    scheduler.approveTask(conv.id);
+    scheduler.markStarted(conv.id);
+    createAgent(db, "root-agent-c");
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status, session_id) VALUES ('root-c', ?, 'root-agent-c', 'completed', 'sess-keep')").run(conv.id);
+    scheduler.completeRun(conv.id);
+    scheduler.reviveTask(conv.id);
+    expect((db.prepare("SELECT session_id FROM agent_instances WHERE id = 'root-c'").get() as { session_id: string }).session_id).toBe("sess-keep");
+  });
+
+  it("keeps the phase on revive for a conversational task and for a task without phases", () => {
+    const teamId = "team-revive-conv";
+    db.prepare("INSERT INTO teams (id, name, phases) VALUES (?, ?, ?)").run(teamId, "Conv", JSON.stringify([{ name: "A", prompt: "a" }, { name: "B", prompt: "b" }]));
+    const conv = scheduler.createTask({ title: "Conv", teamId, workingDirectory: "", mode: "conversational" });
+    scheduler.approveTask(conv.id);
+    scheduler.markStarted(conv.id);
+    db.prepare("UPDATE tasks SET current_phase = 1 WHERE id = ?").run(conv.id);
+    scheduler.completeRun(conv.id);
+    expect(scheduler.reviveTask(conv.id).current_phase).toBe(1);
+
+    const solo = startedTask(); // default team has no phases
+    db.prepare("UPDATE tasks SET current_phase = 1 WHERE id = ?").run(solo);
+    scheduler.completeRun(solo);
+    expect(scheduler.reviveTask(solo).current_phase).toBe(1);
+  });
+
   it("auto-resolves open escalations on archive", () => {
     const id = startedTask();
     const agentId = createAgent(db);

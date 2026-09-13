@@ -29,7 +29,7 @@ export interface TeamAssignedAgent {
 function timelineEntriesHtml(timeline: TimelineEntry[]): string {
   return `<div style="display:flex;flex-direction:column;gap:0.5rem;">
     ${timeline.map((entry) => {
-    const badgeClass = entry.entry_type === "error" ? "danger" : entry.entry_type === "summary" ? "info" : "default";
+    const badgeClass = entry.entry_type === "error" ? "danger" : entry.entry_type === "summary" || entry.entry_type === "transcript" ? "info" : "default";
     const typeLabel = entry.entry_type.toUpperCase();
     const priorityBadge = entry.priority === "high"
       ? ` <span class="badge badge-warning" style="font-size:0.6rem;">HIGH</span>`
