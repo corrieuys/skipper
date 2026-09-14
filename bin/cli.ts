@@ -3,7 +3,7 @@
  * Skipper CLI — the entry point compiled into the standalone binary
  * (`bun build --compile bin/cli.ts`). Dispatches subcommands:
  *
- *   skipper start [--port N]   spawn the server detached; pid + logs in the data dir
+ *   skipper start [--port N] [-h|--headless]   spawn the server detached; pid + logs in the data dir; -h skips opening the UI
  *   skipper stop               SIGTERM the recorded pid (SIGKILL fallback)
  *   skipper restart
  *   skipper status             pid liveness + /health probe
@@ -105,7 +105,7 @@ async function start(forceNoOpen = false): Promise<void> {
   // `restart` passes forceNoOpen: the already-open UI tab hard-reloads itself
   // onto the new daemon (see /api/version + ws-subscribe.js), so opening a second
   // tab would be redundant. `start` still opens unless the caller says --no-open.
-  const noOpen = forceNoOpen || process.argv.includes("--no-open");
+  const noOpen = forceNoOpen || ["--no-open", "--headless", "-h"].some((f) => process.argv.includes(f));
   const existing = readPid();
   if (existing && isAlive(existing)) {
     const url = `http://localhost:${PORT}`;
@@ -290,11 +290,12 @@ function usage(): void {
   console.log(`skipper ${VERSION}
 
 Usage:
-  skipper start [--port N] [--host H] [--no-open] [--experimental]   Start in the background (opens the UI)
+  skipper start [--port N] [--host H] [-h|--headless] [--experimental]   Start in the background (opens the UI;
+                             -h/--headless/--no-open skips the browser tab)
   skipper stop               Stop the background server
   skipper restart [--experimental]   Restart the background server
   skipper status             Show running state + health
-  skipper dashboard [--local | --server <name>]   Open the interactive terminal dashboard
+  skipper dashboard [-l|--local | --server <name>]   Open the interactive terminal dashboard
                              (local daemon, or a saved Skipper Connect remote; no flag = picker)
   skipper logs [-f]          Print (or follow with -f) the server log
   skipper serve [--experimental]     Run the server in the foreground
@@ -346,7 +347,7 @@ async function main(): Promise<void> {
     case "tui": {
       const { runDashboard } = await import("../src/tui/run");
       const serverFlag = process.argv.indexOf("--server");
-      const server = process.argv.includes("--local") ? "local" : serverFlag !== -1 ? process.argv[serverFlag + 1] : undefined;
+      const server = process.argv.includes("--local") || process.argv.includes("-l") ? "local" : serverFlag !== -1 ? process.argv[serverFlag + 1] : undefined;
       await runDashboard({ server });
       break;
     }
