@@ -136,6 +136,9 @@ export function drawDetail(s: Screen, r: Rect, store: Store, ui: UIState, focuse
   }
 
   // ── tabs ──
+  // A blank row between the header block and the tab bar when the pane has
+  // room for it, so the title/meta/agents cluster does not butt into the tabs.
+  if (bottom - y > 12) y++;
   if (y < bottom) {
     let cx = x;
     for (const t of DETAIL_TABS) {

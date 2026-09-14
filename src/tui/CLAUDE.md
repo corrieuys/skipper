@@ -93,9 +93,9 @@ transport ─► store ─► renderer (Screen cell buffer, diff paint)
 ## Keys (summary; `?` in the app has the full list)
 
 `1-6` filters · `↑↓ jk` select/scroll · `tab` focus · `[ ]` detail tabs · `/` search · `o` hide feed
-`n` new · `ctrl+n` new recurring · `e` edit (any status) · `a` approve · `u` unapprove · `p` pause/resume
+`n` new · `ctrl+n` new recurring · `e` edit (any status; on the Recurring filter: edit the series) · `a` approve · `u` unapprove (tasks, and recurring series on the Recurring filter) · `p` pause/resume
 `s` star · `A` autopilot · `m` memory · `c` icon · `+` note · `i` input · `S` settle · `x` cancel · `v` revive · `D` delete
-`y`/`N` review approve/reject · `E` escalation · `T` teams · `I` import team · `R` run recurring · `@` servers · `:` palette · `?` help · `q` quit
+`y`/`N` review approve/reject · `E` escalation · `T` teams (enter view · `e` edit: name, mode, phases, agents; ctrl+s saves via `teams/update`) · `I` import team · `R` run recurring · `@` servers · `:` palette · `?` help · `q` quit
 `enter` on the Artifacts tab opens the selected artifact (inline bodies shown as text; files show metadata)
 
 ## Conventions

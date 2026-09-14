@@ -617,8 +617,24 @@ export async function handleResourceRequest(
             { name: params.name, phases: params.phases, agents: params.agents },
             { existingConfig: existing.config },
           );
+          // Same rule per agent: the wire row only carries id/name/type/model/
+          // instruction/role, so an agent that keeps its id carries its stored
+          // capabilities, custom tools and identity forward unless the client
+          // explicitly sent replacements.
+          const prior = new Map(existing.agents.map((a) => [a.id, a]));
+          const agents = (coerced.agents ?? []).map((a) => {
+            const p = prior.get(a.id);
+            if (!p) return a;
+            const kept: Partial<typeof a> = {};
+            if (p.capabilities !== undefined) kept.capabilities = p.capabilities;
+            if (p.customTools !== undefined) kept.customTools = p.customTools;
+            if (p.color !== undefined) kept.color = p.color;
+            if (p.character !== undefined) kept.character = p.character;
+            return { ...kept, ...a };
+          });
           const input: LocalTeamInput = {
             ...coerced,
+            agents,
             skipper_prompt: existing.skipper_prompt,
             hooks: existing.hooks,
             config: { ...existing.config, mode },
@@ -831,6 +847,22 @@ export async function handleResourceRequest(
           if (!scheduledTaskScheduler.getScheduledTask(id)) return { ok: false, error: "Recurring task not found" };
           const cleared = deps.taskMemory?.clearScope(seriesScopeId(id)) ?? 0;
           return { ok: true, data: { id, cleared } };
+        }
+        if (action === "approve" || action === "unapprove") {
+          // Draft ⇄ approved for a series, mirroring tasks/approve|unapprove.
+          // Approving computes next_run_at from the schedule; unapproving
+          // clears it so no further runs fire.
+          const id = String(params.id ?? "");
+          if (!id) return { ok: false, error: "id is required" };
+          if (!scheduledTaskScheduler.getScheduledTask(id)) return { ok: false, error: "Recurring task not found" };
+          try {
+            const data = action === "approve"
+              ? scheduledTaskScheduler.approveScheduledTask(id)
+              : scheduledTaskScheduler.unapproveScheduledTask(id);
+            return { ok: true, data };
+          } catch (err) {
+            return { ok: false, error: err instanceof Error ? err.message : String(err) };
+          }
         }
         if (action === "update") {
           // Edit a recurring series in place, mirroring the create form:

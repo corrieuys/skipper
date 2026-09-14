@@ -466,6 +466,50 @@ export const ACTIONS: Action[] = [
     },
   },
   {
+    id: "edit-recurring",
+    label: "Edit recurring task",
+    key: "e",
+    keys: [{ ch: "e" }],
+    group: "recurring",
+    hint: true,
+    when: (ctx) => ctx.ui.filter === "recurring" && !!ctx.selectedSeries(),
+    run: (ctx) => openRecurringForm(ctx, ctx.selectedSeries()!),
+  },
+  {
+    id: "approve-recurring",
+    label: "Approve recurring task (schedule runs)",
+    key: "a",
+    keys: [{ ch: "a" }],
+    group: "recurring",
+    hint: true,
+    when: (ctx) => ctx.ui.filter === "recurring" && ctx.selectedSeries()?.status === "draft",
+    run: (ctx) => {
+      const sr = ctx.selectedSeries()!;
+      return ctx.exec(async () => {
+        await ctx.transport.request("recurring", "approve", { id: sr.id });
+        await ctx.loadRecurring(true);
+        return `approved: ${sr.title}`;
+      });
+    },
+  },
+  {
+    id: "unapprove-recurring",
+    label: "Recurring task back to draft (stop scheduling)",
+    key: "u",
+    keys: [{ ch: "u" }],
+    group: "recurring",
+    hint: true,
+    when: (ctx) => ctx.ui.filter === "recurring" && ctx.selectedSeries()?.status === "approved",
+    run: (ctx) => {
+      const sr = ctx.selectedSeries()!;
+      return ctx.exec(async () => {
+        await ctx.transport.request("recurring", "unapprove", { id: sr.id });
+        await ctx.loadRecurring(true);
+        return `back to draft: ${sr.title}`;
+      });
+    },
+  },
+  {
     id: "star-recurring",
     label: "Toggle star (series)",
     key: "s",
@@ -669,40 +713,54 @@ export async function openTaskForm(ctx: Ctx, existing: TaskItem | null): Promise
   }));
 }
 
-export async function openRecurringForm(ctx: Ctx): Promise<void> {
+/** Create a recurring series, or edit `existing` in place (`recurring/update`). */
+export async function openRecurringForm(ctx: Ctx, existing: RecurringSeries | null = null): Promise<void> {
   const teams = await ctx.loadAssignees().catch(() => [] as Assignee[]);
   const teamOptions = teams.map((t) => ({ value: t.id, label: t.name, hint: t.kind === "team" ? `team · ${t.phaseCount} phases` : t.kind.replace("-", " ") }));
   if (teamOptions.length === 0) {
     ctx.toast("a recurring task needs a team. import or create one first (T).", "warn");
     return;
   }
+  const cadence = [
+    { value: "", label: "manual only" },
+    { value: "minutes", label: "every N minutes" },
+    { value: "hours", label: "every N hours" },
+    { value: "days", label: "every N days" },
+  ];
+  const teamIdx = Math.max(0, teamOptions.findIndex((o) => o.value === (existing?.teamId ?? "")));
+  const unitIdx = existing ? Math.max(0, cadence.findIndex((o) => o.value === (existing.scheduleUnit ?? ""))) : 2;
+  const fields: FormModal["fields"] = [
+    { kind: "text", key: "title", label: "Title", buf: new TextBuffer(existing?.title ?? ""), required: true },
+    { kind: "textarea", key: "description", label: "Description", buf: new TextBuffer(existing?.description ?? "", true), rows: 6 },
+    { kind: "select", key: "teamId", label: "Team", options: teamOptions, index: teamIdx },
+    { kind: "select", key: "unit", label: "Cadence", options: cadence, index: unitIdx },
+    { kind: "text", key: "amount", label: "N", buf: new TextBuffer(String(existing?.scheduleAmount ?? 1)), hint: "ignored for manual" },
+  ];
+  if (existing) fields.push({ kind: "static", key: "status", label: "Status", text: `${existing.status}  (a approve · u back to draft)` });
+  else fields.push({ kind: "toggle", key: "approve", label: "Approve immediately", value: true, hint: "off = inert draft series" });
   ctx.push(form(ctx, {
-    title: "New recurring task",
-    subtitle: "Runs spawn as normal tasks on the schedule. Pick manual for a webhook / run-now only series.",
-    fields: [
-      { kind: "text", key: "title", label: "Title", buf: new TextBuffer(""), required: true },
-      { kind: "textarea", key: "description", label: "Description", buf: new TextBuffer("", true), rows: 6 },
-      { kind: "select", key: "teamId", label: "Team", options: teamOptions, index: 0 },
-      {
-        kind: "select",
-        key: "unit",
-        label: "Cadence",
-        options: [
-          { value: "", label: "manual only" },
-          { value: "minutes", label: "every N minutes" },
-          { value: "hours", label: "every N hours" },
-          { value: "days", label: "every N days" },
-        ],
-        index: 2,
-      },
-      { kind: "text", key: "amount", label: "N", buf: new TextBuffer("1"), hint: "ignored for manual" },
-      { kind: "toggle", key: "approve", label: "Approve immediately", value: true, hint: "off = inert draft series" },
-    ],
-    submitLabel: "Create",
+    title: existing ? `Edit recurring · ${existing.title}` : "New recurring task",
+    subtitle: existing
+      ? "Saves in place. An approved series is re-approved after the edit, so the next run is recomputed from the new schedule."
+      : "Runs spawn as normal tasks on the schedule. Pick manual for a webhook / run-now only series.",
+    fields,
+    submitLabel: existing ? "Save" : "Create",
     onSubmit: async (v) => {
       const unit = String(v.unit);
       const amount = Number(String(v.amount).trim());
       if (unit && (!Number.isFinite(amount) || amount <= 0)) throw new Error("N must be a positive number");
+      if (existing) {
+        await ctx.transport.request("recurring", "update", {
+          id: existing.id,
+          title: String(v.title).trim(),
+          description: String(v.description),
+          teamId: String(v.teamId),
+          scheduleUnit: unit || undefined,
+          scheduleAmount: unit ? amount : undefined,
+        });
+        await ctx.loadRecurring(true);
+        return `saved: ${String(v.title).trim()}`;
+      }
       await ctx.transport.request("tasks", "create", {
         kind: "recurring",
         title: String(v.title).trim(),
@@ -756,15 +814,7 @@ export async function openTeams(ctx: Ctx): Promise<void> {
     ctx.toast(e.message, "error");
     return [] as Team[];
   });
-  const items: ListItem[] = teams.map((t) => ({
-    id: t.id,
-    label: t.name,
-    right: `${t.agentCount} agents · ${t.phaseCount} phases · ${t.mode === "workflow" ? "⚡" : "☾"}`,
-    detail: [t.agents.map((a) => `${a.name}(${a.type})`).join(", "), t.phases.map((p) => p.name).join(" › ")].filter(Boolean).join("  ·  "),
-    glyph: "⬢",
-    color: C.accent,
-    data: t,
-  }));
+  const items: ListItem[] = teams.map(teamListItem);
   const modal: ListModal = {
     kind: "list",
     title: `Teams · ${teams.length}`,
@@ -777,7 +827,7 @@ export async function openTeams(ctx: Ctx): Promise<void> {
     height: 26,
     error: null,
     busy: false,
-    hint: "↓ to the list · enter details · n task with team · x export · X all · d delete · I import · / filter",
+    hint: "↓ to the list · enter details · e edit · n task with team · x export · X all · d delete · I import · / filter",
     emptyText: "no teams yet. press I to import one.",
     onPick: (item) => openTeamDetail(ctx, item.data as Team),
     onKey: async (key, item) => {
@@ -787,6 +837,15 @@ export async function openTeams(ctx: Ctx): Promise<void> {
         case "I":
           openImportTeam(ctx);
           return true;
+        case "e": {
+          if (!team) return true;
+          openTeamEditor(ctx, team, async () => {
+            const fresh = await ctx.loadTeams(true);
+            modal.items = fresh.map(teamListItem);
+            modal.title = `Teams · ${fresh.length}`;
+          });
+          return true;
+        }
         case "x": {
           if (!team) return true;
           await ctx.exec(async () => {
@@ -842,6 +901,209 @@ export async function openTeams(ctx: Ctx): Promise<void> {
       }
     },
   };
+  ctx.push(modal);
+}
+
+function teamListItem(t: Team): ListItem {
+  return {
+    id: t.id,
+    label: t.name,
+    right: `${t.agentCount} agents · ${t.phaseCount} phases · ${t.mode === "workflow" ? "⚡" : "☾"}`,
+    detail: [t.agents.map((a) => `${a.name}(${a.type})`).join(", "), t.phases.map((p) => p.name).join(" › ")].filter(Boolean).join("  ·  "),
+    glyph: "⬢",
+    color: C.accent,
+    data: t,
+  };
+}
+
+type EditPhase = Team["phases"][number];
+type EditAgent = Team["agents"][number];
+
+/**
+ * Team editor: a list of the team's fields, phases and agents. Enter opens the
+ * row's form, `a`/`A` add a phase/agent, `d` deletes, `J`/`K` reorder. Nothing
+ * reaches the daemon until ctrl+s, which sends the whole team through
+ * `teams/update` (the daemon keeps skipper_prompt, hooks, Slack config and each
+ * surviving agent's tools/identity, which this editor never shows).
+ */
+export function openTeamEditor(ctx: Ctx, team: Team, onSaved?: () => Promise<void> | void): void {
+  const draft = {
+    name: team.name,
+    mode: team.mode === "conversational" ? "conversational" : "workflow",
+    phases: team.phases.map((p) => ({ ...p })) as EditPhase[],
+    agents: team.agents.map((a) => ({ ...a })) as EditAgent[],
+  };
+  const oneLine = (s: string, n = 90) => s.replace(/\s+/g, " ").trim().slice(0, n);
+
+  const buildItems = (): ListItem[] => {
+    const items: ListItem[] = [
+      { id: "name", glyph: "⬢", color: C.accent, label: `Name   ${draft.name}`, hint: "enter renames" },
+      { id: "mode", glyph: draft.mode === "workflow" ? "⚡" : "☾", color: draft.mode === "workflow" ? C.warn : C.info, label: `Mode   ${draft.mode === "workflow" ? "autopilot (workflow)" : "manual (conversational)"}`, hint: "enter toggles" },
+      { id: "h-phases", glyph: " ", label: `PHASES · ${draft.phases.length}`, right: "a add", disabled: true },
+    ];
+    draft.phases.forEach((p, i) => items.push({
+      id: `p:${i}`,
+      glyph: `${i + 1}.`,
+      color: C.accent,
+      label: p.name || "(unnamed phase)",
+      right: p.review ? "✎ review gate" : "",
+      detail: p.prompt ? oneLine(p.prompt) : "(no prompt)",
+      data: { kind: "phase", i },
+    }));
+    if (draft.phases.length === 0) items.push({ id: "p-none", glyph: " ", label: "no phases: the team runs as a single conversation", disabled: true });
+    items.push({ id: "h-agents", glyph: " ", label: `AGENTS · ${draft.agents.length}`, right: "A add", disabled: true });
+    draft.agents.forEach((a, i) => items.push({
+      id: `a:${i}`,
+      glyph: "⬢",
+      color: C.violet,
+      label: `${a.name || "(unnamed)"}   ${a.type}${a.model ? ` · ${a.model}` : ""}${a.role ? ` · ${a.role}` : ""}`,
+      detail: a.instruction ? oneLine(a.instruction) : "(no instruction)",
+      data: { kind: "agent", i },
+    }));
+    if (draft.agents.length === 0) items.push({ id: "a-none", glyph: " ", label: "no agents: add one with A", disabled: true });
+    return items;
+  };
+
+  const modal: ListModal = {
+    kind: "list",
+    title: `Edit team · ${team.name}`,
+    items: buildItems(),
+    index: 0,
+    filter: new TextBuffer(""),
+    filterable: false,
+    width: 100,
+    height: 30,
+    error: null,
+    busy: false,
+    hint: "enter edit row · a phase · A agent · d delete · J/K move · ctrl+s save · esc close",
+    onPick: (item) => pick(item),
+    onKey: async (key, item) => {
+      if (key.type === "ctrl" && key.ch === "s") {
+        await save();
+        return true;
+      }
+      if (key.type !== "char") return false;
+      const sel = item?.data as { kind: "phase" | "agent"; i: number } | undefined;
+      switch (key.ch) {
+        case "a":
+          openPhaseForm(null);
+          return true;
+        case "A":
+          openAgentForm(null);
+          return true;
+        case "d":
+          if (!sel) return true;
+          if (sel.kind === "phase") draft.phases.splice(sel.i, 1);
+          else draft.agents.splice(sel.i, 1);
+          touch();
+          return true;
+        case "J":
+        case "K": {
+          if (!sel) return true;
+          const list: unknown[] = sel.kind === "phase" ? draft.phases : draft.agents;
+          const j = sel.i + (key.ch === "J" ? 1 : -1);
+          if (j < 0 || j >= list.length) return true;
+          [list[sel.i], list[j]] = [list[j], list[sel.i]];
+          touch();
+          modal.index = modal.items.findIndex((it) => it.id === `${sel.kind === "phase" ? "p" : "a"}:${j}`);
+          return true;
+        }
+        default:
+          return false;
+      }
+    },
+  };
+
+  const touch = () => {
+    const keep = modal.items[modal.index]?.id;
+    modal.items = buildItems();
+    modal.title = `Edit team · ${draft.name} •`;
+    const idx = keep ? modal.items.findIndex((it) => it.id === keep) : -1;
+    modal.index = idx >= 0 ? idx : Math.min(modal.index, modal.items.length - 1);
+  };
+
+  const pick = (item: ListItem): void => {
+    const sel = item.data as { kind: "phase" | "agent"; i: number } | undefined;
+    if (item.id === "name") {
+      ctx.push(form(ctx, {
+        title: "Team name",
+        fields: [{ kind: "text", key: "name", label: "Name", buf: new TextBuffer(draft.name), required: true }],
+        submitLabel: "OK",
+        width: 60,
+        onSubmit: (v) => {
+          draft.name = String(v.name).trim();
+          touch();
+        },
+      }));
+      return;
+    }
+    if (item.id === "mode") {
+      draft.mode = draft.mode === "workflow" ? "conversational" : "workflow";
+      touch();
+      return;
+    }
+    if (sel?.kind === "phase") openPhaseForm(sel.i);
+    else if (sel?.kind === "agent") openAgentForm(sel.i);
+  };
+
+  const openPhaseForm = (i: number | null): void => {
+    const p = i === null ? { name: "", prompt: "", review: false } : draft.phases[i]!;
+    ctx.push(form(ctx, {
+      title: i === null ? "Add phase" : `Phase ${i + 1} · ${p.name}`,
+      fields: [
+        { kind: "text", key: "name", label: "Name", buf: new TextBuffer(p.name), required: true },
+        { kind: "textarea", key: "prompt", label: "Prompt", buf: new TextBuffer(p.prompt, true), rows: 10, placeholder: "what the team does in this phase. ctrl+j for a new line." },
+        { kind: "toggle", key: "review", label: "Review gate", value: p.review, hint: "pause for your approval before the next phase" },
+      ],
+      submitLabel: i === null ? "Add" : "OK",
+      width: 90,
+      onSubmit: (v) => {
+        const next: EditPhase = { name: String(v.name).trim(), prompt: String(v.prompt), review: v.review === true };
+        if (i === null) draft.phases.push(next);
+        else draft.phases[i] = next;
+        touch();
+      },
+    }));
+  };
+
+  const openAgentForm = (i: number | null): void => {
+    const a: EditAgent = i === null ? { id: "", name: "", type: "claude-code", model: "", instruction: "", role: null } : draft.agents[i]!;
+    ctx.push(form(ctx, {
+      title: i === null ? "Add agent" : `Agent · ${a.name}`,
+      subtitle: i === null ? undefined : "Tools, capabilities and identity set in the web editor are kept as they are.",
+      fields: [
+        { kind: "text", key: "name", label: "Name", buf: new TextBuffer(a.name), required: true },
+        { kind: "text", key: "type", label: "Type", buf: new TextBuffer(a.type), required: true, hint: "claude-code · codex · opencode · grok · custom agent id" },
+        { kind: "text", key: "model", label: "Model", buf: new TextBuffer(a.model), placeholder: "blank = provider default" },
+        { kind: "text", key: "role", label: "Role", buf: new TextBuffer(a.role ?? ""), placeholder: "optional, e.g. reviewer" },
+        { kind: "textarea", key: "instruction", label: "Instruction", buf: new TextBuffer(a.instruction, true), rows: 8, placeholder: "standing instruction for this agent. ctrl+j for a new line." },
+      ],
+      submitLabel: i === null ? "Add" : "OK",
+      width: 90,
+      onSubmit: (v) => {
+        const role = String(v.role ?? "").trim();
+        const next: EditAgent = { id: a.id, name: String(v.name).trim(), type: String(v.type).trim(), model: String(v.model ?? "").trim(), instruction: String(v.instruction ?? ""), role: role || null };
+        if (i === null) draft.agents.push(next);
+        else draft.agents[i] = next;
+        touch();
+      },
+    }));
+  };
+
+  const save = async (): Promise<void> => {
+    if (!draft.name.trim()) throw new Error("the team needs a name");
+    await ctx.transport.request("teams", "update", {
+      id: team.id,
+      name: draft.name.trim(),
+      mode: draft.mode,
+      phases: draft.phases.map((p) => ({ name: p.name, prompt: p.prompt, review: p.review })),
+      agents: draft.agents.map((a) => ({ ...(a.id ? { id: a.id } : {}), name: a.name, type: a.type, model: a.model, instruction: a.instruction, ...(a.role ? { role: a.role } : {}) })),
+    });
+    await onSaved?.();
+    ctx.pop();
+    ctx.toast(`saved team: ${draft.name.trim()}`, "ok");
+  };
+
   ctx.push(modal);
 }
 

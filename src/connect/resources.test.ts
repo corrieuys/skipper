@@ -7,7 +7,7 @@ import { handleResourceRequest, type ResourceDeps } from "./resources";
 import { getPublicArtifactUrl, getWebhookTriggerUrl, gidFromConnectKey } from "./public-links";
 import { TaskScheduler } from "../tasks/scheduler";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
-import { createLocalTeam } from "../teams/local-teams";
+import { createLocalTeam, getLocalTeam } from "../teams/local-teams";
 
 // Unsigned JWT-shaped token; only the payload's gid claim matters client-side.
 function fakeConnectKey(gid: string): string {
@@ -172,6 +172,43 @@ describe("connect teams management (protocol v3 vocabulary)", () => {
     const error = (legacy as { ok: false; error: string }).error;
     expect(error).toContain("removed in protocol v3");
     expect(error).toContain("conversational");
+  });
+
+  it("update keeps an agent's tools and identity when the client row omits them", async () => {
+    const db = getDb();
+    const team = createLocalTeam(db, {
+      name: "Kept",
+      phases: [{ name: "Do", prompt: "do" }],
+      agents: [
+        { id: "worker", name: "Worker", type: "claude-code", model: "m", customTools: ["lint"], capabilities: ["shell"], color: "#ff0000" },
+        { id: "gone", name: "Gone", type: "claude-code", model: "m" },
+      ],
+      config: { mode: "workflow" },
+    });
+    const result = await handleResourceRequest(
+      "teams",
+      "update",
+      {
+        id: team.id,
+        name: "Kept v2",
+        mode: "conversational",
+        phases: [{ name: "Do", prompt: "do it", review: true }],
+        agents: [
+          { id: "worker", name: "Worker Renamed", type: "codex", model: "m2", instruction: "be brief" },
+          { name: "Newbie", type: "claude-code", model: "" },
+        ],
+      },
+      teamDeps(),
+    );
+    expect(result.ok).toBe(true);
+    const stored = getLocalTeam(db, team.id)!;
+    expect(stored.name).toBe("Kept v2");
+    expect(stored.config.mode).toBe("conversational");
+    expect(stored.phases[0]).toMatchObject({ name: "Do", prompt: "do it", review: true });
+    const worker = stored.agents.find((a) => a.id === "worker")!;
+    expect(worker).toMatchObject({ name: "Worker Renamed", type: "codex", model: "m2", instruction: "be brief", customTools: ["lint"], capabilities: ["shell"], color: "#ff0000" });
+    expect(stored.agents.find((a) => a.id === "gone")).toBeUndefined();
+    expect(stored.agents.find((a) => a.name === "Newbie")).toBeDefined();
   });
 
   it("update rejects the legacy 'regular' mode", async () => {
@@ -440,6 +477,32 @@ describe("connect tasks read/list projections + v3 actions", () => {
       expect(error).toContain("removed in protocol v3");
       expect(error).toContain(replacement);
     }
+  });
+
+  it("recurring/approve + unapprove flip a series between draft and approved", async () => {
+    const db = getDb();
+    db.prepare("INSERT INTO teams (id, name) VALUES ('team-a', 'Approve Team')").run();
+    const scheduledTaskScheduler = new ScheduledTaskScheduler(db);
+    const d = taskDeps({ scheduledTaskScheduler });
+    const created = await handleResourceRequest("tasks", "create", {
+      kind: "recurring", title: "Nightly", teamId: "team-a", scheduleUnit: "hours", scheduleAmount: 6, autoApprove: false,
+    }, d);
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const id = (created.data as { id: string }).id;
+    expect(scheduledTaskScheduler.getScheduledTask(id)!.status).toBe("draft");
+
+    const approved = await handleResourceRequest("recurring", "approve", { id }, d);
+    expect(approved.ok).toBe(true);
+    expect(scheduledTaskScheduler.getScheduledTask(id)!.status).toBe("approved");
+    expect(scheduledTaskScheduler.getScheduledTask(id)!.next_run_at).toBeTruthy();
+
+    const back = await handleResourceRequest("recurring", "unapprove", { id }, d);
+    expect(back.ok).toBe(true);
+    expect(scheduledTaskScheduler.getScheduledTask(id)!.status).toBe("draft");
+
+    const missing = await handleResourceRequest("recurring", "approve", { id: "nope" }, d);
+    expect(missing.ok).toBe(false);
   });
 });
 

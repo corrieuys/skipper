@@ -4,14 +4,19 @@ import { C, S, SPIN_CUBE, WAVE, CURSOR_BREATHE, phaseSegmentStyle, statusColor, 
 
 /** Reusable drawing helpers every view shares. Pure functions over a Screen. */
 
-/** Bordered panel with a title in the top edge and optional right-side text. */
+/**
+ * Bordered panel with a title in the top edge and optional right-side text.
+ * The returned body rect leaves one blank column inside the left border so
+ * text never touches the frame; the last body column hugs the right border
+ * (that is where `scrollbar` draws).
+ */
 export function panel(
   s: Screen,
   r: Rect,
   title: string,
   opts: { focused?: boolean; right?: string; bg?: number; titleStyle?: Style } = {},
 ): Rect {
-  if (r.w < 3 || r.h < 2) return { x: r.x + 1, y: r.y + 1, w: Math.max(r.w - 2, 0), h: Math.max(r.h - 2, 0) };
+  if (r.w < 5 || r.h < 2) return { x: r.x + 1, y: r.y + 1, w: Math.max(r.w - 2, 0), h: Math.max(r.h - 2, 0) };
   const edge: Style = opts.focused ? S.borderFocus : S.border;
   if (opts.bg !== undefined) s.fill(r.x, r.y, r.w, r.h, " ", { bg: opts.bg });
   s.box(r.x, r.y, r.w, r.h, edge);
@@ -23,7 +28,7 @@ export function panel(
     const rw = Math.min(textWidth(rt), Math.max(r.w - 2 - tw - 1, 0));
     if (rw > 0) s.text(r.x + r.w - 1 - rw, r.y, clip(rt, rw), S.muted, rw);
   }
-  return { x: r.x + 1, y: r.y + 1, w: r.w - 2, h: r.h - 2 };
+  return { x: r.x + 2, y: r.y + 1, w: r.w - 3, h: r.h - 2 };
 }
 
 /** Inline chip: `[ LABEL ]`-style pill with a coloured background. */
