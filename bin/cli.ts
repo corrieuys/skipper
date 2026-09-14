@@ -9,7 +9,7 @@
  *   skipper status             pid liveness + /health probe
  *   skipper dashboard          interactive terminal dashboard (local daemon or a Skipper Connect remote)
  *   skipper logs [-f]          print (or follow) the daemon log
- *   skipper update [--beta]    self-update to the latest (or latest prerelease) release
+ *   skipper update [--beta | <version>]   self-update to the latest (or latest prerelease) release, or to an exact release tag
  *   skipper serve | run        run the server in the foreground (what `start` execs)
  *   skipper --version | -v
  *   skipper help
@@ -247,7 +247,10 @@ async function update(): Promise<void> {
     process.exit(1);
   }
   const beta = process.argv.includes("--beta") || process.argv.includes("--pre");
-  const tag = await resolveLatestTag(beta);
+  // An explicit version (`skipper update v0.3.0-rc.1` / `0.3.0-rc.1`) pins that
+  // exact release: prereleases and downgrades included, no channel lookup.
+  const pinned = process.argv.slice(3).find((a) => !a.startsWith("-"));
+  const tag = pinned ?? (await resolveLatestTag(beta));
   const latest = String(tag ?? "").replace(/^v/, "");
   if (!latest) {
     console.error(beta ? "no releases found" : "no published release found");
@@ -262,6 +265,7 @@ async function update(): Promise<void> {
   const dl = await fetch(url);
   if (!dl.ok) {
     console.error(`download failed: HTTP ${dl.status} (${url})`);
+    if (pinned) console.error(`is there a release tagged v${latest} with a ${asset} asset?`);
     process.exit(1);
   }
   const bytes = new Uint8Array(await dl.arrayBuffer());
@@ -294,7 +298,8 @@ Usage:
                              (local daemon, or a saved Skipper Connect remote; no flag = picker)
   skipper logs [-f]          Print (or follow with -f) the server log
   skipper serve [--experimental]     Run the server in the foreground
-  skipper update [--beta]    Update to the latest release (--beta includes prereleases)
+  skipper update [--beta | <version>]   Update to the latest release (--beta includes prereleases),
+                             or pin an exact release: skipper update v0.3.0-rc.1
   skipper --version          Print version
 
   --experimental enables experimental features (Slack, Global Store, API Keys, Task

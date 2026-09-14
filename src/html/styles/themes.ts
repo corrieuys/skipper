@@ -13,6 +13,7 @@
  */
 
 import { isExperimental } from "../../config/feature-flags";
+import { isOmarchyAvailable } from "../../config-readers/omarchy";
 
 export interface Theme {
   id: string;
@@ -21,11 +22,19 @@ export interface Theme {
   vars: Record<string, string>;
   /** Only selectable/emitted when the experimental flag is on. */
   experimental?: boolean;
+  /** Runtime gate: the theme needs something on this machine (checked per render). */
+  available?: () => boolean;
 }
 
 /** Themes available given the current experimental flag. */
 function availableThemes(): Theme[] {
-  return isExperimental() ? THEMES : THEMES.filter((t) => !t.experimental);
+  const flagged = isExperimental() ? THEMES : THEMES.filter((t) => !t.experimental);
+  return flagged.filter((t) => (t.available ? t.available() : true));
+}
+
+/** Default theme for a fresh browser: follow the OS on an Omarchy machine, else Artemis. */
+function defaultThemeIdForMachine(): string {
+  return isExperimental() && isOmarchyAvailable() ? "omarchy" : "artemis";
 }
 
 export const DEFAULT_THEME_ID = "default";
@@ -244,6 +253,16 @@ export const THEMES: Theme[] = [
     },
   },
   {
+    // Driven by the active Omarchy theme; its vars + glass block are built at
+    // request time from the OS palette in `omarchy-theme.ts` and served as a
+    // separate stylesheet, so nothing static is emitted here.
+    id: "omarchy",
+    label: "Omarchy (follows OS)",
+    vars: {},
+    experimental: true,
+    available: isOmarchyAvailable,
+  },
+  {
     id: "win95",
     label: "Windows 95",
     vars: {
@@ -377,7 +396,7 @@ export function themesCss(): string {
  * Returns the JS body only; the caller wraps it in a `<script>` tag.
  */
 export function themeBootScript(): string {
-  return `(function(){try{var t=localStorage.getItem('skipper.theme');if(t===null){t='artemis';localStorage.setItem('skipper.theme',t);}if(t&&t!=='default')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();`;
+  return `(function(){try{var t=localStorage.getItem('skipper.theme');if(t===null){t='${defaultThemeIdForMachine()}';localStorage.setItem('skipper.theme',t);}if(t&&t!=='default')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();`;
 }
 
 /**
@@ -1027,8 +1046,51 @@ function win95OverridesCss(): string {
   `;
 }
 
+export type GlassRgb = [number, number, number];
+
+/** Colour inputs of the frosted-glass override block (see `glassCss`). */
+export interface GlassPalette {
+  /** Darkest translucent surface (inputs, terminal). */
+  deep: GlassRgb;
+  /** Navbar / sidebar / header surface. */
+  low: GlassRgb;
+  /** Cards, notes, agent rows. */
+  mid: GlassRgb;
+  /** Hairline borders + hover tints. */
+  line: GlassRgb;
+  /** Active-item tint. */
+  accent: GlassRgb;
+  /** Opaque surfaces where glass must be dropped (artifact viewer). */
+  solid: string;
+  solidBar: string;
+  solidMenu: string;
+}
+
+function glassRgba(c: GlassRgb, alpha: number): string {
+  return `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${alpha})`;
+}
+
+/** Artemis literals; the omarchy theme derives its own from the OS palette. */
+const ARTEMIS_GLASS: GlassPalette = {
+  deep: [8, 10, 16],
+  low: [12, 16, 24],
+  mid: [16, 20, 30],
+  line: [160, 175, 200],
+  accent: [110, 196, 255],
+  solid: "#10141e",
+  solidBar: "#161c26",
+  solidMenu: "#161c28",
+};
+
 export function glassOverridesCss(): string {
-  const G = "[data-theme=\"artemis\"]";
+  return glassCss("[data-theme=\"artemis\"]", ARTEMIS_GLASS);
+}
+
+/**
+ * Frosted-glass overrides for a wallpaper theme: translucent chrome, backdrop
+ * blur, pill radii. `G` is the `[data-theme=...]` selector the block is scoped to.
+ */
+export function glassCss(G: string, P: GlassPalette): string {
   return `
     /* ── Base ── */
     ${G} body { background: transparent; }
@@ -1036,7 +1098,7 @@ export function glassOverridesCss(): string {
     /* ── Navbar ── */
     ${G} .sk-navbar,
     ${G} .navbar {
-      background: rgba(12, 16, 24, 0.5);
+      background: ${glassRgba(P.low, 0.5)};
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
     }
@@ -1045,13 +1107,13 @@ export function glassOverridesCss(): string {
     ${G} .sk-panel {
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
-      border: 1px solid rgba(160, 175, 200, 0.15);
+      border: 1px solid ${glassRgba(P.line, 0.15)};
     }
     ${G} .sk-container { background: transparent; }
 
     /* ── Dropdown & Modal ── */
     ${G} .sk-dropdown__menu {
-      background: #161c28;
+      background: ${P.solidMenu};
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     }
     ${G} .sk-modal__content {
@@ -1070,13 +1132,13 @@ export function glassOverridesCss(): string {
     ${G} .sk-input,
     ${G} .sk-select,
     ${G} .sk-textarea {
-      background: rgba(8, 10, 16, 0.4);
+      background: ${glassRgba(P.deep, 0.4)};
       border-radius: var(--sk-radius-md);
     }
 
     /* ── Tables ── */
     ${G} .sk-table thead th {
-      background: rgba(12, 16, 24, 0.4);
+      background: ${glassRgba(P.low, 0.4)};
     }
 
     /* ── v1 panels ── */
@@ -1094,15 +1156,15 @@ export function glassOverridesCss(): string {
 
     /* Sidebar */
     ${G} .mc-sidebar {
-      background: rgba(12, 16, 24, 0.45);
+      background: ${glassRgba(P.low, 0.45)};
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
     }
     ${G} .mc-sidebar__item:hover {
-      background: rgba(160, 175, 200, 0.08);
+      background: ${glassRgba(P.line, 0.08)};
     }
     ${G} .mc-sidebar__item--active {
-      background: rgba(110, 196, 255, 0.08);
+      background: ${glassRgba(P.accent, 0.08)};
     }
 
     /* Task header */
@@ -1111,22 +1173,22 @@ export function glassOverridesCss(): string {
        fixed at z-index 5 and must paint over the header for the cubes to show).
        A slightly more opaque solid bg keeps the frosted look without the trap. */
     ${G} .mc-task-header {
-      background: rgba(12, 16, 24, 0.72);
+      background: ${glassRgba(P.low, 0.72)};
     }
 
     /* Steer card */
     ${G} .mc-steer-card {
-      background: rgba(16, 20, 30, 0.5);
+      background: ${glassRgba(P.mid, 0.5)};
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
       border-radius: 0;
-      border: 1px solid rgba(160, 175, 200, 0.12);
+      border: 1px solid ${glassRgba(P.line, 0.12)};
     }
     ${G} .mc-steer-card:hover {
-      background: rgba(16, 20, 30, 0.6);
+      background: ${glassRgba(P.mid, 0.6)};
     }
     ${G} .mc-steer-card__input {
-      background: rgba(8, 10, 16, 0.5);
+      background: ${glassRgba(P.deep, 0.5)};
       border-radius: var(--sk-radius-md);
     }
 
@@ -1135,22 +1197,22 @@ export function glassOverridesCss(): string {
       border-radius: var(--sk-btn-radius);
     }
     ${G} .mc-tab--active {
-      background: rgba(110, 196, 255, 0.1);
+      background: ${glassRgba(P.accent, 0.1)};
       border-radius: var(--sk-btn-radius);
     }
     ${G} .mc-tabs {
-      background: rgba(12, 16, 24, 0.3);
+      background: ${glassRgba(P.low, 0.3)};
     }
 
     /* Activity feed */
     ${G} .mc-outputs__col-body {
-      background: rgba(12, 16, 24, 0.35);
+      background: ${glassRgba(P.low, 0.35)};
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
       border-radius: 0 0 var(--sk-radius-md) var(--sk-radius-md);
     }
     ${G} .mc-activity__controls {
-      background: rgba(12, 16, 24, 0.3);
+      background: ${glassRgba(P.low, 0.3)};
     }
     ${G} .mc-activity__filter {
       border-radius: var(--sk-btn-radius);
@@ -1164,37 +1226,37 @@ export function glassOverridesCss(): string {
 
     /* Notes panel */
     ${G} .note-item {
-      background: rgba(16, 20, 30, 0.5);
+      background: ${glassRgba(P.mid, 0.5)};
       border-radius: var(--sk-radius-md);
-      border: 1px solid rgba(160, 175, 200, 0.1);
+      border: 1px solid ${glassRgba(P.line, 0.1)};
     }
     ${G} .note-item-user {
-      background: rgba(110, 196, 255, 0.06);
+      background: ${glassRgba(P.accent, 0.06)};
       border-radius: var(--sk-radius-md);
     }
 
     /* Agent row */
     ${G} .mc-agent-row {
-      background: rgba(16, 20, 30, 0.5);
+      background: ${glassRgba(P.mid, 0.5)};
       border-radius: var(--sk-radius-md);
-      border: 1px solid rgba(160, 175, 200, 0.1);
+      border: 1px solid ${glassRgba(P.line, 0.1)};
     }
 
     /* Terminal */
     ${G} .mc-terminal {
-      background: rgba(8, 10, 16, 0.5);
+      background: ${glassRgba(P.deep, 0.5)};
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
       border-radius: var(--sk-radius-lg);
     }
     ${G} .mc-terminal__header {
-      background: rgba(16, 20, 30, 0.4);
+      background: ${glassRgba(P.mid, 0.4)};
       border-radius: var(--sk-radius-lg) var(--sk-radius-lg) 0 0;
     }
 
     /* Phase stepper */
     ${G} .mc-phase-stepper {
-      background: rgba(12, 16, 24, 0.3);
+      background: ${glassRgba(P.low, 0.3)};
     }
 
     /* Badges — pill-shaped */
@@ -1207,24 +1269,24 @@ export function glassOverridesCss(): string {
       background: transparent;
     }
     ${G} .mc-stat-card {
-      background: rgba(16, 20, 30, 0.5);
+      background: ${glassRgba(P.mid, 0.5)};
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
-      border: 1px solid rgba(160, 175, 200, 0.1);
+      border: 1px solid ${glassRgba(P.line, 0.1)};
       border-radius: var(--sk-radius-lg);
     }
     ${G} .mc-idle__input,
     ${G} .mc-idle__desc {
-      background: rgba(12, 16, 24, 0.5);
+      background: ${glassRgba(P.low, 0.5)};
       border-radius: var(--sk-radius-md);
     }
     ${G} .mc-idle__feed-item {
-      background: rgba(16, 20, 30, 0.4);
+      background: ${glassRgba(P.mid, 0.4)};
       border-radius: var(--sk-radius-md);
       margin-bottom: 2px;
     }
     ${G} .mc-idle__feed-item:hover {
-      background: rgba(16, 20, 30, 0.55);
+      background: ${glassRgba(P.mid, 0.55)};
     }
 
     /* Artifact viewer — the inset window sits directly on top of the artifact
@@ -1233,16 +1295,16 @@ export function glassOverridesCss(): string {
        the list rows read straight through the artifact text. These two are the
        one place the glass look has to be dropped: solid, no blur. */
     ${G} .artifact-inset {
-      background: #10141e;
+      background: ${P.solid};
     }
     ${G} .artifact-inset__bar {
-      background: #161c26;
+      background: ${P.solidBar};
     }
     ${G} .artifact-modal-dialog {
-      background: #10141e;
+      background: ${P.solid};
     }
     ${G} .artifact-modal-head {
-      background: #161c26;
+      background: ${P.solidBar};
     }
 
     /* Escalation bar */
@@ -1255,7 +1317,7 @@ export function glassOverridesCss(): string {
     ${G} .sk-create-card {
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
-      border: 1px solid rgba(160, 175, 200, 0.1);
+      border: 1px solid ${glassRgba(P.line, 0.1)};
     }
 
     /* Team pages carry little else but cards on open space, so a bright patch
@@ -1269,9 +1331,9 @@ export function glassOverridesCss(): string {
       z-index: -1;
       pointer-events: none;
       background: linear-gradient(180deg,
-        rgba(8, 10, 16, 0.85) 0%,
-        rgba(8, 10, 16, 0.62) 45%,
-        rgba(8, 10, 16, 0.38) 100%);
+        ${glassRgba(P.deep, 0.85)} 0%,
+        ${glassRgba(P.deep, 0.62)} 45%,
+        ${glassRgba(P.deep, 0.38)} 100%);
     }
 
     /* Team map — the tm- styles are already written against the theme tokens, so
@@ -1303,12 +1365,12 @@ export function glassOverridesCss(): string {
        The timeline column and rail sit directly on the wallpaper; give them the
        same frosted glass as the sidebar so content stays legible. */
     ${G} .tc-timeline-col {
-      background: rgba(12, 16, 24, 0.55);
+      background: ${glassRgba(P.low, 0.55)};
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
     }
     ${G} .tc-rail {
-      background: rgba(12, 16, 24, 0.45);
+      background: ${glassRgba(P.low, 0.45)};
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
     }

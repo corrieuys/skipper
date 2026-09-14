@@ -10,6 +10,7 @@ import { registerScheduledTaskRoutes } from "./src/routes/scheduled-tasks";
 import { registerApiKeyRoutes } from "./src/routes/api-keys";
 import { registerDictationRoutes } from "./src/routes/dictation";
 import { registerGlyphRoutes } from "./src/routes/glyph";
+import { registerOmarchyRoutes, startOmarchyFollower } from "./src/routes/omarchy";
 import { GlyphEngine } from "./src/glyph/engine";
 import { registerCustomAgentRoutes } from "./src/routes/custom-agents";
 import { registerSingleAgentRoutes } from "./src/routes/single-agents";
@@ -108,6 +109,10 @@ registerApiKeyRoutes();
 // Dictation (experimental): transcribe + LLM cleanup for task-description fields.
 registerDictationRoutes();
 registerGlyphRoutes(glyphEngine, getDb());
+// Omarchy OS theme follower (experimental): serves the palette-driven theme +
+// wallpaper and pushes a re-skin to open pages when the OS theme switches.
+registerOmarchyRoutes();
+const stopOmarchyFollower = startOmarchyFollower();
 // Custom agents (experimental): CRUD for in-process agent definitions.
 registerCustomAgentRoutes();
 // Single agents (experimental): CRUD for standalone agents that run a task alone.
@@ -244,6 +249,7 @@ function shutdown() {
   embeddingServer.stop();
   whisperManager.stop(getDb());
   uiPush.destroy();
+  stopOmarchyFollower();
   connectLocal.destroy();
   server.stop(true);
   closeDb();

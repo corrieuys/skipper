@@ -120,6 +120,7 @@ repo's GitHub Releases.
 - install newest incl. prereleases: `SKIPPER_CHANNEL=beta curl -fsSL https://letskipper.work/install.sh | bash`
 - install an exact release: `SKIPPER_VERSION=v0.2.0-beta.1 curl -fsSL https://letskipper.work/install.sh | bash`
 - update onto the beta channel: `skipper update --beta` (lists `/releases`, takes the newest incl. prereleases).
+- pin an exact release: `skipper update v0.2.0-beta.1` (or `0.2.0-beta.1`; prereleases and downgrades allowed, no channel lookup, then `skipper restart`). Running instances never auto-apply a prerelease: the daemon's auto-updater only reads `/releases/latest`, and `classifyBump` refuses `-`/`+` suffixed targets, so an rc/beta tag only reaches a machine through this command or `--beta`.
 
 ## Entry
 
@@ -140,6 +141,8 @@ repo's GitHub Releases.
 | `SKIPPER_CONTEXT_COMPACT_THRESHOLD` | 400000 | input tokens before compact |
 | `SKIPPER_HTTP_LOG` | (unset) | `all` = log every HTTP request; default skips high-frequency UI polls (still logs errors + slow) |
 | `SKIPPER_LOG_MAX_BYTES` | 26214400 (25 MB) | size cap for `~/.skipper/skipper.log` (the daemon's stdout/stderr file); the tick loop snapshots it to `skipper.log.old` + truncates when exceeded |
+| `SKIPPER_TUI_PALETTE` | (auto) | `ansi` = the terminal dashboard draws with the terminal's own ANSI 0..15 colours + default fg/bg (follows the terminal theme, auto on Omarchy); `256` = fixed xterm-256 palette |
+| `OMARCHY_CURRENT_DIR` | `~/.config/omarchy/current` | where the Omarchy OS-theme follower reads `theme/colors.toml` + `background` (override for tests / sandboxes) |
 
 ## Map — where to look
 

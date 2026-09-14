@@ -12,6 +12,7 @@ import { railRows, selectedIndex } from "./ui/view-model";
 import { sortedArtifacts } from "./render/detail";
 import { ACTIONS, actionForKey, availableActions, openArtifact, type Ctx, type Assignee } from "./ui/actions";
 import { setActionHints } from "./ui/hints";
+import { setPalette, resolvePaletteMode } from "./render/theme";
 import { toTask, toNote, toMessage, toTimelineEntry, toArtifact, toEscalation } from "./transport/local";
 
 const RENDER_COALESCE_MS = 40;
@@ -61,6 +62,7 @@ export async function runDashboard(opts: DashboardOptions = {}): Promise<void> {
     return;
   }
 
+  setPalette(resolvePaletteMode());
   const transport: Transport = new LocalTransport(server);
   const controller = new Controller(transport, server);
   await controller.start();

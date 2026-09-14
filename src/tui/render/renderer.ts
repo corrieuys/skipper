@@ -412,7 +412,7 @@ function drawFeed(s: Screen, r: Rect, model: RenderModel, focused: boolean): num
   scrollbar(s, feedRect, lines.length, start, feedRect.h);
   if (sc > 0) {
     const tag = ` ↓ ${sc} `;
-    s.text(feedRect.x + usable - textWidth(tag), feedRect.y + feedRect.h - 1, tag, { fg: C.bg, bg: C.warn, bold: true });
+    s.text(feedRect.x + usable - textWidth(tag), feedRect.y + feedRect.h - 1, tag, { fg: C.onAccent, bg: C.warn, bold: true });
   } else if (store.connStatus() === "connected") {
     s.put(feedRect.x + usable - 1, feedRect.y + feedRect.h - 1, breathingCursor(ui.frame), S.accent);
   }
@@ -442,7 +442,7 @@ function drawToasts(s: Screen, ui: UIState, footer: Rect): void {
     const x = footer.x + footer.w - 1 - w;
     const y = footer.y - i;
     if (y < 0) return;
-    s.text(x, y, clip(txt, w), { fg: i === 0 ? C.bg : color, bg: i === 0 ? color : C.bgPanel, bold: i === 0 }, w);
+    s.text(x, y, clip(txt, w), { fg: i === 0 ? C.onAccent : color, bg: i === 0 ? color : C.bgPanel, bold: i === 0 }, w);
   });
 }
 
@@ -562,7 +562,7 @@ function drawForm(s: Screen, m: FormModal, ui: UIState): { x: number; y: number 
   if (m.error) s.text(inner.x, ey, clip(`✗ ${m.error}`, inner.w), { fg: C.danger, bg }, inner.w);
   const submit = m.busy ? ` ${breathingCursor(ui.frame)} working… ` : ` ${m.submitLabel} `;
   const sx = inner.x + inner.w - textWidth(submit);
-  s.text(sx, ey, submit, { fg: C.bg, bg: m.busy ? C.textMuted : C.accent, bold: true });
+  s.text(sx, ey, submit, { fg: C.onAccent, bg: m.busy ? C.textMuted : C.accent, bold: true });
   return cursor;
 }
 
@@ -580,7 +580,7 @@ function drawConfirm(s: Screen, m: ConfirmModal): null {
   if (m.error) s.text(inner.x, ey, clip(`✗ ${m.error}`, inner.w - 20), { fg: C.danger, bg: C.bgModal });
   const label = m.busy ? " working… " : ` ${m.confirmLabel} `;
   const cancel = " esc cancel ";
-  s.text(inner.x + inner.w - textWidth(label), ey, label, { fg: C.bg, bg: m.danger ? C.danger : C.accent, bold: true });
+  s.text(inner.x + inner.w - textWidth(label), ey, label, { fg: C.onAccent, bg: m.danger ? C.danger : C.accent, bold: true });
   s.text(inner.x + inner.w - textWidth(label) - textWidth(cancel) - 1, ey, cancel, { fg: C.textMuted, bg: C.bgPanel });
   return null;
 }

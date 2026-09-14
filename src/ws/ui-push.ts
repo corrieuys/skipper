@@ -61,6 +61,7 @@ import { topicMatches } from "./fragment-registry";
 import { buildDashboardActivity } from "./dashboard-activity";
 
 import { terminalJsonSummary } from "../html/terminalJsonSummary";
+import { omarchyThemeHref } from "../html/styles/omarchy-theme";
 
 const DEBOUNCE_MS = 1500;
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -246,6 +247,15 @@ export class UIWebSocketManager {
     }
   }
 
+  broadcastOmarchyTheme(version: string): void {
+    const payload = JSON.stringify({ __sk_notify: { kind: "omarchy", href: omarchyThemeHref(version) } });
+    for (const ws of this.clients) {
+      const data = ws.data as UiPushWSData;
+      if (data.format !== "html") continue;
+      try { ws.send(payload); } catch { this.clients.delete(ws); }
+    }
+  }
+
   broadcastNotification(soundUrl: string): void {
     const payload = JSON.stringify({ __sk_notify: { kind: "audio", sound: soundUrl } });
     for (const ws of this.clients) {
@@ -303,6 +313,10 @@ export class UIWebSocketManager {
   }
 
   private registerEventHandlers(): void {
+    // Omarchy OS theme / wallpaper switched: every open page swaps its omarchy
+    // stylesheet link in place (ws-subscribe.js); no fragment, no reload.
+    this.trackOn("appearance:omarchy_changed", (event) => this.broadcastOmarchyTheme(event.version));
+
     // --- Task state changed ---
     this.trackOn("task:state_changed", (event) => {
       this.pushDashboardTasks();

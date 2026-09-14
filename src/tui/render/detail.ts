@@ -125,7 +125,7 @@ export function drawDetail(s: Screen, r: Rect, store: Store, ui: UIState, focuse
     let cx = x + s.text(x, y, "◆ REVIEW GATE ", { fg: C.violet, bg: 54, bold: true });
     cx += s.text(cx, y, `phase ${Math.min(task.current_phase + 1, total || task.current_phase + 1)} awaits your verdict`, { fg: C.textBright, bg: 54 });
     const act = " y approve  N reject ";
-    s.text(x + w - textWidth(act), y, act, { fg: C.bg, bg: C.violet, bold: true });
+    s.text(x + w - textWidth(act), y, act, { fg: C.onAccent, bg: C.violet, bold: true });
     y++;
   }
   if (detail?.result && task.status === "settled" && y < bottom) {
@@ -278,7 +278,7 @@ function drawAnchored(s: Screen, r: Rect, lines: StyledLine[], scroll: number, e
   if (lines.length > r.h) scrollbar(s, r, lines.length, start, r.h);
   if (sc > 0) {
     const tag = ` ↓ ${sc} newer `;
-    s.text(r.x + usable - textWidth(tag), r.y + r.h - 1, tag, { fg: C.bg, bg: C.warn, bold: true });
+    s.text(r.x + usable - textWidth(tag), r.y + r.h - 1, tag, { fg: C.onAccent, bg: C.warn, bold: true });
   } else if (live) {
     s.put(r.x + usable - 1, r.y + r.h - 1, breathingCursor(frame), S.accent);
   }

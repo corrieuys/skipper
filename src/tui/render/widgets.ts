@@ -30,7 +30,7 @@ export function panel(
 export function pill(s: Screen, x: number, y: number, label: string, fg: number, bg?: number, maxW?: number): number {
   const txt = ` ${label} `;
   const w = Math.min(textWidth(txt), maxW ?? txt.length);
-  s.text(x, y, clip(txt, w), { fg: bg === undefined ? fg : C.bg, bg: bg ?? fg, bold: true }, w);
+  s.text(x, y, clip(txt, w), { fg: bg === undefined ? fg : C.onAccent, bg: bg ?? fg, bold: true }, w);
   return w;
 }
 

@@ -2,6 +2,7 @@ import { type DaemonStatus, escapeHtml } from "./components";
 import { navDropdownHtml } from "./navDropdownHtml";
 import { daemonControlFragment } from "./daemonControlFragment";
 import { themeBootScript, appearanceBackgroundCss } from "./styles/themes";
+import { omarchyThemeLinkHtml } from "./styles/omarchy-theme";
 import { STYLESHEET_PATH } from "./styles/stylesheet";
 import { getAppearanceConfig } from "../config/store";
 import { getDb } from "../db/connection";
@@ -73,6 +74,7 @@ export function layout(
   </script>
   <link rel="stylesheet" href="${STYLESHEET_PATH}">
   ${appearanceCss ? `<style>${appearanceCss}</style>` : ""}
+  ${omarchyThemeLinkHtml()}
 </head>
 <body hx-ext="ws" ws-connect="/ws/ui" data-sk-version="${SERVER_ID}"${wsTopics && wsTopics.length > 0 ? ` data-ws-topics="${wsTopics.join(",")}"` : ""}>
   <nav class="navbar">

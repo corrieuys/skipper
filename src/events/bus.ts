@@ -180,7 +180,13 @@ export interface TaskWakeRequestedEvent {
   taskId: string;
 }
 
+/** The Omarchy OS theme or wallpaper changed; `version` cache-busts `/omarchy/theme.css`. */
+export interface AppearanceOmarchyChangedEvent {
+  version: string;
+}
+
 export interface EventMap {
+  "appearance:omarchy_changed": [AppearanceOmarchyChangedEvent];
   "agent:output": [AgentOutputEvent];
   "agent:exit": [AgentExitEvent];
   "agent:streams_drained": [AgentStreamsDrainedEvent];

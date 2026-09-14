@@ -85,7 +85,7 @@ transport ─► store ─► renderer (Screen cell buffer, diff paint)
 | `ui/plain-text.ts` | `htmlToText` / `toPlainText` / `toOneLine`: agent-authored HTML (escalations, messages, notes, artifact bodies) rendered as terminal text (bullets, backticks, links); markdown passes through |
 | `render/widgets.ts` | Shared drawing helpers: panel, pills, phase strip, sparkline, scrollbar, key hints, dim backdrop, shadow |
 | `render/layout.ts` | **Pure** size→rects: `triple` (rail / detail / feed, ≥150 cols), `double` (≥96), `single` (Tab switches views). Modal centering |
-| `render/theme.ts` | 256-colour palette, status colours/labels/glyphs, animation frame sets, brand ramp, agent colours |
+| `render/theme.ts` | Palette (`C`, live-mutated by `setPalette("256"\|"ansi")`: fixed xterm-256 indices, or the terminal's own ANSI 0..15 + default fg/bg so the dashboard follows the terminal theme; `resolvePaletteMode()` = `SKIPPER_TUI_PALETTE`, else `ansi` on Omarchy), status colours/labels/glyphs, animation frame sets, brand ramp, agent colours. `C.onAccent` is the ink on coloured chips (never `C.bg`, which is `undefined` in ansi mode) |
 | `render/terminal.ts` | The only file touching stdout/stdin: alt screen, raw mode, **bracketed paste**, resize, cursor |
 | `input/keyboard.ts` | `KeyDecoder`: raw bytes → `KeyEvent[]` (chars, ctrl, CSI/SS3 keys with modifiers, alt+char, multi-key chunks, bracketed paste → one `paste` event) |
 | `input/text-editor.ts` | `TextBuffer`: grapheme-aware single/multi-line editing (word ops, kill line, vertical moves, soft-wrap view with caret mapping) |

@@ -1,6 +1,7 @@
 import { escapeHtml } from "../atoms/escape-html";
 import { appearanceBackgroundCss } from "../styles/index";
 import { themeBootScript } from "../styles/themes";
+import { omarchyThemeLinkHtml } from "../styles/omarchy-theme";
 import { STYLESHEET_PATH } from "../styles/stylesheet";
 import { getAppearanceConfig } from "../../config/store";
 import { getDb } from "../../db/connection";
@@ -40,6 +41,7 @@ export function v2layout(
   <script src="/schedule-matrix.js" defer></script>
   <link rel="stylesheet" href="${STYLESHEET_PATH}">
   ${appearanceCss ? `<style>${appearanceCss}</style>` : ""}
+  ${omarchyThemeLinkHtml()}
 </head>
 <body hx-ext="ws" ws-connect="/ws/ui" data-sk-version="${SERVER_ID}"${topicsAttr}>
   ${content}

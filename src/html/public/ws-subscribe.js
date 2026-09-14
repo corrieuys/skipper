@@ -234,6 +234,21 @@
     updateBannerText();
   });
 
+  // Omarchy OS theme changed: swap the omarchy stylesheet link in place. The
+  // new sheet is loaded before the old one is removed so nothing flashes.
+  function swapOmarchyTheme(href) {
+    if (!href) return;
+    var old = document.getElementById("sk-omarchy-theme");
+    var next = document.createElement("link");
+    next.rel = "stylesheet";
+    next.href = href;
+    next.onload = function () {
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+      next.id = "sk-omarchy-theme";
+    };
+    (old && old.parentNode ? old.parentNode : document.head).appendChild(next);
+  }
+
   // Handle incoming messages for heartbeat
   document.addEventListener("htmx:wsBeforeMessage", function (evt) {
     try {
@@ -241,6 +256,11 @@
       if (data && data.type === "ping") {
         lastPingAt = Date.now();
         evt.preventDefault(); // Don't let htmx process ping messages
+        return;
+      }
+      if (data && data.__sk_notify && data.__sk_notify.kind === "omarchy") {
+        swapOmarchyTheme(data.__sk_notify.href);
+        evt.preventDefault();
         return;
       }
     } catch (e) {
