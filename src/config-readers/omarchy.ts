@@ -1,39 +1,46 @@
-import { existsSync, readFileSync, realpathSync, statSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, readFileSync, realpathSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
- * Reader for the active Omarchy theme (https://omarchy.org). Omarchy keeps the
- * selected theme behind one symlink, `~/.config/omarchy/current/theme`, whose
- * `colors.toml` is the palette every app is generated from, and the selected
- * wallpaper behind `~/.config/omarchy/current/background`. Nothing here is ever
- * written back; Skipper only follows what the OS picked.
+ * Reader for the active Omarchy theme (https://omarchy.org). Omarchy stages the
+ * selected theme at `~/.local/state/omarchy/current/theme`, whose
+ * `colors.toml` is the palette every app is generated from. Nothing here is
+ * ever written back; Skipper only follows what the OS picked.
  *
- * `watchOmarchy` fires when either symlink is swapped (`omarchy-theme-set`,
- * `omarchy-theme-bg-next`), debounced because a theme switch rewrites many files.
+ * `watchOmarchy` fires when the staged theme is swapped (`omarchy-theme-set`),
+ * debounced because a theme switch rewrites many files.
  */
 
 export interface OmarchyPalette {
   background: string;
   foreground: string;
   accent: string;
-  /** ANSI colours 0..15 as `#rrggbb`; missing entries fall back to foreground. */
+  /**
+   * ANSI colours 0..15 as `#rrggbb`. Staged themes are semantic-only
+   * (background/foreground/red/...) with no `colorN` keys, so missing entries
+   * fall back to the matching semantic name, then to foreground. Mirrors the
+   * `ansi_alias` cascade in `omarchy-theme-color`.
+   */
   colors: string[];
   mode: "dark" | "light";
 }
 
 export interface OmarchyState {
   palette: OmarchyPalette;
-  /** Absolute path of the active wallpaper image, or null when none is set. */
-  background: string | null;
-  /** Cache-busting token: changes whenever the theme or wallpaper changes. */
+  /** Cache-busting token: changes whenever the staged theme changes. */
   version: string;
 }
 
-const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "webp", "avif", "gif"]);
-
 export function omarchyCurrentDir(): string {
-  return process.env.OMARCHY_CURRENT_DIR || join(homedir(), ".config", "omarchy", "current");
+  if (process.env.OMARCHY_CURRENT_DIR) return process.env.OMARCHY_CURRENT_DIR;
+  const next = join(homedir(), ".local", "state", "omarchy", "current");
+  if (existsSync(join(next, "theme", "colors.toml"))) return next;
+  // Legacy location from older Omarchy releases; kept as a fallback so a
+  // machine that still stages the theme there keeps working.
+  const legacy = join(homedir(), ".config", "omarchy", "current");
+  if (existsSync(join(legacy, "theme", "colors.toml"))) return legacy;
+  return next;
 }
 
 function colorsTomlPath(): string {
@@ -81,23 +88,20 @@ export function paletteFromToml(text: string, lightMarker = false): OmarchyPalet
   const kv = parseColorsToml(text);
   const background = normalizeHex(kv.background) ?? "#000000";
   const foreground = normalizeHex(kv.foreground) ?? "#ffffff";
-  const accent = normalizeHex(kv.accent) ?? normalizeHex(kv.color4) ?? foreground;
+  const accent = normalizeHex(kv.accent) ?? normalizeHex(kv.blue) ?? normalizeHex(kv.color4) ?? foreground;
+  // Staged themes (e.g. Catppuccin) ship semantic names only. Fall back per
+  // index the same way `omarchy-theme-color` aliases ANSI <-> semantic.
+  const semanticByIndex = [
+    kv.background, kv.red, kv.green, kv.yellow, kv.blue, kv.magenta, kv.cyan, kv.foreground,
+    kv.muted, kv.bright_red, kv.bright_green, kv.bright_yellow, kv.bright_blue,
+    kv.bright_magenta, kv.bright_cyan, kv.bright_foreground,
+  ];
   const colors: string[] = [];
-  for (let i = 0; i < 16; i++) colors.push(normalizeHex(kv[`color${i}`]) ?? foreground);
+  for (let i = 0; i < 16; i++) {
+    colors.push(normalizeHex(kv[`color${i}`]) ?? normalizeHex(semanticByIndex[i]) ?? foreground);
+  }
   const mode = lightMarker || kv.mode === "light" ? "light" : "dark";
   return { background, foreground, accent, colors, mode };
-}
-
-function resolveBackground(): string | null {
-  const link = join(omarchyCurrentDir(), "background");
-  try {
-    const real = realpathSync(link);
-    const ext = real.split(".").pop()?.toLowerCase() ?? "";
-    if (!IMAGE_EXTS.has(ext)) return null;
-    return statSync(real).isFile() ? real : null;
-  } catch {
-    return null;
-  }
 }
 
 let cached: OmarchyState | null = null;
@@ -107,7 +111,7 @@ export function invalidateOmarchyState(): void {
   cached = null;
 }
 
-/** The active theme + wallpaper, or null when Omarchy is not present. */
+/** The active theme palette, or null when Omarchy is not present. */
 export function getOmarchyState(): OmarchyState | null {
   if (cached) return cached;
   const tomlPath = colorsTomlPath();
@@ -120,19 +124,18 @@ export function getOmarchyState(): OmarchyState | null {
   const themeDir = join(omarchyCurrentDir(), "theme");
   const lightMarker = existsSync(join(themeDir, "light.mode"));
   const palette = paletteFromToml(text, lightMarker);
-  const background = resolveBackground();
   let themeReal = themeDir;
   try { themeReal = realpathSync(themeDir); } catch { /* keep the link path */ }
-  const seed = `${themeReal}|${text}|${background ?? ""}`;
+  const seed = `${themeReal}|${text}`;
   const version = Bun.hash(seed).toString(36);
-  cached = { palette, background, version };
+  cached = { palette, version };
   return cached;
 }
 
 /**
- * Watch `~/.config/omarchy/current` for the theme / background symlinks being
- * replaced. Calls `onChange` (after a short debounce) only when the resolved
- * state actually changed. Returns a stop function; a no-op when Omarchy is absent.
+ * Watch `~/.local/state/omarchy/current` for the staged theme being replaced.
+ * Calls `onChange` (after a short debounce) only when the resolved state
+ * actually changed. Returns a stop function; a no-op when Omarchy is absent.
  */
 export function watchOmarchy(onChange: (state: OmarchyState) => void, debounceMs = 400): () => void {
   const dir = omarchyCurrentDir();

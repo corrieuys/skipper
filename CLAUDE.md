@@ -142,7 +142,7 @@ repo's GitHub Releases.
 | `SKIPPER_HTTP_LOG` | (unset) | `all` = log every HTTP request; default skips high-frequency UI polls (still logs errors + slow) |
 | `SKIPPER_LOG_MAX_BYTES` | 26214400 (25 MB) | size cap for `~/.skipper/skipper.log` (the daemon's stdout/stderr file); the tick loop snapshots it to `skipper.log.old` + truncates when exceeded |
 | `SKIPPER_TUI_PALETTE` | (auto) | `ansi` = the terminal dashboard draws with the terminal's own ANSI 0..15 colours + default fg/bg (follows the terminal theme, auto on Omarchy); `256` = fixed xterm-256 palette |
-| `OMARCHY_CURRENT_DIR` | `~/.config/omarchy/current` | where the Omarchy OS-theme follower reads `theme/colors.toml` + `background` (override for tests / sandboxes) |
+| `OMARCHY_CURRENT_DIR` | `~/.local/state/omarchy/current` | where the Omarchy OS-theme follower reads `theme/colors.toml` (override for tests / sandboxes) |
 
 ## Map — where to look
 

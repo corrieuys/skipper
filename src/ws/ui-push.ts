@@ -313,7 +313,7 @@ export class UIWebSocketManager {
   }
 
   private registerEventHandlers(): void {
-    // Omarchy OS theme / wallpaper switched: every open page swaps its omarchy
+    // Omarchy OS theme switched: every open page swaps its omarchy
     // stylesheet link in place (ws-subscribe.js); no fragment, no reload.
     this.trackOn("appearance:omarchy_changed", (event) => this.broadcastOmarchyTheme(event.version));
 
