@@ -36,6 +36,7 @@ export function v2layout(
   <script src="/monkey.js" defer></script>
   <script src="/zen-cube-2d.js" defer></script>
   <script src="/dictation.js" defer></script>
+  <script src="/glyph.js" defer></script>
   <script src="/schedule-matrix.js" defer></script>
   <link rel="stylesheet" href="${STYLESHEET_PATH}">
   ${appearanceCss ? `<style>${appearanceCss}</style>` : ""}

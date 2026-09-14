@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
-import { registerDaemonTools, registerExternalTools, type DaemonDeps } from "./tools";
-import { hashApiKey, resolveAgentFromToken, type InternalAgentIdentity } from "./auth";
+import { registerDaemonTools, registerExternalTools, registerRendererTools, type DaemonDeps } from "./tools";
+import { hashApiKey, resolveAgentFromToken, issueRendererToken, revokeRendererToken, type InternalAgentIdentity } from "./auth";
 import { GlobalStoreManager } from "../global-store/manager";
 import { createLocalTeam } from "../teams/local-teams";
 import { setStringSetting } from "../config/app-settings";
@@ -336,5 +336,31 @@ describe("resolveAgentFromToken — API key auth", () => {
   it("rejects a finished instance on a finished task", () => {
     seedInstance("inst-done", "completed", "settled");
     expect(resolveAgentFromToken(db, "inst-done")).toBeNull();
+  });
+});
+
+describe("registerRendererTools — the Canvas renderer's read-only surface", () => {
+  beforeEach(() => {
+    db = new Database(TEST_DB);
+    db.exec("PRAGMA foreign_keys = ON");
+    initializeDatabase(db);
+  });
+  afterEach(() => {
+    db.close();
+    try { require("fs").unlinkSync(TEST_DB); } catch {}
+  });
+
+  it("registers exactly list_artifacts and get_artifact", () => {
+    const { registeredNames, server } = makeFakeMcpServer();
+    registerRendererTools(server as never, makeDeps(), () => ({ type: "renderer", taskId: "t1" }));
+    expect(registeredNames.sort()).toEqual(["get_artifact", "list_artifacts"]);
+  });
+
+  it("renderer tokens are in-memory, task-scoped, and revocable", () => {
+    const token = issueRendererToken("task-9");
+    expect(token.startsWith("glyph-")).toBe(true);
+    expect(resolveAgentFromToken(db, token)).toEqual({ type: "renderer", taskId: "task-9" });
+    revokeRendererToken(token);
+    expect(resolveAgentFromToken(db, token)).toBeNull();
   });
 });

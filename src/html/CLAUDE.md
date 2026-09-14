@@ -165,7 +165,7 @@ views share the same shell.
 | `shell/` | Layout + navbar wrappers |
 | `view-models/` | Data shape feeding renderers (e.g. `command-center.vm.ts`). Pure assemblers — SQL lives in `src/data` (`command-center.ts`), never here |
 | `styles/` | CSS strings |
-| `public/` | Static assets served by Bun |
+| `public/` | Static assets served by Bun. `glyph.js` is the **Canvas** overlay (plain-JS port of glyph-ui protocol + FLIP engine, `Skipper.glyph.open/close/reset`, fresh-change highlight; see [../glyph/CLAUDE.md](../glyph/CLAUDE.md)); its node styles live in `styles/glyph.ts`. `realtime-audio.js` also drives mirror Record/Stop/status controls marked `data-rt-start`/`data-rt-stop`/`data-rt-status` (the Canvas bar) |
 
 ## Top-level files
 

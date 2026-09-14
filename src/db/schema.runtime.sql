@@ -678,3 +678,17 @@ CREATE TABLE IF NOT EXISTS task_memory (
 -- Indexes live in migrations/0025_task_memory.sql (fresh DBs) and the
 -- legacy-migrations rebuild (v1 DBs): this file runs before either, and an
 -- index on scope_id would fail against a v1 table that lacks the column.
+
+-- Latest glyph (Canvas) screen per task so the overlay survives a restart:
+-- frame, consumed register cursor, model session. See src/glyph/CLAUDE.md.
+CREATE TABLE IF NOT EXISTS glyph_screens (
+  task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  frame TEXT NOT NULL,
+  cursor TEXT NOT NULL DEFAULT '{}',
+  session_id TEXT,
+  calls INTEGER NOT NULL DEFAULT 0,
+  -- Fingerprint of the task summary (status, phase, review flag) at the last
+  -- wake, so a restart can tell a quiet task from one whose status moved.
+  summary_fp TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

@@ -55,9 +55,17 @@
 
   function getEl(id) { return document.getElementById(id); }
 
+  // Secondary controls (the Canvas overlay's top bar) mirror the composer's
+  // buttons through data attributes instead of ids, so both stay in sync.
+  function eachMirror(sel, fn) {
+    var els = document.querySelectorAll(sel);
+    for (var i = 0; i < els.length; i++) fn(els[i]);
+  }
+
   function updateStatus(text) {
     var el = getEl('audio-status');
     if (el) el.textContent = text;
+    eachMirror('[data-rt-status]', function (m) { m.textContent = text; });
   }
 
   function syncUi() {
@@ -65,7 +73,14 @@
     var stopBtn = getEl('btn-stop-recording');
     var vizWrap = getEl('audio-visualizer-wrap');
 
-    if (!startBtn && !stopBtn && !vizWrap) return;
+    if (!startBtn && !stopBtn && !vizWrap && !document.querySelector('[data-rt-start]')) return;
+
+    eachMirror('[data-rt-start]', function (m) {
+      m.style.display = isRecording ? 'none' : '';
+      m.disabled = !isRecording && audioLockedByOther;
+      m.title = (!isRecording && audioLockedByOther) ? 'Recording is in use by another client' : '';
+    });
+    eachMirror('[data-rt-stop]', function (m) { m.style.display = isRecording ? '' : 'none'; });
 
     if (isRecording) {
       if (startBtn) startBtn.style.display = 'none';

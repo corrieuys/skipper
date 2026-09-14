@@ -13,7 +13,36 @@ export interface ExternalIdentity {
   apiKeyName: string;
 }
 
-export type AgentIdentity = InternalAgentIdentity | ExternalIdentity;
+/**
+ * The Canvas renderer agent (src/glyph): not an agent instance, not an API key.
+ * It gets a short-lived in-memory token per model call, scoped to one task,
+ * and a read-only artifact tool set (server.ts -> registerRendererTools).
+ */
+export interface RendererIdentity {
+  type: "renderer";
+  taskId: string;
+}
+
+export type AgentIdentity = InternalAgentIdentity | ExternalIdentity | RendererIdentity;
+
+// Renderer tokens live only in memory: minted by GlyphEngine before a model
+// call, revoked after it. A daemon restart forgets them all, which is right.
+const rendererTokens = new Map<string, string>();
+
+export function issueRendererToken(taskId: string): string {
+  const token = `glyph-${crypto.randomUUID()}`;
+  rendererTokens.set(token, taskId);
+  return token;
+}
+
+export function revokeRendererToken(token: string): void {
+  rendererTokens.delete(token);
+}
+
+export function resolveRendererToken(token: string): RendererIdentity | null {
+  const taskId = rendererTokens.get(token);
+  return taskId ? { type: "renderer", taskId } : null;
+}
 
 export function hashApiKey(key: string): string {
   const hasher = new Bun.CryptoHasher("sha256");
@@ -73,6 +102,9 @@ export function describeTokenState(db: Database, token: string): Record<string, 
  */
 export function resolveAgentFromToken(db: Database, token: string): AgentIdentity | null {
   if (!token || token.length < 8) return null;
+
+  const renderer = resolveRendererToken(token);
+  if (renderer) return renderer;
 
   // Check agent_instances (covers both entrypoints and delegation children).
   //

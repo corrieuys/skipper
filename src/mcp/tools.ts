@@ -1116,3 +1116,73 @@ export function registerExternalTools(
   registerTaskTools(server, deps, getIdentity, "external");
   registerReferencePrompts(server);
 }
+
+/**
+ * The Canvas renderer's tool set (identity `renderer`, see auth.ts): read-only
+ * access to the task's artifacts, nothing else. `get_artifact` returns the FULL
+ * text body of an inline artifact; a file artifact returns its metadata and,
+ * for images, the image itself as an MCP image block, because the renderer
+ * has no file tool of its own.
+ */
+export function registerRendererTools(
+  server: McpServer,
+  deps: DaemonDeps,
+  getIdentity: () => AgentIdentity | null,
+): void {
+  const { artifactManager } = deps;
+  const taskIdOf = (): string | null => {
+    const id = getIdentity();
+    return id?.type === "renderer" ? id.taskId : null;
+  };
+
+  server.tool(
+    "list_artifacts",
+    "List the task's artifacts (latest version per name): name, version, kind, description, storage ('inline' = text body via get_artifact; 'file' = image or file with mime/bytes/width/height), created_at.",
+    {
+      kind: z.string().optional().describe("Filter by artifact kind"),
+      name_prefix: z.string().optional().describe("Filter by name prefix"),
+      limit: z.number().optional().describe("Max results (default 100)"),
+    },
+    async ({ kind, name_prefix, limit }) => {
+      const taskId = taskIdOf();
+      if (!taskId) return { content: [{ type: "text" as const, text: "Error: no task" }] };
+      const items = artifactManager.listArtifacts({ taskId, kind, namePrefix: name_prefix, limit });
+      return { content: [{ type: "text" as const, text: JSON.stringify(items) }] };
+    },
+  );
+
+  server.tool(
+    "get_artifact",
+    "Read one artifact by name (latest version unless given). Inline artifacts return the complete text body, untruncated. Image artifacts return their metadata plus the image itself; other files return metadata only.",
+    {
+      name: z.string().describe("Artifact name, exactly as listed"),
+      version: z.union([z.literal("latest"), z.number()]).optional().describe("Version number or 'latest'"),
+    },
+    async ({ name, version }) => {
+      const taskId = taskIdOf();
+      if (!taskId) return { content: [{ type: "text" as const, text: "Error: no task" }] };
+      const artifact = artifactManager.getArtifact(taskId, name, version ?? "latest");
+      if (!artifact) {
+        const names = artifactManager.listArtifacts({ taskId }).map((a) => a.name);
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "not_found", artifacts: names }) }] };
+      }
+      if (artifact.storage === "file") {
+        const meta = {
+          id: artifact.id, storage: "file" as const, kind: artifact.kind, name: artifact.name, version: artifact.version,
+          mime: artifact.mime, bytes: artifact.bytes, width: artifact.width, height: artifact.height, description: artifact.body,
+        };
+        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+          { type: "text", text: JSON.stringify(meta) },
+        ];
+        if (artifact.mime?.startsWith("image/")) {
+          const file = artifactManager.readArtifactBytes(artifact.id);
+          if (file) content.push({ type: "image", data: Buffer.from(file.bytes).toString("base64"), mimeType: artifact.mime });
+        }
+        return { content };
+      }
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ name: artifact.name, version: artifact.version, kind: artifact.kind, format: artifact.format, description: artifact.description, body: artifact.body }) }],
+      };
+    },
+  );
+}

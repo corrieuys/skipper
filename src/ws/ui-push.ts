@@ -146,7 +146,10 @@ export class UIWebSocketManager {
       // snapshot on connect, so they render immediately instead of waiting for
       // the next event. HTML clients seed from the server-rendered page.
       const data = ws.data as UiPushWSData;
-      if (data.type === "ui-push" && data.format === "json") {
+      // Only clients that asked for the dashboard (or for nothing in particular)
+      // get the snapshot; a topic-scoped JSON socket (glyph overlay) does not
+      // pay for the 250-row activity query.
+      if (data.type === "ui-push" && data.format === "json" && (data.subscriptions.size === 0 || data.subscriptions.has("dashboard"))) {
         try {
           ws.send(this.buildDashboardSnapshotMessage());
         } catch {
@@ -275,6 +278,11 @@ export class UIWebSocketManager {
    * activity) used to run their queries on every agent:output tick and only
    * THEN discover nobody was listening.
    */
+  /** Public form for out-of-file pushers (glyph engine) that gate model calls on an open overlay. */
+  hasJsonClients(topics: string[]): boolean {
+    return this.hasClients("json", topics);
+  }
+
   private hasClients(format: "html" | "json", topics: string[]): boolean {
     for (const ws of this.clients) {
       const data = ws.data as UiPushWSData;

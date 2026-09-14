@@ -17,6 +17,7 @@ import { teamCenterStyles } from "./team-center";
 import { teamMapStyles } from "./team-map";
 import { toastStyles } from "./toast";
 import { identityStyles } from "./identity";
+import { glyphStyles } from "./glyph";
 
 /** New design system styles (sk- prefixed). Used by v2 pages. */
 export function skStyles(): string {
@@ -36,6 +37,7 @@ export function skStyles(): string {
     teamMapStyles(),
     toastStyles(),
     identityStyles(),
+    glyphStyles(),
   ].join("\n");
 }
 

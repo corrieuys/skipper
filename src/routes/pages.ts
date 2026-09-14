@@ -1445,7 +1445,7 @@ function registerV2PageRoutes(): void {
     // Dictation is experimental-only; its config row is hidden without the flag,
     // so reject writes too.
     const { isExperimental } = require("../config/feature-flags");
-    if (isExperimental()) validTargets.push("dictation");
+    if (isExperimental()) validTargets.push("dictation", "glyph");
     if (!validTargets.includes(target)) {
       return new Response(`target must be ${validTargets.join("|")}`, { status: 400 });
     }

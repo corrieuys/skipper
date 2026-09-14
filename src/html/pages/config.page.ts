@@ -27,6 +27,7 @@ export interface ConfigPageViewModel {
     greg: ModelChoice;
     dictation: ModelChoice;
     task_title: Partial<ModelChoice>;
+    glyph: ModelChoice;
     options: AgentTypeOption[];
   };
   slack?: SlackConfigView;
@@ -46,7 +47,7 @@ export interface ConfigPageViewModel {
 /** One provider (agent type) + model row for a subsystem. Model list is filtered
  *  client-side when the provider changes (see the script in modelSettingsPanel). */
 function modelSettingRow(
-  target: "skipper" | "greg" | "dictation" | "task_title",
+  target: "skipper" | "greg" | "dictation" | "task_title" | "glyph",
   label: string,
   hint: string,
   current: Partial<ModelChoice>,
@@ -98,6 +99,7 @@ function modelSettingsPanel(ms: ConfigPageViewModel["modelSettings"]): string {
       ${modelSettingRow("greg", "Greg", "Heckler bot", ms.greg, ms.options)}
       ${modelSettingRow("task_title", "Task Title Generator", "Generates a short title from the description when none is given", ms.task_title ?? {}, ms.options, true)}
       ${isExperimental() ? modelSettingRow("dictation", "Dictation Rewriter", "Cleans up dictated task descriptions", ms.dictation, ms.options) : ""}
+      ${isExperimental() ? modelSettingRow("glyph", "Canvas Renderer", "Reads a task's notes, messages, artifacts and your input and keeps the Canvas screen up to date", ms.glyph ?? {}, ms.options) : ""}
     </div>
   </div>`;
 }

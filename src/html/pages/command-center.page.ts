@@ -196,7 +196,7 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
   // server always renders Latest active and the client corrects it.
   const latestBody = `${attnHtml}
     ${section("active", "Active", active.length,
-      active.length > 0 ? active.map(t => sidebarItem(t, activeId)).join("") : `<div class="tc-team__empty">Nothing running</div>`)}
+    active.length > 0 ? active.map(t => sidebarItem(t, activeId)).join("") : `<div class="tc-team__empty">Nothing running</div>`)}
     ${vm.scheduledTasks.length > 0 ? section("Scheduled", "Recurring", vm.scheduledTasks.length, recurring) : ""}
     ${recent.length > 0 ? section("recent", "Recent", recent.length,
       recent.map(t => sidebarItem(t, activeId)).join("")) : ""}`;
@@ -281,7 +281,7 @@ function renderRecurringSeries(st: ScheduledTaskSummary, runs: ScheduledRunRow[]
   // Oldest to newest left to right, like a CI run strip.
   const strip = runs.length > 0
     ? `<span class="tc-runstrip">${[...runs].reverse().map(r =>
-        `<span class="tc-runsq tc-runsq--${displayRunSquareClass(runDisplay(r))}" title="${escapeHtml(runDisplay(r))}"></span>`).join("")}</span>`
+      `<span class="tc-runsq tc-runsq--${displayRunSquareClass(runDisplay(r))}" title="${escapeHtml(runDisplay(r))}"></span>`).join("")}</span>`
     : "";
   const runRows = runs.map(r => `
     <a href="/?task=${escapeHtml(r.id)}"
@@ -363,8 +363,8 @@ function renderTeamGroup(team: { id: string; name: string; icon?: string | null;
       <div class="tc-team__head">
         <span class="tc-team__caret">&#x25B6;</span>
         ${team.icon
-          ? `<span class="mc-sidebar__item-icon">${entityIcon(team.icon, team.icon_color, { size: 15 })}</span>`
-          : `<span class="tc-team__dot${hasRunning ? " tc-team__dot--running" : ""}"></span>`}
+      ? `<span class="mc-sidebar__item-icon">${entityIcon(team.icon, team.icon_color, { size: 15 })}</span>`
+      : `<span class="tc-team__dot${hasRunning ? " tc-team__dot--running" : ""}"></span>`}
         ${nameHtml}
         ${attention > 0 ? `<span class="tc-team__count" title="Needs your input">${attention}</span>` : ""}
         ${team.id ? `<a class="tc-team__add" href="/tasks/new?team=${escapeHtml(team.id)}"
@@ -612,6 +612,7 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
   const phaseStepper = task.status !== "settled" && mission && mission.phases.length > 0
     ? renderPhaseStepper(mission.phases, task.id, isWorking) : "";
   const showAutopilot = task.status === "draft" || task.status === "active";
+  const canvasAudio = composerAudioSettings(task as unknown as { task_config?: Record<string, unknown> });
 
   const showResult = (task.status === "settled" || display === "idle") && task.result_summary;
   const resultHtml = showResult ? `
@@ -639,6 +640,7 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
       <div class="mc-task-header__actions">
         ${showAutopilot ? renderAutopilotToggle(task) : ""}
         ${renderActionsMenu(task, needsReview)}
+        ${isExperimental() ? `<button type="button" class="sk-btn sk-btn--sm" onclick="Skipper.glyph.open('${eid}')" title="Canvas: a full-screen picture of the task (decisions, open questions, what needs you, what the agents produced), kept up to date by a renderer agent">Canvas</button>` : ""}
         <button type="button" class="sk-btn sk-btn--sm" onclick="Skipper.modal.open('tc-details-modal')"
           hx-get="/workspace/task/${eid}/details" hx-target="#tc-details-modal-body" hx-swap="innerHTML">Details</button>
       </div>
@@ -711,6 +713,44 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
         </div>
       </div>
     </div>
+
+    <!-- Canvas overlay (experimental): full-screen one-way screen in the glyph protocol, rendered by public/glyph.js.
+         The bar carries the task composer (text + record) so the operator can keep steering with the canvas open;
+         the record buttons mirror the composer's through realtime-audio.js data-rt-* attributes. -->
+    ${isExperimental() ? `<div id="tc-glyph-modal" class="sk-modal tc-glyph" data-sk-modal-backdrop>
+      <div class="sk-modal__content tc-glyph__content">
+        <div class="tc-glyph__bar">
+          <span class="tc-glyph__brand"><img src="/icon2.png" alt="Skipper"><span>skipper</span></span>
+          <span id="tc-glyph-status" class="tc-glyph__status"></span>
+          ${task.status === "active" ? `<form class="tc-glyph__composer" hx-post="/api/tasks/${eid}/input" hx-swap="none"
+                hx-on::after-request="if(event.detail.successful){this.querySelector('input[name=text]').value='';}">
+            <input type="text" name="text" placeholder="Type a message or instruction..." required autocomplete="off" class="tc-glyph__input" />
+            <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Send</button>
+          </form>
+          <span class="tc-glyph__audio">
+            <button type="button" data-rt-start onclick="startRealtimeAudio('${eid}', ${canvasAudio.cadenceSeconds}, ${canvasAudio.overlapSeconds})" class="sk-btn sk-btn--sm" title="Start audio recording">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+              Record
+            </button>
+            <button type="button" data-rt-stop onclick="stopRealtimeAudio()" class="sk-btn sk-btn--sm sk-btn--danger sk-animate-pulse" title="Stop recording" style="display:none;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+              Stop
+            </button>
+            <span data-rt-status class="sk-muted sk-text-xs"></span>
+          </span><span class="tc-glyph__spacer tc-glyph__spacer--fill"></span>` : `<span class="tc-glyph__spacer"></span>`}
+          <button type="button" class="sk-btn sk-btn--sm" onclick="Skipper.glyph.reset()" title="Drop the screen and the renderer session, then render again from scratch">Reset</button>
+          <button type="button" class="sk-btn sk-btn--sm" data-sk-modal-close="tc-glyph-modal">Close</button>
+        </div>
+        <div class="tc-glyph__stage-wrap">
+          <div id="tc-glyph-empty" class="tc-glyph__empty" hidden>
+            <span class="tc-glyph__empty-title">canvas</span>
+            <span class="tc-glyph__empty-sub">waiting for the renderer</span>
+          </div>
+          <main id="tc-glyph-stage" class="tc-glyph__stage" aria-live="polite"></main>
+        </div>
+        <div id="tc-glyph-ghosts" class="tc-glyph__ghosts" aria-hidden="true"></div>
+      </div>
+    </div>` : ""}
 
     <!-- Activity detail modal -->
     <div id="activity-detail-modal" class="sk-modal" data-sk-modal-backdrop style="padding:1rem;">

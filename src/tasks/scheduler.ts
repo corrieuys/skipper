@@ -434,6 +434,7 @@ export class TaskScheduler {
       this.db.prepare("DELETE FROM escalations WHERE task_id = ?").run(id);
       this.db.prepare("DELETE FROM events WHERE task_id = ?").run(id);
       this.db.prepare("DELETE FROM task_messages WHERE task_id = ?").run(id);
+      this.db.prepare("DELETE FROM glyph_screens WHERE task_id = ?").run(id);
       // Memory rows have no FK (a shared series scope outlives its runs); a
       // one-off / per-run scope goes with the task, series rows stay.
       this.db.prepare("DELETE FROM task_memory WHERE scope_id = ?").run(`task:${id}`);

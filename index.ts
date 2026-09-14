@@ -9,6 +9,8 @@ import { registerDataRoutes } from "./src/routes/data/index";
 import { registerScheduledTaskRoutes } from "./src/routes/scheduled-tasks";
 import { registerApiKeyRoutes } from "./src/routes/api-keys";
 import { registerDictationRoutes } from "./src/routes/dictation";
+import { registerGlyphRoutes } from "./src/routes/glyph";
+import { GlyphEngine } from "./src/glyph/engine";
 import { registerCustomAgentRoutes } from "./src/routes/custom-agents";
 import { registerSingleAgentRoutes } from "./src/routes/single-agents";
 import { registerCustomToolRoutes } from "./src/routes/custom-tools";
@@ -57,6 +59,10 @@ const notificationManager = new NotificationManager(getDb(), uiPush);
 // Monkey pet engine
 const monkeyEngine = new MonkeyEngine(getDb(), getGregDb());
 
+// Glyph renderer agent: per-task one-way screen driven by a side model on bus
+// events, pushed on the `glyph:<taskId>` JSON topic. Experimental.
+const glyphEngine = new GlyphEngine(getDb(), uiPush, { daemonPort: () => server.port ?? (Number(process.env.PORT) || 5005) });
+
 // Per-task memory: bus listeners copy exchanges into task_memory and embed
 // them through whichever endpoint the config page selects (the managed local
 // llama-server by default). Agents read it via the query_task_memory tool.
@@ -101,6 +107,7 @@ registerScheduledTaskRoutes(daemon);
 registerApiKeyRoutes();
 // Dictation (experimental): transcribe + LLM cleanup for task-description fields.
 registerDictationRoutes();
+registerGlyphRoutes(glyphEngine, getDb());
 // Custom agents (experimental): CRUD for in-process agent definitions.
 registerCustomAgentRoutes();
 // Single agents (experimental): CRUD for standalone agents that run a task alone.
@@ -192,6 +199,7 @@ let stopUpdateRestart: (() => void) | null = null;
 async function startup() {
   await daemon.start();
   monkeyEngine.start();
+  glyphEngine.start();
   taskMemory.start();
 
   const db = getDb();
@@ -227,6 +235,7 @@ function shutdown() {
   getSlackSocket()?.stop();
   getSlackPush()?.stop();
   monkeyEngine.stop();
+  glyphEngine.stop();
   closeGregDb();
   mcpServer.close();
   notificationManager.destroy();

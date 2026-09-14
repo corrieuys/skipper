@@ -168,6 +168,7 @@ repo's GitHub Releases.
 | user hooks (task/escalation events → shell) | [src/hooks/CLAUDE.md](src/hooks/CLAUDE.md) |
 | desktop notification sounds | [src/notifications/CLAUDE.md](src/notifications/CLAUDE.md) |
 | greg/grug heckler bot | [src/monkey/CLAUDE.md](src/monkey/CLAUDE.md) |
+| Canvas (task overlay: a renderer agent deduces decisions/uncertainties/needs-you from notes, messages, artifacts, escalations and operator input into a one-way full-screen glyph-protocol screen; persisted per task; experimental) | [src/glyph/CLAUDE.md](src/glyph/CLAUDE.md) |
 | shared wire DTO types (all output surfaces) | [src/contracts/CLAUDE.md](src/contracts/CLAUDE.md) |
 | shared read queries (HTML + JSON + WS) | [src/data/CLAUDE.md](src/data/CLAUDE.md) |
 | global cross-task shared key/value store | [src/global-store/CLAUDE.md](src/global-store/CLAUDE.md) |

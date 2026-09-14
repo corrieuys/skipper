@@ -2,7 +2,14 @@
 
 `mcp__skipper-daemon__post_message({ content, format? })` (Codex may show the bare `post_message`) posts a short update to the operator's Messages column in the Skipper UI. It is the only channel that speaks to the human without interrupting them: an escalation stops the task and demands an answer, a message does not.
 
+YOUR PLAIN OUTPUT DOES NOT REACH THE OPERATOR. Text you write outside a tool call is a transcript the orchestrator reads, not a reply the human sees. Every answer meant for the person, without exception, goes through `post_message`:
+- The operator sent input (typed or spoken) and you are responding: the response IS a `post_message`. Answering in plain text means the operator never gets an answer.
+- The operator asked for a summary, a status, a list, an explanation: the summary itself is the content of the `post_message` (use `format: "markdown"` if it needs structure). Never post "I have prepared a summary" or "see the artifact"; post the summary.
+- You finished what the operator asked for: say so with `post_message`, with the result in it.
+Then, if the same content also belongs in a document for later, `create_artifact` in addition, never instead.
+
 WHEN TO POST (aim for a handful over a task, not a running commentary):
+- ALWAYS when you are replying to something the operator said or asked. That is not optional and does not count against "a handful".
 - You start a substantial piece of work: "Started reworking the checkout flow. About 8 files to touch."
 - Milestones and progress through task phases.
 - You make a decision the operator would want to know about: "Went with the existing session store instead of adding Redis, since traffic is well under what it handles."

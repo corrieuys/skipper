@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { resolveAgentFromToken, describeTokenState, type AgentIdentity } from "./auth";
-import { registerDaemonTools, registerExternalTools, type DaemonDeps } from "./tools";
+import { registerDaemonTools, registerExternalTools, type DaemonDeps, registerRendererTools } from "./tools";
 import { isSoloTeamId } from "../agents/solo";
 import { logError } from "../logging";
 
@@ -37,6 +37,8 @@ export class DaemonMcpServer {
 
     if (identity.type === "external") {
       registerExternalTools(server, this.deps, () => currentIdentity);
+    } else if (identity.type === "renderer") {
+      registerRendererTools(server, this.deps, () => currentIdentity);
     } else {
       const isDelegated = this.isDelegatedRuntime(identity.runtimeId);
       const isSolo = this.isSoloRuntime(identity.runtimeId);
@@ -138,7 +140,7 @@ export class DaemonMcpServer {
 
       return Response.json({ error: "Method not allowed" }, { status: 405 });
     } catch (err) {
-      const agentId = identity.type === "internal" ? identity.runtimeId : `ext:${identity.apiKeyId}`;
+      const agentId = identity.type === "internal" ? identity.runtimeId : identity.type === "renderer" ? `renderer:${identity.taskId}` : `ext:${identity.apiKeyId}`;
       logError(this.db, "mcp_server_error", { method, agentId }, err);
       return Response.json({ error: "Internal server error" }, { status: 500 });
     }

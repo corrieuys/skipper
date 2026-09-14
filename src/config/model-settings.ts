@@ -26,6 +26,8 @@ export const SETTING_DICTATION_AGENT_TYPE = "dictation_agent_type";
 export const SETTING_DICTATION_MODEL = "dictation_model";
 export const SETTING_TASK_TITLE_AGENT_TYPE = "task_title_agent_type";
 export const SETTING_TASK_TITLE_MODEL = "task_title_model";
+export const SETTING_GLYPH_AGENT_TYPE = "glyph_agent_type";
+export const SETTING_GLYPH_MODEL = "glyph_model";
 
 export interface ModelChoice {
   agent_type: string;
@@ -37,6 +39,9 @@ export const GREG_DEFAULT: ModelChoice = { agent_type: "claude-code", model: "cl
 
 /** Dictation rewriter default: fast + cheap, same reasoning as Greg's. */
 export const DICTATION_DEFAULT: ModelChoice = { agent_type: "claude-code", model: "claude-haiku-4-5" };
+
+/** Glyph renderer default: the CLI's own default model; the operator picks a specific one on the config page (experimental). */
+export const GLYPH_DEFAULT: ModelChoice = { agent_type: "claude-code", model: "default" };
 
 export interface AgentTypeOption {
   name: string;
@@ -101,6 +106,14 @@ export function getDictationModelChoice(db: Database): ModelChoice {
   };
 }
 
+/** Glyph renderer (experimental), same override-or-default shape as Greg. */
+export function getGlyphModelChoice(db: Database): ModelChoice {
+  return {
+    agent_type: getStringSetting(db, SETTING_GLYPH_AGENT_TYPE, "") || GLYPH_DEFAULT.agent_type,
+    model: getStringSetting(db, SETTING_GLYPH_MODEL, "") || GLYPH_DEFAULT.model,
+  };
+}
+
 /**
  * Task-title generator override, or undefined when unset. Unlike Greg/dictation
  * there is NO built-in default: the operator must pick a provider before a blank
@@ -128,6 +141,7 @@ export function getModelSettingsView(db: Database): {
   greg: ModelChoice;
   dictation: ModelChoice;
   task_title: Partial<ModelChoice>;
+  glyph: ModelChoice;
   options: AgentTypeOption[];
 } {
   const skOverride = getSkipperModelOverride(db);
@@ -140,6 +154,7 @@ export function getModelSettingsView(db: Database): {
     greg: getGregModelChoice(db),
     dictation: getDictationModelChoice(db),
     task_title: getTaskTitleModelOverride(db),
+    glyph: getGlyphModelChoice(db),
     options: listModelOptions(),
   };
 }
@@ -149,6 +164,7 @@ const VALID_KEYS = {
   greg: [SETTING_GREG_AGENT_TYPE, SETTING_GREG_MODEL],
   dictation: [SETTING_DICTATION_AGENT_TYPE, SETTING_DICTATION_MODEL],
   task_title: [SETTING_TASK_TITLE_AGENT_TYPE, SETTING_TASK_TITLE_MODEL],
+  glyph: [SETTING_GLYPH_AGENT_TYPE, SETTING_GLYPH_MODEL],
 } as const;
 
 /**
@@ -157,7 +173,7 @@ const VALID_KEYS = {
  */
 export function saveModelSetting(
   db: Database,
-  target: "skipper" | "greg" | "dictation" | "task_title",
+  target: "skipper" | "greg" | "dictation" | "task_title" | "glyph",
   agentType: string,
   model: string,
 ): string | null {
