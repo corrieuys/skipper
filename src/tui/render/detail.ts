@@ -84,22 +84,35 @@ export function drawDetail(s: Screen, r: Rect, store: Store, ui: UIState, focuse
   }
 
   // ── agents ──
+  // One entry per team agent: the detail's tiles (display name + template id)
+  // merged with the live roster, which names an instance by its template id
+  // ("investigator" for the "Investigator" tile), so matching is by lowercased
+  // name OR id, never by exact display name. Live ones first, then resting.
   if (y < bottom) {
     const live = store.agentsFor(task.id);
     const tiles = detail?.agent_tiles ?? [];
     let cx = x;
-    cx += s.text(cx, y, "agents ", S.dim);
     if (tiles.length === 0 && live.length === 0) {
+      cx += s.text(cx, y, "agents ", S.dim);
       s.text(cx, y, task.team_id ? "none live" : "solo", S.dim);
     } else {
-      const seen = new Set<string>();
-      const entries: Array<{ name: string; active: boolean; count: number }> = tiles.map((t) => ({ name: t.agent_name, active: t.is_active, count: t.instance_count }));
-      for (const t of entries) seen.add(t.name);
-      for (const a of live) if (!seen.has(a.template_agent_name)) entries.push({ name: a.template_agent_name, active: true, count: 1 });
-      for (let i = 0; i < entries.length; i++) {
-        const e = entries[i]!;
-        const glyph = orb(e.active, ui.frame, i);
-        const label = `${glyph} ${e.name}${e.count > 1 ? `×${e.count}` : ""}`;
+      const norm = (v: string) => v.trim().toLowerCase();
+      const entries = tiles.map((t) => ({ name: t.agent_name, keys: new Set([norm(t.agent_name), norm(t.template_agent_id)]), tileActive: t.is_active, tileCount: t.instance_count, liveCount: 0 }));
+      for (const a of live) {
+        const k = norm(a.template_agent_name);
+        let hit = entries.find((e) => e.keys.has(k));
+        if (!hit) {
+          hit = { name: a.template_agent_name, keys: new Set([k]), tileActive: false, tileCount: 0, liveCount: 0 };
+          entries.push(hit);
+        }
+        hit.liveCount++;
+      }
+      const rows = entries.map((e) => ({ name: e.name, active: e.liveCount > 0 || e.tileActive, count: e.liveCount || e.tileCount }));
+      rows.sort((a, b) => Number(b.active) - Number(a.active));
+      const liveN = rows.filter((r) => r.active).length;
+      cx += s.text(cx, y, liveN > 0 ? `${liveN} working ` : "agents resting ", liveN > 0 ? S.muted : S.dim);
+      for (const e of rows) {
+        const label = `${orb(e.active, ui.frame)} ${e.name}${e.active && e.count > 1 ? ` ×${e.count}` : ""}`;
         if (cx - x + textWidth(label) + 2 > w) break;
         cx += s.text(cx, y, label, e.active ? { fg: agentColor(e.name), bold: true } : S.dim);
         cx += 2;

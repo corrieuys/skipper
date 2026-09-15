@@ -90,6 +90,26 @@ export function componentStyles(): string {
     .sk-label { display: block; font-size: var(--sk-text-sm); color: var(--sk-text-muted); margin-bottom: var(--sk-space-1); }
     .sk-form-group { margin-bottom: var(--sk-space-4); }
     .sk-form-row { display: flex; gap: var(--sk-space-3); align-items: flex-end; }
+    /* Side-by-side fields that wrap to one column when narrow. Each cell is a
+       .sk-form-group; a slot with display:contents can inject one. */
+    .sk-form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0 var(--sk-space-4);
+      align-items: start;
+    }
+    .sk-form-help {
+      display: block;
+      font-size: var(--sk-text-xs);
+      color: var(--sk-text-muted);
+      line-height: 1.45;
+      margin-top: var(--sk-space-1);
+    }
+    /* A toggle used as a form field: lines up with .sk-form-group spacing and
+       lets the label carry a help line under the title. */
+    .sk-checkbox--field { align-items: flex-start; margin-top: 0; padding: var(--sk-space-1) 0; }
+    .sk-checkbox--field .sk-checkbox__toggle { margin-top: 2px; }
+    .sk-checkbox--field .sk-checkbox__label { color: var(--sk-text); }
 
     /* ── Checkbox toggle ── */
     .sk-checkbox {

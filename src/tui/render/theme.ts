@@ -247,7 +247,6 @@ export function statusLabel(status: string): string {
 
 // ── animation frame sets ──────────────────────────────────────────────────
 export const SPIN_BRAILLE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-export const SPIN_CUBE = ["◰", "◳", "◲", "◱"];
 export const PULSE = ["●", "◉", "◎", "○", "◎", "◉"];
 export const WAVE = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"];
 export const BLINK_SLOW = 6; // frames per half-cycle

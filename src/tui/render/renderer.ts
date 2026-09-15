@@ -6,7 +6,7 @@ import type { TaskItem, RecurringSeries } from "../model/types";
 import { FILTERS, type UIState, type Modal, type FormModal, type ListModal, type TextModal, type ConfirmModal, topModal, visibleListItems } from "../ui/state";
 import { railRows, selectedIndex, ago, clock, activitySparkline, scheduleLabel, hhmm, type RailRow } from "../ui/view-model";
 import { C, S, BRAND_RAMP, PULSE, statusColor, statusGlyph, agentColor } from "./theme";
-import { panel, phaseStrip, sparkline, lr, keyHints, scrollbar, dimAll, shadow, breathingCursor } from "./widgets";
+import { panel, phaseStrip, sparkline, lr, keyHints, scrollbar, dimAll, shadow, breathingCursor, orb } from "./widgets";
 import { drawDetail, activityLine } from "./detail";
 import { footerHints } from "../ui/hints";
 
@@ -376,7 +376,7 @@ function drawFeed(s: Screen, r: Rect, model: RenderModel, focused: boolean): num
     for (let i = 0; i < agents.length; i++) {
       const a = agents[i]!;
       const running = a.status === "running";
-      const glyph = running ? ["◰", "◳", "◲", "◱"][(ui.frame + i) % 4]! : "◴";
+      const glyph = orb(running, ui.frame);
       const label = `${glyph} ${a.template_agent_name}`;
       if (cx - body.x + textWidth(label) + 2 > body.w - 1) {
         s.text(cx, y, "…", S.dim);

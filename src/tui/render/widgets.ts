@@ -1,6 +1,6 @@
 import { Screen, type Style, textWidth, clip } from "./screen";
 import type { Rect } from "./layout";
-import { C, S, SPIN_CUBE, WAVE, CURSOR_BREATHE, phaseSegmentStyle, statusColor, statusLabel, statusGlyph } from "./theme";
+import { C, S, WAVE, CURSOR_BREATHE, phaseSegmentStyle, statusColor, statusLabel, statusGlyph } from "./theme";
 
 /** Reusable drawing helpers every view shares. Pure functions over a Screen. */
 
@@ -76,9 +76,14 @@ export function sparkline(s: Screen, x: number, y: number, buckets: number[], st
   return buckets.length;
 }
 
-/** Agent orb: rotating cube when active, hollow when idle. */
-export function orb(active: boolean, frame: number, seed: number): string {
-  return active ? SPIN_CUBE[(frame + seed) % SPIN_CUBE.length]! : "◦";
+/**
+ * Agent presence glyph: a slow-pulsing filled dot while the agent works, a
+ * hollow dot while it rests. One shape everywhere (task pane, live-feed
+ * roster) so the reader learns it once.
+ */
+export function orb(active: boolean, frame: number): string {
+  if (!active) return "○";
+  return Math.floor(frame / 4) % 2 === 0 ? "●" : "◉";
 }
 
 /** Animated "alive" wave used under headers while connected. */

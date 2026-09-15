@@ -148,45 +148,8 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
               <label class="sk-label">Working Directory <span style="font-weight:normal;font-size:0.72rem;color:var(--muted);">(optional — Skipper will discover from the task description if blank)</span></label>
               <input type="text" name="workingDirectory" class="sk-input" placeholder="/path/to/repo (optional)">
             </div>
-            <div class="sk-form-row">
-              <div class="sk-form-group" style="flex:1;">
-                <label class="sk-label" style="display:flex;align-items:center;gap:var(--sk-space-2);cursor:pointer;">
-                  <input type="checkbox" id="task-create-autopilot" checked onchange="syncTaskCreateMode(this)">
-                  Autopilot
-                </label>
-                <!-- The team slot and create route read the mode field; the checkbox
-                     mirrors into this hidden input (workflow = autopilot on). -->
-                <input type="hidden" name="mode" id="task-create-mode" value="workflow">
-                <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
-                  On: the team drives the task to the end of its phases. Off: the task waits for your input between turns.
-                </div>
-                <div class="sk-form-row" style="margin-top:var(--sk-space-3);gap:var(--sk-space-3);">
-                  <div class="sk-form-group" style="flex:1;">
-                    <label class="sk-label" for="task-create-summary">Transcript summary</label>
-                    <select id="task-create-summary" name="summaryEnabled" class="sk-select">
-                      <option value="" selected>Use global setting</option>
-                      <option value="true">On: summarize each audio chunk</option>
-                      <option value="false">Off: raw transcript to the timeline</option>
-                    </select>
-                  </div>
-                  <div class="sk-form-group" style="width:160px;">
-                    <label class="sk-label" for="task-create-window">Chunk seconds</label>
-                    <input type="number" id="task-create-window" name="windowSeconds" class="sk-input" min="5" max="600" placeholder="global">
-                  </div>
-                </div>
-                <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
-                  Audio recording settings for this task. Blank = the Real-time transcription defaults on the config page.
-                </div>
-                ${isExperimental() ? `
-                <label class="sk-label" style="display:flex;align-items:center;gap:var(--sk-space-2);cursor:pointer;margin-top:var(--sk-space-3);">
-                  <input type="checkbox" name="memoryEnabled" value="1">
-                  Memory
-                </label>
-                <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
-                  Keep a searchable memory of your input, audio summaries, agent messages, and notes that every agent on the task can query.
-                </div>` : ""}
-              </div>
-              <div class="sk-form-group" style="flex:1;">
+            <div class="sk-form-grid">
+              <div class="sk-form-group">
                 <label class="sk-label">Schedule</label>
                 <select id="task-create-schedule-kind" class="sk-select" onchange="toggleScheduleFields(this)">
                   <option value="once" selected>Run once</option>
@@ -202,6 +165,51 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
                 hx-target="this"
                 hx-swap="outerHTML"></div>
             </div>
+            <div class="sk-form-group">
+              <label class="sk-checkbox sk-checkbox--field">
+                <input type="checkbox" id="task-create-autopilot" checked onchange="syncTaskCreateMode(this)">
+                <span class="sk-checkbox__toggle"></span>
+                <span class="sk-checkbox__label">Autopilot
+                  <span class="sk-form-help">On: the team drives the task to the end of its phases. Off: the task waits for your input between turns.</span>
+                </span>
+              </label>
+              <!-- The team slot and create route read the mode field; the checkbox
+                   mirrors into this hidden input (workflow = autopilot on). -->
+              <input type="hidden" name="mode" id="task-create-mode" value="workflow">
+            </div>
+            ${isExperimental() ? `
+            <div class="sk-form-group">
+              <label class="sk-checkbox sk-checkbox--field">
+                <input type="checkbox" name="memoryEnabled" value="1">
+                <span class="sk-checkbox__toggle"></span>
+                <span class="sk-checkbox__label">Memory
+                  <span class="sk-form-help">Keep a searchable memory of your input, audio summaries, agent messages, and notes that every agent on the task can query.</span>
+                </span>
+              </label>
+            </div>` : ""}
+            <div class="sk-form-group">
+              <details class="sk-collapse-field">
+                <summary class="sk-label" style="cursor:pointer;list-style:none;">
+                  <span class="sk-collapse-field__caret">&#x25B6;</span> Audio recording
+                  <span style="font-weight:normal;font-size:0.72rem;color:var(--muted);">(optional)</span>
+                </summary>
+                <span class="sk-form-help" style="margin:var(--sk-space-1) 0 var(--sk-space-3);">Per-task recording settings. Blank fields use the Real-time transcription defaults on the config page.</span>
+                <div class="sk-form-grid">
+                  <div class="sk-form-group">
+                    <label class="sk-label" for="task-create-summary">Transcript summary</label>
+                    <select id="task-create-summary" name="summaryEnabled" class="sk-select">
+                      <option value="" selected>Use global setting</option>
+                      <option value="true">On: summarize each audio chunk</option>
+                      <option value="false">Off: raw transcript to the timeline</option>
+                    </select>
+                  </div>
+                  <div class="sk-form-group">
+                    <label class="sk-label" for="task-create-window">Chunk seconds</label>
+                    <input type="number" id="task-create-window" name="windowSeconds" class="sk-input" min="5" max="600" placeholder="global (5 to 600)">
+                  </div>
+                </div>
+              </details>
+            </div>
             <div id="phase-config-slot"
               hx-get="/fragments/task-form/phase-config"
               hx-trigger="change[target.name=='teamId'] from:document"
@@ -210,39 +218,38 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
               hx-swap="innerHTML"></div>
             <div id="schedule-fields" style="display:none;">
               ${isExperimental() ? `
-              <div class="sk-form-row" style="gap:var(--sk-space-3);">
-                <div class="sk-form-group" style="flex:1;">
+              <div class="sk-form-grid">
+                <div class="sk-form-group">
                   <label class="sk-label">Memory across runs</label>
                   <select name="memoryMode" class="sk-select">
                     <option value="off" selected>Off</option>
                     <option value="run">Per run (each run its own memory)</option>
                     <option value="shared">Shared across runs</option>
                   </select>
-                  <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
-                    Shared: every run can query what earlier runs recorded. Replaces the Memory checkbox for recurring tasks.
-                  </div>
+                  <span class="sk-form-help">Shared: every run can query what earlier runs recorded. Replaces the Memory toggle for recurring tasks.</span>
                 </div>
-                <div class="sk-form-group" style="width:170px;">
+                <div class="sk-form-group">
                   <label class="sk-label">Keep entries for (days)</label>
                   <input type="number" name="memoryRetentionDays" class="sk-input" min="0" step="1" value="0" placeholder="0 = indefinitely">
+                  <span class="sk-form-help">Shared memory only. Older entries are dropped when new ones are written. 0 keeps them indefinitely.</span>
                 </div>
-              </div>
-              <div class="sk-muted sk-text-xs" style="margin:calc(-1 * var(--sk-space-2)) 0 var(--sk-space-3);">Keep entries for: shared memory only. Entries older than this are dropped when new ones are written. 0 keeps them indefinitely.</div>` : ""}
+              </div>` : ""}
               <div class="sk-form-group">
-                <label class="sk-label">Schedule</label>
+                <label class="sk-label">Cadence</label>
                 <select name="scheduleMode" class="sk-select" style="max-width:220px;">
                   <option value="" selected>None (manual only)</option>
                   <option value="interval">Fixed interval</option>
                   <option value="weekly">Weekly schedule</option>
                 </select>
+                <span class="sk-form-help">Optional. Leave it as None to run this recurring task only by hand with Run Now.</span>
               </div>
               <div id="schedule-interval-fields" style="display:none;">
-                <div class="sk-form-row" style="gap:var(--sk-space-3);">
-                  <div class="sk-form-group" style="flex:1;">
+                <div class="sk-form-grid">
+                  <div class="sk-form-group">
                     <label class="sk-label">Run every</label>
-                    <input type="number" name="scheduleAmount" class="sk-input" min="1" placeholder="e.g. 1" style="max-width:100px;" disabled>
+                    <input type="number" name="scheduleAmount" class="sk-input" min="1" placeholder="e.g. 1" disabled>
                   </div>
-                  <div class="sk-form-group" style="flex:1;">
+                  <div class="sk-form-group">
                     <label class="sk-label">Unit</label>
                     <select name="scheduleUnit" class="sk-select" disabled>
                       <option value="minutes">Minutes</option>
@@ -258,24 +265,17 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
                   ${renderScheduleMatrixEditor(null, { inputDisabled: true })}
                 </div>
               </div>
-              <div class="sk-muted sk-text-xs" style="margin-top:calc(-1 * var(--sk-space-2)); margin-bottom:var(--sk-space-1);">
-                Optional. Leave the schedule as "None" to run this recurring task only manually via Run Now.
-              </div>
               <div class="sk-form-group">
                 <label class="sk-label">Global Store Instructions</label>
                 <textarea name="globalStoreInstructions" class="sk-textarea" rows="3"
                   placeholder="Optional. Key names and payload structure for cross-run state, e.g.: store the last processed timestamp under key 'report-window' and resume from it next run."></textarea>
-                <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
-                  Injected into every run's prompt; authorizes Skipper to use the global store for state shared across runs.
-                </div>
+                <span class="sk-form-help">Injected into every run's prompt; authorizes Skipper to use the global store for state shared across runs.</span>
               </div>
               ${isExperimental() ? `
               <div class="sk-form-group">
                 <label class="sk-label">Slack Slash Command</label>
                 <input type="text" name="slashCommand" class="sk-input" placeholder="/nightly-report">
-                <div class="sk-muted sk-text-xs" style="margin-top:var(--sk-space-1);">
-                  Optional. Bind a Slack slash command to run this recurring task now (arg text = run input). Requires Socket Mode under <a href="/config">Config</a>.
-                </div>
+                <span class="sk-form-help">Optional. Bind a Slack slash command to run this recurring task now (arg text = run input). Requires Socket Mode under <a href="/config">Config</a>.</span>
               </div>
               ` : ""}
             </div>
@@ -297,7 +297,7 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
             <div style="display:flex; gap:var(--sk-space-3); margin-top:var(--sk-space-4);">
               <input type="hidden" name="autoApprove" value="0">
               <button type="submit" class="sk-btn sk-btn--primary" onclick="this.form.querySelector('[name=autoApprove]').value='1';">Create &amp; Approve</button>
-              <button type="submit" class="sk-btn sk-btn--sm">Save as Draft</button>
+              <button type="submit" class="sk-btn">Save as Draft</button>
               <a href="/" class="sk-btn sk-btn--link" style="margin-left:auto;">Cancel</a>
             </div>
           </form>
