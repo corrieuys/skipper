@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseColorsToml, paletteFromToml, getOmarchyState, invalidateOmarchyState, isOmarchyAvailable } from "./omarchy";
@@ -64,6 +64,40 @@ describe("paletteFromToml", () => {
     expect(p.colors[1]).toBe("#ffffff");
   });
 
+  test("aliases semantic names to colorN for staged themes without colorN keys", () => {
+    // Real staged themes (e.g. Catppuccin) ship semantic names only.
+    const p = paletteFromToml(`
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+accent = "#89b4fa"
+muted = "#585b70"
+red = "#f38ba8"
+green = "#a6e3a1"
+yellow = "#f9e2af"
+blue = "#89b4fa"
+magenta = "#f5c2e7"
+cyan = "#94e2d5"
+bright_red = "#f38ba8"
+bright_green = "#a6e3a1"
+bright_yellow = "#f9e2af"
+bright_blue = "#89b4fa"
+bright_magenta = "#f5c2e7"
+bright_cyan = "#94e2d5"
+bright_foreground = "#cdd6f4"
+`);
+    expect(p.colors[0]).toBe("#1e1e2e");
+    expect(p.colors[1]).toBe("#f38ba8");
+    expect(p.colors[2]).toBe("#a6e3a1");
+    expect(p.colors[3]).toBe("#f9e2af");
+    expect(p.colors[4]).toBe("#89b4fa");
+    expect(p.colors[5]).toBe("#f5c2e7");
+    expect(p.colors[6]).toBe("#94e2d5");
+    expect(p.colors[7]).toBe("#cdd6f4");
+    expect(p.colors[8]).toBe("#585b70");
+    expect(p.colors[14]).toBe("#94e2d5");
+    expect(p.colors[15]).toBe("#cdd6f4");
+  });
+
   test("light.mode marker or mode key flags light", () => {
     expect(paletteFromToml(TOKYO, true).mode).toBe("light");
     expect(paletteFromToml(`${TOKYO}\nmode = "light"`).mode).toBe("light");
@@ -92,36 +126,37 @@ describe("getOmarchyState", () => {
     expect(getOmarchyState()).toBeNull();
   });
 
-  test("resolves the theme symlink, wallpaper and a version that tracks both", () => {
+  test("resolves the theme symlink and versions the palette", () => {
     const themeA = join(dir, "themes", "a");
     mkdirSync(themeA, { recursive: true });
     writeFileSync(join(themeA, "colors.toml"), TOKYO);
     symlinkSync(themeA, join(dir, "theme"));
     expect(isOmarchyAvailable()).toBe(true);
 
-    const noWallpaper = getOmarchyState()!;
-    expect(noWallpaper.palette.background).toBe("#1a1b26");
-    expect(noWallpaper.background).toBeNull();
-
-    const img = join(dir, "themes", "a", "1.png");
-    writeFileSync(img, "png");
-    symlinkSync(img, join(dir, "background"));
-    invalidateOmarchyState();
-    const withWallpaper = getOmarchyState()!;
-    expect(withWallpaper.background).toBe(realpathSync(img));
-    expect(withWallpaper.version).not.toBe(noWallpaper.version);
+    const first = getOmarchyState()!;
+    expect(first.palette.background).toBe("#1a1b26");
+    expect(first.palette.colors[6]).toBe("#449dab");
 
     // Cached until invalidated.
-    expect(getOmarchyState()).toBe(withWallpaper);
+    expect(getOmarchyState()).toBe(first);
+
+    // A theme content change bumps the version.
+    invalidateOmarchyState();
+    writeFileSync(join(themeA, "colors.toml"), TOKYO.replace("#1a1b26", "#000000"));
+    const second = getOmarchyState()!;
+    expect(second.palette.background).toBe("#000000");
+    expect(second.version).not.toBe(first.version);
   });
 
-  test("ignores a non-image background target", () => {
+  test("ignores a stray background symlink", () => {
     const theme = join(dir, "t");
     mkdirSync(theme, { recursive: true });
     writeFileSync(join(theme, "colors.toml"), TOKYO);
     symlinkSync(theme, join(dir, "theme"));
     writeFileSync(join(theme, "notes.txt"), "x");
     symlinkSync(join(theme, "notes.txt"), join(dir, "background"));
-    expect(getOmarchyState()!.background).toBeNull();
+    const state = getOmarchyState()!;
+    expect(state.palette.background).toBe("#1a1b26");
+    expect("background" in state).toBe(false);
   });
 });

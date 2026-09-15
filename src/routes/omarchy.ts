@@ -6,10 +6,9 @@ import { omarchyThemeCss } from "../html/styles/omarchy-theme";
 
 /**
  * Omarchy OS-theme follower (experimental, 404 without `--experimental` or when
- * `~/.config/omarchy/current/theme/colors.toml` is absent).
+ * `~/.local/state/omarchy/current/theme/colors.toml` is absent).
  *
  *   GET  /omarchy/theme.css?v=   the `omarchy` theme stylesheet built from the active palette
- *   GET  /omarchy/background?v=  the active Omarchy wallpaper image
  *   POST /api/omarchy/reload     re-read the OS state now (for an omarchy `theme-set` hook);
  *                                emits `appearance:omarchy_changed` when it differs
  *
@@ -34,17 +33,6 @@ export function registerOmarchyRoutes(): void {
     });
   });
 
-  addRoute("GET", "/omarchy/background", (req) => {
-    const refused = gate();
-    if (refused) return refused;
-    const state = getOmarchyState()!;
-    if (!state.background) return new Response("not found", { status: 404 });
-    const file = Bun.file(state.background);
-    return new Response(file, {
-      headers: { "Content-Type": file.type || "application/octet-stream", "Cache-Control": cacheHeader(req, state.version) },
-    });
-  });
-
   addRoute("POST", "/api/omarchy/reload", () => {
     const refused = gate();
     if (refused) return refused;
@@ -59,8 +47,8 @@ export function registerOmarchyRoutes(): void {
 }
 
 /**
- * Follow the OS: watch the Omarchy `current` dir and fan a theme / wallpaper
- * switch out on the bus so every open page re-skins itself. Returns a stop fn.
+ * Follow the OS: watch the staged Omarchy theme and fan a theme switch out on
+ * the bus so every open page re-skins itself. Returns a stop fn.
  */
 export function startOmarchyFollower(): () => void {
   if (!isExperimental()) return () => {};

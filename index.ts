@@ -109,8 +109,8 @@ registerApiKeyRoutes();
 // Dictation (experimental): transcribe + LLM cleanup for task-description fields.
 registerDictationRoutes();
 registerGlyphRoutes(glyphEngine, getDb());
-// Omarchy OS theme follower (experimental): serves the palette-driven theme +
-// wallpaper and pushes a re-skin to open pages when the OS theme switches.
+// Omarchy OS theme follower (experimental): serves the palette-driven theme
+// and pushes a re-skin to open pages when the OS theme switches.
 registerOmarchyRoutes();
 const stopOmarchyFollower = startOmarchyFollower();
 // Custom agents (experimental): CRUD for in-process agent definitions.

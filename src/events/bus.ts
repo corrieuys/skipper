@@ -180,7 +180,7 @@ export interface TaskWakeRequestedEvent {
   taskId: string;
 }
 
-/** The Omarchy OS theme or wallpaper changed; `version` cache-busts `/omarchy/theme.css`. */
+/** The Omarchy OS theme changed; `version` cache-busts `/omarchy/theme.css`. */
 export interface AppearanceOmarchyChangedEvent {
   version: string;
 }

@@ -8,9 +8,9 @@ import { isExperimental } from "../../config/feature-flags";
  * own stylesheet (`GET /omarchy/theme.css`) and linked from the page head, so a
  * theme switch on the OS only has to swap that link (see `ws-subscribe.js`).
  *
- * Layout mirrors the Artemis theme: translucent surfaces over the Omarchy
- * wallpaper, the same frosted-glass overrides, accents from the palette. v1 is
- * dark-only: a light Omarchy theme still renders dark surfaces.
+ * Layout mirrors the Artemis theme: flat palette background, the same
+ * frosted-glass overrides, accents from the palette. v1 is dark-only: a light
+ * Omarchy theme still renders dark surfaces.
  */
 
 type Rgb = [number, number, number];
@@ -133,9 +133,8 @@ function omarchyGlassPalette(p: OmarchyPalette): GlassPalette {
   };
 }
 
-/** Wallpaper (or flat palette background when none is set) behind the page. */
-function omarchyBackgroundCss(p: OmarchyPalette, hasImage: boolean, version: string): string {
-  const image = hasImage ? `background-image: url('/omarchy/background?v=${version}');` : "";
+/** Flat palette background behind the page (no wallpaper inheritance). */
+function omarchyBackgroundCss(p: OmarchyPalette): string {
   return `
     [data-theme="omarchy"] body::before {
       content: '';
@@ -143,11 +142,6 @@ function omarchyBackgroundCss(p: OmarchyPalette, hasImage: boolean, version: str
       inset: 0;
       z-index: -1;
       background-color: ${p.background};
-      ${image}
-      background-position: center;
-      background-size: cover;
-      background-repeat: no-repeat;
-      background-attachment: fixed;
     }
   `;
 }
@@ -159,7 +153,7 @@ export function omarchyThemeCss(): string {
   const decls = Object.entries(omarchyThemeVars(state.palette)).map(([k, v]) => `${k}: ${v};`).join(" ");
   return [
     `[data-theme="omarchy"] { ${decls} }`,
-    omarchyBackgroundCss(state.palette, state.background !== null, state.version),
+    omarchyBackgroundCss(state.palette),
     glassCss('[data-theme="omarchy"]', omarchyGlassPalette(state.palette)),
   ].join("\n");
 }
