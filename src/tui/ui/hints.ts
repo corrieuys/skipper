@@ -32,7 +32,10 @@ export function footerHints(store: Store, ui: UIState): Array<[string, string]> 
   if (ui.composerActive) return [["enter", "send"], ["ctrl+j", "newline"], ["esc", "cancel"]];
   if (ui.searchActive) return [["type", "to filter"], ["enter", "done"], ["esc", "clear"]];
   const base: Array<[string, string]> = [];
-  if (ui.focus === "rail" || ui.filter === "recurring") base.push(["↑↓", "select"]);
+  if (ui.focus === "rail") {
+    base.push(["↑↓", "select"]);
+    if (ui.railKind === "series") base.push(["enter", "runs"]);
+  }
   else if (ui.detailTab === "artifacts") base.push(["↑↓", "select"], ["enter", "open artifact"]);
   else base.push(["↑↓", "scroll"]);
   base.push(...actionHints(store, ui));

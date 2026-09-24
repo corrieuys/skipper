@@ -116,7 +116,15 @@ lock, so it is required for `acquire`, `release` and audio `ingest` only. A
 `format: 'text'` ingest is sessionless and needs no `clientId`.
 
 **task memory over connect:** `connect:capabilities` lists the `task_memory`
-feature. Recurring series: `recurring/list` rows carry `memoryMode`
+feature. Team rows (`teams/list-all`, `create`, `update`) carry `skipperPrompt`, the extra context for the root Skipper (the web team map's Skipper card); `teams/create` / `teams/update` take an optional `skipperPrompt` string: sent = replace (empty clears), absent = the stored prompt is kept, so older clients never wipe it. Forwarded events also include `recurring:changed` (+ fat `recurring`, the `recurring/list` row) and `team:changed` (+ fat `team`, the `teams/list-all` row); both omit the row when `change` is `deleted`. `escalation:resolved` may carry `auto: true` (system close). Live agent instances: `instances/list { taskId }` projects a task's
+running / waiting_delegation instances oldest-first (`id`, `agent_name`,
+`template_agent_id`, `status`, `parent_instance_id`, `process_pid`, `can_steer`,
+`disabled_reason`, eligibility from `daemon.listRuntimeSteeringOptions`, so it
+matches the web agent modal), and `instances/steer { id, message }` interrupts
+one (`daemon.steerRuntime`: kill + resume the session with the guidance; the
+respawn emits `instance:state_changed` and a synthetic output line). Both need
+the `steerRuntime` / `listRuntimeSteeringOptions` deps; without them nothing is
+steerable. Over a remote the integrator scope map (`skipper-connect/src/protocol.ts`) gates them: `instances/list` = `tasks:read`, `instances/steer` = `tasks:input`; `recurring/approve|unapprove` = `tasks:approve`; `tasks/set-memory` = `tasks:*`, `recurring/set-memory` = `tasks:update`, both `clear-memory` = `tasks:delete`. A new verb here needs an entry there, or the hub refuses it before it reaches the daemon (the local socket has no such gate). Recurring series: `recurring/list` rows carry `memoryMode`
 (off | run | shared), `memoryRetentionDays` and `memorySummary` (shared only);
 `recurring/set-memory { id, mode?, retentionDays? }` sets them (shared backfills
 every run and replies `backfilled`), `recurring/clear-memory { id }` hard-deletes
@@ -138,6 +146,22 @@ The projection only ever ships the flag, never `task_config`. `tasks/read` adds
 scope_id, runs, entries, vectors, pending, deleted, models, dims,
 content/vector/total bytes, by_kind, by_author, oldest/newest, retention_days);
 null when memory is off and nothing is stored.
+
+## Remote team repos (experimental)
+
+`connect:capabilities` lists `remote_team_repos`. Resource `remote-team-repos`:
+`list` → `{ experimental, repos }` (flag off = `experimental:false`, empty list;
+every other action then errors), `add { url, ref? }`, `refresh { id }`,
+`remove { id }` → `{ removed }`. Repo row: `id, url, ref, name, status
+(pending|syncing|ok|error), lastCommit, lastSyncAt, lastError, teamErrors[{path,error}],
+teamIds`. `add` / `refresh` never wait for git (a clone can outlast the relay's
+request timeout): they reply with the row as it stands and the outcome arrives as
+`remote_team_repo:changed` (fat `repo`, absent on `deleted`) plus a `team:changed`
+per loaded team. Team rows carry `remote: { repoId, path, removedUpstream } | null`;
+a remote team refuses `teams/update`, and `teams/delete` until `removedUpstream`.
+`teams/duplicate { id }` returns an editable local copy. Over a remote the
+integrator scope map needs entries for the new resource and verb (the local
+socket has no such gate).
 
 ## File artifacts (operator uploads)
 

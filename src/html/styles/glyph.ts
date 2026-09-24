@@ -288,19 +288,20 @@ export function glyphStyles(): string {
     @media (prefers-reduced-motion: reduce) { .gl-em, .gl-em::before, .tc-glyph__empty-title { animation: none; } }
 
     /* fresh: what changed in the last update. Border only: the element's own
-       border turns the secondary accent and fades back to its normal colour
-       over a few seconds. No outline, no wash, no pseudo-element, so it sits
-       exactly on the element's box. The missing 100% keyframe means the
-       animation ends at each element's own border colour, whatever the theme
-       set. Distinct from the primary-accent emphasis ring. */
-    .gl-fresh { animation: gl-fresh 4.2s ease-out; }
+       border takes a dim tint of the secondary accent and fades back to its
+       normal colour in about a second. No outline, no wash, no pseudo-element,
+       so it sits exactly on the element's box. The missing 100% keyframe means
+       the animation ends at each element's own border colour, whatever the
+       theme set. Kept deliberately faint and short so a redraw reads as a hint,
+       not a flash. Distinct from the primary-accent emphasis ring. */
+    .gl-fresh { animation: gl-fresh 1.1s ease-out; }
     @keyframes gl-fresh {
-      0%, 35% { border-color: var(--sk-accent-secondary); }
+      0%, 15% { border-color: var(--sk-accent-secondary-dim); }
     }
     /* headings carry no visible border; give them a transparent one so the
        highlight has something to colour without changing their layout */
     .gl-n-h { border: 1px solid transparent; }
-    @media (prefers-reduced-motion: reduce) { .gl-fresh { animation-duration: 1.2s; } }
+    @media (prefers-reduced-motion: reduce) { .gl-fresh { animation-duration: 0.5s; } }
 
     /* id chips (press i inside the overlay) */
     .gl-n::after {

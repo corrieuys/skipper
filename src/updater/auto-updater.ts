@@ -52,7 +52,9 @@ function defaultRunRestart(): void {
     // the child must outlive us to run start() afterwards. --no-open: the tab
     // hard-refreshes itself on WS reconnect instead of a new one opening.
     // Forward --experimental when this server is running it, so the restarted
-    // daemon keeps experimental features on (serveInvocation reads it from argv).
+    // daemon keeps experimental features on. The CLI would also fall back to
+    // the recorded launch-flags.json, but the explicit flag keeps this path
+    // independent of that file.
     const restartArgs = ["restart", "--no-open"];
     if (isExperimental()) restartArgs.push("--experimental");
     const { cmd, args } = cliInvocation(restartArgs);

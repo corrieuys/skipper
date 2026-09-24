@@ -204,7 +204,8 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
   const agentsBody = soloTeams.length > 0
     ? soloGroups : `<div class="tc-team__empty">No agents yet</div>`;
 
-  // Favorites board: every starred task + starred recurring task, newest first.
+  // Starred board (board id stays `favorites`: it is the persisted sidebarBoard
+  // value): every starred task + starred recurring task, newest first.
   // allTasks is already created_at DESC. Toggling a star emits task:state_changed,
   // so the whole sidebar (this board included) re-renders live.
   const favTasks = vm.allTasks.filter(t => t.starred);
@@ -218,7 +219,7 @@ export function renderSidebarListBody(vm: CommandCenterViewModel, activeId: stri
   return `<div class="tc-side">
     <div class="tc-tabs" role="tablist">
       ${tab("latest", "Latest", 0, true)}
-      ${tab("favorites", "Favorites", favCount, false)}
+      ${tab("favorites", "Starred", favCount, false)}
       ${tab("teams", "Teams", regularTeams.length, false)}
       ${tab("agents", "Agents", soloTeams.length, false)}
     </div>

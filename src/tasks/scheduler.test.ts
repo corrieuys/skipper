@@ -572,6 +572,34 @@ describe("requestWake / getNextStartableTask", () => {
     expect(scheduler.getNextStartableTask()).toBeNull();
   });
 
+  it("skips tasks with an open delegation while every instance row is settled", () => {
+    // The gap between a delegated child's exit and its result resuming the
+    // parked root: both rows already read 'completed'. A wake here must wait,
+    // or it spawns a second root alongside the one the result resumes.
+    const id = startedTask();
+    scheduler.requestWake(id);
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('root-inst', ?, 'default-agent', 'completed')",
+    ).run(id);
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, status) VALUES ('child-inst', ?, 'default-agent', 'root-inst', 'completed')",
+    ).run(id);
+    db.prepare(
+      "INSERT INTO delegation_groups (id, task_id, parent_instance_id, expected_count, status) VALUES ('grp', ?, 'root-inst', 1, 'running')",
+    ).run(id);
+    db.prepare(
+      `INSERT INTO delegations (id, parent_agent_id, child_agent_id, parent_instance_id, child_instance_id, delegation_group_id, task_id, prompt, status)
+       VALUES ('del', 'default-agent', 'default-agent', 'root-inst', 'child-inst', 'grp', ?, 'work', 'running')`,
+    ).run(id);
+    expect(scheduler.getNextStartableTask()).toBeNull();
+
+    db.prepare("UPDATE delegations SET status = 'completed' WHERE id = 'del'").run();
+    expect(scheduler.getNextStartableTask()).toBeNull();
+
+    db.prepare("UPDATE delegation_groups SET status = 'completed' WHERE id = 'grp'").run();
+    expect(scheduler.getNextStartableTask()!.id).toBe(id);
+  });
+
   it("skips tasks awaiting review", () => {
     const id = startedTask();
     scheduler.requestWake(id);
@@ -825,5 +853,54 @@ describe("bus events", () => {
     } finally {
       eventBus.off("task:phase_changed", listener);
     }
+  });
+});
+
+describe("edits announce themselves (same-status task:state_changed)", () => {
+  function capture(): { seen: Array<{ taskId: string; previousStatus: string; newStatus: string }>; stop: () => void } {
+    const seen: Array<{ taskId: string; previousStatus: string; newStatus: string }> = [];
+    const h = (e: { taskId: string; previousStatus: string; newStatus: string }) => seen.push(e);
+    eventBus.on("task:state_changed", h);
+    return { seen, stop: () => eventBus.off("task:state_changed", h) };
+  }
+
+  it("updateTask emits so other surfaces patch the edited row", () => {
+    const task = scheduler.createTask({ title: "Before", workingDirectory: "" });
+    const c = capture();
+    try {
+      scheduler.updateTask(task.id, { title: "After", description: "new" });
+    } finally {
+      c.stop();
+    }
+    expect(c.seen).toEqual([{ taskId: task.id, previousStatus: "draft", newStatus: "draft" }]);
+  });
+
+  it("setIdentity emits (rename + icon from the web Details modal)", () => {
+    const task = scheduler.createTask({ title: "Before", workingDirectory: "" });
+    const c = capture();
+    try {
+      scheduler.setIdentity(task.id, "Renamed", "rocket", "#fff");
+      scheduler.setIdentity("missing", "x", null, null); // unknown id: no write, no event
+    } finally {
+      c.stop();
+    }
+    expect(c.seen).toEqual([{ taskId: task.id, previousStatus: "draft", newStatus: "draft" }]);
+    expect(scheduler.getTask(task.id)!.title).toBe("Renamed");
+  });
+
+  it("settling a task closes its open escalations and announces each one as a system close", () => {
+    const teamId = createTeam(db);
+    const id = startedTask(teamId);
+    db.prepare("INSERT INTO escalations (id, agent_id, task_id, type, question, status) VALUES ('esc-1', 'default-agent', ?, 'question', 'Which DB?', 'open')").run(id);
+    const seen: Array<{ escalationId: string; taskId: string; auto?: boolean }> = [];
+    const h = (e: { escalationId: string; taskId: string; auto?: boolean }) => seen.push(e);
+    eventBus.on("escalation:resolved", h);
+    try {
+      scheduler.settleTask(id, { escalationResponse: "Task cancelled." });
+    } finally {
+      eventBus.off("escalation:resolved", h);
+    }
+    expect(seen).toEqual([expect.objectContaining({ escalationId: "esc-1", taskId: id, auto: true })]);
+    expect((db.prepare("SELECT status FROM escalations WHERE id = 'esc-1'").get() as { status: string }).status).toBe("resolved");
   });
 });

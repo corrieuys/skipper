@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { eventBus } from "../events/bus";
 import type { Database } from "bun:sqlite";
 import {
   type AgentDefinition,
@@ -16,6 +17,7 @@ import { isCustomAgentType } from "../agents/types";
 import { getCustomAgentByType } from "../custom-agents/store";
 import { normalizeSlashCommand } from "../slack/slash-command";
 import { getSingleAgent, isSingleAgentRefType, singleAgentIdFromRefType } from "../single-agents/store";
+import { type RemoteTeamLink, deleteRemoteTeamLink, getRemoteTeamLink, listRemoteTeamLinks } from "./remote-links";
 
 // ---------------------------------------------------------------------------
 // A team embeds its own agents + phases and is persisted in the runtime DB.
@@ -123,6 +125,11 @@ export interface LocalTeam {
   phases: TeamPhase[];
   agents: LocalTeamAgent[];
   config: LocalTeamConfig;
+  /**
+   * Set when a remote team repo owns this team (src/teams/remote-repos.ts). Such
+   * a team is read-only: only the repo sync may write it.
+   */
+  remote?: RemoteTeamLink;
   created_at: string;
   updated_at: string;
 }
@@ -512,16 +519,29 @@ function localTeamsTableExists(db: Database): boolean {
   return !!row;
 }
 
+function withRemoteLink(team: LocalTeam, link: RemoteTeamLink | null): LocalTeam {
+  return link ? { ...team, remote: link } : team;
+}
+
+/** Thrown when a caller other than the repo sync tries to write a remote team. */
+export const REMOTE_TEAM_READ_ONLY = "team: this team comes from a remote repository and is read-only";
+
+/** Writes the repo sync may do on a remote team; every other caller leaves this unset. */
+export interface RemoteWriteOpts {
+  allowRemote?: boolean;
+}
+
 export function listLocalTeams(db: Database): LocalTeam[] {
   if (!localTeamsTableExists(db)) return [];
   const rows = db.prepare("SELECT * FROM local_teams ORDER BY created_at, id").all() as LocalTeamRow[];
-  return rows.map(rowToLocalTeam);
+  const links = listRemoteTeamLinks(db);
+  return rows.map((row) => withRemoteLink(rowToLocalTeam(row), links.get(row.id) ?? null));
 }
 
 export function getLocalTeam(db: Database, id: string): LocalTeam | null {
   if (!localTeamsTableExists(db)) return null;
   const row = db.prepare("SELECT * FROM local_teams WHERE id = ?").get(id) as LocalTeamRow | null;
-  return row ? rowToLocalTeam(row) : null;
+  return row ? withRemoteLink(rowToLocalTeam(row), getRemoteTeamLink(db, id)) : null;
 }
 
 export function createLocalTeam(db: Database, input: LocalTeamInput): LocalTeam {
@@ -544,12 +564,14 @@ export function createLocalTeam(db: Database, input: LocalTeamInput): LocalTeam 
     ts,
   );
   refreshLocalTeamInShared(db, id);
+  eventBus.emit("team:changed", { teamId: id, change: "created" });
   return getLocalTeam(db, id)!;
 }
 
-export function updateLocalTeam(db: Database, id: string, input: LocalTeamInput): LocalTeam {
+export function updateLocalTeam(db: Database, id: string, input: LocalTeamInput, opts: RemoteWriteOpts = {}): LocalTeam {
   const existing = getLocalTeam(db, id);
   if (!existing) throw new Error(`team: id "${id}" not found`);
+  if (existing.remote && !opts.allowRemote) throw new Error(REMOTE_TEAM_READ_ONLY);
   validateInput(db, input);
   const ts = nowTs();
   db.prepare(
@@ -567,14 +589,22 @@ export function updateLocalTeam(db: Database, id: string, input: LocalTeamInput)
     id,
   );
   refreshLocalTeamInShared(db, id);
+  eventBus.emit("team:changed", { teamId: id, change: "updated" });
   return getLocalTeam(db, id)!;
 }
 
-export function deleteLocalTeam(db: Database, id: string): boolean {
+export function deleteLocalTeam(db: Database, id: string, opts: RemoteWriteOpts = {}): boolean {
   const existing = getLocalTeam(db, id);
   if (!existing) return false;
+  // A live remote team is the repo's to remove. One the repo dropped (kept only
+  // because tasks reference it) is the operator's to clear.
+  if (existing.remote && !existing.remote.removedUpstream && !opts.allowRemote) {
+    throw new Error(REMOTE_TEAM_READ_ONLY);
+  }
   db.prepare("DELETE FROM local_teams WHERE id = ?").run(id);
+  deleteRemoteTeamLink(db, id);
   removeLocalTeamFromShared(db, id);
+  eventBus.emit("team:changed", { teamId: id, change: "deleted" });
   return true;
 }
 

@@ -23,6 +23,11 @@ import { dashboardSteerPanelSlotFragment } from "../html/dashboardSteerPanelFrag
 import { dashboardActiveTaskFragment } from "../html/dashboardActiveTaskFragment";
 import { recentActivityFragment } from "../html/recentActivityFragment";
 import { renderSidebarListBody } from "../html/pages/command-center.page";
+import { remoteReposList } from "../html/pages/teams.page";
+import { listLocalTeams } from "../teams/local-teams";
+import { getRemoteTeamLink } from "../teams/remote-links";
+import { listRemoteTeamRepos } from "../teams/remote-repos";
+import { isExperimental } from "../config/feature-flags";
 import { buildCommandCenterViewModel } from "../html/view-models/command-center.vm";
 import type {
   LogEntryData,
@@ -365,8 +370,23 @@ export class UIWebSocketManager {
     });
 
     // --- Instance state changed ---
+    // Recurring series and teams live in the sidebar (Latest > Recurring, the
+    // Teams board); a change from any other surface re-renders just that list.
+    this.trackOn("recurring:changed", () => this.pushCommandCenterSidebar());
+    this.trackOn("team:changed", (event) => {
+      this.pushCommandCenterSidebar();
+      // A remote team's card lives inside its repo block on /teams. A deleted
+      // team has no link left to check, so it re-renders the list too.
+      if (event.change === "deleted" || getRemoteTeamLink(this.db, event.teamId)) this.pushRemoteTeamRepos();
+    });
+    // Remote team repos (experimental): link / sync status / unlink.
+    this.trackOn("remote_team_repo:changed", () => this.pushRemoteTeamRepos());
+
     this.trackOn("instance:state_changed", (event) => {
       this.pushDashboardInstances();
+      // activeAgentCount lives in the metrics lane; without this it only moved
+      // on task events and went stale when agents exited on a resting task.
+      this.pushDashboardMetrics();
       this.pushDashboardSteering();
       if (event.taskId) this.pushRtRunningAgents(event.taskId);
       if (event.taskId) this.pushV2SteerPanel(event.taskId);
@@ -834,6 +854,20 @@ export class UIWebSocketManager {
    * Sends a hidden div with hx-get that causes the mc-main area to reload.
    * This ensures the v2 workspace gets real-time updates.
    */
+  /**
+   * Re-render the /teams "Remote teams" repo list in place on every open teams
+   * page. A sync emits a burst (syncing, one per changed team, ok), so this is
+   * debounced. The add form sits outside #tm-remote-repos and is never touched.
+   */
+  private pushRemoteTeamRepos(): void {
+    if (!isExperimental()) return;
+    this.debounced("remote-team-repos", () => {
+      if (!this.hasClients("html", ["teams"])) return;
+      const html = remoteReposList(listRemoteTeamRepos(this.db), listLocalTeams(this.db).filter((t) => t.remote));
+      this.broadcastRaw(html.replace('<div id="tm-remote-repos"', '<div id="tm-remote-repos" hx-swap-oob="outerHTML"'), ["teams"]);
+    });
+  }
+
   private pushCommandCenterSidebar(): void {
     const vm = buildCommandCenterViewModel(this.db);
     const body = renderSidebarListBody(vm, null);

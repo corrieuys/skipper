@@ -1,4 +1,5 @@
 import { addRoute } from "../server";
+import { eventBus } from "../events/bus";
 import { TaskScheduler } from "../tasks/scheduler";
 import { getDb } from "../db/connection";
 import {
@@ -197,7 +198,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
   // Per-task agent assignment config
   addRoute("POST", "/api/realtime-tasks/:id/config", async (req, params) => {
     const db = getDb();
-    const task = db.prepare("SELECT id, task_config FROM tasks WHERE id = ?").get(params.id) as { id: string; task_config: string } | null;
+    const task = db.prepare("SELECT id, status, task_config FROM tasks WHERE id = ?").get(params.id) as { id: string; status: string; task_config: string } | null;
     if (!task) {
       return Response.json({ error: "Task not found" }, { status: 404 });
     }
@@ -225,6 +226,7 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
 
     db.prepare("UPDATE tasks SET task_config = ?, updated_at = datetime('now') WHERE id = ?")
       .run(JSON.stringify(newConfig), params.id);
+    eventBus.emit("task:state_changed", { taskId: task.id, previousStatus: task.status, newStatus: task.status });
 
     if (req.headers.get("HX-Request")) {
       const selectableAgents = fetchAvailableAgents();

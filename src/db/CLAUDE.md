@@ -22,7 +22,7 @@ SQLite via `bun:sqlite`. Split architecture.
 
 ## Migrations
 
-Latest: `0026_glyph_screens.sql` (`glyph_screens`: latest Canvas screen per task, frame + register cursor + model session + summary fingerprint; FK cascade on tasks and an explicit delete in `TaskScheduler.deleteTask`; see [../glyph/CLAUDE.md](../glyph/CLAUDE.md)). Before it `0025_task_memory.sql` (`task_memory` table, scope-owned, no FK; see [../task-memory/CLAUDE.md](../task-memory/CLAUDE.md)). The v1 shape (FK to tasks) is rebuilt by `legacy-migrations.ts:migrateTaskMemoryScope`.
+Latest: `0027_remote_team_repos.sql` (`remote_team_repos` + `remote_team_links`, runtime, no FKs: a team that tasks still use outlives its repo row; see [../teams/CLAUDE.md](../teams/CLAUDE.md)). Before it `0026_glyph_screens.sql` (`glyph_screens`: latest Canvas screen per task, frame + register cursor + model session + summary fingerprint; FK cascade on tasks and an explicit delete in `TaskScheduler.deleteTask`; see [../glyph/CLAUDE.md](../glyph/CLAUDE.md)). Before it `0025_task_memory.sql` (`task_memory` table, scope-owned, no FK; see [../task-memory/CLAUDE.md](../task-memory/CLAUDE.md)). The v1 shape (FK to tasks) is rebuilt by `legacy-migrations.ts:migrateTaskMemoryScope`.
 
 **Icon + star** (`starred` indexed + `icon` Lucide id + `icon_color` hex on `tasks`
 and `scheduled_tasks`) live in the schema CREATE plus `legacy-migrations.ts`, NOT a

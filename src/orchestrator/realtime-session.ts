@@ -12,6 +12,7 @@ import { getSkipperConfig, getEntrypointAgentId } from "../agents/skipper";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
 import { getLocalTeam } from "../teams/local-teams";
 import { deduplicateOverlap } from "../realtime/dedup";
+import { emitInstanceState } from "../agents/instance-status";
 import { unlinkSync, readdirSync } from "fs";
 
 export interface InputChunk {
@@ -1585,9 +1586,13 @@ export class RealtimeSessionManager {
           try { this.agentManager.killAgent(runningInstance.id); } catch { /* best effort */ }
         }
       }
+      const closing = (this.db
+        .prepare("SELECT id FROM agent_instances WHERE template_agent_id = ? AND task_id = ? AND status = 'running'")
+        .all(entrypointAgentId, taskId) as Array<{ id: string }>).map((r) => r.id);
       this.db
         .prepare("UPDATE agent_instances SET status = 'completed' WHERE template_agent_id = ? AND task_id = ? AND status = 'running'")
         .run(entrypointAgentId, taskId);
+      for (const id of closing) emitInstanceState(this.db, id);
     }
 
     this.sessions.delete(taskId);

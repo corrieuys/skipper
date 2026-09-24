@@ -209,7 +209,9 @@ export class LocalTransport implements Transport {
       const label = String(t.id ?? t.name ?? "(unnamed)");
       const cfg = (t.config && typeof t.config === "object" ? t.config : {}) as Record<string, unknown>;
       const mode = cfg.mode === "conversational" || cfg.mode === "realtime" ? "conversational" : "workflow";
-      const params = { name: t.name, phases: t.phases, agents: t.agents, mode };
+      // skipper_prompt rides along when the export has one; an export without
+      // the key leaves a same-id team's stored prompt alone.
+      const params = { name: t.name, phases: t.phases, agents: t.agents, mode, ...(typeof t.skipper_prompt === "string" ? { skipperPrompt: t.skipper_prompt } : {}) };
       try {
         if (typeof t.id === "string" && known.has(t.id)) {
           await this.request("teams", "update", { id: t.id, ...params });
@@ -232,7 +234,7 @@ export class LocalTransport implements Transport {
       const teams = await this.request<Array<Record<string, unknown>>>("teams", "list-all");
       const pick = teamId ? teams.filter((t) => t.id === teamId) : teams;
       if (teamId && pick.length === 0) throw new Error("Team not found");
-      return JSON.stringify({ teams: pick.map((t) => ({ id: t.id, name: t.name, phases: t.phases, agents: t.agents, config: { mode: t.mode, slackEnabled: t.slackEnabled, slashCommand: t.slashCommand } })) }, null, 2);
+      return JSON.stringify({ teams: pick.map((t) => ({ id: t.id, name: t.name, skipper_prompt: t.skipperPrompt ?? "", phases: t.phases, agents: t.agents, config: { mode: t.mode, slackEnabled: t.slackEnabled, slashCommand: t.slashCommand } })) }, null, 2);
     }
     const url = `${base}/api/teams/export${teamId ? `?id=${encodeURIComponent(teamId)}` : ""}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
@@ -486,10 +488,27 @@ export function mapConnectEvent(name: string, p: Record<string, unknown>): Trans
         const task = toTask(p.task as Record<string, unknown>);
         if (name === "task:created") return { kind: "task", task, created: true };
         if (name === "task:state_changed" && p.previousStatus === "draft" && p.newStatus === "active") return { kind: "task", task, started: true };
+        if (name === "task:state_changed" && p.previousStatus === p.newStatus) return { kind: "task", task, edited: true };
         return { kind: "task", task };
       }
       return null;
     }
+    case "recurring:changed":
+      return {
+        kind: "recurring_changed",
+        id: String(p.scheduledTaskId ?? ""),
+        deleted: p.change === "deleted",
+        row: p.recurring && typeof p.recurring === "object" ? (p.recurring as Record<string, unknown>) : null,
+      };
+    case "team:changed":
+      return {
+        kind: "team_changed",
+        id: String(p.teamId ?? ""),
+        deleted: p.change === "deleted",
+        row: p.team && typeof p.team === "object" ? (p.team as Record<string, unknown>) : null,
+      };
+    case "remote_team_repo:changed":
+      return { kind: "remote_repo_changed", id: String(p.repoId ?? ""), deleted: p.change === "deleted" };
     case "task:phase_changed":
       if (p.task && typeof p.task === "object") return { kind: "task", task: toTask(p.task as Record<string, unknown>) };
       return { kind: "task_phase", taskId: String(p.taskId ?? ""), newPhase: num(p.newPhase) };

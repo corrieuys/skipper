@@ -72,6 +72,10 @@ function jsonScript(value: unknown): string {
 export function teamMapPage(vm: TeamMapViewModel): string {
   const isNew = !vm.team;
   const title = isNew ? "New Team" : vm.team!.name;
+  // A team owned by a remote repo is read-only: no Save, and Delete only once
+  // the repo no longer ships it. "Duplicate to edit" makes a local copy.
+  const remote = vm.team?.remote ?? null;
+  const canDelete = !isNew && (!remote || remote.removedUpstream);
 
   // Scaffold for a new team: one phase so the flow is never empty.
   const team = vm.team ?? {
@@ -99,10 +103,19 @@ export function teamMapPage(vm: TeamMapViewModel): string {
           <span class="tm-error" id="tm-error"></span>
           <button type="button" class="sk-btn sk-btn--sm" id="tm-settings">Team settings</button>
           ${isNew ? "" : `<a class="sk-btn sk-btn--sm" href="/api/teams/export?id=${encodeURIComponent(team.id)}">Export</a>`}
-          ${isNew ? "" : `<button type="button" class="sk-btn sk-btn--sm sk-btn--danger" id="tm-delete">Delete</button>`}
-          <button type="button" class="sk-btn sk-btn--sm sk-btn--primary" id="tm-save">${isNew ? "Create team" : "Save"}</button>
+          ${canDelete ? `<button type="button" class="sk-btn sk-btn--sm sk-btn--danger" id="tm-delete">Delete</button>` : ""}
+          ${remote
+            ? (isExperimental() ? `<button type="button" class="sk-btn sk-btn--sm sk-btn--primary" id="tm-duplicate">Duplicate to edit</button>` : "")
+            : `<button type="button" class="sk-btn sk-btn--sm sk-btn--primary" id="tm-save">${isNew ? "Create team" : "Save"}</button>`}
         </div>
       </div>
+      ${remote ? `<div class="tm-readonly-note">
+        <span class="tm-chip tm-chip--remote">${remote.removedUpstream ? "Removed upstream" : "Remote"}</span>
+        <span>${remote.removedUpstream
+          ? "The linked repository no longer has this team. It stays here because tasks use it. It is read-only."
+          : `This team comes from a linked repository (<code>${escapeHtml(remote.path)}</code>) and is read-only. A refresh of the repository replaces it.`}
+          ${isExperimental() ? "Duplicate it to make a local team you can edit." : ""}</span>
+      </div>` : ""}
 
       <div class="tm-band">
         <div class="tm-band__head">
@@ -152,6 +165,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       var MODEL_PROVIDERS = ${jsonScript(vm.modelProviders)};
       var LIBRARY = ${jsonScript(vm.agentLibrary)};
       var IS_NEW = ${isNew ? "true" : "false"};
+      var READ_ONLY = ${remote ? "true" : "false"};
 
       // A library reference member carries a ref token as its type: single:<id>
       // (headless CLI agent) or custom:<id> (custom agent). Its provider/model/
@@ -212,7 +226,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
           .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
       }
       function el(html){ var t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstChild; }
-      function markDirty(){ dirty = true; dirtyEl.hidden = false; }
+      function markDirty(){ if (READ_ONLY) return; dirty = true; dirtyEl.hidden = false; }
 
       // Ensure every agent carries a stable client-side id.
       function slug(s){
@@ -887,7 +901,24 @@ export function teamMapPage(vm: TeamMapViewModel): string {
           if (saveBtn.textContent === 'Saving...') saveBtn.textContent = label;
         }
       }
-      saveBtn.addEventListener('click', function(){ saveTeam(); });
+      if (saveBtn) saveBtn.addEventListener('click', function(){ saveTeam(); });
+
+      var duplicateBtn = document.getElementById('tm-duplicate');
+      if (duplicateBtn) {
+        duplicateBtn.addEventListener('click', async function(){
+          duplicateBtn.disabled = true;
+          try {
+            var res = await fetch('/api/teams/' + encodeURIComponent(TEAM.id) + '/duplicate', { method: 'POST' });
+            var data = await res.json();
+            if (!res.ok) { flashError(data.error || 'Duplicate failed.'); return; }
+            window.location.href = '/teams/' + encodeURIComponent(data.id);
+          } catch (e) {
+            flashError('Duplicate failed.');
+          } finally {
+            duplicateBtn.disabled = false;
+          }
+        });
+      }
 
       var deleteBtn = document.getElementById('tm-delete');
       if (deleteBtn) {

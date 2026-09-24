@@ -212,7 +212,16 @@ describe("Health monitor — instance process health", () => {
        VALUES (?, ?, ?, 'running', 999999, 1)`,
     ).run(instanceId, taskId, agentId);
 
-    daemon.getHealthMonitor().checkInstanceProcessHealth();
+    // A reap must reach every surface: the status write alone emits nothing.
+    const seen: Array<{ instanceId: string; taskId: string; status: string }> = [];
+    const onInstance = (e: { instanceId: string; taskId: string; status: string }) => seen.push(e);
+    eventBus.on("instance:state_changed", onInstance);
+    try {
+      daemon.getHealthMonitor().checkInstanceProcessHealth();
+    } finally {
+      eventBus.off("instance:state_changed", onInstance);
+    }
+    expect(seen).toEqual([expect.objectContaining({ instanceId, taskId, templateAgentId: agentId, status: "failed" })]);
 
     const inst = db.prepare("SELECT status, process_pid FROM agent_instances WHERE id = ?").get(instanceId) as { status: string; process_pid: number | null };
     expect(inst.status).toBe("failed");

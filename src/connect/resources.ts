@@ -62,6 +62,16 @@ import {
   type CustomAgent,
   type CustomAgentInput,
 } from "../custom-agents/store";
+import {
+  type RemoteTeamRepo,
+  addRemoteTeamRepo,
+  duplicateTeamToLocal,
+  getRemoteTeamRepo,
+  listRemoteTeamRepos,
+  listRepoTeams,
+  removeRemoteTeamRepo,
+  syncRemoteTeamRepo,
+} from "../teams/remote-repos";
 
 // ---------------------------------------------------------------------------
 // Projections for team + agent management over Connect. Wire keys match the
@@ -95,8 +105,79 @@ function connectTeamRow(team: LocalTeam) {
     })),
     slackEnabled: team.config.slackEnabled === true,
     slashCommand: team.config.slashCommand ?? "",
+    // Extra context for the root Skipper on this team (the web team map's
+    // Skipper card). Editable through teams/create + teams/update.
+    skipperPrompt: team.skipper_prompt ?? "",
+    // Set when a remote team repo owns the team: read-only (update refuses;
+    // delete only once removedUpstream). Null for an ordinary local team.
+    remote: team.remote
+      ? { repoId: team.remote.repoId, path: team.remote.path, removedUpstream: team.remote.removedUpstream }
+      : null,
   };
 }
+
+/** Remote team repo row (`remote-team-repos/list` + the `remote_team_repo:changed` fat event). */
+function connectRemoteRepoRow(db: ReturnType<typeof getDb>, repo: RemoteTeamRepo) {
+  return {
+    id: repo.id,
+    url: repo.url,
+    ref: repo.ref,
+    name: repo.name,
+    status: repo.status,
+    lastCommit: repo.lastCommit,
+    lastSyncAt: repo.lastSyncAt,
+    lastError: repo.lastError,
+    teamErrors: repo.teamErrors,
+    teamIds: listRepoTeams(db, repo.id).map((t) => t.id),
+  };
+}
+
+/** One remote team repo row by id (null once unlinked). */
+export function fetchRemoteTeamRepoItem(db: ReturnType<typeof getDb>, id: string) {
+  const repo = getRemoteTeamRepo(db, id);
+  return repo ? connectRemoteRepoRow(db, repo) : null;
+}
+
+/** Recurring series rows as `recurring/list` and the `recurring:changed` fat event project them. */
+export function connectRecurringRows(db: ReturnType<typeof getDb>) {
+  const runsBy = fetchRecentScheduledRuns(db);
+  return fetchScheduledTaskRows(db).map((s) => ({
+    id: s.id,
+    title: s.title,
+    description: s.description ?? null,
+    teamId: s.team_id ?? null,
+    teamName: s.team_name ?? null,
+    scheduleUnit: s.schedule_unit ?? null,
+    scheduleAmount: s.schedule_amount ?? null,
+    scheduleMatrix: s.schedule_matrix ?? null,
+    status: s.status,
+    starred: !!(s.starred ?? 0),
+    icon: s.icon ?? null,
+    iconColor: s.icon_color ?? null,
+    nextRunAt: s.next_run_at ?? null,
+    lastRunAt: s.last_run_at ?? null,
+    ...recurringMemoryFields(db, s.id),
+    runs: (runsBy[s.id] ?? []).map((r) => ({
+      id: r.id,
+      title: r.title,
+      status: r.status,
+      createdAt: r.created_at,
+      completedAt: r.completed_at ?? null,
+    })),
+  }));
+}
+
+/** One series row by id (undefined once deleted). */
+export function fetchRecurringItem(db: ReturnType<typeof getDb>, id: string) {
+  return connectRecurringRows(db).find((r) => r.id === id);
+}
+
+/** One team row by id, as `teams/list-all` projects it (null once deleted). */
+export function fetchTeamItem(db: ReturnType<typeof getDb>, id: string) {
+  const team = getLocalTeam(db, id);
+  return team ? connectTeamRow(team) : null;
+}
+
 
 /** Headless CLI (single) agent projection. */
 function connectSingleAgentRow(sa: SingleAgent) {
@@ -202,6 +283,66 @@ export interface ResourceDeps {
   killTaskRuntimes?: (taskId: string) => void;
   /** Per-task memory: `tasks/set-memory` / `recurring/set-memory` backfill through it, clear actions delete through it. */
   taskMemory?: Pick<TaskMemoryManager, "backfill" | "backfillSeries" | "clearScope" | "prune">;
+  /**
+   * Interrupt-and-steer a live agent instance (`daemon.steerRuntime`: kills the
+   * process and resumes its session with the operator's guidance) plus the
+   * daemon's per-template eligibility rules (`daemon.listRuntimeSteeringOptions`)
+   * so `instances/list` reports the same can_steer / reason the web UI shows.
+   */
+  steerRuntime?: (templateAgentId: string, runtimeId: string, message: string) => Promise<void>;
+  listRuntimeSteeringOptions?: (templateAgentId: string) => Array<{
+    id: string;
+    can_steer: boolean;
+    disabled_reason: string | null;
+    session_id: string | null;
+    process_pid: number | null;
+  }>;
+}
+
+/** One live agent instance on a task, as `instances/list` projects it. */
+export interface InstanceProjection {
+  id: string;
+  task_id: string;
+  template_agent_id: string;
+  agent_name: string;
+  status: string;
+  parent_instance_id: string | null;
+  process_pid: number | null;
+  created_at: string;
+  can_steer: boolean;
+  disabled_reason: string | null;
+}
+
+/**
+ * Live (running / waiting on delegation) instances of one task, oldest first
+ * so parallel instances of the same agent keep a stable order. Eligibility
+ * comes from the daemon when it is wired; otherwise nothing is steerable.
+ */
+export function listTaskInstances(db: ReturnType<typeof getDb>, deps: ResourceDeps, taskId: string): InstanceProjection[] {
+  const rows = db.prepare(
+    `SELECT ai.id, ai.task_id, ai.template_agent_id, COALESCE(a.name, ai.template_agent_id) AS agent_name,
+            ai.status, ai.parent_instance_id, ai.process_pid, ai.created_at
+     FROM agent_instances ai
+     LEFT JOIN agents a ON a.id = ai.template_agent_id
+     WHERE ai.task_id = ? AND ai.status IN ('running', 'waiting_delegation')
+     ORDER BY ai.created_at ASC, ai.id ASC`,
+  ).all(taskId) as Array<Omit<InstanceProjection, "can_steer" | "disabled_reason">>;
+  const eligibility = new Map<string, { can_steer: boolean; disabled_reason: string | null }>();
+  if (deps.listRuntimeSteeringOptions) {
+    for (const templateId of new Set(rows.map((r) => r.template_agent_id))) {
+      for (const opt of deps.listRuntimeSteeringOptions(templateId)) {
+        eligibility.set(opt.id, { can_steer: opt.can_steer, disabled_reason: opt.disabled_reason });
+      }
+    }
+  }
+  return rows.map((r) => {
+    const e = eligibility.get(r.id);
+    return {
+      ...r,
+      can_steer: e?.can_steer ?? false,
+      disabled_reason: e ? e.disabled_reason : deps.listRuntimeSteeringOptions ? "Runtime is not currently running." : "Steering is unavailable on this daemon.",
+    };
+  });
 }
 
 export type ResourceResult = { ok: true; data: unknown } | { ok: false; error: string };
@@ -601,6 +742,7 @@ export async function handleResourceRequest(
           if (typeof mode !== "string") return mode;
           const coerced = toTeamInput({ name: params.name, phases: params.phases, agents: params.agents });
           const input: LocalTeamInput = { ...coerced, config: { ...(coerced.config ?? {}), mode } };
+          if (typeof params.skipperPrompt === "string") input.skipper_prompt = params.skipperPrompt;
           return { ok: true, data: connectTeamRow(createLocalTeam(db, input)) };
         }
         if (action === "update") {
@@ -613,6 +755,9 @@ export async function handleResourceRequest(
           // State-safety: coerce ONLY name/phases/agents from the wire; carry
           // hooks/skipper_prompt/config forward from the stored team and overlay
           // just the mode, so fields the client never sent are never wiped.
+          // `skipperPrompt` is the one opt-in overlay: a string replaces the
+          // stored prompt (empty clears it), an absent key keeps it, so clients
+          // that predate the field never wipe it.
           const coerced = toTeamInput(
             { name: params.name, phases: params.phases, agents: params.agents },
             { existingConfig: existing.config },
@@ -635,7 +780,7 @@ export async function handleResourceRequest(
           const input: LocalTeamInput = {
             ...coerced,
             agents,
-            skipper_prompt: existing.skipper_prompt,
+            skipper_prompt: typeof params.skipperPrompt === "string" ? params.skipperPrompt : existing.skipper_prompt,
             hooks: existing.hooks,
             config: { ...existing.config, mode },
           };
@@ -646,7 +791,52 @@ export async function handleResourceRequest(
           if (!id) return { ok: false, error: "id is required" };
           return { ok: true, data: { deleted: deleteLocalTeam(db, id) } };
         }
+        // An editable local copy of a (read-only remote) team.
+        if (action === "duplicate") {
+          if (!isExperimental()) return { ok: false, error: "Remote teams require the daemon --experimental flag" };
+          const id = String(params.id ?? "");
+          if (!id) return { ok: false, error: "id is required" };
+          return { ok: true, data: connectTeamRow(duplicateTeamToLocal(db, id)) };
+        }
         return { ok: false, error: `Unknown teams action: ${action}` };
+      }
+
+      case "remote-team-repos": {
+        // Linked GitHub repos of team configs (experimental, like the web UI).
+        // `add` / `refresh` never wait for git: a clone can outlast the relay's
+        // request timeout. They reply with the row as it stands (pending /
+        // syncing); the result arrives as `remote_team_repo:changed` (+ fat
+        // `repo`) and a `team:changed` per loaded team.
+        if (action === "list") {
+          if (!isExperimental()) return { ok: true, data: { experimental: false, repos: [] } };
+          return {
+            ok: true,
+            data: { experimental: true, repos: listRemoteTeamRepos(db).map((r) => connectRemoteRepoRow(db, r)) },
+          };
+        }
+        if (!isExperimental()) {
+          return { ok: false, error: "Remote teams require the daemon --experimental flag" };
+        }
+        if (action === "add") {
+          const repo = addRemoteTeamRepo(db, {
+            url: String(params.url ?? ""),
+            ref: params.ref != null ? String(params.ref) : null,
+          });
+          void syncRemoteTeamRepo(db, repo.id);
+          return { ok: true, data: connectRemoteRepoRow(db, repo) };
+        }
+        const id = String(params.id ?? "");
+        if (!id) return { ok: false, error: "id is required" };
+        if (action === "refresh") {
+          const repo = getRemoteTeamRepo(db, id);
+          if (!repo) return { ok: false, error: "Repository not found" };
+          void syncRemoteTeamRepo(db, id);
+          return { ok: true, data: connectRemoteRepoRow(db, repo) };
+        }
+        if (action === "remove") {
+          return { ok: true, data: { removed: removeRemoteTeamRepo(db, id) } };
+        }
+        return { ok: false, error: `Unknown remote-team-repos action: ${action}` };
       }
 
       case "agents": {
@@ -794,31 +984,7 @@ export async function handleResourceRequest(
         // Recurring task series + their recent runs, for a client-side
         // "Recurring" view. Mirrors the main UI's sidebar run strip.
         if (action === "list") {
-          const runsBy = fetchRecentScheduledRuns(db);
-          const series = fetchScheduledTaskRows(db).map((s) => ({
-            id: s.id,
-            title: s.title,
-            description: s.description ?? null,
-            teamId: s.team_id ?? null,
-            teamName: s.team_name ?? null,
-            scheduleUnit: s.schedule_unit ?? null,
-            scheduleAmount: s.schedule_amount ?? null,
-            scheduleMatrix: s.schedule_matrix ?? null,
-            status: s.status,
-            starred: !!(s.starred ?? 0),
-            icon: s.icon ?? null,
-            iconColor: s.icon_color ?? null,
-            nextRunAt: s.next_run_at ?? null,
-            lastRunAt: s.last_run_at ?? null,
-            ...recurringMemoryFields(db, s.id),
-            runs: (runsBy[s.id] ?? []).map((r) => ({
-              id: r.id,
-              title: r.title,
-              status: r.status,
-              createdAt: r.created_at,
-              completedAt: r.completed_at ?? null,
-            })),
-          }));
+          const series = connectRecurringRows(db);
           return { ok: true, data: series };
         }
         if (action === "set-memory") {
@@ -1001,6 +1167,33 @@ export async function handleResourceRequest(
           default:
             return { ok: false, error: `Unknown reviews action: ${action}` };
         }
+      }
+
+      case "instances": {
+        // Live agent instances of a task + interrupt-and-steer one of them. The
+        // steer itself changes no task state; the kill/respawn it causes emits
+        // instance:state_changed and the synthetic "[SKIPPER] Operator steer
+        // injected" output line, so every surface sees it land.
+        if (action === "list") {
+          const taskId = String(params.taskId ?? params.id ?? "");
+          if (!taskId) return { ok: false, error: "taskId is required" };
+          if (!taskScheduler.getTask(taskId)) return { ok: false, error: "Task not found" };
+          return { ok: true, data: listTaskInstances(db, deps, taskId) };
+        }
+        if (action === "steer") {
+          const runtimeId = String(params.id ?? params.instanceId ?? "").trim();
+          const message = String(params.message ?? "").trim();
+          if (!runtimeId) return { ok: false, error: "id is required" };
+          if (!message) return { ok: false, error: "message is required" };
+          if (!deps.steerRuntime) return { ok: false, error: "Steering is unavailable on this daemon." };
+          const row = db.prepare("SELECT template_agent_id, task_id FROM agent_instances WHERE id = ?").get(runtimeId) as
+            | { template_agent_id: string; task_id: string }
+            | null;
+          if (!row) return { ok: false, error: "Instance not found" };
+          await deps.steerRuntime(row.template_agent_id, runtimeId, message);
+          return { ok: true, data: { id: runtimeId, task_id: row.task_id, delivered: "steered" } };
+        }
+        return { ok: false, error: `Unknown instances action: ${action}` };
       }
 
       case "notes": {

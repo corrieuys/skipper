@@ -394,6 +394,46 @@ export function teamMapStyles(): string {
     }
     .tm-chip--review { background: color-mix(in srgb, var(--sk-accent-warning) 15%, transparent); color: var(--sk-accent-warning); }
     .tm-chip--slack { background: color-mix(in srgb, var(--sk-accent-tertiary) 15%, transparent); color: var(--sk-accent-tertiary); }
+    .tm-chip--remote { background: color-mix(in srgb, var(--sk-accent-primary) 15%, transparent); color: var(--sk-accent-primary); }
+    .tm-chip--repo-ok { background: color-mix(in srgb, var(--sk-accent-tertiary) 15%, transparent); color: var(--sk-accent-tertiary); }
+    .tm-chip--repo-error { background: color-mix(in srgb, var(--sk-accent-danger) 15%, transparent); color: var(--sk-accent-danger); }
+    .tm-chip--repo-syncing { background: color-mix(in srgb, var(--sk-accent-secondary) 15%, transparent); color: var(--sk-accent-secondary); }
+
+    /* ── Remote teams: linked repos on the teams index ───────────────── */
+    .tm-remote { margin-top: var(--sk-space-6); display: flex; flex-direction: column; gap: var(--sk-space-3); }
+    .tm-remote__title { font-family: var(--sk-font-heading); font-size: var(--sk-text-lg); color: var(--sk-text); margin: 0; }
+    .tm-remote__sub { font-size: var(--sk-text-xs); color: var(--sk-text-muted); margin-top: 2px; }
+    .tm-remote__sub code { font-family: var(--sk-font-mono); }
+    .tm-remote__add { display: flex; gap: var(--sk-space-2); flex-wrap: wrap; align-items: center; }
+    .tm-remote__add .sk-input { flex: 1 1 22rem; max-width: 32rem; }
+    .tm-remote__add .tm-remote__ref { flex: 0 1 14rem; }
+    .tm-remote__repos { display: flex; flex-direction: column; gap: var(--sk-space-3); }
+    .tm-repo {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sk-space-3);
+      padding: var(--sk-space-4);
+      border: 1px solid var(--sk-border);
+      border-radius: var(--sk-panel-radius);
+    }
+    .tm-repo__head { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--sk-space-3); flex-wrap: wrap; }
+    .tm-repo__name { display: flex; align-items: center; gap: var(--sk-space-2); font-family: var(--sk-font-heading); color: var(--sk-text); }
+    .tm-repo__meta { font-family: var(--sk-font-mono); font-size: var(--sk-text-xs); color: var(--sk-text-subtle); margin-top: var(--sk-space-1); }
+    .tm-repo__actions { display: flex; gap: var(--sk-space-2); }
+    .tm-repo__error, .tm-repo__errors { color: var(--sk-accent-danger); font-size: var(--sk-text-sm); margin: 0; }
+    .tm-repo__errors { padding-left: var(--sk-space-4); }
+    .tm-repo__errors code { font-family: var(--sk-font-mono); color: var(--sk-text-muted); margin-right: var(--sk-space-1); }
+    .tm-readonly-note {
+      display: flex;
+      align-items: center;
+      gap: var(--sk-space-2);
+      padding: var(--sk-space-2) var(--sk-space-3);
+      margin-bottom: var(--sk-space-3);
+      border: 1px solid var(--sk-border);
+      border-radius: 6px;
+      font-size: var(--sk-text-sm);
+      color: var(--sk-text-muted);
+    }
 
     /* Node tool rail — appears on hover, sits above the card. */
     .tm-tools {

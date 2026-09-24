@@ -299,3 +299,25 @@ describe("headless CLI agent references (live members)", () => {
     })).toThrow();
   });
 });
+
+describe("team:changed", () => {
+  it("create, update and delete each announce the team", async () => {
+    const { eventBus } = await import("../events/bus");
+    const seen: Array<{ teamId: string; change: string }> = [];
+    const h = (e: { teamId: string; change: string }) => seen.push(e);
+    eventBus.on("team:changed", h);
+    try {
+      const team = createLocalTeam(db, { name: "Evented", phases: [] });
+      updateLocalTeam(db, team.id, { name: "Evented v2", phases: [] });
+      expect(deleteLocalTeam(db, team.id)).toBe(true);
+      expect(deleteLocalTeam(db, team.id)).toBe(false); // already gone: no event
+      expect(seen).toEqual([
+        { teamId: team.id, change: "created" },
+        { teamId: team.id, change: "updated" },
+        { teamId: team.id, change: "deleted" },
+      ]);
+    } finally {
+      eventBus.off("team:changed", h);
+    }
+  });
+});

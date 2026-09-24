@@ -3,6 +3,7 @@ import { removeTaskArtifactFiles } from "../orchestrator/artifact-files";
 import { parseJsonOr } from "../db/json";
 import { getDb } from "../db/connection";
 import { eventBus } from "../events/bus";
+import { autoResolveEscalations } from "../escalations/auto-resolve";
 import { logError } from "../logging";
 
 // workflow: the system drives the task to the end of its phases (pokes, recovery).
@@ -211,16 +212,19 @@ export class TaskScheduler {
   }
 
   /**
-   * Rename + set icon in one write, WITHOUT emitting any event. The task-header
-   * editor swaps only its own identity slot (htmx), so a WS re-render would
-   * needlessly refresh the whole view — renaming must not refresh the page (same
-   * rule as starring). The new name/icon reach the sidebar on the next natural
-   * render. Pre-sanitized by the caller.
+   * Rename + set icon in one write. Emits a same-status `task:state_changed`
+   * (like setStarred / setIcon) so every other surface (other tabs, the TUI,
+   * the apps) patches the new name and icon; ui-push treats a same-status event
+   * as an in-place patch, never a view refresh. The task-header editor still
+   * swaps its own identity slot (htmx). Pre-sanitized by the caller.
    */
   setIdentity(id: string, title: string, icon: string | null, iconColor: string | null): void {
+    const task = this.getTask(id);
+    if (!task) return;
     this.db
       .prepare("UPDATE tasks SET title = ?, icon = ?, icon_color = ?, updated_at = datetime('now') WHERE id = ?")
       .run(title, icon, iconColor, id);
+    eventBus.emit("task:state_changed", { taskId: id, previousStatus: task.status, newStatus: task.status });
   }
 
   /** Set (or clear) a task's icon + tint. Pre-sanitized by the caller. */
@@ -342,7 +346,12 @@ export class TaskScheduler {
         id,
       );
 
-    return this.getTask(id)!;
+    // An edit (title, description, team, working directory, mode, config, icon)
+    // is a state mutation like any other: announce it so every surface patches
+    // the row. Same status on both sides = in-place patch, never a view refresh.
+    const updated = this.getTask(id)!;
+    eventBus.emit("task:state_changed", { taskId: id, previousStatus: updated.status, newStatus: updated.status });
+    return updated;
   }
 
   /** draft -> active. The wake marker queues the first start. */
@@ -892,6 +901,17 @@ export class TaskScheduler {
            AND id NOT IN (
              SELECT DISTINCT task_id FROM agent_instances WHERE status IN ${LIVE_INSTANCE_STATUSES}
            )
+           -- An open delegation means the root is parked, not idle: its process
+           -- exited after handing off, and the delegation result resumes it.
+           -- Instance rows alone miss the gap while a finished child's exit
+           -- drains (both rows already settled), so a wake there started a
+           -- second root next to the one the result is about to resume.
+           AND id NOT IN (
+             SELECT task_id FROM delegations WHERE status IN ('pending', 'running')
+           )
+           AND id NOT IN (
+             SELECT task_id FROM delegation_groups WHERE status = 'running'
+           )
          ORDER BY COALESCE(wake_requested_at, approved_at, created_at) ASC, rowid ASC
          LIMIT 1`,
       )
@@ -1026,18 +1046,7 @@ export class TaskScheduler {
       )
       .run();
 
-    this.db
-      .prepare(
-        `UPDATE escalations
-         SET status = 'resolved',
-             response = COALESCE(response, 'Auto-resolved: task is settled.'),
-             resolved_at = datetime('now')
-         WHERE status = 'open'
-           AND task_id IN (
-             SELECT id FROM tasks WHERE status = 'settled'
-           )`,
-      )
-      .run();
+    autoResolveEscalations(this.db, "task_id IN (SELECT id FROM tasks WHERE status = 'settled')", [], "Auto-resolved: task is settled.");
   }
 
   /**
@@ -1089,14 +1098,6 @@ export class TaskScheduler {
   }
 
   private resolveOpenEscalationsForTask(taskId: string, response: string): void {
-    this.db
-      .prepare(
-        `UPDATE escalations
-         SET status = 'resolved',
-             response = COALESCE(response, ?),
-             resolved_at = datetime('now')
-         WHERE task_id = ? AND status = 'open'`,
-      )
-      .run(response, taskId);
+    autoResolveEscalations(this.db, "task_id = ?", [taskId], response);
   }
 }

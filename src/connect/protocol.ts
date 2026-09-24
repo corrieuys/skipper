@@ -217,7 +217,7 @@ export interface ArtifactItem {
  * `state/snapshot`, because a consumer that connects later never sees the
  * one-shot event.
  */
-export const CONNECT_FEATURES = ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files", "task_memory"] as const;
+export const CONNECT_FEATURES = ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files", "task_memory", "remote_team_repos"] as const;
 
 export interface StateSnapshot {
   protocolVersion: number;

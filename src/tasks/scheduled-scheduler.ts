@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { eventBus } from "../events/bus";
 import { isMemoryMode, type MemoryMode } from "../task-memory/scope";
 import { parseJsonOr } from "../db/json";
 import { getDb } from "../db/connection";
@@ -195,6 +196,15 @@ export class ScheduledTaskScheduler {
     this.db = db ?? getDb();
   }
 
+  /**
+   * Announce a series change. Recurring series had no domain event, so other
+   * clients (web tabs, TUI, apps) stayed stale until they reloaded the list.
+   * Listeners re-render / forward only.
+   */
+  private changed(id: string, change: "created" | "updated" | "deleted"): void {
+    eventBus.emit("recurring:changed", { scheduledTaskId: id, change });
+  }
+
   createScheduledTask(input: CreateScheduledTaskInput): ScheduledTask {
     if ((input.scheduleUnit || input.scheduleAmount) && input.scheduleMatrix) {
       throw new Error("A scheduled task uses either an interval or a weekly schedule, not both");
@@ -224,6 +234,7 @@ export class ScheduledTaskScheduler {
         input.iconColor ?? null,
       );
 
+    this.changed(id, "created");
     return this.getScheduledTask(id)!;
   }
 
@@ -247,6 +258,7 @@ export class ScheduledTaskScheduler {
         .prepare("UPDATE scheduled_tasks SET webhook_key = ?, updated_at = datetime('now') WHERE id = ?")
         .run(crypto.randomUUID(), id);
     }
+    this.changed(id, "updated");
     return this.getScheduledTask(id)!;
   }
 
@@ -257,6 +269,7 @@ export class ScheduledTaskScheduler {
     this.db
       .prepare("UPDATE scheduled_tasks SET webhook_key = ?, updated_at = datetime('now') WHERE id = ?")
       .run(crypto.randomUUID(), id);
+    this.changed(id, "updated");
     return this.getScheduledTask(id)!;
   }
 
@@ -267,6 +280,7 @@ export class ScheduledTaskScheduler {
     this.db
       .prepare("UPDATE scheduled_tasks SET webhook_key = NULL, updated_at = datetime('now') WHERE id = ?")
       .run(id);
+    this.changed(id, "updated");
     return this.getScheduledTask(id)!;
   }
 
@@ -280,6 +294,7 @@ export class ScheduledTaskScheduler {
     this.db
       .prepare("UPDATE scheduled_tasks SET webhook_debounce_minutes = ?, updated_at = datetime('now') WHERE id = ?")
       .run(minutes, id);
+    this.changed(id, "updated");
     return this.getScheduledTask(id)!;
   }
 
@@ -352,6 +367,7 @@ export class ScheduledTaskScheduler {
     this.db
       .prepare("UPDATE scheduled_tasks SET task_config = ?, updated_at = datetime('now') WHERE id = ?")
       .run(JSON.stringify(config), id);
+    this.changed(id, "updated");
     return this.getScheduledTask(id)!;
   }
 
@@ -399,6 +415,7 @@ export class ScheduledTaskScheduler {
         id,
       );
 
+    this.changed(id, "updated");
     return this.getScheduledTask(id)!;
   }
 
@@ -407,6 +424,7 @@ export class ScheduledTaskScheduler {
     this.db
       .prepare("UPDATE scheduled_tasks SET starred = ?, updated_at = datetime('now') WHERE id = ?")
       .run(starred ? 1 : 0, id);
+    this.changed(id, "updated");
   }
 
   /** Set (or clear) a recurring task's icon + tint. Pre-sanitized by the caller. */
@@ -414,6 +432,7 @@ export class ScheduledTaskScheduler {
     this.db
       .prepare("UPDATE scheduled_tasks SET icon = ?, icon_color = ?, updated_at = datetime('now') WHERE id = ?")
       .run(icon, iconColor, id);
+    this.changed(id, "updated");
   }
 
   approveScheduledTask(id: string): ScheduledTask {
@@ -437,6 +456,7 @@ export class ScheduledTaskScheduler {
       )
       .run(nextRunAt, id);
 
+    this.changed(id, "updated");
     return this.getScheduledTask(id)!;
   }
 
@@ -454,6 +474,7 @@ export class ScheduledTaskScheduler {
       )
       .run(id);
 
+    this.changed(id, "updated");
     return this.getScheduledTask(id)!;
   }
 
@@ -464,6 +485,7 @@ export class ScheduledTaskScheduler {
     this.db.prepare("DELETE FROM scheduled_tasks WHERE id = ?").run(id);
     // Shared memory is owned by the series, not its runs (no FK): sweep it here.
     this.db.prepare("DELETE FROM task_memory WHERE scope_id = ?").run(`series:${id}`);
+    this.changed(id, "deleted");
   }
 
   /**
@@ -490,6 +512,7 @@ export class ScheduledTaskScheduler {
     this.db
       .prepare("UPDATE scheduled_tasks SET task_config = ?, updated_at = datetime('now') WHERE id = ?")
       .run(JSON.stringify(config), id);
+    this.changed(id, "updated");
     return this.getScheduledTask(id)!;
   }
 
@@ -523,6 +546,7 @@ export class ScheduledTaskScheduler {
          WHERE id = ?`,
       )
       .run(nextRunAt, id);
+    this.changed(id, "updated");
   }
 
   // Clear the recurring schedule (interval or weekly matrix) so the task
@@ -540,6 +564,7 @@ export class ScheduledTaskScheduler {
       )
       .run(id);
 
+    this.changed(id, "updated");
     return this.getScheduledTask(id)!;
   }
 

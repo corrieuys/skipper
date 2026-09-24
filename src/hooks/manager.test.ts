@@ -147,6 +147,26 @@ describe("HookManager", () => {
     expect(payload.hook_event).toBe("escalation.created");
   });
 
+  it("fires escalation.resolved for an operator answer, not for a system close", async () => {
+    const taskId = "task-esc-res";
+    createTestTask(taskId, [
+      { event: "escalation.resolved", type: "curl", template: "echo res_{{event.response}}" },
+    ]);
+
+    // System close (task settled / cancelled): UIs reconcile, hooks stay quiet.
+    eventBus.emit("escalation:resolved", { escalationId: "esc-auto", agentId: "agent-1", taskId, response: "Task cancelled.", auto: true });
+    // Operator answer.
+    eventBus.emit("escalation:resolved", { escalationId: "esc-op", agentId: "agent-1", taskId, response: "Use postgres" });
+
+    await new Promise((r) => setTimeout(r, 500));
+
+    const events = db.prepare(
+      "SELECT * FROM events WHERE task_id = ? AND type = 'hook:executed'",
+    ).all(taskId) as Array<{ payload: string }>;
+    expect(events.length).toBe(1);
+    expect(JSON.parse(events[0]!.payload).hook_event).toBe("escalation.resolved");
+  });
+
   it("fires phase.review_pending hook", async () => {
     const taskId = "task-review-1";
     createTestTask(taskId, [

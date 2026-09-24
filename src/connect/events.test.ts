@@ -48,7 +48,7 @@ describe("subscribeConnectEvents", () => {
     expect(frames[0]!.event).toBe("connect:capabilities");
     expect(frames[0]!.payload).toEqual({
       protocolVersion: 3,
-      features: ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files", "task_memory"],
+      features: ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files", "task_memory", "remote_team_repos"],
     });
   });
 
@@ -220,5 +220,48 @@ describe("subscribeConnectEvents", () => {
     eventBus.emit("task:state_changed", { taskId, previousStatus: "approved", newStatus: "running" });
     await Bun.sleep(30);
     expect(frames).toHaveLength(0);
+  });
+});
+
+describe("recurring + team change events", () => {
+  it("forwards recurring:changed with the series row, and without one when deleted", () => {
+    const db = getDb();
+    db.prepare("INSERT INTO teams (id, name, phases) VALUES ('team-r', 'Team R', '[]')").run();
+    db.prepare("INSERT INTO scheduled_tasks (id, title, team_id, working_directory, status) VALUES ('st-1', 'Nightly', 'team-r', '/repo', 'draft')").run();
+    cleanup = subscribeConnectEvents(capture);
+    frames.length = 0;
+
+    eventBus.emit("recurring:changed", { scheduledTaskId: "st-1", change: "updated" });
+    eventBus.emit("recurring:changed", { scheduledTaskId: "st-1", change: "deleted" });
+
+    expect(frames.map((f) => f.event)).toEqual(["recurring:changed", "recurring:changed"]);
+    expect(frames[0]!.payload.recurring).toMatchObject({ id: "st-1", title: "Nightly", teamId: "team-r", status: "draft" });
+    expect(frames[1]!.payload).toEqual({ scheduledTaskId: "st-1", change: "deleted" });
+  });
+
+  it("forwards team:changed with the team row including skipperPrompt", async () => {
+    const { createLocalTeam } = await import("../teams/local-teams");
+    cleanup = subscribeConnectEvents(capture);
+    frames.length = 0;
+    const team = createLocalTeam(getDb(), { name: "Evented", phases: [{ name: "Do", prompt: "do" }], skipper_prompt: "lead well" });
+
+    const created = frames.find((f) => f.event === "team:changed")!;
+    expect(created.payload).toMatchObject({ teamId: team.id, change: "created" });
+    expect(created.payload.team).toMatchObject({ id: team.id, name: "Evented", phaseCount: 1, skipperPrompt: "lead well", remote: null });
+  });
+
+  it("forwards remote_team_repo:changed with the repo row, and none once unlinked", async () => {
+    const { addRemoteTeamRepo, removeRemoteTeamRepo } = await import("../teams/remote-repos");
+    cleanup = subscribeConnectEvents(capture);
+    frames.length = 0;
+    const repo = addRemoteTeamRepo(getDb(), { url: "acme/teams", ref: "main" });
+
+    const created = frames.find((f) => f.event === "remote_team_repo:changed")!;
+    expect(created.payload).toMatchObject({ repoId: repo.id, change: "created" });
+    expect(created.payload.repo).toMatchObject({ id: repo.id, url: "https://github.com/acme/teams.git", ref: "main", status: "pending", teamIds: [] });
+
+    frames.length = 0;
+    removeRemoteTeamRepo(getDb(), repo.id);
+    expect(frames.find((f) => f.event === "remote_team_repo:changed")!.payload).toEqual({ repoId: repo.id, change: "deleted" });
   });
 });

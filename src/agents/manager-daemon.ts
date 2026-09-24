@@ -8,7 +8,7 @@ import { StateTracker } from "./state-tracker";
 import { EscalationManager } from "../escalations/manager";
 import { HookManager } from "../hooks/manager";
 import { eventBus } from "../events/bus";
-import { updateInstanceStatus, finalizeActiveInstancesForTask } from "./instance-status";
+import { updateInstanceStatus, finalizeActiveInstancesForTask, emitInstanceState } from "./instance-status";
 import type { AgentExitEvent, AgentSignalEvent } from "../events/bus";
 import { logError } from "../logging";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "./types";
@@ -1027,18 +1027,10 @@ export class ManagerDaemon {
           .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
           .run(templateId);
         const settledStatus = event.code === 0 ? "completed" : "failed";
-        updateInstanceStatus(this.db, event.agentId, settledStatus);
-        const relRow = this.db
-          .prepare("SELECT parent_instance_id, root_instance_id FROM agent_instances WHERE id = ?")
-          .get(event.agentId) as { parent_instance_id: string | null; root_instance_id: string | null } | null;
-        eventBus.emit("instance:state_changed", {
-          instanceId: event.agentId,
-          templateAgentId: templateId,
-          taskId,
-          parentInstanceId: relRow?.parent_instance_id ?? null,
-          rootInstanceId: relRow?.root_instance_id ?? null,
-          status: settledStatus,
-        });
+        if (!updateInstanceStatus(this.db, event.agentId, settledStatus)) {
+          // Legacy template-runtime id with no instance row: announce by hand.
+          eventBus.emit("instance:state_changed", { instanceId: event.agentId, templateAgentId: templateId, taskId, parentInstanceId: null, rootInstanceId: null, status: settledStatus });
+        }
         return;
       }
 
@@ -1120,24 +1112,14 @@ export class ManagerDaemon {
           .prepare("UPDATE agents SET current_task_id = NULL WHERE id = ?")
           .run(templateId);
         const finalStatus = event.code === 0 ? "completed" : "failed";
-        updateInstanceStatus(this.db, event.agentId, finalStatus);
-        // Announce the settled status so the UI clears this agent's "active"
-        // orb. updateInstanceStatus is a bare UPDATE that emits nothing, and the
-        // ui-push agent:exit handler already ran synchronously BEFORE this line —
-        // it read the instance as still 'running' and rebuilt the steer panel
-        // with the orb lit. Without this follow-up event nothing re-pushes once
-        // the status flips, so the orb stayed active until a manual refresh.
-        const rel = this.db
-          .prepare("SELECT parent_instance_id, root_instance_id FROM agent_instances WHERE id = ?")
-          .get(event.agentId) as { parent_instance_id: string | null; root_instance_id: string | null } | null;
-        eventBus.emit("instance:state_changed", {
-          instanceId: event.agentId,
-          templateAgentId: templateId,
-          taskId,
-          parentInstanceId: rel?.parent_instance_id ?? null,
-          rootInstanceId: rel?.root_instance_id ?? null,
-          status: finalStatus,
-        });
+        if (!updateInstanceStatus(this.db, event.agentId, finalStatus)) {
+          // Legacy template-runtime id with no instance row: announce by hand.
+          eventBus.emit("instance:state_changed", { instanceId: event.agentId, templateAgentId: templateId, taskId, parentInstanceId: null, rootInstanceId: null, status: finalStatus });
+        }
+        // updateInstanceStatus announces the settled status (instance:state_changed).
+        // That matters here: the ui-push agent:exit handler already ran
+        // synchronously BEFORE this line and read the instance as still
+        // 'running', so without the follow-up event the orb stayed lit.
         // Input arrived while this root was busy (wake marker persisted). Now
         // that its instance is finalized the queue can deliver immediately
         // instead of waiting for the next 60s tick.
@@ -1237,6 +1219,7 @@ export class ManagerDaemon {
       this.db
         .prepare(`UPDATE agent_instances SET status = 'stopped', updated_at = datetime('now') WHERE id IN (${placeholders})`)
         .run(...this.pausedRuntimeSnapshots.map((snapshot) => snapshot.runtimeId));
+      for (const snapshot of this.pausedRuntimeSnapshots) emitInstanceState(this.db, snapshot.runtimeId);
       const templateIds = Array.from(new Set(this.pausedRuntimeSnapshots.map((snapshot) => snapshot.templateAgentId)));
       const templatePlaceholders = templateIds.map(() => "?").join(", ");
       this.db
@@ -1285,6 +1268,7 @@ export class ManagerDaemon {
                 snapshot.sessionId,
                 snapshot.runtimeId,
               );
+            emitInstanceState(this.db, snapshot.runtimeId);
           }
           this.db
             .prepare("UPDATE agents SET current_task_id = ?, status = 'busy', updated_at = datetime('now') WHERE id = ?")
@@ -1446,6 +1430,7 @@ export class ManagerDaemon {
                 snapshot.sessionId,
                 snapshot.runtimeId,
               );
+            emitInstanceState(this.db, snapshot.runtimeId);
           }
           this.db
             .prepare("UPDATE agents SET current_task_id = ?, status = 'busy', updated_at = datetime('now') WHERE id = ?")

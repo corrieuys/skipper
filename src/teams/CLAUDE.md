@@ -4,6 +4,8 @@
 |---|---|
 | `manager.ts` | Team CRUD. Phase mgmt. Membership + constraints. Execution-shape resolution. Skipper enforced as entrypoint |
 | `team-input.ts` | `toTeamInput` — coerce raw create/update/import bodies (JSON or team-map form payloads) into `LocalTeamInput`. Shared by `/api/teams` and `/data/teams` |
+| `remote-repos.ts` | Remote team repos (experimental): link a GitHub repo of team configs, clone/pull it with the machine's own git credentials, load its teams into `local_teams` as read-only teams. URL/ref validation, git runner, manifest + team-file parsing, sync, unlink, `duplicateTeamToLocal` |
+| `remote-links.ts` | `remote_team_links` rows (team id → repo id, source path, `removed_upstream`). No `local-teams` import, so `local-teams.ts` reads it for the read-only guard without a cycle |
 
 Phases live on team. Each phase carries a prompt + optional review gate.
 
@@ -71,3 +73,48 @@ mode split is gone — any team runs any task); the provider list for the
 summary model comes from
 `model-settings.ts:listModelOptions` (never a hardcoded model). The built-in
 "Real Time" team predates this and keeps its legacy summarizer default.
+
+**Events.** `createLocalTeam` / `updateLocalTeam` / `deleteLocalTeam` emit `team:changed { teamId, change }`, whatever surface called them (web, import, Connect, MCP).
+
+## Remote team repos (experimental)
+
+A linked repo is a row in runtime `remote_team_repos` (machine-scoped) plus a
+shallow clone at `<data dir>/remote-teams/<repoId>/` (daemon-owned, never
+hand-edited). `repoId` = first 8 hex of sha256(`owner/repo` lowercased), so the
+same repo keeps its id (and its team ids) over https/ssh and across unlink/re-link.
+
+Repo format: `skipper-teams.json` = `{ "version": 1, "name"?, "teams": ["teams/a.json", ...] }`;
+without it every `teams/*.json` loads. A team file is one team in the
+`/api/teams/export` shape, or the `{ teams: [...] }` export wrapper. Team id =
+`remote-<repoId>-<slug(file id, else filename)>`. Paths must stay inside the clone
+(symlinks resolved), `.json`, 1 MB cap.
+
+**Credentials:** git runs as the daemon's user (`systemGit`: `GIT_TERMINAL_PROMPT=0`,
+ssh `BatchMode`, 60s cap), so the credential helper / `gh auth setup-git` /
+ssh-agent authenticate. Skipper never handles a token. Only `github.com` URLs
+(https, ssh, `owner/repo`) pass `parseRepoUrl`; no userinfo, no leading dash; the
+URL reaches git as an argv element after `--`.
+
+**What a repo may not bring** (`toRemoteTeamInput`): `hooks` (shell), `slackEnabled`,
+`slashCommand`, `skipperCustomTools`, per-agent `customTools` are dropped; a
+`single:`/`custom:` member fails that file (inline agents only). Prompts are trusted
+as written: linking a repo = trusting its authors.
+
+**Sync** (`syncRemoteTeamRepo`, one in flight per repo, never throws): clone or
+`fetch --depth 1` + `reset --hard FETCH_HEAD` → manifest → upsert each team (only
+when its content changed, so an unchanged team emits nothing) → retire teams the
+repo no longer lists. A git/manifest failure sets `status: error` + `last_error`
+and leaves every stored team alone. A per-file failure lands in `team_errors`,
+the other files load, and that file's team keeps its last good version.
+Runs on link, on Refresh, and once at boot in the background (`index.ts`); there
+is no periodic pull.
+
+**Read-only + retire:** `updateLocalTeam` / `deleteLocalTeam` throw
+`REMOTE_TEAM_READ_ONLY` for a linked team unless the sync passes `allowRemote`
+(routes answer 400/409, Connect `{ok:false}`). A team removed upstream (or whose
+repo is unlinked) is deleted, unless a task or recurring task references it: then
+it stays assignable, flagged `removed_upstream` ("Removed upstream" label), and the
+operator may delete it. `LocalTeam.remote` carries the link on every read.
+
+**Events:** `remote_team_repo:changed { repoId, change }` on link / every status
+move / unlink; each upserted or retired team also emits `team:changed`.

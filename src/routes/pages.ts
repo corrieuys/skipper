@@ -365,7 +365,11 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
     };
 
     addRoute("GET", "/teams", () => {
-      return html(teamsPage({ teams: listLocalTeams(db), ...teamPageMeta() }));
+      // Remote teams section (experimental): null hides it.
+      const remoteRepos = isExperimental()
+        ? (require("../teams/remote-repos").listRemoteTeamRepos(db) as import("../teams/remote-repos").RemoteTeamRepo[])
+        : null;
+      return html(teamsPage({ teams: listLocalTeams(db), remoteRepos, ...teamPageMeta() }));
     });
 
     // Tools a team may grant to any of its agents. Empty (and the section is not

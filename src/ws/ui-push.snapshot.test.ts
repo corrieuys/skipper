@@ -5,6 +5,7 @@ import { initializeDatabase } from "../db/connection";
 import { startServer, setWebSocketUpgradeHandlers, setWebSocketHandlers } from "../server";
 import { UIWebSocketManager } from "./ui-push";
 import type { ManagerDaemon } from "../agents/manager-daemon";
+import { eventBus } from "../events/bus";
 
 let server: Server<unknown>;
 let manager: UIWebSocketManager;
@@ -61,6 +62,42 @@ function firstMessage(url: string): Promise<string> {
     });
   });
 }
+
+/** Collect JSON frames on a dashboard socket until `done` says stop (or the timeout). */
+function collectFrames(url: string, onOpen: () => void, done: (frames: Array<{ resource: string; data: Record<string, unknown> }>) => boolean): Promise<Array<{ resource: string; data: Record<string, unknown> }>> {
+  return new Promise((resolve, reject) => {
+    const frames: Array<{ resource: string; data: Record<string, unknown> }> = [];
+    const ws = new WebSocket(url);
+    const timer = setTimeout(() => { ws.close(); reject(new Error(`timed out; saw ${frames.map((f) => f.resource).join(",")}`)); }, 3000);
+    ws.addEventListener("message", (ev) => {
+      if (typeof ev.data !== "string" || !ev.data.startsWith("{")) return;
+      const frame = JSON.parse(ev.data) as { resource: string; data: Record<string, unknown> };
+      frames.push(frame);
+      if (frame.resource === "dashboard:snapshot") onOpen();
+      if (done(frames)) { clearTimeout(timer); ws.close(); resolve(frames); }
+    });
+    ws.addEventListener("error", (e) => { clearTimeout(timer); reject(new Error(`ws error: ${String(e)}`)); });
+  });
+}
+
+describe("dashboard lanes on instance liveness", () => {
+  it("an instance exit re-pushes the roster AND the header metrics", async () => {
+    const frames = await collectFrames(
+      `ws://localhost:${port}/ws/ui?format=json&topics=dashboard`,
+      () => {
+        db.prepare("UPDATE agent_instances SET status = 'completed' WHERE id = 'inst-1'").run();
+        eventBus.emit("instance:state_changed", { instanceId: "inst-1", templateAgentId: "a-tmpl", taskId: "task-1", parentInstanceId: null, rootInstanceId: null, status: "completed" });
+      },
+      (fs) => fs.some((f) => f.resource === "dashboard:instances") && fs.some((f) => f.resource === "dashboard:metrics"),
+    );
+    const instances = frames.find((f) => f.resource === "dashboard:instances")!;
+    const metrics = frames.find((f) => f.resource === "dashboard:metrics")!;
+    expect(instances.data.running_instances).toHaveLength(0);
+    expect(metrics.data.activeAgentCount).toBe(0);
+    // restore for the other tests in this file
+    db.prepare("UPDATE agent_instances SET status = 'running' WHERE id = 'inst-1'").run();
+  });
+});
 
 describe("UI WS JSON snapshot on connect", () => {
   it("pushes a full dashboard snapshot to a json client immediately on open", async () => {

@@ -466,3 +466,25 @@ describe("setSlashCommand", () => {
     expect(cfg.phase_overrides).toEqual({ 0: { prompt: "keep me" } });
   });
 });
+
+describe("recurring:changed", () => {
+  it("every series mutation announces itself; delete says deleted", async () => {
+    const { eventBus } = await import("../events/bus");
+    const seen: Array<{ scheduledTaskId: string; change: string }> = [];
+    const h = (e: { scheduledTaskId: string; change: string }) => seen.push(e);
+    eventBus.on("recurring:changed", h);
+    try {
+      const teamId = createTeam("team-ev");
+      const s = scheduled.createScheduledTask({ title: "Nightly", teamId, workingDirectory: "/repo" });
+      scheduled.setStarred(s.id, true);
+      scheduled.updateScheduledTask(s.id, { title: "Nightly v2", teamId, workingDirectory: "/repo" });
+      scheduled.approveScheduledTask(s.id);
+      scheduled.unapproveScheduledTask(s.id);
+      scheduled.deleteScheduledTask(s.id);
+      expect(seen.map((e) => e.change)).toEqual(["created", "updated", "updated", "updated", "updated", "deleted"]);
+      expect(new Set(seen.map((e) => e.scheduledTaskId))).toEqual(new Set([s.id]));
+    } finally {
+      eventBus.off("recurring:changed", h);
+    }
+  });
+});

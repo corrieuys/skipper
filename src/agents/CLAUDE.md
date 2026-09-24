@@ -12,7 +12,7 @@ Agent process runtime. Spawn external CLI, parse stdout, route signals.
 | `oneshot.ts` | `runOneShotText()` — provider-generic one-shot text call built from `agent_types` arg templates. Used by Greg's brain + the dictation rewriter; no instance rows/MCP/signals |
 | `skipper.ts` | `SKIPPER_AGENT_ID` constant + skipper config read/update. Also the Skipper's own orb identity: `getSkipperIdentity`/`saveSkipperIdentity` (machine-scoped `app_settings`, default character `captain`) + `applySkipperIdentity` which patches the config `agents` row for `skipper` (called at boot in `db/connection.ts` and on save from the config page's experimental Skipper Character panel) |
 | `mcp-spawn-helper.ts` | Build MCP server config injection at spawn time. Skipped for in-process agents |
-| `instance-status.ts` | Shared `agent_instances.status` writers: `updateInstanceStatus()`, `finalizeActiveInstancesForTask()` |
+| `instance-status.ts` | Shared `agent_instances.status` writers: `updateInstanceStatus()`, `finalizeActiveInstancesForTask()`. **Both emit `instance:state_changed`** (via `emitInstanceState(db, id)`, which reads the row): the write and the announcement are one step, so no caller can forget it. `updateInstanceStatus` returns false when the id has no instance row (legacy template-runtime id); `handleAgentExit` then announces by hand. Any raw `UPDATE agent_instances SET status` elsewhere must call `emitInstanceState` after it |
 | `signal-utils.ts` | `signalTextSnippet()` — dedup-fingerprint normalization shared with `mcp/signal-bridge.ts` |
 
 ## Agent types (seeded `db/connection.ts:seedAgentTypes()`)

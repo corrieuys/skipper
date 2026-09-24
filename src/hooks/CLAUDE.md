@@ -9,3 +9,5 @@ User hooks — shell commands fired on task/escalation events. Like git hooks.
 | `types.ts` | `HookDefinition`, `HookEventName`, payloads |
 
 Events: `task.started`, `task.completed`, `task.failed`, `escalation.created`, `escalation.resolved`, `phase.review_pending`.
+
+`escalation:resolved` with `auto: true` (system close on settle / cancel, see `src/escalations/auto-resolve.ts`) is ignored: the hook / sound means the operator answered.

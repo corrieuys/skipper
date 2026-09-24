@@ -1,4 +1,5 @@
 import { addDataRoute } from "./auth";
+import { eventBus } from "../../events/bus";
 import { getDb } from "../../db/connection";
 import {
   fetchRealtimeTimeline,
@@ -271,8 +272,8 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
   addDataRoute("POST", "/data/realtime-tasks/:id/config", async (req, params) => {
     const db = getDb();
     const task = db
-      .prepare("SELECT id, task_config FROM tasks WHERE id = ?")
-      .get(params.id) as { id: string; task_config: string } | null;
+      .prepare("SELECT id, status, task_config FROM tasks WHERE id = ?")
+      .get(params.id) as { id: string; status: string; task_config: string } | null;
     if (!task) return err("Task not found", 404);
 
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
@@ -288,6 +289,7 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
 
     db.prepare("UPDATE tasks SET task_config = ?, updated_at = datetime('now') WHERE id = ?")
       .run(JSON.stringify(newConfig), params.id);
+    eventBus.emit("task:state_changed", { taskId: task.id, previousStatus: task.status, newStatus: task.status });
 
     return ok({ id: params.id, config: newConfig });
   });

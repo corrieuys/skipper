@@ -4,10 +4,10 @@ import { TerminalDriver } from "./terminal";
 import type { Store } from "../model/store";
 import type { TaskItem, RecurringSeries } from "../model/types";
 import { FILTERS, type UIState, type Modal, type FormModal, type ListModal, type TextModal, type ConfirmModal, topModal, visibleListItems } from "../ui/state";
-import { railRows, selectedIndex, ago, clock, activitySparkline, scheduleLabel, hhmm, type RailRow } from "../ui/view-model";
+import { railRows, selectedIndex, isSelectable, ago, clock, activitySparkline, scheduleLabel, hhmm, type RailRow } from "../ui/view-model";
 import { C, S, BRAND_RAMP, PULSE, statusColor, statusGlyph, agentColor } from "./theme";
 import { panel, phaseStrip, sparkline, lr, keyHints, scrollbar, dimAll, shadow, breathingCursor, orb } from "./widgets";
-import { drawDetail, activityLine } from "./detail";
+import { drawDetail, activityLines } from "./detail";
 import { footerHints } from "../ui/hints";
 
 export interface RenderModel {
@@ -146,14 +146,16 @@ function drawHeader(s: Screen, r: Rect, model: RenderModel): void {
 
   // Right side: metric chips + clock.
   const c = store.counts();
-  const m = store.metricsNow();
   const chips: Array<[string, number, number]> = [
     [(c.working ?? 0) > 0 ? statusGlyph("working", f) : "⠿", c.working ?? 0, C.ok],
     ["◉", c.queued ?? 0, C.warn],
     ["◆", c.review ?? 0, C.violet],
     ["▲", Math.max(c.blocked ?? 0, c.escalations ?? 0), C.danger],
     ["▮▮", c.paused ?? 0, C.orange],
-    ["⬢", m.activeAgentCount || c.agents || 0, C.accent],
+    // Live roster length, not metrics.activeAgentCount: the roster lane is
+    // patched on every instance start/exit (local dashboard lane and remote
+    // fat events alike); the metrics lane is a coarser, task-driven push.
+    ["⬢", c.agents ?? 0, C.accent],
   ];
   const labels = ["working", "queued", "review", "blocked", "paused", "agents"];
   const time = clock(new Date());
@@ -181,7 +183,7 @@ function drawHeader(s: Screen, r: Rect, model: RenderModel): void {
   const all = store.allTasks();
   for (const flt of FILTERS) {
     const active = ui.filter === flt.id;
-    const count = flt.id === "recurring" ? ui.recurring.length : countFor(all, flt.id);
+    const count = countFor(all, flt.id) + (flt.id === "starred" ? ui.recurring.filter((sr) => sr.starred).length : 0);
     const label = `${flt.key} ${flt.label}${count > 0 ? ` ${count}` : ""}`;
     const st: Style = active ? { fg: C.textBright, bg: C.bgSelected, bold: true } : { fg: C.textMuted, bg: C.bgPanel };
     if (cx - r.x + textWidth(label) + 3 > r.w - 24) break;
@@ -199,14 +201,13 @@ function drawHeader(s: Screen, r: Rect, model: RenderModel): void {
 
 function countFor(all: TaskItem[], filter: string): number {
   switch (filter) {
-    case "active":
+    case "latest":
+      // What is alive right now: the number the operator cares about on this tab.
       return all.filter((t) => t.status === "active").length;
     case "drafts":
       return all.filter((t) => t.status === "draft").length;
     case "starred":
       return all.filter((t) => t.starred).length;
-    case "done":
-      return all.filter((t) => t.status === "settled").length;
     case "all":
       return all.length;
     default:
@@ -218,18 +219,17 @@ function countFor(all: TaskItem[], filter: string): number {
 
 function drawRail(s: Screen, r: Rect, rows: RailRow[], model: RenderModel, focused: boolean): number {
   const { ui, store } = model;
-  const title = ui.filter === "recurring" ? "RECURRING" : FILTERS.find((f) => f.id === ui.filter)!.label.toUpperCase();
-  const body = panel(s, r, title, { focused, right: rows.length ? String(rows.length) : undefined });
+  const title = FILTERS.find((f) => f.id === ui.filter)!.label.toUpperCase();
+  const selectable = rows.filter(isSelectable).length;
+  const body = panel(s, r, title, { focused, right: selectable ? String(selectable) : undefined });
   if (body.h <= 0) return 0;
-  if (rows.length === 0) {
+  if (rows.length === 0 || !store.isHydrated) {
     const msg = !store.isHydrated
       ? `connecting ${breathingCursor(ui.frame)}`
-      : ui.filter === "recurring"
-        ? "no recurring tasks"
-        : ui.search.value
+      : ui.search.value
           ? "nothing matches"
           : ui.filter === "drafts"
-            ? "no drafts — n creates one"
+            ? "no drafts. n creates one"
             : "nothing here";
     s.text(body.x + 1, body.y, msg, S.dim, body.w - 1);
     return body.h;
@@ -259,8 +259,12 @@ function drawRail(s: Screen, r: Rect, rows: RailRow[], model: RenderModel, focus
     const selected = i === sel;
     const bg = selected ? C.bgSelected : undefined;
     if (selected) s.fill(body.x, y, body.w - 1, Math.min(2, body.y + body.h - y), " ", { bg });
-    if (row.kind === "task") drawTaskRow(s, body, y, row.task, selected, ui.frame, now, i, bg, store);
-    else drawSeriesRow(s, body, y, row.series, selected, ui.frame, now, bg);
+    if (row.kind === "header") drawSectionHeader(s, body, y, row.label, row.count, row.note);
+    else if (row.kind === "task") {
+      // A series' run sits two columns in, under its series row.
+      const at = row.run ? { ...body, x: body.x + 2, w: body.w - 2 } : body;
+      drawTaskRow(s, at, y, row.task, selected, ui.frame, now, i, bg, store);
+    } else drawSeriesRow(s, body, y, row.series, selected, ui.frame, now, bg, row.expanded);
     y += selected ? 2 : 1;
   }
   scrollbar(s, body, rows.length, top, Math.max(capacity - 1, 1));
@@ -337,11 +341,25 @@ function statusLabelShort(st: string): string {
   }
 }
 
-function drawSeriesRow(s: Screen, body: Rect, y: number, sr: RecurringSeries, selected: boolean, frame: number, now: number, bg: number | undefined): void {
+/** Section label inside the Latest board: `ACTIVE 3 ─────`, or a dim note when the section is empty. */
+function drawSectionHeader(s: Screen, body: Rect, y: number, label: string, count: number, note?: string): void {
+  const w = body.w - 1;
+  let cx = body.x;
+  cx += s.text(cx, y, label, { fg: C.textMuted, bold: true });
+  if (count > 0) cx += s.text(cx, y, ` ${count}`, S.dim);
+  if (note) cx += s.text(cx, y, `  ${note}`, S.dim, Math.max(w - (cx - body.x), 0));
+  cx += 1;
+  const rule = Math.max(body.x + w - cx, 0);
+  if (rule > 0) s.text(cx, y, "─".repeat(rule), S.dim, rule);
+}
+
+function drawSeriesRow(s: Screen, body: Rect, y: number, sr: RecurringSeries, selected: boolean, frame: number, now: number, bg: number | undefined, expanded = false): void {
   const w = body.w - 1;
   const approved = sr.status === "approved";
   let cx = body.x;
-  cx += s.text(cx, y, approved ? `${["↻", "↺"][Math.floor(frame / 6) % 2]} ` : "◌ ", { fg: approved ? C.accent : C.textDim, bg, bold: true });
+  // Caret says the row opens (its latest runs); colour and spin say approved.
+  cx += s.text(cx, y, expanded ? "▾" : "▸", { fg: approved ? C.accent : C.textDim, bg, bold: true });
+  cx += s.text(cx, y, approved ? `${["↻", "↺"][Math.floor(frame / 6) % 2]}` : "◌", { fg: approved ? C.accent : C.textDim, bg, bold: true });
   if (sr.starred) cx += s.text(cx, y, "★", { fg: C.gold, bg });
   else cx += s.text(cx, y, " ", { bg });
   const right = sr.nextRunAt ? `next ${hhmm(sr.nextRunAt)}` : sr.status;
@@ -391,7 +409,7 @@ function drawFeed(s: Screen, r: Rect, model: RenderModel, focused: boolean): num
   }
   const feedRect: Rect = { x: body.x, y, w: body.w, h: body.y + body.h - y };
   // Newest first from the server → draw oldest at top, newest at bottom.
-  const lines = [...rows].reverse().map((a) => activityLine(a, feedRect.w));
+  const lines = [...rows].reverse().flatMap((a) => activityLines(a, feedRect.w - 1));
   if (lines.length === 0) {
     s.text(feedRect.x, feedRect.y, store.isHydrated ? "waiting for agent output…" : `connecting ${breathingCursor(ui.frame)}`, S.dim, feedRect.w);
     return feedRect.h;

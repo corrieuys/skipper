@@ -31,6 +31,7 @@ export class ConnectClient {
   private realtimeSessionManager: RealtimeSessionManager;
   private inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>;
   private killTaskRuntimes?: (taskId: string) => void;
+  private steering?: Pick<ResourceDeps, "steerRuntime" | "listRuntimeSteeringOptions">;
   private taskMemory?: ResourceDeps["taskMemory"];
 
   constructor(
@@ -43,6 +44,7 @@ export class ConnectClient {
     inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>,
     killTaskRuntimes?: (taskId: string) => void,
     taskMemory?: ResourceDeps["taskMemory"],
+    steering?: Pick<ResourceDeps, "steerRuntime" | "listRuntimeSteeringOptions">,
   ) {
     this.taskScheduler = taskScheduler;
     this.scheduledTaskScheduler = scheduledTaskScheduler;
@@ -53,6 +55,7 @@ export class ConnectClient {
     this.inputTask = inputTask;
     this.killTaskRuntimes = killTaskRuntimes;
     this.taskMemory = taskMemory;
+    this.steering = steering;
   }
 
   start(): void {
@@ -91,6 +94,8 @@ export class ConnectClient {
       inputTask: this.inputTask,
       killTaskRuntimes: this.killTaskRuntimes,
       taskMemory: this.taskMemory,
+      steerRuntime: this.steering?.steerRuntime,
+      listRuntimeSteeringOptions: this.steering?.listRuntimeSteeringOptions,
     };
   }
 
@@ -222,8 +227,9 @@ export function initConnectClient(
   inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>,
   killTaskRuntimes?: (taskId: string) => void,
   taskMemory?: ResourceDeps["taskMemory"],
+  steering?: Pick<ResourceDeps, "steerRuntime" | "listRuntimeSteeringOptions">,
 ): ConnectClient {
-  _connectClient = new ConnectClient(taskScheduler, scheduledTaskScheduler, escalationManager, artifactManager, phaseManager, realtimeSessionManager, inputTask, killTaskRuntimes, taskMemory);
+  _connectClient = new ConnectClient(taskScheduler, scheduledTaskScheduler, escalationManager, artifactManager, phaseManager, realtimeSessionManager, inputTask, killTaskRuntimes, taskMemory, steering);
   return _connectClient;
 }
 

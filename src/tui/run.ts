@@ -8,7 +8,7 @@ import { Renderer } from "./render/renderer";
 import { TerminalDriver } from "./render/terminal";
 import { KeyDecoder, type KeyEvent } from "./input/keyboard";
 import { initialUIState, topModal, formValues, visibleListItems, FILTERS, DETAIL_TABS, type UIState, type Modal, type FormModal, type ListModal, type Pane } from "./ui/state";
-import { railRows, selectedIndex } from "./ui/view-model";
+import { railRows, selectedIndex, nearestSelectable, type RailRow } from "./ui/view-model";
 import { sortedArtifacts } from "./render/detail";
 import { ACTIONS, actionForKey, availableActions, openArtifact, type Ctx, type Assignee } from "./ui/actions";
 import { setActionHints } from "./ui/hints";
@@ -132,6 +132,13 @@ class Controller implements Ctx {
     if (event.kind === "snapshot") this.afterSnapshot(before === 0);
     if (event.kind === "task_deleted" && this.ui.selectedTaskId === event.taskId) this.selectTask(null);
     if (event.kind === "task" && (event.created || event.started)) this.followNewTask(event.task);
+    // An edit moves fields the list row does not carry (description, working
+    // directory, config): re-read the open task's detail, nothing else.
+    if (event.kind === "task" && event.edited && event.task.id === this.ui.selectedTaskId) void this.refreshDetail(event.task.id);
+    if (event.kind === "recurring_changed") this.patchRecurring(event);
+    if (event.kind === "team_changed") this.patchTeams(event);
+    // The remote repos browser shows sync status + team counts: both move on these.
+    if (event.kind === "remote_repo_changed" || event.kind === "team_changed") this.reloadTaggedList("remote-repos");
     if (event.kind === "auth_failed") this.toast(event.message, "error");
     this.ensureSelection();
     this.scheduleRender();
@@ -208,29 +215,29 @@ class Controller implements Ctx {
   private followNewTask(task: TaskItem): void {
     if (this.ui.modals.length || this.ui.composerActive || this.ui.searchActive) return;
     if (this.ui.selectedTaskId === task.id) return;
-    if (task.status === "active" && !["active", "all", "starred"].includes(this.ui.filter)) this.ui.filter = "active";
-    else if (task.status === "draft" && !["drafts", "all"].includes(this.ui.filter)) this.ui.filter = "drafts";
+    // Latest lists active tasks and drafts alike; only a narrower board needs a switch.
+    if (task.status === "active" && !["latest", "all", "starred"].includes(this.ui.filter)) this.ui.filter = "latest";
+    else if (task.status === "draft" && !["latest", "drafts", "all"].includes(this.ui.filter)) this.ui.filter = "drafts";
     this.selectTask(task.id);
     this.toast(`${task.status === "draft" ? "new draft" : "task started"}: ${task.title || task.id.slice(0, 8)}`, "info");
   }
 
   /** With nothing selected but rows on the board, select the top row. */
   private ensureSelection(): void {
-    if (this.ui.selectedTaskId || this.ui.filter === "recurring" || this.ui.modals.length) return;
-    const first = railRows(this.store, this.ui)[0];
-    if (first?.kind === "task") this.selectTask(first.task.id);
+    if (this.ui.selectedTaskId || this.ui.railKind === "series" || this.ui.modals.length) return;
+    this.selectRow(railRows(this.store, this.ui).find((r) => r.kind === "task"));
   }
 
   private afterSnapshot(first: boolean): void {
     // Keep the selection valid; pick the top row on first hydrate.
     if (this.ui.selectedTaskId && !this.store.task(this.ui.selectedTaskId)) this.ui.selectedTaskId = null;
-    if (!this.ui.selectedTaskId && this.ui.filter !== "recurring") {
-      const rows = railRows(this.store, this.ui);
-      const firstRow = rows[0];
-      if (firstRow?.kind === "task") this.selectTask(firstRow.task.id);
+    if (!this.ui.selectedTaskId && this.ui.railKind === "task") {
+      this.selectRow(railRows(this.store, this.ui).find((r) => r.kind === "task"));
     } else if (this.ui.selectedTaskId && !first) {
       void this.loadBundle(this.ui.selectedTaskId, true);
     }
+    // The Latest board lists the recurring series; `recurring:changed` keeps them current after this.
+    void this.loadRecurring(!first).then(() => this.scheduleRender());
   }
 
   // ── painting ──────────────────────────────────────────────────────────
@@ -325,8 +332,9 @@ class Controller implements Ctx {
       const rows = await this.transport.request<Record<string, unknown>[]>("recurring", "list");
       this.ui.recurring = rows.map(toSeries);
       this.ui.recurringLoadedAt = Date.now();
-      if (!this.ui.selectedSeriesId || !this.ui.recurring.some((s) => s.id === this.ui.selectedSeriesId)) {
-        this.ui.selectedSeriesId = this.ui.recurring[0]?.id ?? null;
+      if (this.ui.selectedSeriesId && !this.ui.recurring.some((s) => s.id === this.ui.selectedSeriesId)) {
+        this.ui.selectedSeriesId = null;
+        this.ui.railKind = "task";
       }
     } catch (err) {
       this.toast(err instanceof Error ? err.message : String(err), "error");
@@ -345,6 +353,7 @@ class Controller implements Ctx {
       }
     }
     this.ui.selectedTaskId = id;
+    if (id) this.ui.railKind = "task"; // any path that picks a task moves the rail cursor onto it
     // One live output tail at a time (the daemon caps subscriptions per socket).
     if (this.tailedTaskId && this.tailedTaskId !== id) {
       this.transport.unsubscribeOutputs(this.tailedTaskId);
@@ -361,8 +370,69 @@ class Controller implements Ctx {
     this.scheduleRender();
   }
 
-  reloadTask(id: string): void {
-    void this.loadBundle(id, true);
+  /**
+   * Keep the cached lists current from `recurring:changed` / `team:changed`
+   * fat events. Only a list that was already loaded is patched; an unloaded one
+   * is fetched fresh the first time it is opened. A changed event with no row
+   * (older daemon, enrichment failure) just marks the cache stale.
+   */
+  private patchRecurring(event: { id: string; deleted: boolean; row: Record<string, unknown> | null }): void {
+    if (!this.ui.recurringLoadedAt) return;
+    if (event.deleted) {
+      this.ui.recurring = this.ui.recurring.filter((s) => s.id !== event.id);
+      this.ui.expandedSeries.delete(event.id);
+      if (this.ui.selectedSeriesId === event.id) {
+        this.ui.selectedSeriesId = null;
+        this.ui.railKind = "task";
+      }
+      return;
+    }
+    if (!event.row) {
+      void this.loadRecurring(true).then(() => this.scheduleRender());
+      return;
+    }
+    const next = toSeries(event.row);
+    const i = this.ui.recurring.findIndex((s) => s.id === next.id);
+    if (i >= 0) this.ui.recurring[i] = next;
+    else this.ui.recurring = [next, ...this.ui.recurring];
+  }
+
+  /** Refresh an open list modal whose items a daemon event just made stale. */
+  private reloadTaggedList(tag: string): void {
+    for (const modal of this.ui.modals) {
+      if (modal.kind === "list" && modal.tag === tag && modal.reload) {
+        void modal.reload().then(() => this.scheduleRender()).catch(() => {});
+      }
+    }
+  }
+
+  private patchTeams(event: { id: string; deleted: boolean; row: Record<string, unknown> | null }): void {
+    // Assignees (teams + solo agents) derive from the team list: drop that cache too.
+    this.assigneesLoadedAt = 0;
+    if (!this.ui.teamsLoadedAt) return;
+    if (event.deleted) {
+      this.ui.teams = this.ui.teams.filter((t) => t.id !== event.id);
+      return;
+    }
+    if (!event.row) {
+      this.ui.teamsLoadedAt = null;
+      return;
+    }
+    const next = toTeam(event.row);
+    const i = this.ui.teams.findIndex((t) => t.id === next.id);
+    if (i >= 0) this.ui.teams[i] = next;
+    else this.ui.teams = [...this.ui.teams, next];
+  }
+
+  private async refreshDetail(taskId: string): Promise<void> {
+    if (!this.store.bundle(taskId).detail) return; // not loaded yet: the bundle load will bring it
+    try {
+      const raw = await this.transport.request<Record<string, unknown> | null>("tasks", "read", { id: taskId });
+      if (raw) this.store.setDetail(taskId, toDetail(raw));
+      this.scheduleRender();
+    } catch {
+      /* the next bundle load corrects it */
+    }
   }
 
   openComposer(): void {
@@ -441,6 +511,8 @@ class Controller implements Ctx {
         case "end":
           return this.move(1_000_000);
         case "enter":
+          // On a recurring series the rail's enter opens / closes its latest runs.
+          if (this.activePane() === "rail" && this.toggleSeries()) return;
           if (this.ui.focus === "rail" || this.ui.singleView === "rail") {
             this.ui.focus = "main";
             this.ui.singleView = "main";
@@ -493,11 +565,14 @@ class Controller implements Ctx {
         case "l":
           return this.cycleFocus(1);
         case "r":
-          if (this.ui.filter === "recurring") {
+          if (this.ui.railKind === "series") {
             await this.loadRecurring(true);
             this.toast("recurring list refreshed", "info");
             return;
           }
+          break;
+        case " ":
+          if (this.activePane() === "rail" && this.toggleSeries()) return;
           break;
       }
       const flt = FILTERS.find((f) => f.key === k.ch);
@@ -548,15 +623,33 @@ class Controller implements Ctx {
     this.ui.railScroll = 0;
     this.ui.focus = "rail";
     this.ui.singleView = "rail";
-    if (filter === "recurring") {
-      void this.loadRecurring(false);
+    const rows = railRows(this.store, this.ui);
+    if (selectedIndex(rows, this.ui) < 0) this.selectRow(rows[nearestSelectable(rows, 0)]);
+  }
+
+  /** Put the rail cursor on a row: a task (loads its detail) or a recurring series. Headers are never passed here. */
+  private selectRow(row: RailRow | undefined): void {
+    if (!row || row.kind === "header") {
+      this.ui.railKind = "task";
+      this.selectTask(null);
       return;
     }
-    const rows = railRows(this.store, this.ui);
-    if (selectedIndex(rows, this.ui) < 0) {
-      const first = rows[0];
-      this.selectTask(first?.kind === "task" ? first.task.id : null);
+    if (row.kind === "series") {
+      this.ui.railKind = "series";
+      this.ui.selectedSeriesId = row.series.id;
+      return;
     }
+    this.ui.railKind = "task";
+    this.selectTask(row.task.id);
+  }
+
+  /** Open / close the selected series' run list. False when the cursor is not on a series. */
+  private toggleSeries(): boolean {
+    if (this.ui.railKind !== "series" || !this.ui.selectedSeriesId) return false;
+    const id = this.ui.selectedSeriesId;
+    if (this.ui.expandedSeries.has(id)) this.ui.expandedSeries.delete(id);
+    else this.ui.expandedSeries.add(id);
+    return true;
   }
 
   private move(delta: number): void {
@@ -581,10 +674,10 @@ class Controller implements Ctx {
     const rows = railRows(this.store, this.ui);
     if (rows.length === 0) return;
     const cur = selectedIndex(rows, this.ui);
-    const next = Math.min(Math.max(cur < 0 ? (delta > 0 ? 0 : rows.length - 1) : cur + delta, 0), rows.length - 1);
-    const row = rows[next]!;
-    if (row.kind === "task") this.selectTask(row.task.id);
-    else this.ui.selectedSeriesId = row.series.id;
+    const want = Math.min(Math.max(cur < 0 ? (delta > 0 ? 0 : rows.length - 1) : cur + delta, 0), rows.length - 1);
+    // Section headers are not rows you can stand on: keep going the same way, else stay.
+    const next = nearestSelectable(rows, want, delta >= 0 ? 1 : -1);
+    if (next >= 0) this.selectRow(rows[next]);
   }
 
   // ── composer ──────────────────────────────────────────────────────────
@@ -629,11 +722,7 @@ class Controller implements Ctx {
     this.ui.search.handle(k);
     // Keep the selection on a visible row while filtering.
     const rows = railRows(this.store, this.ui);
-    if (rows.length && selectedIndex(rows, this.ui) < 0) {
-      const first = rows[0]!;
-      if (first.kind === "task") this.selectTask(first.task.id);
-      else this.ui.selectedSeriesId = first.series.id;
-    }
+    if (rows.length && selectedIndex(rows, this.ui) < 0) this.selectRow(rows[nearestSelectable(rows, 0)]);
   }
 
   // ── modals ────────────────────────────────────────────────────────────
@@ -904,6 +993,14 @@ function toTeam(o: Record<string, unknown>): Team {
     })),
     slackEnabled: o.slackEnabled === true,
     slashCommand: String(o.slashCommand ?? ""),
+    skipperPrompt: String(o.skipperPrompt ?? ""),
+    remote: o.remote && typeof o.remote === "object"
+      ? {
+          repoId: String((o.remote as Record<string, unknown>).repoId ?? ""),
+          path: String((o.remote as Record<string, unknown>).path ?? ""),
+          removedUpstream: (o.remote as Record<string, unknown>).removedUpstream === true,
+        }
+      : null,
   };
 }
 

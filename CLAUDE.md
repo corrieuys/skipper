@@ -26,6 +26,12 @@ This is the default for EVERY new feature; do not wait to be told.
    refresh is only for real status TRANSITIONS (draft/active/settled), never a
    same-status toggle (see the `previousStatus !== newStatus` guard in ui-push.ts).
 
+The same holds beyond tasks: agent instances (`instance:state_changed`, emitted
+by the status writers in `src/agents/instance-status.ts`), escalations
+(`escalation:created` / `resolved`), recurring series (`recurring:changed`) and
+teams (`team:changed`). Emit from the WRITER, not from each caller; see
+[src/events/CLAUDE.md](src/events/CLAUDE.md).
+
 When you add a task-level control, wire BOTH: it emits/uses the event so all
 surfaces reconcile, AND it updates its own element with no page/view refresh. If
 a client renders a control from a held/local copy instead of the store, fix the
@@ -79,6 +85,13 @@ UI in the default browser — `-h`/`--headless`/`--no-open` skips), `stop` (SIGT
 SIGKILL fallback), `restart`, `status` (pid + `/health`), `logs [-f]`, `serve`
 (foreground — what `start` execs), `update` (self-replace from latest GitHub
 release), `--version`.
+
+**Experimental mode sticks across restarts.** `serve` records the mode it booted
+in to `<data dir>/launch-flags.json`; `start`/`restart`/`serve` without an explicit
+flag resolve to that recorded mode (`resolveExperimentalLaunch` in
+`src/config/feature-flags.ts`), so the auto-updater's `skipper restart` (or yours)
+never drops `--experimental`. `--no-experimental` is the explicit way back to
+stable. `start` always passes the resolved mode to `serve` explicitly.
 
 ## Release + distribute (manual)
 
@@ -135,7 +148,7 @@ repo's GitHub Releases.
 |---|---|---|
 | `PORT` | 5005 | HTTP port |
 | `SKIPPER_HOST` | 127.0.0.1 | bind address (loopback only by default — most of the HTTP surface has no auth; `--host`/`SKIPPER_HOST` to expose deliberately) |
-| `SKIPPER_DATA_DIR` | `~/.skipper` | writable state (DB, greg.db, config copy, pid/log) |
+| `SKIPPER_DATA_DIR` | `~/.skipper` | writable state (DB, greg.db, config copy, pid/log, `launch-flags.json`) |
 | `SKIPPER_RUNTIME_DB_PATH` | `<data dir>/skipper-runtime.db` | runtime DB file |
 | `SKIPPER_CONFIG_DIR` | `<data dir>/config` (binary) · `./config` (dev) | config snapshots |
 | `SKIPPER_CONTEXT_COMPACT_THRESHOLD` | 400000 | input tokens before compact |
@@ -161,7 +174,7 @@ repo's GitHub Releases.
 | event bus | [src/events/CLAUDE.md](src/events/CLAUDE.md) |
 | WS push to UI | [src/ws/CLAUDE.md](src/ws/CLAUDE.md) |
 | task CRUD + lifecycle | [src/tasks/CLAUDE.md](src/tasks/CLAUDE.md) |
-| teams + phases + membership | [src/teams/CLAUDE.md](src/teams/CLAUDE.md) |
+| teams + phases + membership; remote team repos (experimental: GitHub repos of team configs cloned with the machine's git credentials, loaded as read-only teams) | [src/teams/CLAUDE.md](src/teams/CLAUDE.md) |
 | escalations | [src/escalations/CLAUDE.md](src/escalations/CLAUDE.md) |
 | operator messages (agent → human progress updates, experimental) | [src/messages/CLAUDE.md](src/messages/CLAUDE.md) |
 | realtime audio/transcribe | [src/realtime/CLAUDE.md](src/realtime/CLAUDE.md) |

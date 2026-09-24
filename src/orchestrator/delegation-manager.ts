@@ -214,7 +214,7 @@ export class DelegationManager {
       return [];
     }
 
-    this.markParentWaitingOnGroup(ctx, groupId, rootInstanceId, started.length, eligibleItems.length);
+    this.markParentWaitingOnGroup(ctx, groupId, started.length, eligibleItems.length);
     return started;
   }
 
@@ -326,20 +326,11 @@ export class DelegationManager {
   private markParentWaitingOnGroup(
     ctx: DelegationBatchContext,
     groupId: string,
-    rootInstanceId: string,
     startedCount: number,
     expectedCount: number,
   ): void {
     this.setAgentState(ctx.parentTemplateId, "waiting_delegation", { delegation_group_id: groupId });
     updateInstanceStatus(this.db, ctx.parentInstanceId, "waiting_delegation");
-    eventBus.emit("instance:state_changed", {
-      instanceId: ctx.parentInstanceId,
-      templateAgentId: ctx.parentTemplateId,
-      taskId: ctx.taskId,
-      parentInstanceId: null,
-      rootInstanceId: rootInstanceId,
-      status: "waiting_delegation",
-    });
 
     this.updateOrchestrationState(ctx.taskId, {
       step: "WAITING_DELEGATION",
@@ -488,14 +479,6 @@ export class DelegationManager {
 
     this.setAgentState(parentTemplateId, "waiting_delegation", { delegation_group_id: groupId });
     updateInstanceStatus(this.db, parentInstanceId, "waiting_delegation");
-    eventBus.emit("instance:state_changed", {
-      instanceId: parentInstanceId,
-      templateAgentId: parentTemplateId,
-      taskId: parentTask.task_id,
-      parentInstanceId: null,
-      rootInstanceId,
-      status: "waiting_delegation",
-    });
 
     this.updateOrchestrationState(parentTask.task_id, {
       step: "WAITING_DELEGATION",

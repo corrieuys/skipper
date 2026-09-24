@@ -2,9 +2,12 @@ import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
 import type { LocalTeam } from "../../teams/local-teams";
+import type { RemoteTeamRepo } from "../../teams/remote-repos";
 
 export interface TeamsPageViewModel {
   teams: LocalTeam[];
+  /** Linked remote team repos. `null` hides the Remote teams section (not experimental). */
+  remoteRepos: RemoteTeamRepo[] | null;
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
@@ -34,7 +37,7 @@ function miniFlow(team: LocalTeam): string {
   return `<div class="tm-mini">${parts.join("")}</div>`;
 }
 
-function teamCard(team: LocalTeam): string {
+function teamCard(team: LocalTeam, opts: { canDuplicate?: boolean } = {}): string {
   const gates = team.phases.filter((p) => p.review).length;
   const realtime = team.config?.mode === "conversational" || team.config?.mode === "realtime"
     ? `<span class="tm-chip tm-chip--rt" title="New tasks on this team start with autopilot off">Manual default</span>`
@@ -45,6 +48,20 @@ function teamCard(team: LocalTeam): string {
   const slash = team.config?.slashCommand
     ? `<span class="tm-chip">${escapeHtml(team.config.slashCommand)}</span>`
     : "";
+  // A remote team is read-only: Duplicate in place of Export/Delete. Delete
+  // comes back once its repo no longer ships it.
+  const remote = team.remote
+    ? `<span class="tm-chip tm-chip--remote" title="${team.remote.removedUpstream
+        ? "The linked repository no longer has this team. It stays because tasks use it."
+        : "From a linked repository. Read-only."}">${team.remote.removedUpstream ? "Removed upstream" : "Remote"}</span>`
+    : "";
+  const deleteBtn = `<button type="button" class="sk-btn sk-btn--sm sk-btn--danger" data-tm-delete="${escapeHtml(team.id)}"
+        data-tm-name="${escapeHtml(team.name)}">Delete</button>`;
+  const actions = team.remote
+    ? `${opts.canDuplicate ? `<button type="button" class="sk-btn sk-btn--sm" data-tm-duplicate="${escapeHtml(team.id)}">Duplicate to edit</button>` : ""}
+      ${team.remote.removedUpstream ? deleteBtn : ""}`
+    : `<a class="sk-btn sk-btn--sm" href="/api/teams/export?id=${encodeURIComponent(team.id)}">Export</a>
+      ${deleteBtn}`;
   return `<div class="tm-card">
     <a class="tm-card__link" href="/teams/${escapeHtml(team.id)}">
       <div class="tm-card__name">${escapeHtml(team.name)}</div>
@@ -56,20 +73,115 @@ function teamCard(team: LocalTeam): string {
       </div>
       ${miniFlow(team)}
     </a>
-    ${realtime || slack || slash ? `<div class="tm-phase__chips">${realtime}${slack}${slash}</div>` : ""}
+    ${remote || realtime || slack || slash ? `<div class="tm-phase__chips">${remote}${realtime}${slack}${slash}</div>` : ""}
     <div class="tm-card__actions">
       <a class="sk-btn sk-btn--sm" href="/teams/${escapeHtml(team.id)}">Open</a>
-      <a class="sk-btn sk-btn--sm" href="/api/teams/export?id=${encodeURIComponent(team.id)}">Export</a>
-      <button type="button" class="sk-btn sk-btn--sm sk-btn--danger" data-tm-delete="${escapeHtml(team.id)}"
-        data-tm-name="${escapeHtml(team.name)}">Delete</button>
+      ${actions}
     </div>
   </div>`;
 }
 
-export function teamsPage(vm: TeamsPageViewModel): string {
-  const cards = vm.teams.map(teamCard).join("");
+// ---------------------------------------------------------------------------
+// Remote teams (experimental): linked GitHub repos + the teams each one ships.
+// `remoteReposList` is the live unit: the add/remove routes swap it, the
+// refresh route swaps one `remoteRepoBlock`, and ws/ui-push.ts pushes the list
+// OOB on remote_team_repo:changed / team:changed. The add form sits outside it
+// so a push never wipes what the operator is typing.
+// ---------------------------------------------------------------------------
 
-  const body = vm.teams.length === 0
+// The duplicate route is part of the (experimental) remote teams surface, so
+// only cards inside this section offer it.
+const remoteTeamCard = (team: LocalTeam): string => teamCard(team, { canDuplicate: true });
+
+function repoSlug(url: string): string {
+  const m = /github\.com[:/](.+?)(?:\.git)?$/.exec(url);
+  return m ? m[1]! : url;
+}
+
+const REPO_STATUS_LABEL: Record<RemoteTeamRepo["status"], string> = {
+  pending: "Pending",
+  syncing: "Syncing",
+  ok: "Up to date",
+  error: "Error",
+};
+
+/** One linked repo: status line, refresh/remove, errors, its team cards. */
+export function remoteRepoBlock(repo: RemoteTeamRepo, teams: LocalTeam[]): string {
+  const id = escapeHtml(repo.id);
+  const busy = repo.status === "syncing";
+  const meta = [
+    repo.ref ? `ref ${escapeHtml(repo.ref)}` : "default branch",
+    repo.lastCommit ? `commit ${escapeHtml(repo.lastCommit.slice(0, 7))}` : "",
+    repo.lastSyncAt ? `synced ${escapeHtml(repo.lastSyncAt)} UTC` : "",
+    `${teams.length} team${teams.length === 1 ? "" : "s"}`,
+  ].filter(Boolean).join(" &middot; ");
+  const fileErrors = repo.teamErrors.length > 0
+    ? `<ul class="tm-repo__errors">${repo.teamErrors
+        .map((e) => `<li><code>${escapeHtml(e.path)}</code> ${escapeHtml(e.error)}</li>`).join("")}</ul>`
+    : "";
+  return `<div class="tm-repo" id="tm-repo-${id}">
+    <div class="tm-repo__head">
+      <div class="tm-repo__heading">
+        <div class="tm-repo__name">${escapeHtml(repo.name ?? repoSlug(repo.url))}
+          <span class="tm-chip tm-chip--repo-${escapeHtml(repo.status)}">${REPO_STATUS_LABEL[repo.status] ?? escapeHtml(repo.status)}</span>
+        </div>
+        <div class="tm-repo__meta"><span>${escapeHtml(repoSlug(repo.url))}</span> &middot; ${meta}</div>
+      </div>
+      <div class="tm-repo__actions">
+        <button type="button" class="sk-btn sk-btn--sm" ${busy ? "disabled" : ""}
+          hx-post="/api/remote-team-repos/${id}/refresh" hx-target="closest .tm-repo" hx-swap="outerHTML"
+          hx-disabled-elt="this" title="Pull the latest team configs">${busy ? "Refreshing..." : "Refresh"}</button>
+        <button type="button" class="sk-btn sk-btn--sm sk-btn--danger"
+          hx-delete="/api/remote-team-repos/${id}" hx-target="#tm-remote-repos" hx-swap="outerHTML"
+          hx-confirm="Unlink ${escapeHtml(repoSlug(repo.url))}? Its teams are removed. A team that tasks still use stays, marked Removed upstream.">Unlink</button>
+      </div>
+    </div>
+    ${repo.lastError ? `<div class="tm-repo__error">${escapeHtml(repo.lastError)}</div>` : ""}
+    ${fileErrors}
+    ${teams.length > 0 ? `<div class="tm-grid">${teams.map(remoteTeamCard).join("")}</div>` : ""}
+  </div>`;
+}
+
+/** Every linked repo, plus remote teams whose repo was unlinked (kept because tasks use them). */
+export function remoteReposList(repos: RemoteTeamRepo[], teams: LocalTeam[], error?: string): string {
+  const repoIds = new Set(repos.map((r) => r.id));
+  const blocks = repos
+    .map((r) => remoteRepoBlock(r, teams.filter((t) => t.remote?.repoId === r.id)))
+    .join("");
+  const orphans = teams.filter((t) => t.remote && !repoIds.has(t.remote.repoId));
+  return `<div id="tm-remote-repos" class="tm-remote__repos">
+    ${error ? `<div class="tm-repo__error">${escapeHtml(error)}</div>` : ""}
+    ${repos.length === 0 && orphans.length === 0 ? `<div class="sk-text-sm sk-muted">No repositories linked.</div>` : ""}
+    ${blocks}
+    ${orphans.length > 0 ? `<div class="tm-repo">
+      <div class="tm-repo__name">Unlinked repositories</div>
+      <div class="tm-grid">${orphans.map(remoteTeamCard).join("")}</div>
+    </div>` : ""}
+  </div>`;
+}
+
+function remoteTeamsSection(repos: RemoteTeamRepo[], teams: LocalTeam[]): string {
+  return `<section class="tm-remote">
+    <div class="tm-remote__head">
+      <h2 class="tm-remote__title">Remote teams</h2>
+      <div class="tm-remote__sub">Link a GitHub repository of team configs (a <code>skipper-teams.json</code> manifest, or <code>teams/*.json</code>). Skipper clones it with the git credentials of this machine. Remote teams are read-only.</div>
+    </div>
+    <form class="tm-remote__add" hx-post="/api/remote-team-repos" hx-target="#tm-remote-repos" hx-swap="outerHTML"
+      hx-disabled-elt="find button" hx-on::after-request="if (event.detail.successful &amp;&amp; !document.querySelector('#tm-remote-repos > .tm-repo__error')) this.reset()">
+      <input class="sk-input" name="url" required placeholder="https://github.com/owner/repo" aria-label="Repository URL">
+      <input class="sk-input tm-remote__ref" name="ref" placeholder="Branch or tag (optional)" aria-label="Branch or tag">
+      <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Link repository</button>
+    </form>
+    ${remoteReposList(repos, teams)}
+  </section>`;
+}
+
+export function teamsPage(vm: TeamsPageViewModel): string {
+  // With the section on, remote teams render under their repo, not in the grid.
+  const gridTeams = vm.remoteRepos ? vm.teams.filter((t) => !t.remote) : vm.teams;
+  const cards = gridTeams.map((t) => teamCard(t)).join("");
+
+  const body = gridTeams.length === 0
     ? `<div class="tm-empty">
          <p>No teams yet.</p>
          <a class="sk-btn sk-btn--primary" href="/teams/new">Create your first team</a>
@@ -108,6 +220,7 @@ export function teamsPage(vm: TeamsPageViewModel): string {
       </div>
 
       ${body}
+      ${vm.remoteRepos ? remoteTeamsSection(vm.remoteRepos, vm.teams.filter((t) => t.remote)) : ""}
     </div>
 
     <script>
@@ -151,14 +264,23 @@ export function teamsPage(vm: TeamsPageViewModel): string {
         }
       });
 
-      document.querySelectorAll('[data-tm-delete]').forEach(function(btn){
-        btn.addEventListener('click', async function(){
-          var id = btn.getAttribute('data-tm-delete');
-          var name = btn.getAttribute('data-tm-name');
-          if (!window.confirm('Delete team "' + name + '"? This cannot be undone.')) return;
-          var res = await fetch('/api/teams/' + encodeURIComponent(id), { method: 'DELETE' });
-          if (res.ok) window.location.reload();
-        });
+      // Delegated: remote team cards are re-rendered by htmx swaps + WS pushes.
+      document.addEventListener('click', async function(ev){
+        var btn = ev.target && ev.target.closest ? ev.target.closest('[data-tm-delete],[data-tm-duplicate]') : null;
+        if (!btn) return;
+        if (btn.hasAttribute('data-tm-duplicate')) {
+          btn.disabled = true;
+          var dup = await fetch('/api/teams/' + encodeURIComponent(btn.getAttribute('data-tm-duplicate')) + '/duplicate', { method: 'POST' });
+          var data = await dup.json().catch(function(){ return {}; });
+          if (dup.ok && data.id) window.location.href = '/teams/' + encodeURIComponent(data.id);
+          else btn.disabled = false;
+          return;
+        }
+        var id = btn.getAttribute('data-tm-delete');
+        var name = btn.getAttribute('data-tm-name');
+        if (!window.confirm('Delete team "' + name + '"? This cannot be undone.')) return;
+        var res = await fetch('/api/teams/' + encodeURIComponent(id), { method: 'DELETE' });
+        if (res.ok) window.location.reload();
       });
     })();
     </script>

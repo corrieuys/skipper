@@ -1,6 +1,8 @@
 import { startServer, addRoute, setWebSocketUpgradeHandlers, setWebSocketHandlers } from "./src/server";
 import { registerTaskRoutes, killRunningRuntimesForTask } from "./src/routes/tasks";
 import { registerTeamRoutes } from "./src/routes/teams";
+import { registerRemoteTeamRoutes } from "./src/routes/remote-teams";
+import { syncAllRemoteTeamRepos } from "./src/teams/remote-repos";
 import { registerSkipperRoutes } from "./src/routes/skipper";
 import { registerPageRoutes } from "./src/routes/pages";
 import { registerDaemonRoutes } from "./src/routes/daemon";
@@ -40,10 +42,18 @@ import { isSocketModeConfigured, isSlackSocketEnabled, isSlackConfigured } from 
 import { getBoolSetting, getStringSetting, SETTING_SKIPPER_CONNECT_ENABLED, SETTING_SKIPPER_CONNECT_KEY } from "./src/config/app-settings";
 import { recordBootVersion } from "./src/config/auto-update-settings";
 import { initUpdateRestartOnIdle } from "./src/updater/restart-scheduler";
+import { writeLaunchFlags } from "./src/paths";
 
 const experimental = process.argv.includes("--experimental");
 if (experimental) {
   console.log("[skipper] --experimental flag set: experimental UI features enabled");
+}
+// Record the mode this boot runs in, so a later `skipper restart` without the
+// flag (the auto-updater's, or yours) comes back in the same mode.
+try {
+  writeLaunchFlags({ experimental });
+} catch (err) {
+  console.warn("[skipper] could not record launch flags:", err);
 }
 
 initializeDatabase();
@@ -99,6 +109,8 @@ daemon.getRealtimeSessionManager().setWhisperControls({
 registerTaskRoutes(daemon);
 // Teams (with inline agents) CRUD + /api/teams/import|export.
 registerTeamRoutes();
+// Remote team repos (experimental): link/refresh/unlink GitHub repos of team configs.
+registerRemoteTeamRoutes();
 registerSkipperRoutes();
 registerDaemonRoutes(daemon);
 registerPageRoutes(daemon);
@@ -163,6 +175,10 @@ const connectClient = initConnectClient(
   (taskId, text, source) => daemon.inputTask(taskId, text, source),
   (taskId) => killRunningRuntimesForTask(taskId, daemon),
   taskMemory,
+  {
+    steerRuntime: (templateAgentId, runtimeId, message) => daemon.steerRuntime(templateAgentId, runtimeId, message),
+    listRuntimeSteeringOptions: (templateAgentId) => daemon.listRuntimeSteeringOptions(templateAgentId),
+  },
 );
 
 // Local consumer WebSocket for apps on this machine (Mac app). Unauthenticated
@@ -227,6 +243,12 @@ async function startup() {
   // slackEnabled), and /api/config/slack starts/stops this without a restart.
   if (experimental && isSlackConfigured(db)) {
     slackPush.start();
+  }
+  // Remote team repos (experimental): pull each linked repo in the background.
+  // The teams loaded by the last sync already serve tasks; a failure lands on
+  // the repo row, never on boot.
+  if (experimental) {
+    void syncAllRemoteTeamRepos(db).catch((err) => console.error("[remote-teams] boot sync failed:", err));
   }
 }
 

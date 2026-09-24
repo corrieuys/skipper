@@ -1,30 +1,44 @@
 import type { Store } from "../model/store";
 import type { TaskItem, RecurringSeries, ActivityRow } from "../model/types";
-import type { UIState, Filter } from "./state";
+import { SERIES_RUNS_SHOWN, RECENT_SHOWN, type UIState, type Filter } from "./state";
 import { STATUS_ORDER } from "../render/theme";
 import { toPlainText } from "./plain-text";
 
 /** Pure selectors from store + ui state → what the views draw. No I/O. */
 
-export type RailRow = { kind: "task"; task: TaskItem } | { kind: "series"; series: RecurringSeries };
+/**
+ * One rail line. `header` rows are section labels (never selectable); a `task`
+ * row with `run: true` is one of an expanded series' latest runs (indented).
+ */
+export type RailRow =
+  | { kind: "header"; id: string; label: string; count: number; note?: string }
+  | { kind: "task"; task: TaskItem; run?: boolean }
+  | { kind: "series"; series: RecurringSeries; expanded: boolean };
+
+export function isSelectable(row: RailRow): boolean {
+  return row.kind !== "header";
+}
+
+/**
+ * Top-level tasks, as the web sidebar lists them (`fetchCommandCenterTasks`):
+ * every one-off task, plus a recurring run only while it is active or when it
+ * failed. Finished healthy runs stay under their series.
+ */
+function isTopLevel(t: TaskItem): boolean {
+  if (!t.source_scheduled_task_id) return true;
+  return t.status === "active" || t.display_status === "failed";
+}
 
 export function applyFilter(tasks: TaskItem[], filter: Filter): TaskItem[] {
   switch (filter) {
-    case "active":
-      return tasks.filter((t) => t.status === "active" && !t.source_scheduled_task_id).concat(
-        // recurring runs that are live still belong on the active board
-        tasks.filter((t) => t.status === "active" && !!t.source_scheduled_task_id && t.display_status !== "idle"),
-      );
+    case "latest":
+      return tasks.filter(isTopLevel);
     case "drafts":
       return tasks.filter((t) => t.status === "draft");
     case "starred":
       return tasks.filter((t) => t.starred);
-    case "done":
-      return tasks.filter((t) => t.status === "settled");
     case "all":
       return tasks;
-    case "recurring":
-      return [];
   }
 }
 
@@ -42,6 +56,8 @@ export function sortTasks(tasks: TaskItem[]): TaskItem[] {
   });
 }
 
+const newestFirst = (a: TaskItem, b: TaskItem): number => b.created_at.localeCompare(a.created_at);
+
 export function matchesSearch(t: TaskItem, q: string): boolean {
   if (!q) return true;
   const hay = `${t.title} ${t.team_name ?? ""} ${t.display_status} ${t.id}`.toLowerCase();
@@ -52,27 +68,82 @@ export function matchesSearch(t: TaskItem, q: string): boolean {
     .every((term) => hay.includes(term));
 }
 
-export function railRows(store: Store, ui: UIState): RailRow[] {
-  if (ui.filter === "recurring") {
-    const q = ui.search.value.trim().toLowerCase();
-    return ui.recurring
-      .filter((s) => !q || `${s.title} ${s.teamName ?? ""} ${s.status}`.toLowerCase().includes(q))
-      .map((series) => ({ kind: "series" as const, series }));
+function matchesSeries(s: RecurringSeries, q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  return !needle || `${s.title} ${s.teamName ?? ""} ${s.status}`.toLowerCase().includes(needle);
+}
+
+/** The newest runs of a series that the store knows, newest first. */
+export function seriesRuns(store: Store, seriesId: string, limit = SERIES_RUNS_SHOWN): TaskItem[] {
+  return store.allTasks().filter((t) => t.source_scheduled_task_id === seriesId).sort(newestFirst).slice(0, limit);
+}
+
+function seriesRows(store: Store, ui: UIState, list: RecurringSeries[]): RailRow[] {
+  const rows: RailRow[] = [];
+  for (const series of list) {
+    const expanded = ui.expandedSeries.has(series.id);
+    rows.push({ kind: "series", series, expanded });
+    if (expanded) for (const task of seriesRuns(store, series.id)) rows.push({ kind: "task", task, run: true });
   }
+  return rows;
+}
+
+/**
+ * The Latest board, section by section like the web sidebar:
+ * Needs you (open review / escalation, not finished) › Active (active + draft,
+ * minus Needs you) › Recurring (every series, expandable) › Recent (the newest
+ * few top-level tasks not already shown). Empty sections are left out, except
+ * Active, which says so.
+ */
+function latestRows(store: Store, ui: UIState): RailRow[] {
   const q = ui.search.value.trim();
-  // Dedupe (the active filter concatenates two slices).
-  const seen = new Set<string>();
-  const list = applyFilter(store.allTasks(), ui.filter).filter((t) => {
-    if (seen.has(t.id)) return false;
-    seen.add(t.id);
-    return matchesSearch(t, q);
-  });
-  return sortTasks(list).map((task) => ({ kind: "task" as const, task }));
+  const tasks = applyFilter(store.allTasks(), "latest").filter((t) => matchesSearch(t, q)).sort(newestFirst);
+  const needsYou = (t: TaskItem): boolean => t.status !== "settled" && (t.needs_review || store.escalationsFor(t.id).length > 0);
+  const attention = tasks.filter(needsYou);
+  const attnIds = new Set(attention.map((t) => t.id));
+  const active = sortTasks(tasks.filter((t) => !attnIds.has(t.id) && (t.status === "active" || t.status === "draft")));
+  const shown = new Set([...attnIds, ...active.map((t) => t.id)]);
+  const recent = tasks.filter((t) => !shown.has(t.id)).slice(0, RECENT_SHOWN);
+  const series = ui.recurring.filter((s) => matchesSeries(s, q));
+
+  const rows: RailRow[] = [];
+  if (attention.length) {
+    rows.push({ kind: "header", id: "h-attn", label: "NEEDS YOU", count: attention.length });
+    for (const task of attention) rows.push({ kind: "task", task });
+  }
+  rows.push({ kind: "header", id: "h-active", label: "ACTIVE", count: active.length, note: active.length ? undefined : q ? "nothing matches" : "nothing running" });
+  for (const task of active) rows.push({ kind: "task", task });
+  if (series.length) {
+    rows.push({ kind: "header", id: "h-recurring", label: "RECURRING", count: series.length });
+    rows.push(...seriesRows(store, ui, series));
+  }
+  if (recent.length) {
+    rows.push({ kind: "header", id: "h-recent", label: "RECENT", count: recent.length });
+    for (const task of recent) rows.push({ kind: "task", task });
+  }
+  return rows;
+}
+
+export function railRows(store: Store, ui: UIState): RailRow[] {
+  if (ui.filter === "latest") return latestRows(store, ui);
+  const q = ui.search.value.trim();
+  const list = applyFilter(store.allTasks(), ui.filter).filter((t) => matchesSearch(t, q));
+  const rows: RailRow[] = sortTasks(list).map((task) => ({ kind: "task" as const, task }));
+  // Starred also holds starred recurring series, like the web's Starred board.
+  if (ui.filter === "starred") rows.push(...seriesRows(store, ui, ui.recurring.filter((s) => s.starred && matchesSeries(s, q))));
+  return rows;
 }
 
 export function selectedIndex(rows: RailRow[], ui: UIState): number {
-  if (ui.filter === "recurring") return rows.findIndex((r) => r.kind === "series" && r.series.id === ui.selectedSeriesId);
+  if (ui.railKind === "series") return rows.findIndex((r) => r.kind === "series" && r.series.id === ui.selectedSeriesId);
   return rows.findIndex((r) => r.kind === "task" && r.task.id === ui.selectedTaskId);
+}
+
+/** First selectable row index at or after `from` (then before it), or -1. */
+export function nearestSelectable(rows: RailRow[], from: number, dir: 1 | -1 = 1): number {
+  for (let i = from; i >= 0 && i < rows.length; i += dir) if (isSelectable(rows[i]!)) return i;
+  for (let i = from; i >= 0 && i < rows.length; i -= dir) if (isSelectable(rows[i]!)) return i;
+  return -1;
 }
 
 // ── conversation merge ────────────────────────────────────────────────────

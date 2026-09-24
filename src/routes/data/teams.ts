@@ -96,7 +96,13 @@ export function registerDataTeamRoutes(db: Database, _daemon?: unknown): void {
 
   // DELETE /data/teams/:id
   addDataRoute("DELETE", "/data/teams/:id", (_req, params) => {
-    const deleted = deleteLocalTeam(db, params.id);
+    let deleted: boolean;
+    try {
+      deleted = deleteLocalTeam(db, params.id);
+    } catch (e) {
+      // A live remote team is read-only (its repo owns it).
+      return err(e instanceof Error ? e.message : String(e), 409);
+    }
     if (!deleted) return err("Team not found", 404);
     return ok({ deleted: true });
   });

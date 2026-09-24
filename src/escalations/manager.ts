@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { autoResolveEscalations } from "./auto-resolve";
 import { getDb } from "../db/connection";
 import { AgentManager } from "../agents/manager";
 import type { PromptBuilder } from "../agents/prompt-builder";
@@ -117,20 +118,7 @@ export class EscalationManager {
   }
 
   reconcileOpenEscalationsForInactiveTasks(): number {
-    const result = this.db
-      .prepare(
-        `UPDATE escalations
-         SET status = 'resolved',
-             response = COALESCE(response, 'Auto-resolved: task is no longer active.'),
-             resolved_at = datetime('now')
-         WHERE status = 'open'
-           AND task_id IN (
-             SELECT id FROM tasks WHERE status != 'active'
-           )`,
-      )
-      .run();
-
-    return Number(result.changes ?? 0);
+    return autoResolveEscalations(this.db, "task_id IN (SELECT id FROM tasks WHERE status != 'active')", [], "Auto-resolved: task is no longer active.");
   }
 
   dismissEscalation(escalationId: string): Escalation {

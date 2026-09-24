@@ -5,16 +5,24 @@ import type { RecurringSeries, Team } from "../model/types";
 /** Which column has keyboard focus. */
 export type Pane = "rail" | "main" | "feed";
 
-export type Filter = "active" | "drafts" | "starred" | "done" | "all" | "recurring";
+/**
+ * Rail boards. `latest` mirrors the web sidebar's Latest tab: Needs you, Active,
+ * Recurring (expandable series with their last runs) and Recent. Finished tasks
+ * live under `all`; recurring series live inside `latest` (and `starred`).
+ */
+export type Filter = "latest" | "drafts" | "starred" | "all";
 
 export const FILTERS: { id: Filter; label: string; key: string }[] = [
-  { id: "active", label: "Active", key: "1" },
-  { id: "drafts", label: "Drafts", key: "2" },
+  { id: "latest", label: "Latest", key: "1" },
+  { id: "all", label: "All", key: "2" },
   { id: "starred", label: "Starred", key: "3" },
-  { id: "done", label: "Done", key: "4" },
-  { id: "all", label: "All", key: "5" },
-  { id: "recurring", label: "Recurring", key: "6" },
+  { id: "drafts", label: "Drafts", key: "4" },
 ];
+
+/** How many of a series' newest runs an expanded series row lists. */
+export const SERIES_RUNS_SHOWN = 5;
+/** How many finished tasks the Latest board's Recent section lists. */
+export const RECENT_SHOWN = 5;
 
 export type DetailTab = "conversation" | "output" | "notes" | "artifacts" | "info";
 
@@ -107,6 +115,10 @@ export interface ListModal {
   error: string | null;
   busy: boolean;
   emptyText?: string;
+  /** Names the list so the controller can find it when a daemon event makes it stale. */
+  tag?: string;
+  /** Re-read the list's items from the daemon (called on a matching event while open). */
+  reload?: () => Promise<void>;
 }
 
 export interface TextModal {
@@ -134,6 +146,10 @@ export interface UIState {
   searchActive: boolean;
   selectedTaskId: string | null;
   selectedSeriesId: string | null;
+  /** Which of the two the rail cursor is on: a task row or a recurring series row. */
+  railKind: "task" | "series";
+  /** Series whose latest runs are listed under them in the rail. */
+  expandedSeries: Set<string>;
   railScroll: number;
   detailTab: DetailTab;
   /** Scrollback from the newest line for bottom-anchored bodies. */
@@ -146,7 +162,7 @@ export interface UIState {
   modals: Modal[];
   toasts: Toast[];
   transportLabel: string;
-  /** Loaded on demand for the Recurring view + run-now. */
+  /** Loaded after the first snapshot for the Latest board, then kept current by `recurring:changed`. */
   recurring: RecurringSeries[];
   recurringLoadedAt: number | null;
   /** Loaded on demand for task forms + the teams browser. */
@@ -162,11 +178,13 @@ export function initialUIState(transportLabel: string): UIState {
     frame: 0,
     focus: "rail",
     singleView: "rail",
-    filter: "active",
+    filter: "latest",
     search: new TextBuffer(""),
     searchActive: false,
     selectedTaskId: null,
     selectedSeriesId: null,
+    railKind: "task",
+    expandedSeries: new Set(),
     railScroll: 0,
     detailTab: "conversation",
     detailScroll: 0,

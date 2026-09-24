@@ -165,6 +165,7 @@ export class PhaseManager {
           "INSERT INTO task_notes (id, task_id, agent_id, content) VALUES (?, ?, ?, ?)",
         )
         .run(noteId, taskId, agentId, `[PHASE REGRESSION to phase ${targetPhaseOneIndexed}] ${reason}`);
+      eventBus.emit("task:note_added", { noteId, taskId, agentId, content: `[PHASE REGRESSION to phase ${targetPhaseOneIndexed}] ${reason}` });
     } catch (err) {
       logError(this.db, "regression_note_create", { taskId, agentId, method: "handlePhaseRegression" }, err);
     }

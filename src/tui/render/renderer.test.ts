@@ -55,6 +55,20 @@ function text(s: Screen): string {
 }
 
 describe("drawFrame", () => {
+  it("header agents chip follows the live roster, not the coarser metrics lane", () => {
+    const { store, ui } = world();
+    // Metrics still say 2 (last task-driven push); both agents then exit.
+    store.apply({ kind: "metrics", metrics: { running: 1, queued: 0, completed: 0, failed: 0, activeAgentCount: 2 } });
+    const header = (): string => {
+      const s = new Screen(180, 48);
+      drawFrame(s, { store, ui });
+      return s.toLines()[0]!;
+    };
+    expect(header()).toContain("⬢ 1 agents");
+    store.apply({ kind: "instance", instance: { id: "i1", template_agent_name: "coder", task_id: "t1", task_title: "Fix auth middleware", status: "completed", updated_at: null } });
+    expect(header()).toContain("⬢ 0 agents");
+  });
+
   it("draws header, rail, detail and feed on a wide terminal", () => {
     const { store, ui } = world();
     const s = new Screen(180, 48);
@@ -62,10 +76,14 @@ describe("drawFrame", () => {
     const t = text(s);
     expect(r.layout.mode).toBe("triple");
     expect(t).toContain("SKIPPER");
+    // The Latest board, sectioned like the web sidebar.
+    expect(t).toContain("LATEST");
+    expect(t).toContain("NEEDS YOU"); // t1 has an open escalation
     expect(t).toContain("ACTIVE");
+    expect(t).toContain("RECENT");
     expect(t).toContain("Fix auth middleware");
     expect(t).toContain("Import CSV");
-    expect(t).not.toContain("Old one"); // settled tasks are not in the Active filter
+    expect(t).toContain("Old one"); // the finished task sits under Recent
     expect(t).toContain("LIVE FEED");
     expect(t).toContain("Analyzing the middleware");
     // detail: status pill, meta, escalation banner, conversation
@@ -81,16 +99,47 @@ describe("drawFrame", () => {
     expect(t).toContain("▲ 1 blocked");
   });
 
-  it("switches filters and shows settled tasks under Done", () => {
+  it("switches filters: Drafts narrows, All keeps finished tasks (there is no Done board)", () => {
     const { store, ui } = world();
-    ui.filter = "done";
+    ui.filter = "drafts";
+    let s = new Screen(140, 40);
+    drawFrame(s, { store, ui });
+    expect(text(s)).toContain("DRAFTS");
+    expect(text(s)).not.toContain("Old one");
+    ui.filter = "all";
     ui.selectedTaskId = "t3";
-    const s = new Screen(140, 40);
+    s = new Screen(140, 40);
     drawFrame(s, { store, ui });
     const t = text(s);
-    expect(t).toContain("DONE");
     expect(t).toContain("Old one");
-    expect(t).not.toContain("Import CSV");
+    expect(t).toContain("Import CSV");
+    expect(t).not.toContain(" Done ");
+    expect(t).not.toContain("Recurring"); // the tab is gone; series live inside Latest
+  });
+
+  it("lists recurring series on Latest, opens one to its latest runs, and shows the series in the main pane", () => {
+    const { store, ui } = world();
+    ui.recurring = [{ id: "s1", title: "Nightly sweep", description: "Sweep the repo", teamId: "team-1", teamName: "Core Team", scheduleUnit: "hours", scheduleAmount: 6, status: "approved", starred: false, nextRunAt: null, lastRunAt: null, memoryMode: "shared", runs: [] }];
+    ui.recurringLoadedAt = Date.now();
+    store.apply({ kind: "task", task: task({ id: "r1", title: "Nightly sweep · run 41", status: "settled", display_status: "completed", source_scheduled_task_id: "s1", created_at: "2026-09-02 01:00:00" }) });
+    const draw = (): string => {
+      const s = new Screen(180, 48);
+      drawFrame(s, { store, ui });
+      return text(s);
+    };
+    let t = draw();
+    expect(t).toContain("RECURRING");
+    expect(t).toContain("▸");
+    expect(t).not.toContain("run 41"); // a healthy finished run stays under its series
+
+    ui.railKind = "series";
+    ui.selectedSeriesId = "s1";
+    ui.expandedSeries.add("s1");
+    t = draw();
+    expect(t).toContain("▾");
+    expect(t).toContain("run 41");
+    expect(t).toContain("LATEST RUNS"); // main pane shows the series
+    expect(t).toContain("memory shared");
   });
 
   it("renders a single column on a narrow terminal and the detail view on demand", () => {

@@ -28,6 +28,12 @@ export interface EscalationResolvedEvent {
   agentId: string;
   taskId: string;
   response: string;
+  /**
+   * True when the SYSTEM closed it (task settled / cancelled / no longer
+   * active; see escalations/auto-resolve.ts), not the operator. UIs reconcile
+   * either way; user hooks and notification sounds skip system closes.
+   */
+  auto?: boolean;
 }
 
 export interface TaskNoteAddedEvent {
@@ -90,6 +96,29 @@ export interface AgentSignalEvent {
   taskId?: string;
   targetPhase?: number;
   reason?: string;
+}
+
+/**
+ * A recurring series (scheduled_tasks row) was created, edited (any field:
+ * schedule, approval, star, icon, memory, webhook, slash command, last run) or
+ * deleted. Recurring series had no event at all before this, so every other
+ * client stayed stale until it reloaded the list.
+ */
+export interface RecurringChangedEvent {
+  scheduledTaskId: string;
+  change: "created" | "updated" | "deleted";
+}
+
+/** A local team was created, edited or deleted (src/teams/local-teams.ts). */
+export interface TeamChangedEvent {
+  teamId: string;
+  change: "created" | "updated" | "deleted";
+}
+
+/** A remote team repo was linked, synced (any status move) or unlinked (src/teams/remote-repos.ts). */
+export interface RemoteTeamRepoChangedEvent {
+  repoId: string;
+  change: "created" | "updated" | "deleted";
 }
 
 export interface InstanceStateChangedEvent {
@@ -193,6 +222,9 @@ export interface EventMap {
   "agent:signal": [AgentSignalEvent];
   "agent:state_changed": [AgentStateChangedEvent];
   "instance:state_changed": [InstanceStateChangedEvent];
+  "recurring:changed": [RecurringChangedEvent];
+  "team:changed": [TeamChangedEvent];
+  "remote_team_repo:changed": [RemoteTeamRepoChangedEvent];
   "delegation_group:progress": [DelegationGroupProgressEvent];
   "escalation:created": [EscalationCreatedEvent];
   "escalation:resolved": [EscalationResolvedEvent];

@@ -91,3 +91,32 @@ describe("toTask", () => {
     expect(t.starred).toBe(false);
   });
 });
+
+describe("mapConnectEvent: edits, recurring and team changes", () => {
+  it("flags a same-status task event as an edit, a transition not", () => {
+    const edit = mapConnectEvent("task:state_changed", { taskId: "t1", previousStatus: "active", newStatus: "active", task: taskWire });
+    expect(edit).toMatchObject({ kind: "task", edited: true });
+    const move = mapConnectEvent("task:state_changed", { taskId: "t1", previousStatus: "active", newStatus: "settled", task: taskWire });
+    expect(move?.kind).toBe("task");
+    expect((move as { edited?: boolean }).edited).toBeUndefined();
+  });
+
+  it("maps recurring:changed and team:changed with their fat rows", () => {
+    expect(mapConnectEvent("recurring:changed", { scheduledTaskId: "s1", change: "updated", recurring: { id: "s1", title: "Nightly" } })).toEqual({
+      kind: "recurring_changed", id: "s1", deleted: false, row: { id: "s1", title: "Nightly" },
+    });
+    expect(mapConnectEvent("recurring:changed", { scheduledTaskId: "s1", change: "deleted" })).toEqual({ kind: "recurring_changed", id: "s1", deleted: true, row: null });
+    expect(mapConnectEvent("team:changed", { teamId: "tm", change: "created", team: { id: "tm", name: "Crew" } })).toEqual({
+      kind: "team_changed", id: "tm", deleted: false, row: { id: "tm", name: "Crew" },
+    });
+  });
+
+  it("maps remote_team_repo:changed so an open repos browser reloads", () => {
+    expect(mapConnectEvent("remote_team_repo:changed", { repoId: "abcd1234", change: "updated", repo: { id: "abcd1234" } })).toEqual({
+      kind: "remote_repo_changed", id: "abcd1234", deleted: false,
+    });
+    expect(mapConnectEvent("remote_team_repo:changed", { repoId: "abcd1234", change: "deleted" })).toEqual({
+      kind: "remote_repo_changed", id: "abcd1234", deleted: true,
+    });
+  });
+});

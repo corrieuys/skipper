@@ -19,8 +19,8 @@ old classic dock sidebar/task-view were removed (there is no `isV2UI` flag). The
 views share the same shell.
 
 - **Sidebar** (`renderSidebarListBody`) is a segmented **tab bar** (`.tc-tabs`,
-  mirroring the iOS `Board` picker) over four boards: **Latest** / **Favorites** /
-  **Teams** / **Agents**. **Favorites** lists every `starred` task + starred
+  mirroring the iOS `Board` picker) over four boards: **Latest** / **Starred** (board id `favorites`) /
+  **Teams** / **Agents**. **Starred** lists every `starred` task + starred
   recurring task (star toggled via `fragments/star-button.fragment.ts` → `POST
   /api/tasks/:id/star` or `/api/scheduled-tasks/:id/star`; the task route emits
   `task:state_changed` so the whole sidebar re-renders live). A task/team/recurring
@@ -66,11 +66,12 @@ views share the same shell.
   inline edit pencil. Name + icon are edited only from the **Details** modal's
   Name & Icon panel (saves via `POST /api/tasks/:id/identity`, auto-closes).
   (`renderTaskIdentityEdit` + `GET /fragments/tasks/:id/identity-edit` remain but
-  are no longer wired to a header trigger.) Both renaming and starring emit NO
-  event and never re-render `#mc-main`. Starring self-swaps the button AND
+  are no longer wired to a header trigger.) Both renaming and starring emit a
+  same-status `task:state_changed` (in-place patch on every surface) and never
+  re-render `#mc-main`. Starring self-swaps the button AND
   appends an OOB refresh of ONLY `#mc-sidebar-list` (`renderSidebarOob`) so the
-  Favorites board updates live; renaming updates the sidebar on its next natural
-  render. The **Details** button (opens `tc-details-modal` with
+  Starred board updates live; renaming emits a same-status `task:state_changed`
+  (`setIdentity`), so the sidebar and every other client patch the new name. The **Details** button (opens `tc-details-modal` with
   `/workspace/task/:id/details`) sits at the **far right** of the header actions.
   Draft + active headers also carry the **Autopilot toggle button**
   (`renderAutopilotToggle`, `.tc-autopilot-btn`: a real `.sk-btn` that goes green
@@ -213,3 +214,15 @@ connectors, review gate = diamond) above a flat crew line (Skipper plus the
 team's agents as peer cards; there is no reporting hierarchy). Every edit
 mutates `TEAM` and re-renders; nothing persists until Save POSTs the whole team
 as JSON to `/api/teams` (create) or `/api/teams/:id/update`.
+
+**Remote teams** (experimental, `teamsPage` with `remoteRepos != null`): a
+"Remote teams" section under the grid: the link form, then `remoteReposList`
+(`#tm-remote-repos`) = one `remoteRepoBlock` (`.tm-repo`) per linked repo with
+status chip, ref/commit/last sync, Refresh + Unlink, errors, and that repo's team
+cards. Remote cards carry a "Remote" / "Removed upstream" chip and swap
+Export/Delete for "Duplicate to edit" (Delete returns once removed upstream); they
+leave the main grid. The list is the live unit: htmx swaps it (or one block) in
+place and `ws/ui-push.ts` pushes it OOB on `remote_team_repo:changed` /
+`team:changed`; the form sits outside it so a push never wipes typed input. Card
+buttons use a delegated click handler because the cards are re-rendered. The team
+map of a remote team is read-only: banner, no Save, "Duplicate to edit".

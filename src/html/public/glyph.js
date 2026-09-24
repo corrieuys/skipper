@@ -534,11 +534,12 @@
   };
 
   // "What changed" highlight: every node whose content, type or source changed
-  // in this commit, and every new node, gets a few seconds of a fresh wash
+  // in this commit, and every new node, gets a brief, faint border tint
   // (distinct from the model's `!` emphasis ring). Skipped on the first commit
   // after opening, where everything would be new. A parent whose only change is
-  // a changed child does not flash; the child does.
-  var FRESH_MS = 4200;
+  // a changed child does not flash; the child does. Keep in sync with the
+  // .gl-fresh animation duration in src/html/styles/glyph.ts.
+  var FRESH_MS = 1100;
   Renderer.prototype.flashChanged = function () {
     var changed = this.changed;
     this.changed = {};

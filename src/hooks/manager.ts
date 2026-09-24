@@ -60,6 +60,7 @@ export class HookManager {
     };
 
     this.escalationResolvedHandler = (event: EscalationResolvedEvent) => {
+      if (event.auto) return; // system close (task settled/cancelled), not an operator answer
       this.fireHooksForTask(event.taskId, "escalation.resolved", {
         task_id: event.taskId,
         escalation_id: event.escalationId,

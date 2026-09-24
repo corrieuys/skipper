@@ -2,10 +2,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Store } from "../model/store";
 import type { Transport } from "../transport/types";
-import type { TaskItem, Team, RecurringSeries, Artifact } from "../model/types";
+import type { TaskItem, Team, RecurringSeries, Artifact, RemoteTeamRepo } from "../model/types";
 import { TextBuffer } from "../input/text-editor";
 import type { KeyEvent } from "../input/keyboard";
-import { C } from "../render/theme";
+import { C, agentColor } from "../render/theme";
 import { type UIState, type Modal, type FormModal, type ListItem, type ListModal, type FormValues, formValues, visibleListItems } from "./state";
 import { scheduleLabel, shortId } from "./view-model";
 import { toOneLine, toPlainText } from "./plain-text";
@@ -32,8 +32,6 @@ export interface Ctx {
   loadAssignees(force?: boolean): Promise<Assignee[]>;
   loadRecurring(force?: boolean): Promise<RecurringSeries[]>;
   selectTask(id: string | null): void;
-  /** Re-read a task's detail bundle (after a write whose event may not reach this client). */
-  reloadTask(id: string): void;
   openComposer(): void;
   quit(): void;
   resync(): void;
@@ -71,7 +69,10 @@ export function keyMatches(k: KeyEvent, m: KeyMatch): boolean {
   return k.type === "key" && k.name === m.name && !!k.shift === !!m.shift;
 }
 
-const isTask = (ctx: Ctx) => !!ctx.selectedTask() && ctx.ui.filter !== "recurring";
+/** The rail cursor is on a task row (not on a recurring series). */
+const isTask = (ctx: Ctx) => !!ctx.selectedTask() && ctx.ui.railKind === "task";
+/** The rail cursor is on a recurring series row. */
+const onSeries = (ctx: Ctx) => ctx.ui.railKind === "series";
 const isActive = (ctx: Ctx) => isTask(ctx) && ctx.selectedTask()!.status === "active";
 const isDraft = (ctx: Ctx) => isTask(ctx) && ctx.selectedTask()!.status === "draft";
 const isSettled = (ctx: Ctx) => isTask(ctx) && ctx.selectedTask()!.status === "settled";
@@ -119,6 +120,15 @@ export const ACTIONS: Action[] = [
     when: () => true,
     run: (ctx) => openTeams(ctx),
   },
+  {
+    id: "remote-repos",
+    label: "Remote team repos",
+    key: "M",
+    keys: [{ ch: "M" }],
+    group: "teams",
+    when: () => true,
+    run: (ctx) => openRemoteRepos(ctx),
+  },
   // ── task lifecycle ──
   {
     id: "input",
@@ -129,6 +139,16 @@ export const ACTIONS: Action[] = [
     hint: true,
     when: isTask,
     run: (ctx) => ctx.openComposer(),
+  },
+  {
+    id: "interrupt",
+    label: "Interrupt a running agent (steer)",
+    key: "!",
+    keys: [{ ch: "!" }],
+    group: "task",
+    hint: true,
+    when: isActive,
+    run: (ctx) => openInterruptPicker(ctx, ctx.selectedTask()!),
   },
   {
     id: "edit",
@@ -448,7 +468,7 @@ export const ACTIONS: Action[] = [
     keys: [{ ch: "R" }],
     group: "recurring",
     hint: true,
-    when: (ctx) => ctx.ui.filter === "recurring" && !!ctx.selectedSeries(),
+    when: (ctx) => onSeries(ctx) && !!ctx.selectedSeries(),
     run: (ctx) => {
       const sr = ctx.selectedSeries()!;
       const buf = new TextBuffer("", true);
@@ -472,7 +492,7 @@ export const ACTIONS: Action[] = [
     keys: [{ ch: "e" }],
     group: "recurring",
     hint: true,
-    when: (ctx) => ctx.ui.filter === "recurring" && !!ctx.selectedSeries(),
+    when: (ctx) => onSeries(ctx) && !!ctx.selectedSeries(),
     run: (ctx) => openRecurringForm(ctx, ctx.selectedSeries()!),
   },
   {
@@ -482,7 +502,7 @@ export const ACTIONS: Action[] = [
     keys: [{ ch: "a" }],
     group: "recurring",
     hint: true,
-    when: (ctx) => ctx.ui.filter === "recurring" && ctx.selectedSeries()?.status === "draft",
+    when: (ctx) => onSeries(ctx) && ctx.selectedSeries()?.status === "draft",
     run: (ctx) => {
       const sr = ctx.selectedSeries()!;
       return ctx.exec(async () => {
@@ -499,7 +519,7 @@ export const ACTIONS: Action[] = [
     keys: [{ ch: "u" }],
     group: "recurring",
     hint: true,
-    when: (ctx) => ctx.ui.filter === "recurring" && ctx.selectedSeries()?.status === "approved",
+    when: (ctx) => onSeries(ctx) && ctx.selectedSeries()?.status === "approved",
     run: (ctx) => {
       const sr = ctx.selectedSeries()!;
       return ctx.exec(async () => {
@@ -515,7 +535,7 @@ export const ACTIONS: Action[] = [
     key: "s",
     keys: [{ ch: "s" }],
     group: "recurring",
-    when: (ctx) => ctx.ui.filter === "recurring" && !!ctx.selectedSeries(),
+    when: (ctx) => onSeries(ctx) && !!ctx.selectedSeries(),
     run: (ctx) => ctx.toast("star a recurring series from the web UI (not exposed over Connect yet)", "warn"),
   },
   // ── view / app ──
@@ -594,6 +614,109 @@ export function actionForKey(ctx: Ctx, k: KeyEvent): Action | null {
 }
 
 // ── modal builders ────────────────────────────────────────────────────────
+
+/** One live instance on a task, as `instances/list` projects it. */
+interface InstanceRow {
+  id: string;
+  template_agent_id: string;
+  agent_name: string;
+  status: string;
+  parent_instance_id: string | null;
+  process_pid: number | null;
+  can_steer: boolean;
+  disabled_reason: string | null;
+}
+
+/** One list row per live instance; parallel instances of one agent are numbered in spawn order. */
+export function instanceListItems(rows: InstanceRow[]): ListItem[] {
+  const perAgent = new Map<string, number>();
+  for (const r of rows) perAgent.set(r.agent_name, (perAgent.get(r.agent_name) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return rows.map((r) => {
+    const n = (seen.get(r.agent_name) ?? 0) + 1;
+    seen.set(r.agent_name, n);
+    const name = (perAgent.get(r.agent_name) ?? 1) > 1 ? `${r.agent_name} #${n}` : r.agent_name;
+    const waiting = r.status === "waiting_delegation";
+    const meta = [shortId(r.id), r.process_pid ? `pid ${r.process_pid}` : null, r.parent_instance_id ? "delegated" : "root"].filter(Boolean).join(" · ");
+    return {
+      id: r.id,
+      label: name,
+      hint: meta,
+      right: waiting ? "waiting on delegation" : r.can_steer ? "running" : "running · not steerable",
+      detail: r.can_steer ? undefined : r.disabled_reason ?? undefined,
+      glyph: waiting ? "◌" : "●",
+      color: r.can_steer ? agentColor(r.agent_name) : C.textDim,
+      data: r,
+    };
+  });
+}
+
+/**
+ * Pick one live instance on the task and interrupt it with guidance. The
+ * daemon kills that process and resumes its session with the message, exactly
+ * what the web UI's agent modal does (`daemon.steerRuntime`). The list is the
+ * daemon's own eligibility: a row that cannot be steered says why.
+ */
+async function openInterruptPicker(ctx: Ctx, task: TaskItem): Promise<void> {
+  let rows: InstanceRow[];
+  try {
+    rows = (await ctx.transport.request("instances", "list", { taskId: task.id })) as InstanceRow[];
+  } catch (err) {
+    ctx.toast(err instanceof Error ? err.message : String(err), "error");
+    return;
+  }
+  const modal: ListModal = {
+    kind: "list",
+    title: `Interrupt an agent · ${shortId(task.id)}`,
+    items: instanceListItems(rows),
+    index: 0,
+    filter: new TextBuffer(""),
+    filterable: false,
+    width: 96,
+    height: 18,
+    error: null,
+    busy: false,
+    hint: "enter interrupt with guidance · r refresh · esc close",
+    emptyText: "no live agent on this task right now.",
+    onPick: (item) => {
+      const r = item.data as InstanceRow;
+      if (!r.can_steer) {
+        ctx.toast(r.disabled_reason ?? "This instance cannot be steered.", "warn");
+        return;
+      }
+      ctx.push(form(ctx, {
+        title: `Interrupt · ${item.label}`,
+        subtitle: "Stops the running process and resumes its session with this guidance. Its work so far is kept.",
+        fields: [{ kind: "textarea", key: "message", label: "Guidance", buf: new TextBuffer("", true), rows: 6, required: true }],
+        submitLabel: "Interrupt",
+        onSubmit: async (v) => {
+          await ctx.transport.request("instances", "steer", { id: r.id, message: String(v.message) });
+          // Drop the picker under this form: the instance is respawning, so its list is stale.
+          const i = ctx.ui.modals.indexOf(modal);
+          if (i >= 0) ctx.ui.modals.splice(i, 1);
+          return `interrupted ${item.label}`;
+        },
+      }));
+    },
+    onKey: async (key, _item, m) => {
+      if (key.type === "char" && key.ch === "r") {
+        m.busy = true;
+        m.error = null;
+        try {
+          m.items = instanceListItems((await ctx.transport.request("instances", "list", { taskId: task.id })) as InstanceRow[]);
+          m.index = Math.min(m.index, Math.max(m.items.length - 1, 0));
+        } catch (err) {
+          m.error = err instanceof Error ? err.message : String(err);
+        } finally {
+          m.busy = false;
+        }
+        return true;
+      }
+      return false;
+    },
+  };
+  ctx.push(modal);
+}
 
 function form(
   _ctx: Ctx,
@@ -689,7 +812,6 @@ export async function openTaskForm(ctx: Ctx, existing: TaskItem | null): Promise
           await ctx.transport.request("tasks", "update", { id: existing.id, title, description: String(v.description), teamId, mode });
         } else {
           await ctx.transport.updateTask(existing.id, { title, description: String(v.description), teamId, ...(workingDirectory ? { workingDirectory } : {}) });
-          ctx.reloadTask(existing.id);
         }
         return `saved: ${title}`;
       }
@@ -706,7 +828,7 @@ export async function openTaskForm(ctx: Ctx, existing: TaskItem | null): Promise
         ...(String(v.windowSeconds ?? "").trim() ? { windowSeconds: Number(String(v.windowSeconds).trim()) } : {}),
       })) as { id: string; title?: string };
       if (v.approve) await ctx.transport.request("tasks", "approve", { id: created.id });
-      ctx.ui.filter = v.approve ? "active" : "drafts";
+      ctx.ui.filter = "latest"; // Latest lists approved tasks and drafts alike
       ctx.selectTask(created.id);
       return v.approve ? `created + approved: ${title || created.title || shortId(created.id)}` : `draft created: ${title || shortId(created.id)}`;
     },
@@ -761,7 +883,7 @@ export async function openRecurringForm(ctx: Ctx, existing: RecurringSeries | nu
         await ctx.loadRecurring(true);
         return `saved: ${String(v.title).trim()}`;
       }
-      await ctx.transport.request("tasks", "create", {
+      const created = await ctx.transport.request("tasks", "create", {
         kind: "recurring",
         title: String(v.title).trim(),
         description: String(v.description),
@@ -770,8 +892,15 @@ export async function openRecurringForm(ctx: Ctx, existing: RecurringSeries | nu
         scheduleAmount: unit ? amount : undefined,
         autoApprove: v.approve === true,
       });
-      ctx.ui.filter = "recurring";
-      await ctx.loadRecurring(true);
+      // Show it where it lives: the Latest board's Recurring section.
+      ctx.ui.filter = "latest";
+      const list = await ctx.loadRecurring(true);
+      const made = created && typeof created === "object" ? String((created as { id?: unknown }).id ?? "") : "";
+      const row = list.find((sr) => sr.id === made) ?? list.find((sr) => sr.title === String(v.title).trim());
+      if (row) {
+        ctx.ui.selectedSeriesId = row.id;
+        ctx.ui.railKind = "series";
+      }
       return `recurring task created: ${String(v.title).trim()}`;
     },
   }));
@@ -783,7 +912,7 @@ export function openImportTeam(ctx: Ctx): void {
     title: "Import team",
     subtitle: ctx.transport.capabilities().fullTeamImport
       ? "Paste a team export (one team, an array, or { teams: [...] }). Same id = update in place. Or type a path and press ctrl+o to load the file."
-      : "Remote import goes over Connect: name, phases, agents and mode land; skipper_prompt, hooks and Slack config in the export are dropped. Same id = update in place.",
+      : "Remote import goes over Connect: name, phases, agents, mode and the Skipper instructions land; hooks and Slack config in the export are dropped. Same id = update in place.",
     fields: [
       { kind: "text", key: "path", label: "File path", buf: new TextBuffer(""), placeholder: "./team.json  (optional)", hint: "ctrl+o loads it" },
       { kind: "textarea", key: "json", label: "Team JSON", buf: json, rows: 14, placeholder: '{ "name": "…", "phases": [...], "agents": [...] }', required: true, hint: "paste here" },
@@ -827,7 +956,7 @@ export async function openTeams(ctx: Ctx): Promise<void> {
     height: 26,
     error: null,
     busy: false,
-    hint: "↓ to the list · enter details · e edit · n task with team · x export · X all · d delete · I import · / filter",
+    hint: "↓ to the list · enter details · e edit · c duplicate · n task with team · x export · X all · d delete · I import · M remote repos · / filter",
     emptyText: "no teams yet. press I to import one.",
     onPick: (item) => openTeamDetail(ctx, item.data as Team),
     onKey: async (key, item) => {
@@ -837,8 +966,26 @@ export async function openTeams(ctx: Ctx): Promise<void> {
         case "I":
           openImportTeam(ctx);
           return true;
+        case "M":
+          await openRemoteRepos(ctx);
+          return true;
+        case "c": {
+          if (!team) return true;
+          await ctx.exec(async () => {
+            const copy = await ctx.transport.request<{ name?: string }>("teams", "duplicate", { id: team.id });
+            const fresh = await ctx.loadTeams(true);
+            modal.items = fresh.map(teamListItem);
+            modal.title = `Teams · ${fresh.length}`;
+            return `duplicated → ${copy?.name ?? "local copy"}`;
+          });
+          return true;
+        }
         case "e": {
           if (!team) return true;
+          if (team.remote) {
+            ctx.toast("remote team: read-only. press c to duplicate it into a local team", "warn");
+            return true;
+          }
           openTeamEditor(ctx, team, async () => {
             const fresh = await ctx.loadTeams(true);
             modal.items = fresh.map(teamListItem);
@@ -878,6 +1025,10 @@ export async function openTeams(ctx: Ctx): Promise<void> {
         }
         case "d": {
           if (!team) return true;
+          if (team.remote && !team.remote.removedUpstream) {
+            ctx.toast("remote team: its repository owns it. unlink the repo (M) to remove it", "warn");
+            return true;
+          }
           ctx.push({
             kind: "confirm",
             title: "Delete team",
@@ -904,11 +1055,151 @@ export async function openTeams(ctx: Ctx): Promise<void> {
   ctx.push(modal);
 }
 
+// ── remote team repos (experimental) ────────────────────────────────────────
+
+function repoSlug(url: string): string {
+  const m = /github\.com[:/](.+?)(?:\.git)?$/.exec(url);
+  return m ? m[1]! : url;
+}
+
+function remoteRepoListItem(r: RemoteTeamRepo): ListItem {
+  const problems = r.lastError ?? (r.teamErrors.length > 0 ? r.teamErrors.map((e) => `${e.path}: ${e.error}`).join(" · ") : "");
+  return {
+    id: r.id,
+    label: r.name ?? repoSlug(r.url),
+    right: `${r.status} · ${r.teamIds.length} teams${r.lastCommit ? ` · ${r.lastCommit.slice(0, 7)}` : ""}`,
+    detail: [repoSlug(r.url), r.ref ? `ref ${r.ref}` : "default branch", r.lastSyncAt ? `synced ${r.lastSyncAt}` : "", problems]
+      .filter(Boolean).join("  ·  "),
+    glyph: r.status === "error" ? "✕" : r.status === "syncing" || r.status === "pending" ? "↻" : "⬢",
+    color: r.status === "error" ? C.danger : C.accent,
+    data: r,
+  };
+}
+
+async function loadRemoteRepos(ctx: Ctx): Promise<{ experimental: boolean; repos: RemoteTeamRepo[] }> {
+  const res = await ctx.transport.request<{ experimental?: boolean; repos?: RemoteTeamRepo[] }>("remote-team-repos", "list", {});
+  return { experimental: res?.experimental === true, repos: Array.isArray(res?.repos) ? res.repos : [] };
+}
+
+/**
+ * Remote team repos: GitHub repositories of team configs the daemon clones with
+ * this machine's git credentials. `a` links one, `r` pulls the latest, `d`
+ * unlinks. add/refresh reply at once; the sync result arrives as
+ * `remote_team_repo:changed`, which makes the controller call `modal.reload`.
+ */
+export async function openRemoteRepos(ctx: Ctx): Promise<void> {
+  let loaded: Awaited<ReturnType<typeof loadRemoteRepos>>;
+  try {
+    loaded = await loadRemoteRepos(ctx);
+  } catch (e) {
+    ctx.toast(e instanceof Error ? e.message : String(e), "error");
+    return;
+  }
+  if (!loaded.experimental) {
+    ctx.toast("remote teams need the daemon --experimental flag", "warn");
+    return;
+  }
+  const modal: ListModal = {
+    kind: "list",
+    tag: "remote-repos",
+    title: `Remote team repos · ${loaded.repos.length}`,
+    items: loaded.repos.map(remoteRepoListItem),
+    index: 0,
+    filter: new TextBuffer(""),
+    filterable: false,
+    width: Math.min(110, 120),
+    height: 20,
+    error: null,
+    busy: false,
+    hint: "a link a repository · r refresh (pull latest) · d unlink · enter details",
+    emptyText: "no repositories linked. press a to link one.",
+    reload: async () => {
+      const fresh = await loadRemoteRepos(ctx);
+      modal.items = fresh.repos.map(remoteRepoListItem);
+      modal.title = `Remote team repos · ${fresh.repos.length}`;
+      modal.index = Math.min(modal.index, Math.max(0, modal.items.length - 1));
+    },
+    onPick: (item) => {
+      const r = item.data as RemoteTeamRepo;
+      ctx.push({
+        kind: "text",
+        title: r.name ?? repoSlug(r.url),
+        body: [
+          `url        ${r.url}`,
+          `ref        ${r.ref ?? "(default branch)"}`,
+          `status     ${r.status}`,
+          `commit     ${r.lastCommit ?? "-"}`,
+          `last sync  ${r.lastSyncAt ?? "-"}`,
+          `teams      ${r.teamIds.length}`,
+          ...(r.lastError ? ["", `error: ${r.lastError}`] : []),
+          ...(r.teamErrors.length > 0 ? ["", "team file errors:", ...r.teamErrors.map((e) => `  ${e.path}: ${e.error}`)] : []),
+        ].join("\n"),
+        scroll: 0,
+        width: 100,
+        height: 18,
+      });
+    },
+    onKey: async (key, item) => {
+      if (key.type !== "char") return false;
+      const repo = item?.data as RemoteTeamRepo | undefined;
+      switch (key.ch) {
+        case "a":
+          ctx.push(form(ctx, {
+            title: "Link a team repository",
+            subtitle: "The daemon clones it with the git credentials of its machine. Teams from it are read-only.",
+            submitLabel: "Link",
+            fields: [
+              { kind: "text", key: "url", label: "GitHub repository", buf: new TextBuffer(""), placeholder: "https://github.com/owner/repo", required: true },
+              { kind: "text", key: "ref", label: "Branch or tag", buf: new TextBuffer(""), placeholder: "(default branch)" },
+            ],
+            onSubmit: async (v) => {
+              await ctx.transport.request("remote-team-repos", "add", { url: String(v.url ?? ""), ref: String(v.ref ?? "") });
+              await modal.reload?.();
+              return "repository linked: syncing";
+            },
+          }));
+          return true;
+        case "r": {
+          if (!repo) return true;
+          await ctx.exec(async () => {
+            await ctx.transport.request("remote-team-repos", "refresh", { id: repo.id });
+            return `refreshing ${repo.name ?? repoSlug(repo.url)}`;
+          });
+          return true;
+        }
+        case "d": {
+          if (!repo) return true;
+          ctx.push({
+            kind: "confirm",
+            title: "Unlink repository",
+            body: `Unlink ${repoSlug(repo.url)}? Its ${repo.teamIds.length} teams are removed. A team that tasks still use stays, marked removed upstream.`,
+            confirmLabel: "Unlink",
+            danger: true,
+            busy: false,
+            error: null,
+            onConfirm: async () => {
+              await ctx.transport.request("remote-team-repos", "remove", { id: repo.id });
+              await modal.reload?.();
+              await ctx.loadTeams(true);
+              return `unlinked ${repoSlug(repo.url)}`;
+            },
+          });
+          return true;
+        }
+        default:
+          return false;
+      }
+    },
+  };
+  ctx.push(modal);
+}
+
 function teamListItem(t: Team): ListItem {
+  const remote = t.remote ? (t.remote.removedUpstream ? "removed upstream · " : "remote · ") : "";
   return {
     id: t.id,
     label: t.name,
-    right: `${t.agentCount} agents · ${t.phaseCount} phases · ${t.mode === "workflow" ? "⚡" : "☾"}`,
+    right: `${remote}${t.agentCount} agents · ${t.phaseCount} phases · ${t.mode === "workflow" ? "⚡" : "☾"}`,
     detail: [t.agents.map((a) => `${a.name}(${a.type})`).join(", "), t.phases.map((p) => p.name).join(" › ")].filter(Boolean).join("  ·  "),
     glyph: "⬢",
     color: C.accent,
@@ -923,13 +1214,14 @@ type EditAgent = Team["agents"][number];
  * Team editor: a list of the team's fields, phases and agents. Enter opens the
  * row's form, `a`/`A` add a phase/agent, `d` deletes, `J`/`K` reorder. Nothing
  * reaches the daemon until ctrl+s, which sends the whole team through
- * `teams/update` (the daemon keeps skipper_prompt, hooks, Slack config and each
- * surviving agent's tools/identity, which this editor never shows).
+ * `teams/update` (the daemon keeps hooks, Slack config and each surviving
+ * agent's tools/identity, which this editor never shows).
  */
 export function openTeamEditor(ctx: Ctx, team: Team, onSaved?: () => Promise<void> | void): void {
   const draft = {
     name: team.name,
     mode: team.mode === "conversational" ? "conversational" : "workflow",
+    skipperPrompt: team.skipperPrompt ?? "",
     phases: team.phases.map((p) => ({ ...p })) as EditPhase[],
     agents: team.agents.map((a) => ({ ...a })) as EditAgent[],
   };
@@ -939,6 +1231,14 @@ export function openTeamEditor(ctx: Ctx, team: Team, onSaved?: () => Promise<voi
     const items: ListItem[] = [
       { id: "name", glyph: "⬢", color: C.accent, label: `Name   ${draft.name}`, hint: "enter renames" },
       { id: "mode", glyph: draft.mode === "workflow" ? "⚡" : "☾", color: draft.mode === "workflow" ? C.warn : C.info, label: `Mode   ${draft.mode === "workflow" ? "autopilot (workflow)" : "manual (conversational)"}`, hint: "enter toggles" },
+      {
+        id: "skipper",
+        glyph: "✦",
+        color: C.accent,
+        label: "Skipper instructions",
+        hint: "enter edits",
+        detail: draft.skipperPrompt.trim() ? oneLine(draft.skipperPrompt) : "(none: Skipper leads with its standard orchestration prompt)",
+      },
       { id: "h-phases", glyph: " ", label: `PHASES · ${draft.phases.length}`, right: "a add", disabled: true },
     ];
     draft.phases.forEach((p, i) => items.push({
@@ -1042,6 +1342,20 @@ export function openTeamEditor(ctx: Ctx, team: Team, onSaved?: () => Promise<voi
       touch();
       return;
     }
+    if (item.id === "skipper") {
+      ctx.push(form(ctx, {
+        title: "Skipper instructions",
+        subtitle: "Extra context for Skipper, the team lead: how to run this team, what to delegate, what done looks like. Blank clears it.",
+        fields: [{ kind: "textarea", key: "prompt", label: "Instructions", buf: new TextBuffer(draft.skipperPrompt, true), rows: 14, placeholder: "e.g. always delegate code changes to the Developer; never open a PR without a PASS note from the Tester" }],
+        submitLabel: "OK",
+        width: 96,
+        onSubmit: (v) => {
+          draft.skipperPrompt = String(v.prompt);
+          touch();
+        },
+      }));
+      return;
+    }
     if (sel?.kind === "phase") openPhaseForm(sel.i);
     else if (sel?.kind === "agent") openAgentForm(sel.i);
   };
@@ -1096,6 +1410,7 @@ export function openTeamEditor(ctx: Ctx, team: Team, onSaved?: () => Promise<voi
       id: team.id,
       name: draft.name.trim(),
       mode: draft.mode,
+      skipperPrompt: draft.skipperPrompt,
       phases: draft.phases.map((p) => ({ name: p.name, prompt: p.prompt, review: p.review })),
       agents: draft.agents.map((a) => ({ ...(a.id ? { id: a.id } : {}), name: a.name, type: a.type, model: a.model, instruction: a.instruction, ...(a.role ? { role: a.role } : {}) })),
     });
@@ -1111,6 +1426,11 @@ function openTeamDetail(ctx: Ctx, t: Team): void {
   const lines: string[] = [];
   lines.push(`${t.name}`);
   lines.push(`id ${t.id} · mode ${t.mode}${t.slackEnabled ? ` · slack ${t.slashCommand || "on"}` : ""}`);
+  if (t.skipperPrompt.trim()) {
+    lines.push("");
+    lines.push("SKIPPER INSTRUCTIONS");
+    lines.push(t.skipperPrompt.trim());
+  }
   lines.push("");
   lines.push("AGENTS");
   for (const a of t.agents) {
@@ -1181,7 +1501,7 @@ function openEscalationList(ctx: Ctx): void {
     onPick: (item) => {
       const e = item.data as { taskId: string };
       ctx.pop();
-      ctx.ui.filter = "active";
+      ctx.ui.filter = "latest";
       ctx.selectTask(e.taskId);
       const t = ctx.store.task(e.taskId);
       if (t) openEscalationForm(ctx, t);
@@ -1363,11 +1683,13 @@ export function openHelp(ctx: Ctx): void {
   const body = `NAVIGATION
 tab / shift+tab   cycle focus: tasks › detail › feed (single column: switch view)
 ↑ ↓  j k          move / scroll        pgup pgdn   page
-1-6               filter: active, drafts, starred, done, all, recurring
+1-4               board: latest, all, starred, drafts
+                  latest = needs you › active › recurring › recent (like the web sidebar)
 /                 filter tasks by text          esc clears
 [ ]               detail tabs: timeline, activity, notes, artifacts, details
 o                 hide/show the live feed column
 enter             from the rail: jump to the task detail
+                  on a recurring task: open / close its latest runs (space too)
 
 TASK
 i   send input (draft: appends to description · review: your verdict · done: revives)
@@ -1383,8 +1705,10 @@ E   answer this task's escalation   ctrl+e  all open escalations
 
 TEAMS + RECURRING
 T   browse teams (details, export, delete, new task with team)
+M   remote team repos (link a GitHub repo of team configs, refresh, unlink)
 I   import team from pasted JSON or a file (ctrl+o in the form)
-R   run the selected recurring task now (Recurring filter)
+R   run the selected recurring task now       (cursor on a recurring task:
+    e edit · a approve · u unapprove · r refresh the list)
 
 APP
 @   switch server (local / Connect remotes; add or delete)

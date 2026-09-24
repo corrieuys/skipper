@@ -25,7 +25,9 @@ export class NotificationManager {
     const onRunCompleted = () => this.fire("task.completed");
     const onRunFailed = () => this.fire("task.failed");
     const onEscCreated = () => this.fire("escalation.created");
-    const onEscResolved = () => this.fire("escalation.resolved");
+    const onEscResolved = (e: { auto?: boolean }) => {
+      if (!e.auto) this.fire("escalation.resolved"); // system closes stay silent
+    };
     const onReview = (e: { needsReview: boolean }) => {
       if (e.needsReview) this.fire("phase.review_pending");
     };

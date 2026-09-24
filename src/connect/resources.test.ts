@@ -211,6 +211,31 @@ describe("connect teams management (protocol v3 vocabulary)", () => {
     expect(stored.agents.find((a) => a.name === "Newbie")).toBeDefined();
   });
 
+  it("skipperPrompt rides the team row; update replaces it only when the key is sent", async () => {
+    const db = getDb();
+    const created = await handleResourceRequest("teams", "create", { name: "Led", mode: "workflow", phases: [], skipperPrompt: "always delegate" }, deps);
+    expect(created.ok).toBe(true);
+    const row = (created as { ok: true; data: { id: string; skipperPrompt: string } }).data;
+    expect(row.skipperPrompt).toBe("always delegate");
+    expect(getLocalTeam(db, row.id)!.skipper_prompt).toBe("always delegate");
+
+    // A client that predates the field omits the key: the stored prompt survives.
+    const untouched = await handleResourceRequest("teams", "update", { id: row.id, name: "Led v2", mode: "workflow", phases: [] }, deps);
+    expect((untouched as { ok: true; data: { skipperPrompt: string } }).data.skipperPrompt).toBe("always delegate");
+
+    const replaced = await handleResourceRequest("teams", "update", { id: row.id, name: "Led v2", mode: "workflow", phases: [], skipperPrompt: "never open a PR without a PASS note" }, deps);
+    expect((replaced as { ok: true; data: { skipperPrompt: string } }).data.skipperPrompt).toBe("never open a PR without a PASS note");
+    expect(getLocalTeam(db, row.id)!.skipper_prompt).toBe("never open a PR without a PASS note");
+
+    // An empty string is an explicit clear.
+    const cleared = await handleResourceRequest("teams", "update", { id: row.id, name: "Led v2", mode: "workflow", phases: [], skipperPrompt: "" }, deps);
+    expect((cleared as { ok: true; data: { skipperPrompt: string } }).data.skipperPrompt).toBe("");
+
+    const listed = await handleResourceRequest("teams", "list-all", {}, deps);
+    const found = (listed as { ok: true; data: Array<{ id: string; skipperPrompt: string }> }).data.find((t) => t.id === row.id)!;
+    expect(found.skipperPrompt).toBe("");
+  });
+
   it("update rejects the legacy 'regular' mode", async () => {
     const db = getDb();
     const team = createLocalTeam(db, { name: "Editable", phases: [], config: { mode: "workflow" } });
@@ -312,6 +337,74 @@ describe("connect tasks read/list projections + v3 actions", () => {
     const blank = await handleResourceRequest("tasks", "input", { id, text: "   " }, inputDeps);
     expect(blank.ok).toBe(false);
     expect((blank as { ok: false; error: string }).error).toContain("text is required");
+  });
+
+  function seedInstance(id: string, templateId: string, status = "running", createdAt = "2026-01-01 00:00:00"): void {
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, status, process_pid, created_at, updated_at)
+       VALUES (?, 'task-p', ?, ?, 4242, ?, ?)`,
+    ).run(id, templateId, status, createdAt, createdAt);
+  }
+
+  it("instances/list projects a task's live instances oldest-first with the daemon's steer eligibility", async () => {
+    const id = seedTask("active");
+    const db = getDb();
+    db.prepare("INSERT INTO agents (id, name, type) VALUES ('coder', 'Coder', 'claude-code')").run();
+    seedInstance("inst-b", "coder", "running", "2026-01-01 00:00:02");
+    seedInstance("inst-a", "coder", "running", "2026-01-01 00:00:01");
+    seedInstance("inst-w", "coder", "waiting_delegation", "2026-01-01 00:00:03");
+    seedInstance("inst-done", "coder", "completed", "2026-01-01 00:00:00");
+
+    const asked: string[] = [];
+    const deps = taskDeps({
+      listRuntimeSteeringOptions: (templateId) => {
+        asked.push(templateId);
+        return [
+          { id: "inst-a", can_steer: true, disabled_reason: null, session_id: "s1", process_pid: 4242 },
+          { id: "inst-b", can_steer: false, disabled_reason: "Runtime has no resumable session yet.", session_id: null, process_pid: 4242 },
+          { id: "inst-w", can_steer: false, disabled_reason: "Runtime is waiting on delegation and cannot be steered.", session_id: "s3", process_pid: 4242 },
+        ];
+      },
+    });
+    const result = await handleResourceRequest("instances", "list", { taskId: id }, deps);
+    expect(result.ok).toBe(true);
+    const rows = (result as { ok: true; data: Array<Record<string, unknown>> }).data;
+    expect(asked).toEqual(["coder"]);
+    expect(rows.map((r) => r.id)).toEqual(["inst-a", "inst-b", "inst-w"]);
+    expect(rows[0]).toMatchObject({ agent_name: "Coder", template_agent_id: "coder", status: "running", can_steer: true, disabled_reason: null });
+    expect(rows[1]).toMatchObject({ can_steer: false, disabled_reason: "Runtime has no resumable session yet." });
+    expect(rows[2]).toMatchObject({ status: "waiting_delegation", can_steer: false });
+
+    // No daemon wiring: nothing is steerable, and the reason says so.
+    const bare = await handleResourceRequest("instances", "list", { taskId: id }, taskDeps());
+    const bareRows = (bare as { ok: true; data: Array<Record<string, unknown>> }).data;
+    expect(bareRows.every((r) => r.can_steer === false && r.disabled_reason === "Steering is unavailable on this daemon.")).toBe(true);
+
+    const missing = await handleResourceRequest("instances", "list", { taskId: "nope" }, deps);
+    expect(missing.ok).toBe(false);
+  });
+
+  it("instances/steer relays the instance's template id and message into steerRuntime", async () => {
+    seedTask("active");
+    getDb().prepare("INSERT INTO agents (id, name, type) VALUES ('coder', 'Coder', 'claude-code')").run();
+    seedInstance("inst-a", "coder");
+    const calls: Array<[string, string, string]> = [];
+    const deps = taskDeps({ steerRuntime: async (t, r, m) => { calls.push([t, r, m]); } });
+
+    const ok = await handleResourceRequest("instances", "steer", { id: "inst-a", message: "  stop, use the other API  " }, deps);
+    expect(ok.ok).toBe(true);
+    expect((ok as { ok: true; data: Record<string, unknown> }).data).toEqual({ id: "inst-a", task_id: "task-p", delivered: "steered" });
+    expect(calls).toEqual([["coder", "inst-a", "stop, use the other API"]]);
+
+    const blank = await handleResourceRequest("instances", "steer", { id: "inst-a", message: " " }, deps);
+    expect((blank as { ok: false; error: string }).error).toContain("message is required");
+    const unknown = await handleResourceRequest("instances", "steer", { id: "inst-x", message: "hi" }, deps);
+    expect((unknown as { ok: false; error: string }).error).toBe("Instance not found");
+    const refused = await handleResourceRequest("instances", "steer", { id: "inst-a", message: "hi" }, taskDeps({ steerRuntime: async () => { throw new Error("Runtime is no longer live."); } }));
+    expect((refused as { ok: false; error: string }).error).toBe("Runtime is no longer live.");
+    const unwired = await handleResourceRequest("instances", "steer", { id: "inst-a", message: "hi" }, taskDeps());
+    expect((unwired as { ok: false; error: string }).error).toContain("unavailable");
   });
 
   it("tasks/settle finishes a task as completed", async () => {
@@ -1137,5 +1230,47 @@ describe("connect file artifacts (upload-* / read-bytes)", () => {
     expect(await handleResourceRequest("artifacts", "upload-abort", { uploadId: id2 }, fileDeps)).toEqual({ ok: true, data: { aborted: true } });
     expect((await handleResourceRequest("artifacts", "upload-commit", { uploadId: id2 }, fileDeps)).ok).toBe(false);
     expect(getDb().prepare("SELECT COUNT(*) AS c FROM task_artifacts WHERE task_id = ?").get(taskId)).toEqual({ c: 0 });
+  });
+});
+
+describe("connect remote team repos", () => {
+  const origArgv = process.argv;
+  afterEach(() => {
+    process.argv = origArgv;
+  });
+
+  it("is experimental: list reports the flag off, writes refuse", async () => {
+    process.argv = origArgv.filter((a) => a !== "--experimental");
+    expect(await handleResourceRequest("remote-team-repos", "list", {}, deps)).toEqual({ ok: true, data: { experimental: false, repos: [] } });
+    const add = await handleResourceRequest("remote-team-repos", "add", { url: "acme/teams" }, deps);
+    expect(add.ok).toBe(false);
+  });
+
+  it("rejects a non-GitHub URL and an unknown repo id", async () => {
+    process.argv = [...origArgv, "--experimental"];
+    const bad = await handleResourceRequest("remote-team-repos", "add", { url: "https://evil.example/x/y" }, deps);
+    expect(bad).toMatchObject({ ok: false });
+    expect(await handleResourceRequest("remote-team-repos", "refresh", { id: "nope" }, deps)).toEqual({ ok: false, error: "Repository not found" });
+    expect(await handleResourceRequest("remote-team-repos", "remove", { id: "nope" }, deps)).toEqual({ ok: true, data: { removed: false } });
+  });
+
+  it("a remote team is read-only over connect; duplicate makes a local copy", async () => {
+    process.argv = [...origArgv, "--experimental"];
+    const db = getDb();
+    const { createLocalTeam } = await import("../teams/local-teams");
+    const { upsertRemoteTeamLink } = await import("../teams/remote-links");
+    upsertRemoteTeamLink(db, "remote-abcd1234-crew", "abcd1234", "teams/crew.json");
+    createLocalTeam(db, { id: "remote-abcd1234-crew", name: "Crew", phases: [] });
+
+    const rows = (await handleResourceRequest("teams", "list-all", {}, deps)).data as Array<{ id: string; remote: unknown }>;
+    expect(rows.find((t) => t.id === "remote-abcd1234-crew")?.remote).toEqual({ repoId: "abcd1234", path: "teams/crew.json", removedUpstream: false });
+
+    const update = await handleResourceRequest("teams", "update", { id: "remote-abcd1234-crew", name: "Hacked", mode: "workflow", phases: [], agents: [] }, deps);
+    expect(update).toMatchObject({ ok: false, error: expect.stringContaining("read-only") });
+    const del = await handleResourceRequest("teams", "delete", { id: "remote-abcd1234-crew" }, deps);
+    expect(del).toMatchObject({ ok: false, error: expect.stringContaining("read-only") });
+
+    const copy = await handleResourceRequest("teams", "duplicate", { id: "remote-abcd1234-crew" }, deps);
+    expect(copy).toMatchObject({ ok: true, data: { name: "Crew (copy)", remote: null } });
   });
 });

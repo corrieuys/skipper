@@ -149,6 +149,24 @@ export interface Team {
   agents: TeamAgent[];
   slackEnabled: boolean;
   slashCommand: string;
+  /** Extra context for the root Skipper on this team (web: the team map's Skipper card). */
+  skipperPrompt: string;
+  /** Set when a remote team repo owns the team: read-only (no edit; delete only once removed upstream). */
+  remote: { repoId: string; path: string; removedUpstream: boolean } | null;
+}
+
+/** A linked GitHub repo of team configs (`remote-team-repos/list`, experimental). */
+export interface RemoteTeamRepo {
+  id: string;
+  url: string;
+  ref: string | null;
+  name: string | null;
+  status: string;
+  lastCommit: string | null;
+  lastSyncAt: string | null;
+  lastError: string | null;
+  teamErrors: { path: string; error: string }[];
+  teamIds: string[];
 }
 
 export interface RecurringRun {
@@ -197,7 +215,13 @@ export type TransportEvent =
   | { kind: "capabilities"; protocolVersion: number; features: string[] }
   | { kind: "auth_failed"; message: string }
   | { kind: "snapshot"; tasks: TaskItem[]; escalations: Escalation[]; titleGeneratorConfigured: boolean }
-  | { kind: "task"; task: TaskItem; created?: boolean; started?: boolean }
+  /** A recurring series or team changed on the daemon. `row` is the wire projection (absent when deleted); the controller maps it into its cached list. */
+  | { kind: "recurring_changed"; id: string; deleted: boolean; row: Record<string, unknown> | null }
+  | { kind: "team_changed"; id: string; deleted: boolean; row: Record<string, unknown> | null }
+  /** A remote team repo was linked, moved sync status, or was unlinked. An open repos browser reloads. */
+  | { kind: "remote_repo_changed"; id: string; deleted: boolean }
+  /** `edited`: a same-status change (edit, rename, star, toggle): fields outside the list row may have moved. */
+  | { kind: "task"; task: TaskItem; created?: boolean; started?: boolean; edited?: boolean }
   | { kind: "task_deleted"; taskId: string }
   | { kind: "task_phase"; taskId: string; newPhase: number }
   | { kind: "escalation"; escalation: Escalation }

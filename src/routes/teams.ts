@@ -224,14 +224,24 @@ export function registerTeamRoutes(database?: Database): void {
 
   // ----- Delete -----
   addRoute("DELETE", "/api/teams/:id", (_req, params) => {
-    const ok = deleteLocalTeam(db, params.id!);
+    let ok: boolean;
+    try {
+      ok = deleteLocalTeam(db, params.id!);
+    } catch (e) {
+      // A live remote team is read-only (its repo owns it).
+      return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 409 });
+    }
     if (!ok) return Response.json({ error: "Team not found" }, { status: 404 });
     return new Response("", { status: 200 });
   });
 
   // Form-based delete (HTML)
   addRoute("POST", "/api/teams/:id/delete", (req, params) => {
-    deleteLocalTeam(db, params.id!);
+    try {
+      deleteLocalTeam(db, params.id!);
+    } catch (e) {
+      return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 409 });
+    }
     if (req.headers.get("HX-Request")) {
       return hxRedirect("/teams");
     }

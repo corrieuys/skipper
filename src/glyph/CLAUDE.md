@@ -111,10 +111,10 @@ timeout.
   model's source texts; `w` renders as `<img>` when the URL carries `?glyph=image`,
   else a sandboxed `<iframe>`; `refresh: [ids]` on a payload reloads those views.
   Every node whose content, type or source changed in a commit, and every new
-  node, gets `.gl-fresh` for ~4s: its own border turns the secondary accent
-  and fades back (border only, no outline/wash/pseudo-element, so it sits on
-  the element's box; distinct from the model's `!` emphasis ring); skipped on
-  the first commit after opening. The
+  node, gets `.gl-fresh` for ~1.1s: its own border takes a dim tint of the
+  secondary accent and fades back (border only, no outline/wash/pseudo-element,
+  so it sits on the element's box; deliberately faint and short; distinct from
+  the model's `!` emphasis ring); skipped on the first commit after opening. The
   screen never scrolls: no container has a scrollbar (overflow hidden); after
   each commit `fitToStage` finds the worst content-vs-slot ratio over every
   container, zooms the stage down by it (CSS `zoom`, so FLIP rects stay

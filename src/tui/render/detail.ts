@@ -1,12 +1,12 @@
 import { Screen, type Style, wrap, clip, textWidth, padEnd } from "./screen";
 import type { Rect } from "./layout";
 import type { Store } from "../model/store";
-import type { ActivityRow, Artifact, TaskDetail, TaskItem } from "../model/types";
+import type { ActivityRow, Artifact, RecurringSeries, TaskDetail, TaskItem } from "../model/types";
 import { DETAIL_TABS, type UIState } from "../ui/state";
-import { conversation, ago, elapsed, hhmm, shortId, type ConvoItem } from "../ui/view-model";
+import { conversation, ago, elapsed, hhmm, shortId, scheduleLabel, seriesRuns, type ConvoItem } from "../ui/view-model";
 import { toOneLine, toPlainText } from "../ui/plain-text";
 import { C, S, agentColor, statusColor, statusLabel, statusGlyph } from "./theme";
-import { panel, phaseStrip, statusPill, orb, lr, scrollbar, breathingCursor } from "./widgets";
+import { panel, phaseStrip, statusPill, pill, orb, lr, scrollbar, breathingCursor } from "./widgets";
 
 export interface DetailDrawResult {
   cursor: { x: number; y: number } | null;
@@ -20,6 +20,9 @@ export interface DetailDrawResult {
  * live output, notes, artifacts, info) and the input composer.
  */
 export function drawDetail(s: Screen, r: Rect, store: Store, ui: UIState, focused: boolean): DetailDrawResult {
+  // The rail cursor is on a recurring series: show the series, not the last task.
+  const series = ui.railKind === "series" ? ui.recurring.find((sr) => sr.id === ui.selectedSeriesId) : undefined;
+  if (series) return drawSeriesDetail(s, r, store, ui, series, focused);
   const id = ui.selectedTaskId;
   const task = id ? store.task(id) : undefined;
   const body = panel(s, r, task ? "TASK" : "TASK", { focused, right: task ? shortId(task.id) : undefined });
@@ -215,6 +218,52 @@ function tabCount(store: Store, taskId: string, tab: string): number | null {
   }
 }
 
+/** A recurring series: what it is, when it runs, and its latest runs (live from the task store). */
+function drawSeriesDetail(s: Screen, r: Rect, store: Store, ui: UIState, sr: RecurringSeries, focused: boolean): DetailDrawResult {
+  const body = panel(s, r, "RECURRING", { focused, right: shortId(sr.id) });
+  const x = body.x;
+  const w = body.w;
+  const bottom = body.y + body.h;
+  let y = body.y;
+  if (body.h <= 0) return { cursor: null, bodyRows: 0 };
+  const approved = sr.status === "approved";
+  const label = approved ? "APPROVED" : sr.status.toUpperCase();
+  const pillW = textWidth(label) + 2;
+  s.text(x, y, clip(`${sr.starred ? "★ " : ""}${sr.title || "(untitled)"}`, Math.max(w - pillW - 1, 4)), { fg: C.textBright, bold: true });
+  pill(s, x + w - pillW, y, label, approved ? C.ok : C.warn, approved ? C.ok : C.warn);
+  y++;
+  if (y < bottom) s.text(x, y++, clip(`${sr.teamName ?? "no team"} · ${scheduleLabel(sr)}`, w), { fg: C.accent }, w);
+  const when = [
+    approved ? (sr.nextRunAt ? `next run ${hhmm(sr.nextRunAt)} (${ago(sr.nextRunAt)})` : "manual only: R runs it now") : "not approved: a approves it",
+    sr.lastRunAt ? `last run ${ago(sr.lastRunAt)} ago` : "never ran",
+    sr.memoryMode && sr.memoryMode !== "off" ? `memory ${sr.memoryMode}` : null,
+  ].filter(Boolean).join(" · ");
+  if (y < bottom) s.text(x, y++, clip(when, w), S.muted, w);
+  if (sr.description?.trim() && y < bottom) {
+    y++;
+    for (const line of wrap(toPlainText(sr.description), w).slice(0, 6)) {
+      if (y >= bottom) break;
+      s.text(x, y++, line, S.text, w);
+    }
+  }
+  y++;
+  const runs = seriesRuns(store, sr.id, 12);
+  if (y < bottom) s.text(x, y++, `LATEST RUNS${runs.length ? ` · ${runs.length}` : ""}`, { fg: C.textMuted, bold: true }, w);
+  if (runs.length === 0 && y < bottom) s.text(x, y++, "no runs yet.", S.dim, w);
+  for (const [i, t] of runs.entries()) {
+    if (y >= bottom - 1) break;
+    const right = `${statusLabel(t.display_status)} · ${ago(t.updated_at ?? t.created_at)}`;
+    const rw = textWidth(right);
+    let cx = x;
+    cx += s.text(cx, y, `${statusGlyph(t.display_status, ui.frame, i)} `, { fg: statusColor(t.display_status), bold: true });
+    s.text(cx, y, clip(t.title || "(untitled)", Math.max(w - (cx - x) - rw - 1, 4)), S.text);
+    s.text(x + w - rw, y, right, S.muted);
+    y++;
+  }
+  if (bottom - 1 >= y) s.text(x, bottom - 1, clip("enter runs in the rail · R run now · e edit · a approve · u unapprove", w), S.dim, w);
+  return { cursor: null, bodyRows: Math.max(body.h - 6, 0) };
+}
+
 function drawEmpty(s: Screen, r: Rect, store: Store, ui: UIState): void {
   const lines = [
     "",
@@ -357,45 +406,61 @@ function convoLines(it: ConvoItem, textW: number, prefixW: number): StyledLine[]
   return out;
 }
 
-export function activityLine(a: ActivityRow, w: number, showAgent = true): StyledLine {
+/** Longest an activity row may run when wrapped; the rest is folded into a count. */
+const ACTIVITY_MAX_LINES = 8;
+
+/**
+ * One activity row as wrapped lines: `HH:MM ⚙ agent text…` on the first line,
+ * continuation lines indented under the text so the time/tag column stays
+ * clean. `w` is the full row width available (a scrollbar column is the
+ * caller's business). Very long rows (tool payloads) fold after
+ * ACTIVITY_MAX_LINES with a "… N more lines" tail.
+ */
+export function activityLines(a: ActivityRow, w: number, showAgent = true): StyledLine[] {
   const t = hhmm(a.created_at);
   let tag: string;
-  let tagSt: Style;
   let bodySt: Style;
   switch (a.kind) {
     case "note":
       tag = "★";
-      tagSt = S.orange;
       bodySt = S.orange;
       break;
     case "tool":
       tag = "⚙";
-      tagSt = S.warn;
       bodySt = S.muted;
       break;
     case "message":
       tag = "▓";
-      tagSt = S.accent;
       bodySt = S.text;
       break;
     default:
       tag = "·";
-      tagSt = S.dim;
       bodySt = S.dim;
   }
+  const prefixSt = a.kind === "note" ? S.orange : a.kind === "tool" ? S.warn : a.kind === "message" ? S.accent : S.dim;
   const who = showAgent ? clip(a.agent_name, 10) : "";
   const prefix = `${t} ${tag} `;
-  void tagSt;
-  void w;
-  return {
-    prefix: { text: prefix, st: a.kind === "note" ? S.orange : a.kind === "tool" ? S.warn : a.kind === "message" ? S.accent : S.dim },
-    text: (who ? `${who} ` : "") + a.text,
+  const prefixW = textWidth(prefix);
+  const textW = Math.max(w - prefixW, 8);
+  const body = (who ? `${who} ` : "") + a.text.replace(/\s+/g, " ").trim();
+  const wrapped = wrap(body, textW);
+  if (wrapped.length === 0) wrapped.push("");
+  const shown = wrapped.length > ACTIVITY_MAX_LINES ? wrapped.slice(0, ACTIVITY_MAX_LINES - 1) : wrapped;
+  const out: StyledLine[] = shown.map((line, i) => ({
+    prefix: { text: i === 0 ? prefix : " ".repeat(prefixW), st: prefixSt },
+    text: line,
     st: bodySt,
-  };
+  }));
+  if (wrapped.length > ACTIVITY_MAX_LINES) {
+    out.push({ prefix: { text: " ".repeat(prefixW), st: S.dim }, text: `… ${wrapped.length - shown.length} more lines`, st: S.dim });
+  }
+  return out;
 }
 
 function drawOutput(s: Screen, r: Rect, rows: ActivityRow[], ui: UIState, live: boolean): void {
-  const lines = rows.map((a) => activityLine(a, r.w));
+  // Wrap to the width minus the scrollbar column drawAnchored reserves once
+  // the lines overflow; reserving it always keeps wrap points stable.
+  const lines = rows.flatMap((a) => activityLines(a, r.w - 1));
   drawAnchored(s, r, lines, ui.detailScroll, "no activity yet. the live agent output tail appears here while agents work.", live, ui.frame);
 }
 

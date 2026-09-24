@@ -3,7 +3,7 @@
  * Skipper CLI — the entry point compiled into the standalone binary
  * (`bun build --compile bin/cli.ts`). Dispatches subcommands:
  *
- *   skipper start [--port N] [-h|--headless]   spawn the server detached; pid + logs in the data dir; -h skips opening the UI
+ *   skipper start [--port N] [-h|--headless] [--experimental|--no-experimental]   spawn the server detached; pid + logs in the data dir; -h skips opening the UI; no mode flag = last recorded mode
  *   skipper stop               SIGTERM the recorded pid (SIGKILL fallback)
  *   skipper restart
  *   skipper status             pid liveness + /health probe
@@ -21,7 +21,8 @@
 import { spawn } from "node:child_process";
 import { openSync, readFileSync, writeFileSync, existsSync, unlinkSync, chmodSync, renameSync } from "node:fs";
 import { isCompiledBinary } from "../src/assets";
-import { getPidFile, getLogFile, ensureDataDir } from "../src/paths";
+import { getPidFile, getLogFile, ensureDataDir, readLaunchFlags } from "../src/paths";
+import { resolveExperimentalLaunch } from "../src/config/feature-flags";
 import { APP_VERSION as VERSION } from "../src/version";
 
 const PORT = process.env.PORT || "5005";
@@ -55,6 +56,16 @@ function clearPidFile(): void {
 }
 
 /**
+ * Whether this launch runs experimental. An explicit `--experimental` /
+ * `--no-experimental` wins; otherwise the mode the daemon last booted with
+ * (`launch-flags.json`, written by `serve`) is honoured, so `skipper restart`
+ * (yours, or the auto-updater's) never silently drops back to stable.
+ */
+function experimentalRequested(): boolean {
+  return resolveExperimentalLaunch(process.argv, readLaunchFlags().experimental);
+}
+
+/**
  * How to re-invoke ourselves in foreground `serve` mode (binary vs `bun run`).
  * Forwards launch flags the server itself reads from argv — `--experimental` gates
  * experimental features via `isExperimental()`, which inspects the *server*
@@ -62,7 +73,9 @@ function clearPidFile(): void {
  * or it would be silently dropped. (`--port` is handled separately via PORT env.)
  */
 function serveInvocation(): { cmd: string; args: string[] } {
-  const passthrough = process.argv.includes("--experimental") ? ["--experimental"] : [];
+  // Always explicit, so the child never falls back to the recorded file (which
+  // still holds the previous boot's mode until the child overwrites it).
+  const passthrough = experimentalRequested() ? ["--experimental"] : ["--no-experimental"];
   if (isCompiledBinary()) return { cmd: process.execPath, args: ["serve", ...passthrough] };
   return { cmd: process.execPath, args: [Bun.main, "serve", ...passthrough] };
 }
@@ -129,7 +142,7 @@ async function start(forceNoOpen = false): Promise<void> {
   if (child.pid) writeFileSync(getPidFile(), String(child.pid));
   child.unref();
   const url = `http://localhost:${PORT}`;
-  console.log(`skipper started (pid ${child.pid}) on ${url}`);
+  console.log(`skipper started (pid ${child.pid}) on ${url}${args.includes("--experimental") ? " [experimental]" : ""}`);
   console.log(`logs: ${logPath}`);
 
   // Open the UI once the server is actually responding (skip with --no-open).
@@ -290,22 +303,24 @@ function usage(): void {
   console.log(`skipper ${VERSION}
 
 Usage:
-  skipper start [--port N] [--host H] [-h|--headless] [--experimental]   Start in the background (opens the UI;
-                             -h/--headless/--no-open skips the browser tab)
+  skipper start [--port N] [--host H] [-h|--headless] [--experimental|--no-experimental]
+                             Start in the background (opens the UI; -h/--headless/--no-open skips the browser tab)
   skipper stop               Stop the background server
-  skipper restart [--experimental]   Restart the background server
+  skipper restart [--experimental|--no-experimental]   Restart the background server
   skipper status             Show running state + health
   skipper dashboard [-l|--local | --server <name>]   Open the interactive terminal dashboard
                              (local daemon, or a saved Skipper Connect remote; no flag = picker)
   skipper logs [-f]          Print (or follow with -f) the server log
-  skipper serve [--experimental]     Run the server in the foreground
+  skipper serve [--experimental|--no-experimental]   Run the server in the foreground
   skipper update [--beta | <version>]   Update to the latest release (--beta includes prereleases),
                              or pin an exact release: skipper update v0.3.0-rc.1
   skipper --version          Print version
 
   --experimental enables experimental features (Slack, Global Store, API Keys, Task
-  Auto-Delete, extra teams/agents). It is per-launch: a later restart without the
-  flag drops back to stable, so pass it each time you want it on.
+  Auto-Delete, extra teams/agents). The mode sticks: start/restart/serve without a
+  flag keep whatever mode the daemon last booted in (recorded in the data dir's
+  launch-flags.json), so an auto-update restart never drops it. --no-experimental
+  switches back to stable explicitly.
 `);
 }
 
@@ -327,6 +342,10 @@ async function main(): Promise<void> {
   switch (cmd) {
     case "serve":
     case "run":
+      // The server reads the mode from its own argv (`isExperimental()`); apply
+      // the resolved launch mode there so a recorded state is honoured in the
+      // foreground too, and `--no-experimental` is not itself forwarded.
+      if (experimentalRequested() && !process.argv.includes("--experimental")) process.argv.push("--experimental");
       await import("../index.ts"); // boots the server (foreground)
       break;
     case "start":

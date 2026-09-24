@@ -287,6 +287,8 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         const updatedConfig: Record<string, unknown> = { ...currentConfig, phase_overrides: phaseOverrides };
         db.prepare("UPDATE tasks SET task_config = ?, updated_at = datetime('now') WHERE id = ?")
           .run(JSON.stringify(updatedConfig), created.id);
+        // task:created already went out with the pre-override config.
+        eventBus.emit("task:state_changed", { taskId: created.id, previousStatus: created.status, newStatus: created.status });
       }
 
       if (shouldAutoApprove) {

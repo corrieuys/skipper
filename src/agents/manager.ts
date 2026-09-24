@@ -12,6 +12,7 @@ import { InProcessHandle, NOOP_STDIN, runCustomAgent } from "../custom-agents/ru
 import { signalBridge } from "../mcp/signal-bridge";
 import { getStringSetting } from "../config/app-settings";
 import { SETTING_SKIPPER_AGENT_TYPE, SETTING_SKIPPER_MODEL } from "../config/model-settings";
+import { emitInstanceState } from "./instance-status";
 
 // Cap on ONE buffered stdout line. Stdout is stored per complete line (see
 // ingestChunk), so the buffer only ever holds the unterminated tail; a
@@ -783,6 +784,8 @@ export class AgentManager {
               "UPDATE agent_instances SET status = 'failed', process_pid = NULL, state_metadata = json_set(state_metadata, '$.spawn_error', ?), updated_at = datetime('now') WHERE id = ?",
             )
             .run(reason, runtimeId);
+          // The pre-spawn row was announced as 'running'; tell every surface it died.
+          emitInstanceState(this.db, runtimeId);
         } catch (cleanupErr) {
           logError(this.db, "agent.spawn_cleanup", { runtimeId, templateAgentId }, cleanupErr);
         }

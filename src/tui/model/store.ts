@@ -82,6 +82,11 @@ export class Store {
         this.authError = event.message;
         this.status = "closed";
         return true;
+      case "recurring_changed":
+      case "team_changed":
+      case "remote_repo_changed":
+        // Those lists live in the controller's UI cache (run.ts), not the store.
+        return false;
       case "capabilities":
         this.protocolVersion = event.protocolVersion;
         this.features = event.features;
@@ -191,6 +196,14 @@ export class Store {
 
   setBundleLoading(taskId: string, loading: boolean): void {
     this.bundle(taskId).loading = loading;
+    this._version++;
+  }
+
+  /** Replace just the detail of an already-loaded bundle (after an edit event). */
+  setDetail(taskId: string, detail: TaskDetail): void {
+    const b = this.bundles.get(taskId);
+    if (!b) return;
+    b.detail = detail;
     this._version++;
   }
 

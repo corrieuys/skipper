@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { existsSync, mkdirSync, copyFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, copyFileSync, statSync, writeFileSync, readFileSync } from "node:fs";
 import { isCompiledBinary, listAssets, assetBytesSync } from "./assets";
 
 const LEGACY_CWD_DB = "skipper-runtime.db";
@@ -95,6 +95,36 @@ export function getPidFile(): string {
 /** Log file the detached daemon writes stdout/stderr to. */
 export function getLogFile(): string {
   return join(getDataDir(), "skipper.log");
+}
+
+/**
+ * Launch flags the daemon was last booted with (`launch-flags.json`). Written
+ * by `serve` on every boot; read by `skipper start`/`restart`/`serve` when the
+ * command line carries no explicit `--experimental` / `--no-experimental`, so a
+ * restart (yours, or the auto-updater's) keeps the mode the daemon was running in.
+ */
+export interface LaunchFlags {
+  experimental?: boolean;
+}
+
+export function getLaunchFlagsFile(): string {
+  return join(getDataDir(), "launch-flags.json");
+}
+
+export function readLaunchFlags(): LaunchFlags {
+  try {
+    const raw = JSON.parse(readFileSync(getLaunchFlagsFile(), "utf8")) as unknown;
+    if (!raw || typeof raw !== "object") return {};
+    const experimental = (raw as { experimental?: unknown }).experimental;
+    return typeof experimental === "boolean" ? { experimental } : {};
+  } catch {
+    return {};
+  }
+}
+
+export function writeLaunchFlags(flags: LaunchFlags): void {
+  ensureDataDir();
+  writeFileSync(getLaunchFlagsFile(), JSON.stringify(flags) + "\n");
 }
 
 /**

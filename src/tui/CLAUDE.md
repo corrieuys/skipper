@@ -35,7 +35,7 @@ The transport advertises `capabilities()`; the UI degrades on a remote:
 | capability | local | remote |
 |---|---|---|
 | global live feed column + roster lane (`/ws/ui`) | yes | no: feed column hidden, roster rebuilt from `instance:state_changed` fat events (name = template id tail) |
-| team import/export | loopback HTTP routes, full shape (skipper_prompt, hooks, config) | `teams/create` / `teams/update` / `teams/list-all` over Connect: name, phases, agents, mode only (the form says so) |
+| team import/export | loopback HTTP routes, full shape (skipper_prompt, hooks, config) | `teams/create` / `teams/update` / `teams/list-all` over Connect: name, phases, agents, mode and the Skipper instructions (`skipperPrompt`); hooks and Slack config stay web-only |
 | edit an active/settled task | loopback `POST /api/tasks/:id/update` | `tasks/update` (daemon refuses non-drafts) |
 | `w` open in web UI | yes | hidden |
 
@@ -46,7 +46,7 @@ The transport speaks to two loopback sockets, both unauthenticated by design
 
 | socket | carries |
 |---|---|
-| `GET /connect/local` ([src/connect/local-endpoint.ts](../connect/local-endpoint.ts)) | the same consumer protocol the Mac/iOS apps use: `state/snapshot` hydration, **fat events** (`task:*`, `escalation:*`, `task:note_added`, `task:message_posted`, `realtime:timeline_updated`, `artifact:*`, `instance:state_changed`), every `request` write action (`tasks/*`, `teams/*`, `reviews/*`, `escalations/*`, `notes/create`, `recurring/*`), and the `subscribe outputs` live tail for the selected task |
+| `GET /connect/local` ([src/connect/local-endpoint.ts](../connect/local-endpoint.ts)) | the same consumer protocol the Mac/iOS apps use: `state/snapshot` hydration, **fat events** (`task:*`, `escalation:*`, `task:note_added`, `task:message_posted`, `realtime:timeline_updated`, `artifact:*`, `instance:state_changed`), every `request` write action (`tasks/*`, `teams/*`, `reviews/*`, `escalations/*`, `notes/create`, `recurring/*`, `instances/list|steer`), and the `subscribe outputs` live tail for the selected task |
 | `GET /ws/ui?format=json&topics=dashboard` ([src/ws/ui-push.ts](../ws/ui-push.ts)) | the dashboard lanes the web UI already pushes: live agent roster (`dashboard:instances`), the summarized global activity feed (`dashboard:activity`, notes folded in), header metrics |
 
 Team import/export go over plain loopback HTTP (`POST /api/teams/import`,
@@ -92,16 +92,18 @@ transport ─► store ─► renderer (Screen cell buffer, diff paint)
 
 ## Keys (summary; `?` in the app has the full list)
 
-`1-6` filters · `↑↓ jk` select/scroll · `tab` focus · `[ ]` detail tabs · `/` search · `o` hide feed
-`n` new · `ctrl+n` new recurring · `e` edit (any status; on the Recurring filter: edit the series) · `a` approve · `u` unapprove (tasks, and recurring series on the Recurring filter) · `p` pause/resume
-`s` star · `A` autopilot · `m` memory · `c` icon · `+` note · `i` input · `S` settle · `x` cancel · `v` revive · `D` delete
-`y`/`N` review approve/reject · `E` escalation · `T` teams (enter view · `e` edit: name, mode, phases, agents; ctrl+s saves via `teams/update`) · `I` import team · `R` run recurring · `@` servers · `:` palette · `?` help · `q` quit
+`1-4` boards (latest · all · starred · drafts) · `↑↓ jk` select/scroll (section headers are skipped) · `enter`/`space` on a recurring series opens its latest runs · `tab` focus · `[ ]` detail tabs · `/` search · `o` hide feed
+`n` new · `ctrl+n` new recurring · `e` edit (any status; with the cursor on a recurring series: edit the series) · `a` approve · `u` unapprove (tasks, and the recurring series under the cursor) · `p` pause/resume
+`s` star · `A` autopilot · `m` memory · `c` icon · `+` note · `i` input · `!` interrupt a running agent (pick one live instance, parallel ones numbered, then guidance; `instances/steer`) · `S` settle · `x` cancel · `v` revive · `D` delete
+`y`/`N` review approve/reject · `E` escalation · `T` teams (enter view · `e` edit: name, mode, Skipper instructions, phases, agents; ctrl+s saves via `teams/update`) · `I` import team · `R` run recurring · `M` remote team repos (experimental: `a` link · `r` refresh · `d` unlink; also `M` inside the teams browser, where a remote team shows `remote` / `removed upstream`, refuses `e`/`d`, and `c` duplicates it into a local team) · `@` servers · `:` palette · `?` help · `q` quit
 `enter` on the Artifacts tab opens the selected artifact (inline bodies shown as text; files show metadata)
 
 ## Conventions
 
+- **The rail's Latest board mirrors the web sidebar's Latest tab** (`ui/view-model.ts:latestRows`): `NEEDS YOU` (open review / escalation, not finished) › `ACTIVE` (active + draft) › `RECURRING` (every series; `ui.expandedSeries` lists a series' newest `SERIES_RUNS_SHOWN` runs from the task store, indented) › `RECENT` (`RECENT_SHOWN` newest top-level tasks not shown above). Top-level = one-off tasks plus a recurring run only while active or when it failed (same rule as `fetchCommandCenterTasks`). Rail rows are `header | task | series`; headers are never selectable (`nearestSelectable`). The cursor is a task or a series: `ui.railKind` + `selectedTaskId` / `selectedSeriesId`; task actions need `railKind === "task"`, recurring actions `"series"`, and the main pane draws the series (`drawSeriesDetail`) when the cursor is on one. There is no Done or Recurring board: finished tasks are under All, series under Latest (and starred series under Starred). The series list loads after the first snapshot and stays current through `recurring:changed`.
 - **New tasks are followed.** A `task:created` (or a draft starting) selects the new task and switches the filter to show it, unless a modal, the composer or the search is active. Answered escalations stay in the conversation (`escalations/list status=resolved`, narrowed by task).
 - The task form carries the audio settings (`Transcript summary` global/on/off, `Audio chunk seconds`) which map to Connect `summaryEnabled` / `windowSeconds`; a raw transcript arrives as a `transcript` timeline entry (shown as `you ⟨transcript⟩`).
+- **Edits and list changes arrive as events.** A same-status `task:state_changed` maps to `{kind:"task", edited:true}`; for the open task the controller re-reads only `tasks/read` (`refreshDetail`), since the list row does not carry description / working directory. `recurring:changed` / `team:changed` map to `recurring_changed` / `team_changed`; the controller patches its cached `ui.recurring` / `ui.teams` from the fat row (`patchRecurring` / `patchTeams`), so another client's edit shows without a reload. `remote_team_repo:changed` maps to `remote_repo_changed`: a list modal may carry a `tag` + `reload()`, and the controller (`reloadTaggedList`) re-reads the open remote repos browser (`tag: "remote-repos"`) on that event and on `team_changed`, so sync status and team counts move live.
 - **A mutation never refreshes the view.** Actions send the request and let the
   fat event patch the store; the reply is only used for the toast. Same contract
   as the web/native clients (root CLAUDE.md, UI update contract).

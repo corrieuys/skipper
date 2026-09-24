@@ -1,5 +1,6 @@
 import { eventBus, type DelegationGroupProgressEvent, type EventName } from "../events/bus";
 import { getDb } from "../db/connection";
+import { fetchRecurringItem, fetchRemoteTeamRepoItem, fetchTeamItem } from "./resources";
 import { CONNECT_PROTOCOL_VERSION, CONNECT_FEATURES } from "./protocol";
 import {
   fetchArtifactItem,
@@ -25,6 +26,13 @@ const FORWARDED_EVENTS: readonly EventName[] = [
   // Per-agent liveness: lets a client refresh the roster (which member is
   // working) the moment an instance starts or exits, instead of polling.
   "instance:state_changed",
+  // Recurring series + teams: fat `recurring` / `team` row rides along (absent
+  // on change === "deleted"), so clients patch their lists without a refetch.
+  "recurring:changed",
+  "team:changed",
+  // Remote team repos: fat `repo` row (the `remote-team-repos/list` shape),
+  // absent on change === "deleted". A sync also fires team:changed per team.
+  "remote_team_repo:changed",
   "escalation:created",
   "escalation:resolved",
   "artifact:created",
@@ -89,6 +97,18 @@ function enrichPayload(eventName: EventName, payload: unknown): unknown {
     if ((eventName === "escalation:created" || eventName === "escalation:resolved") && typeof p.escalationId === "string") {
       const escalation = fetchEscalationItem(db, p.escalationId);
       return escalation ? { ...p, escalation } : p;
+    }
+    if (eventName === "recurring:changed" && typeof p.scheduledTaskId === "string" && p.change !== "deleted") {
+      const recurring = fetchRecurringItem(db, p.scheduledTaskId);
+      return recurring ? { ...p, recurring } : p;
+    }
+    if (eventName === "team:changed" && typeof p.teamId === "string" && p.change !== "deleted") {
+      const team = fetchTeamItem(db, p.teamId);
+      return team ? { ...p, team } : p;
+    }
+    if (eventName === "remote_team_repo:changed" && typeof p.repoId === "string" && p.change !== "deleted") {
+      const repo = fetchRemoteTeamRepoItem(db, p.repoId);
+      return repo ? { ...p, repo } : p;
     }
     if (ARTIFACT_FAT_EVENTS.has(eventName) && typeof p.artifactId === "string") {
       const artifact = fetchArtifactItem(db, p.artifactId);
