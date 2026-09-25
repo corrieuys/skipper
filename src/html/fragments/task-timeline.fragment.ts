@@ -253,27 +253,34 @@ export function taskTimelineFragment(db: Database, taskId: string): string {
   // two-way conversation instead of only the agent's side. Upload entries
   // join their file artifact for name/size/caption/source, and the agent
   // behind an agent-sourced artifact for its display name + color.
+  // Both capped reads take the NEWEST rows (DESC + LIMIT in a subquery) and
+  // re-sort them oldest first; an ASC + LIMIT read kept the oldest rows, so
+  // on a long task new input and messages never rendered.
   const inputEntries = db.prepare(
-    `SELECT t.id, t.entry_type, t.content, t.fed_to_skipper, t.created_at, t.artifact_id,
-            a.name AS artifact_name, a.version AS artifact_version, a.mime AS artifact_mime,
-            a.bytes AS artifact_bytes, a.body AS artifact_caption, a.source AS artifact_source,
-            ag.name AS artifact_agent_name, json_extract(ag.config, '$.color') AS artifact_agent_color
-     FROM realtime_timeline t
-     LEFT JOIN task_artifacts a ON a.id = t.artifact_id
-     LEFT JOIN agents ag ON ag.id = a.source
-     WHERE t.task_id = ?
-     ORDER BY t.created_at ASC
-     LIMIT 300`,
+    `SELECT * FROM (
+       SELECT t.rowid AS seq, t.id, t.entry_type, t.content, t.fed_to_skipper, t.created_at, t.artifact_id,
+              a.name AS artifact_name, a.version AS artifact_version, a.mime AS artifact_mime,
+              a.bytes AS artifact_bytes, a.body AS artifact_caption, a.source AS artifact_source,
+              ag.name AS artifact_agent_name, json_extract(ag.config, '$.color') AS artifact_agent_color
+       FROM realtime_timeline t
+       LEFT JOIN task_artifacts a ON a.id = t.artifact_id
+       LEFT JOIN agents ag ON ag.id = a.source
+       WHERE t.task_id = ?
+       ORDER BY t.created_at DESC, t.rowid DESC
+       LIMIT 300
+     ) ORDER BY created_at ASC, seq ASC`,
   ).all(taskId) as InputEntryRow[];
 
   const opMessages = db.prepare(
-    `SELECT m.id, m.agent_id, m.content, m.format, m.created_at, a.name AS agent_name,
-            json_extract(a.config, '$.color') AS agent_color
-     FROM task_messages m
-     LEFT JOIN agents a ON a.id = m.agent_id
-     WHERE m.task_id = ?
-     ORDER BY m.created_at ASC, m.rowid ASC
-     LIMIT 200`,
+    `SELECT * FROM (
+       SELECT m.rowid AS seq, m.id, m.agent_id, m.content, m.format, m.created_at, a.name AS agent_name,
+              json_extract(a.config, '$.color') AS agent_color
+       FROM task_messages m
+       LEFT JOIN agents a ON a.id = m.agent_id
+       WHERE m.task_id = ?
+       ORDER BY m.created_at DESC, m.rowid DESC
+       LIMIT 200
+     ) ORDER BY created_at ASC, seq ASC`,
   ).all(taskId) as OpMessageRow[];
 
   const escalations = db.prepare(

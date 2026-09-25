@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { unlinkSync } from "fs";
 import { initializeDatabase } from "../db/connection";
-import { fetchTaskForensics, buildTeamAgentTiles, fetchRecentActivity, fetchTaskOutputPage, fetchTaskOutputRow } from "./queries";
+import { fetchTaskForensics, buildTeamAgentTiles, fetchRecentActivity, fetchTaskOutputPage, fetchTaskOutputRow, fetchTasksWithTeams } from "./queries";
 
 const TEST_DB = "test-queries.db";
 
@@ -180,5 +180,34 @@ describe("fetchTaskOutputPage", () => {
     expect(row?.data).toBe("frame-1");
     expect(row?.task_id).toBe("task-p");
     expect(fetchTaskOutputRow(db, 999_999)).toBeNull();
+  });
+});
+
+describe("fetchTasksWithTeams", () => {
+  it("returns every task as a full row: active, then drafts, then the rest, latest activity first, ties newest insert first", () => {
+    db.prepare("INSERT INTO teams (id, name) VALUES ('team-x', 'Team X')").run();
+    const ins = db.prepare(
+      `INSERT INTO tasks (id, title, description, team_id, status, result, created_at, updated_at)
+       VALUES (?, ?, 'body', ?, ?, ?, '2026-01-01 00:00:00', ?)`,
+    );
+    ins.run("settled-old", "S old", null, "settled", JSON.stringify({ summary: "ok" }), "2026-01-02 00:00:00");
+    ins.run("draft-1", "D", "team-x", "draft", null, "2026-01-01 00:00:00");
+    ins.run("active-old", "A old", "team-x", "active", null, "2026-01-03 00:00:00");
+    ins.run("settled-new", "S new", null, "settled", JSON.stringify({ error: "x" }), "2026-01-05 00:00:00");
+    ins.run("active-new", "A new", null, "active", null, "2026-01-04 00:00:00");
+    ins.run("settled-tie", "S tie", null, "settled", null, "2026-01-02 00:00:00");
+
+    const rows = fetchTasksWithTeams(db);
+
+    expect(rows.map((r) => r.id)).toEqual(["active-new", "active-old", "draft-1", "settled-new", "settled-tie", "settled-old"]);
+    const columns = (db.prepare("PRAGMA table_info(tasks)").all() as { name: string }[]).map((c) => c.name);
+    expect(Object.keys(rows[0]!)).toEqual([...columns, "team_name", "display_status", "task_type"]);
+    const activeOld = rows.find((r) => r.id === "active-old")!;
+    expect(activeOld.team_name).toBe("Team X");
+    expect(activeOld.description).toBe("body");
+    const failed = rows.find((r) => r.id === "settled-new")!;
+    expect(failed.result).toEqual({ error: "x" });
+    expect(failed.display_status).toBe("failed");
+    expect(rows.find((r) => r.id === "settled-old")!.display_status).toBe("completed");
   });
 });

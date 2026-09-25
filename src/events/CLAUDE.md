@@ -9,8 +9,8 @@ Typed event bus singleton. Single channel between `AgentManager` (process) and o
 ## Key events
 
 - `agent:output` — raw stdout/stderr chunk
-- `agent:exit` — process exited (carries `isRespawn`, `hasDelegation` guards)
-- `agent:streams_drained` — stdout+stderr readers finished. Gate before exit handling
+- `agent:exit`: process exited (carries `isRespawn`, `hasDelegation` guards, and `streamsDrained`, true when this process's readers already finished and always for an in-process agent)
+- `agent:streams_drained`: stdout+stderr readers finished. Bun usually drains the pipes before `exited` resolves, so this normally fires BEFORE `agent:exit`; the daemon's exit handler waits for it (bounded) only when the exit says `streamsDrained: false`
 - `agent:signal` — parsed orchestrator signal
 - `agent:state_changed`, `instance:state_changed`, `delegation_group:progress`
 - `escalation:created`, `escalation:resolved`
@@ -22,4 +22,4 @@ Typed event bus singleton. Single channel between `AgentManager` (process) and o
 
 ## Rule: a state write without an event is a bug
 
-Every surface reconciles from these events (root CLAUDE.md, UI update contract). Writers that announce themselves: `updateInstanceStatus` / `finalizeActiveInstancesForTask` (`instance:state_changed`), `TaskScheduler.updateTask` / `setIdentity` / `setStarred` / `setIcon` / `setAutopilot` (same-status `task:state_changed` = in-place patch), `autoResolveEscalations`, the recurring scheduler, local-teams CRUD. New mutation → emit from the writer, not from each caller.
+Every surface reconciles from these events (root CLAUDE.md, UI update contract). Writers that announce themselves: `updateInstanceStatus` / `finalizeActiveInstancesForTask` and the settle paths `TaskScheduler.completeRun` / `failRun` / `settleTask` (`instance:state_changed`, after the settle transaction commits), `TaskScheduler.updateTask` / `setIdentity` / `setStarred` / `setIcon` / `setAutopilot` (same-status `task:state_changed` = in-place patch), `autoResolveEscalations`, the recurring scheduler, local-teams CRUD. New mutation → emit from the writer, not from each caller.

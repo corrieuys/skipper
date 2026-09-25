@@ -945,5 +945,5 @@ export function teamMapPage(vm: TeamMapViewModel): string {
     <template id="tm-identity-tpl">${agentIdentityPicker({ experimental: isExperimental() })}</template>
     ${agentIdentityPickerScript()}
     ${iconIdentityPickerScript()}
-  `, "/teams");
+  `, "/teams", ["team-map"]);
 }

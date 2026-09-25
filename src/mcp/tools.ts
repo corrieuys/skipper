@@ -49,6 +49,14 @@ export interface DaemonDeps {
   /** Unified input entry (daemon.inputTask): text into any task, waking it if idle. */
   inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>;
   /**
+   * Stop / respawn a task's agents around the paused flag (daemon.pauseTaskAgents /
+   * daemon.resumeTaskAgents), so `pause_task` / `resume_task` match
+   * POST /api/tasks/:id/{pause,resume-from-pause}. Optional so test harnesses
+   * need not build a daemon; the tools then only flip the flag.
+   */
+  pauseTaskAgents?: (taskId: string) => Promise<unknown>;
+  resumeTaskAgents?: (taskId: string) => Promise<void>;
+  /**
    * Per-task memory + keyword search (`query_task_memory`, `search_task_content`).
    * Optional so test harnesses need not build one; the tools then report that
    * memory is unavailable.

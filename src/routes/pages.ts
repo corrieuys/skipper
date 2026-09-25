@@ -79,6 +79,7 @@ import {
   isAutoUpdateEnabled, setAutoUpdateEnabled, getUpdateNoticeView,
   dismissAvailableNotice, clearAppliedNotice, SETTING_UPDATE_AVAILABLE_VERSION,
 } from "../config/auto-update-settings";
+import { getAllowedHostsView, saveAllowedHosts } from "../config/allowed-hosts";
 import { renderUpdateNotice } from "../html/fragments/update-toast";
 import { recentActivityFragment } from "../html/recentActivityFragment";
 import type {
@@ -845,7 +846,7 @@ function registerV2PageRoutes(): void {
   const { buildCommandCenterViewModel } = require("../html/view-models/command-center.vm");
   const { taskListPage } = require("../html/pages/task-list.page");
   const { agentTerminalPage } = require("../html/pages/agent-terminal.page");
-  const { configPage } = require("../html/pages/config.page");
+  const { configPage, allowedHostsPanel } = require("../html/pages/config.page");
   const { taskCreatePage } = require("../html/pages/task-create.page");
 
   const fetchScheduledOverride = (scheduledId: string) => {
@@ -965,16 +966,11 @@ function registerV2PageRoutes(): void {
     return html(taskHeaderIdentity(updated as any) + renderSidebarOob(db));
   });
 
-  // Phase strip fragment — polled by dashboard so phase status updates without a page reload
+  // Phase strip fragment, polled every 5 s while the task works so phase status updates
+  // without a page reload. Reads only this task's row + mission, not the whole view model.
   addRoute("GET", "/workspace/task/:id/phase-strip", (_req, params) => {
-    const vm = buildCommandCenterViewModel(db);
-    const task = vm.allTasks.find((t: any) => t.id === params.id);
-    if (!task) return html("");
-    const mission = params.id ? vm.missionsByTask?.[params.id] : undefined;
-    const phases = mission?.phases ?? [];
-    const isWorking = (task as any).display_status === "working";
-    const { renderPhaseStripFragment } = require("../html/pages/command-center.page");
-    return html(renderPhaseStripFragment(phases, params.id, isWorking));
+    const { renderTaskPhaseStrip } = require("../html/pages/command-center.page");
+    return html(renderTaskPhaseStrip(db, params.id));
   });
 
   // Agent list fragment — polled by dashboard for running tasks
@@ -1418,6 +1414,7 @@ function registerV2PageRoutes(): void {
         const rt = getRealtimeConfig(db);
         return { cadenceSeconds: rt.cadence_seconds, summaryEnabled: rt.summary_enabled, cadenceMin: CADENCE_MIN_SECONDS, cadenceMax: CADENCE_MAX_SECONDS };
       })(),
+      allowedHosts: getAllowedHostsView(db),
     }));
   });
 
@@ -1558,6 +1555,33 @@ function registerV2PageRoutes(): void {
     db.prepare("DELETE FROM agent_sessions WHERE created_at < datetime('now', ? || ' hours')").run(-retentionHours);
     db.prepare("DELETE FROM events WHERE created_at < datetime('now', ? || ' hours')").run(-retentionHours);
     return new Response(null, { status: 204 });
+  });
+
+  // Allowed Hosts: extra Host names for the foreign-request gate. Not experimental,
+  // it is the remedy for that always-on gate. A save swaps the list into the
+  // running gate (config/allowed-hosts.ts), so it applies with no restart. The
+  // htmx Save gets the re-rendered section for its self-swap, errors inline (200,
+  // so htmx swaps it); JSON callers get {hosts} or 400 {errors}.
+  addRoute("POST", "/api/config/allowed-hosts", async (req) => {
+    let hosts: unknown;
+    try {
+      hosts = (await parseRequestBody<{ hosts?: unknown }>(req)).hosts;
+    } catch {
+      hosts = undefined;
+    }
+    // Required, so a malformed call cannot clear the list by omission.
+    if (hosts === undefined || hosts === null) {
+      return Response.json({ errors: ["hosts is required"] }, { status: 400 });
+    }
+    const raw = String(hosts);
+    const result = saveAllowedHosts(db, raw);
+    if (req.headers.get("hx-request") === "true") {
+      const form = result.errors.length > 0 ? { input: raw, errors: result.errors } : { saved: true };
+      return html(allowedHostsPanel(getAllowedHostsView(db), { ...form, open: true }));
+    }
+    return result.errors.length > 0
+      ? Response.json({ errors: result.errors }, { status: 400 })
+      : Response.json({ hosts: result.hosts });
   });
 
   addRoute("POST", "/api/config/skipper-connect", async (req) => {

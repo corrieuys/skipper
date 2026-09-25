@@ -666,8 +666,19 @@ export class ManagerDaemon {
     this.exitHandlerRegistered = true;
 
     this.exitHandler = (event: AgentExitEvent) => {
-      this.agentManager.waitForStreamsDrained(event.agentId, STREAMS_DRAIN_TIMEOUT_MS)
-        .then(() => this.handleAgentExit(event));
+      // Bun normally finishes reading both pipes before `exited` resolves, so
+      // agent:streams_drained has usually fired BEFORE agent:exit, and an
+      // in-process agent never emits it. Waiting for it regardless ran the full
+      // timeout on every exit: 5 s per turn end and delegation hop, and a window
+      // in which a resume could respawn the same runtime id before this exit
+      // was handled. A drained exit is handled in the microtask queued here,
+      // which runs before any caller awaiting waitForExit() on this runtime
+      // resumes. Only a runtime whose readers are still going (a grandchild
+      // holding the pipe open) waits, bounded, so the handler sees every frame.
+      const drained = event.streamsDrained
+        ? Promise.resolve()
+        : this.agentManager.waitForStreamsDrained(event.agentId, STREAMS_DRAIN_TIMEOUT_MS);
+      drained.then(() => this.handleAgentExit(event));
     };
     eventBus.on("agent:exit", this.exitHandler);
   }
@@ -687,10 +698,10 @@ export class ManagerDaemon {
   }
 
   private handleAgentSignal(event: AgentSignalEvent): void {
-    // Track signal activity for stuck-agent detection.
-    // Use the template agent ID so the state row is always on the canonical agent.
-    const templateAgentId = this.agentManager.getTemplateAgentId(event.agentId) ?? event.agentId;
-    this.stateTracker.updateLastSignalAt(templateAgentId);
+    // Track signal activity for stuck-agent detection on the runtime that sent
+    // the signal. Stuck detection is per runtime instance; a template id would
+    // stamp one row shared by every task running the template.
+    this.stateTracker.updateLastSignalAt(event.agentId);
 
     // Skipper signalled activity — clear any pending idle-poke for this task.
     // Only the root entrypoint instance matters; delegated children don't reset the idle gate.
@@ -1505,9 +1516,13 @@ export class ManagerDaemon {
       return;
     }
 
-    if (this.agentManager.getRunningAgent(entrypointAgentId)) {
-      this.agentManager.killAgent(entrypointAgentId);
-      await this.agentManager.waitForExit(entrypointAgentId);
+    // Target THIS task's instance. getRunningAgent/killAgent(templateId) resolve
+    // to whichever live instance of the template comes first, which is another
+    // task's root when several tasks share the entrypoint template.
+    const staleInstance = this.agentManager.getRunningInstanceForTask(entrypointAgentId, taskId);
+    if (staleInstance) {
+      this.agentManager.killAgent(staleInstance.id);
+      await this.agentManager.waitForExit(staleInstance.id);
     }
 
     this.agentManager.clearSessionId(entrypointAgentId);

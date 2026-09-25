@@ -185,6 +185,12 @@ export interface RecurringSeries {
   teamName: string | null;
   scheduleUnit: string | null;
   scheduleAmount: number | null;
+  /**
+   * Weekly hour grid as the daemon sends it (JSON: 7 days x 24 hours of 0/1,
+   * Monday first); null for an interval or manual series. The TUI cannot edit
+   * the grid: an edit that keeps "weekly" sends this value back unchanged.
+   */
+  scheduleMatrix: string | null;
   status: string;
   starred: boolean;
   nextRunAt: string | null;

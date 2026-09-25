@@ -35,6 +35,29 @@ export interface CommandCenterTaskRow {
   icon_color?: string | null;
 }
 
+// Shared by the list and the single-task read so both return the same row shape
+// and agree on which tasks are listed. The unary + keeps idx_tasks_source_scheduled
+// off the IS NULL term so the list stays one table scan: with the index the OR
+// becomes a multi-index OR over nearly every row, which measured slower.
+const COMMAND_CENTER_TASK_SELECT =
+  `SELECT t.id, t.title, t.description, t.status, t.current_phase, t.team_id, t.mode, t.paused, t.needs_review,
+            t.working_directory, t.created_at, t.completed_at, t.result, t.task_config,
+            t.source_scheduled_task_id, t.wake_requested_at, t.started_at,
+            t.starred, t.icon, t.icon_color,
+            tm.name AS team_name
+     FROM tasks t LEFT JOIN teams tm ON tm.id = t.team_id`;
+const LISTED_TASK_CONDITION =
+  `(+t.source_scheduled_task_id IS NULL
+        OR t.status = 'active'
+        OR (t.status = 'settled' AND json_valid(t.result) AND json_extract(t.result, '$.error') IS NOT NULL))`;
+
+type CommandCenterTaskQueryRow = CommandCenterTaskRow & { wake_requested_at: string | null; started_at: string | null };
+
+function decorateCommandCenterTask(db: Database, row: CommandCenterTaskQueryRow): void {
+  row.display_status = deriveDisplayStatus(db, row);
+  row.task_type = row.mode === "conversational" ? "real_time" : "standard";
+}
+
 /**
  * Tasks with team names. Active and failed (settled-with-error) scheduled runs
  * stay in the list; cleanly settled ones are hidden (visible under the
@@ -43,23 +66,28 @@ export interface CommandCenterTaskRow {
  */
 export function fetchCommandCenterTasks(db: Database, includeTaskId?: string): CommandCenterTaskRow[] {
   const rows = db.prepare(
-    `SELECT t.id, t.title, t.description, t.status, t.current_phase, t.team_id, t.mode, t.paused, t.needs_review,
-            t.working_directory, t.created_at, t.completed_at, t.result, t.task_config,
-            t.source_scheduled_task_id, t.wake_requested_at, t.started_at,
-            t.starred, t.icon, t.icon_color,
-            tm.name AS team_name
-     FROM tasks t LEFT JOIN teams tm ON tm.id = t.team_id
-     WHERE t.source_scheduled_task_id IS NULL
-        OR t.status = 'active'
-        OR (t.status = 'settled' AND json_valid(t.result) AND json_extract(t.result, '$.error') IS NOT NULL)
+    `${COMMAND_CENTER_TASK_SELECT}
+     WHERE ${LISTED_TASK_CONDITION}
         OR t.id = ?
      ORDER BY t.created_at DESC`,
-  ).all(includeTaskId ?? null) as (CommandCenterTaskRow & { wake_requested_at: string | null; started_at: string | null })[];
-  for (const row of rows) {
-    row.display_status = deriveDisplayStatus(db, row);
-    row.task_type = row.mode === "conversational" ? "real_time" : "standard";
-  }
+  ).all(includeTaskId ?? null) as CommandCenterTaskQueryRow[];
+  for (const row of rows) decorateCommandCenterTask(db, row);
   return rows;
+}
+
+/**
+ * One task as fetchCommandCenterTasks would list it (no includeTaskId), or null
+ * when that list hides it. For per-task reads such as the phase-strip poll,
+ * which must not pay for the whole list.
+ */
+export function fetchCommandCenterTask(db: Database, taskId: string): CommandCenterTaskRow | null {
+  const row = db.prepare(
+    `${COMMAND_CENTER_TASK_SELECT}
+     WHERE t.id = ? AND ${LISTED_TASK_CONDITION}`,
+  ).get(taskId) as CommandCenterTaskQueryRow | null;
+  if (!row) return null;
+  decorateCommandCenterTask(db, row);
+  return row;
 }
 
 export interface ScheduledRunRow {
@@ -96,37 +124,6 @@ export function fetchRecentScheduledRuns(db: Database, perTask = 5): Record<stri
   return byTask;
 }
 
-export interface ActiveInstanceRow {
-  id: string;
-  template_agent_id: string;
-  agent_name: string;
-  parent_instance_id: string | null;
-  root_instance_id: string | null;
-  status: string;
-  process_pid: number | null;
-  task_id: string;
-  input_tokens: number;
-  output_tokens: number;
-  cache_creation_tokens: number;
-  cache_read_tokens: number;
-}
-
-/** Active agents — includes recently completed ones on running tasks so the tree renders fully. */
-export function fetchActiveInstanceRows(db: Database): ActiveInstanceRow[] {
-  return db.prepare(
-    `SELECT ai.id, ai.template_agent_id,
-            COALESCE(a.name, ai.template_agent_id) AS agent_name,
-            ai.parent_instance_id, ai.root_instance_id, ai.status, ai.process_pid, ai.task_id,
-            ai.input_tokens, ai.output_tokens,
-            ai.cache_creation_tokens, ai.cache_read_tokens
-     FROM agent_instances ai
-     LEFT JOIN agents a ON a.id = ai.template_agent_id
-     WHERE ai.status IN ('running', 'waiting_delegation', 'pending')
-        OR (ai.status IN ('completed', 'failed') AND ai.task_id IN (SELECT id FROM tasks WHERE status = 'active'))
-     ORDER BY ai.created_at`,
-  ).all() as ActiveInstanceRow[];
-}
-
 export interface DelegationPillInfo {
   id: string;
   status: string;
@@ -152,14 +149,6 @@ export function fetchDelegationsByChildInstance(
     byChild[d.child_instance_id] = { id: d.id, status: d.status, promptPreview: preview };
   }
   return byChild;
-}
-
-export function fetchRunningDelegationGroupCounts(
-  db: Database,
-): Array<{ settled_count: number; expected_count: number; failed_count: number }> {
-  return db.prepare(
-    "SELECT settled_count, expected_count, failed_count FROM delegation_groups WHERE status = 'running'",
-  ).all() as Array<{ settled_count: number; expected_count: number; failed_count: number }>;
 }
 
 /**
@@ -209,32 +198,6 @@ export function hasDaemonOwner(db: Database): boolean {
   return db.prepare("SELECT value FROM daemon_state WHERE key = 'owner_pid'").get() != null;
 }
 
-export interface TaskTokenTotals {
-  input: number;
-  output: number;
-  cache_creation: number;
-  cache_read: number;
-}
-
-/** Token usage totals per task (sum across all instances regardless of status). */
-export function fetchTokenTotalsByTask(db: Database): Record<string, TaskTokenTotals> {
-  const rows = db.prepare(
-    `SELECT task_id,
-            COALESCE(SUM(input_tokens), 0) AS input,
-            COALESCE(SUM(output_tokens), 0) AS output,
-            COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
-            COALESCE(SUM(cache_read_tokens), 0) AS cache_read
-     FROM agent_instances GROUP BY task_id`,
-  ).all() as Array<{ task_id: string } & TaskTokenTotals>;
-  const byTask: Record<string, TaskTokenTotals> = {};
-  for (const row of rows) {
-    byTask[row.task_id] = {
-      input: row.input, output: row.output, cache_creation: row.cache_creation, cache_read: row.cache_read,
-    };
-  }
-  return byTask;
-}
-
 export interface ScheduledTaskRow {
   id: string;
   title: string;
@@ -266,21 +229,4 @@ export function fetchScheduledTaskRows(db: Database): ScheduledTaskRow[] {
   } catch {
     return []; // table may not exist yet
   }
-}
-
-/** cadence_timer_active per running realtime task; tasks without a pipeline row map to false. */
-export function fetchRealtimeSessionActive(db: Database, taskIds: string[]): Record<string, boolean> {
-  const active: Record<string, boolean> = {};
-  if (taskIds.length === 0) return active;
-  try {
-    const rows = db.prepare(
-      "SELECT task_id, cadence_timer_active FROM realtime_pipeline_state WHERE task_id IN (" +
-      taskIds.map(() => "?").join(",") + ")",
-    ).all(...taskIds) as Array<{ task_id: string; cadence_timer_active: number }>;
-    for (const row of rows) active[row.task_id] = row.cadence_timer_active === 1;
-    for (const id of taskIds) {
-      if (!(id in active)) active[id] = false;
-    }
-  } catch { /* table may not exist */ }
-  return active;
 }

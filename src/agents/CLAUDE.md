@@ -4,10 +4,10 @@ Agent process runtime. Spawn external CLI, parse stdout, route signals.
 
 | file | use |
 |---|---|
-| `manager.ts` | `AgentManager` — spawn/kill, stdout/stderr readers, JSON stream events, `parseAgentOutput()` extracts signals, session/resume tracking, persists runtime output/state. `ingestChunk()` is the one output path; `ingestSyntheticStdout`/`ingestSyntheticStderr` let an in-process agent reach it without a stream |
-| `manager-daemon.ts` | `ManagerDaemon` facade. Wires every orchestrator module. Subscribes to `agent:exit` / `agent:signal`. Single object passed to routes. |
+| `manager.ts` | `AgentManager` — spawn/kill, stdout/stderr readers, JSON stream events, `parseAgentOutput()` extracts signals, session/resume tracking, persists runtime output/state. `ingestChunk()` is the one output path; `ingestSyntheticStdout`/`ingestSyntheticStderr` let an in-process agent reach it without a stream. On process exit (`handleProcessExit`) the instance row takes `completed`/`failed` from the exit code only while it is still live (running, waiting_delegation, pending); a row another writer already closed (a settle, a realtime stop) keeps its status, so the stop's exit 143 never turns a completed run's root into failed. The pid is cleared and the exit code recorded either way, and `instance:state_changed` carries the status actually stored |
+| `manager-daemon.ts` | `ManagerDaemon` facade. Wires every orchestrator module. Subscribes to `agent:exit` / `agent:signal`. Single object passed to routes. A drained exit (`streamsDrained`, the usual case) is handled at once, in a microtask that runs before any `waitForExit()` caller resumes, so it cannot act on a respawn under the same runtime id; only an exit whose streams are still open waits (bounded, 5 s) for `agent:streams_drained` |
 | `prompt-builder.ts` | Build initial/resume prompts. Inject phase + delegation context + command templates from `prompts/`. Also injects per-run `task_config` blocks: `run_input` (ADDITIONAL INSTRUCTIONS), `global_store_instructions`, and `slack_origin` (SLACK ORIGIN → reply via `slack_send_message`, only when the team's Slack tools are available) |
-| `state-tracker.ts` | Heartbeat + fingerprint for stuck detect / nudge / escalation |
+| `state-tracker.ts` | Heartbeat + fingerprint for stuck detect / nudge / escalation, per runtime instance. Every live `agent_instances` row (running or waiting_delegation, with a pid) has its own `agent_states` row keyed by the runtime id, fingerprinted from that runtime's own stdout. A stuck runtime alone is nudged, then escalated on its own task (`agent_id` = template, `runtime_agent_id` = the runtime, so the answer resumes it) and killed. The delegation-wait check reads the runtime's own task and the delegations it parents, the child-process check its own pid; the shared `agents` row (`current_task_id`, `process_pid`) is never consulted. A runtime with an open escalation of its own (`escalations.runtime_agent_id`) is skipped. The tracker puts its own `waiting_delegation` / `escalated` parking back to `working` once that wait or escalation ends, because the delegation and escalation managers reset only the template row. `last_signal_at` is stamped with the signalling runtime's id (`manager-daemon.ts:handleAgentSignal`). Template-keyed `agent_states` rows (still written by those managers, and holding heartbeats from before per-runtime tracking) never join to a live instance, so they are never checked, nudged or escalated |
 | `types.ts` | Agent-type lookup + cache. `clearAgentTypeCache()` for tests |
 | `oneshot.ts` | `runOneShotText()` — provider-generic one-shot text call built from `agent_types` arg templates. Used by Greg's brain + the dictation rewriter; no instance rows/MCP/signals |
 | `skipper.ts` | `SKIPPER_AGENT_ID` constant + skipper config read/update. Also the Skipper's own orb identity: `getSkipperIdentity`/`saveSkipperIdentity` (machine-scoped `app_settings`, default character `captain`) + `applySkipperIdentity` which patches the config `agents` row for `skipper` (called at boot in `db/connection.ts` and on save from the config page's experimental Skipper Character panel) |
@@ -124,6 +124,12 @@ flushed when the stream drains; a synthetic write (`ingestSyntheticStdout`) is
 newline-terminated so it lands immediately. The line buffer allows 16MB (a
 claude-code image `tool_result` is one multi-MB line); anything larger is
 dropped with a marker row.
+
+`sequence` is per runtime id and keeps counting across spawns: a respawn that
+reuses the id (resume, compaction, pause/resume, an escalation answer) starts
+from the id's `MAX(sequence)`, not 0. `delegation-manager.ts:gatherTerminalOutput`
+orders a child's frames by it and keeps the LAST result frame, so a restart at 0
+would hand the parent an older spawn's result.
 
 Only the **stored** copy is capped (`MAX_TERMINAL_OUTPUT_BYTES`, 32KB):
 `compactFrameForStorage` first compacts an oversized JSON frame structurally

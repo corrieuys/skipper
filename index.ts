@@ -41,6 +41,7 @@ import { initSlackPush, getSlackPush } from "./src/slack/push";
 import { isSocketModeConfigured, isSlackSocketEnabled, isSlackConfigured } from "./src/config/slack-settings";
 import { getBoolSetting, getStringSetting, SETTING_SKIPPER_CONNECT_ENABLED, SETTING_SKIPPER_CONNECT_KEY } from "./src/config/app-settings";
 import { recordBootVersion } from "./src/config/auto-update-settings";
+import { loadAllowedHosts } from "./src/config/allowed-hosts";
 import { initUpdateRestartOnIdle } from "./src/updater/restart-scheduler";
 import { writeLaunchFlags } from "./src/paths";
 
@@ -94,6 +95,8 @@ const mcpServer = new DaemonMcpServer(getDb(), {
   globalStoreManager: new GlobalStoreManager(getDb()),
   realtimeSessionManager: daemon.getRealtimeSessionManager(),
   inputTask: (taskId, text, source) => daemon.inputTask(taskId, text, source),
+  pauseTaskAgents: (taskId) => daemon.pauseTaskAgents(taskId),
+  resumeTaskAgents: (taskId) => daemon.resumeTaskAgents(taskId),
   taskMemoryManager: taskMemory,
 });
 const whisperManager = new WhisperManager();
@@ -179,6 +182,10 @@ const connectClient = initConnectClient(
     steerRuntime: (templateAgentId, runtimeId, message) => daemon.steerRuntime(templateAgentId, runtimeId, message),
     listRuntimeSteeringOptions: (templateAgentId) => daemon.listRuntimeSteeringOptions(templateAgentId),
   },
+  {
+    pauseTaskAgents: (taskId) => daemon.pauseTaskAgents(taskId),
+    resumeTaskAgents: (taskId) => daemon.resumeTaskAgents(taskId),
+  },
 );
 
 // Local consumer WebSocket for apps on this machine (Mac app). Unauthenticated
@@ -254,6 +261,8 @@ async function startup() {
 
 startup().catch((err) => console.error("Startup failed:", err));
 
+// The config page's Allowed Hosts join the Host gate before the first request.
+loadAllowedHosts(getDb());
 const server = startServer();
 
 function shutdown() {

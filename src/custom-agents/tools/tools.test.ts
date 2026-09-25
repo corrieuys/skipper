@@ -87,6 +87,14 @@ describe("search_replace", () => {
     expect(readFileSync(join(root, "a.txt"), "utf-8")).toBe("hello there\n");
   });
 
+  // String.replace expands `$&` (the match), `$'` (the text after it) and the
+  // other $-patterns in a string replacement, which silently corrupts the file.
+  it("writes new_string literally, with no $-pattern expansion", async () => {
+    writeFileSync(join(root, "a.txt"), "a X b\n");
+    await call("search_replace", { file_path: "a.txt", old_string: "X", new_string: "[$&|$'|$`|$$]" });
+    expect(readFileSync(join(root, "a.txt"), "utf-8")).toBe("a [$&|$'|$`|$$] b\n");
+  });
+
   it("refuses an ambiguous match unless replace_all is set", async () => {
     writeFileSync(join(root, "a.txt"), "x\nx\n");
     await expect(call("search_replace", { file_path: "a.txt", old_string: "x", new_string: "y" }))

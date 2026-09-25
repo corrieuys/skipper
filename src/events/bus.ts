@@ -13,6 +13,14 @@ export interface AgentExitEvent {
   isRespawn: boolean;
   hasDelegation: boolean;
   stderrSnippet: string;
+  /**
+   * Both output streams of THIS process were fully read when the exit was
+   * emitted: its `agent:streams_drained` already fired, or it is an in-process
+   * agent with no streams. Bun normally finishes the pipes before `exited`
+   * resolves, so this is the usual case. Read off the exiting process itself,
+   * so it stays correct when a respawn reuses the runtime id.
+   */
+  streamsDrained: boolean;
 }
 
 export interface EscalationCreatedEvent {

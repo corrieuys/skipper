@@ -179,5 +179,5 @@ export function logsPage(vm: LogsPageViewModel): string {
         updateLiveState();
       })();
     </script>
-  `, "/logs");
+  `, "/logs", ["logs"]);
 }

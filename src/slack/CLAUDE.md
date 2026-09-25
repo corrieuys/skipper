@@ -141,7 +141,11 @@ the text must **contain the word "skipper"** (`mentionsSkipper`, case-insensitiv
 substring — `slash-command.ts`; the literal word, *not* an @-mention). A task thread is a normal conversation, so without that gate every
 aside between colleagues would land in the agent's prompt as an OPERATOR INSTRUCTION;
 a reply that doesn't mention Skipper is dropped with `in.thread_reply.skip
-reason=no_skipper_mention` and gets no ack.
+reason=no_skipper_mention` and gets no ack. The sender must also be on the
+`slack_allowed_users` allowlist (`isSlackUserAllowed`, the same fail-closed check
+as slash commands and buttons; a reply with no user id is denied), because a reply
+drives the task (input, review response, revive). Anyone else is dropped with
+`in.thread_reply.skip reason=user_not_allowed` and gets no ack.
 
 Because the gate is a loose substring it also admits people talking *about* Skipper.
 Captured notes are therefore prefixed `[Slack]` (`SLACK_NOTE_PREFIX`), and

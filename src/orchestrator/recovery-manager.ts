@@ -514,6 +514,18 @@ export class RecoveryManager {
         .prepare("UPDATE agents SET current_task_id = NULL, process_pid = NULL WHERE current_task_id = ?")
         .run(taskId);
 
+      // Stop every runtime still running for the task, root included, whole
+      // process tree. The settle transaction already moved their rows to
+      // completed/failed (TaskScheduler.finalizeTaskRuntime), so the live-row
+      // query below misses them: the in-memory runtime map is what says a
+      // process is alive. On a completeRun settle this also stops the root that
+      // called complete_task, mid-turn. A killed runtime's exit finds the task
+      // settled and handleAgentExit bails.
+      for (const runtime of [...this.agentManager.getRunningAgents().values()]) {
+        if (runtime.taskId !== taskId) continue;
+        this.agentManager.killAgentTree(runtime.id);
+      }
+
       // Fail any non-terminal instances
       const activeInstances = this.db
         .prepare(

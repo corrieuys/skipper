@@ -3,51 +3,28 @@ import type { ServerWebSocket, Server } from "bun";
 import type { WSData, UiPushWSData } from "./types";
 import { eventBus } from "../events/bus";
 import {
-  taskDetailSummaryFragment,
-  taskPhaseStepperFragment,
-  taskDelegationsFragment,
   logsTableFragment,
   renderTerminalOutputChunk,
   terminalOutputFragment,
 } from "../html/components";
-import { taskListFragment } from "../html/taskListFragment";
-import { dashboardRealtimeTimelineFragment } from "../html/dashboardRealtimeTimelineFragment";
-import { dashboardPhaseIndicatorFragment } from "../html/dashboardPhaseIndicatorFragment";
-import { dashboardEscalationsFragment } from "../html/dashboardEscalationsFragment";
-import { dashboardDelegationGroupsFragment } from "../html/dashboardDelegationGroupsFragment";
-import { dashboardActiveAgentsCountFragment } from "../html/dashboardActiveAgentsCountFragment";
-import { dashboardRunningInstancesFragment } from "../html/dashboardRunningInstancesFragment";
-import { dashboardQueueFragment } from "../html/dashboardQueueFragment";
 import { selectDashboardFocusTasks } from "../html/selectDashboardFocusTasks";
-import { dashboardSteerPanelSlotFragment } from "../html/dashboardSteerPanelFragment";
-import { dashboardActiveTaskFragment } from "../html/dashboardActiveTaskFragment";
-import { recentActivityFragment } from "../html/recentActivityFragment";
 import { renderSidebarListBody } from "../html/pages/command-center.page";
 import { remoteReposList } from "../html/pages/teams.page";
 import { listLocalTeams } from "../teams/local-teams";
 import { getRemoteTeamLink } from "../teams/remote-links";
 import { listRemoteTeamRepos } from "../teams/remote-repos";
 import { isExperimental } from "../config/feature-flags";
-import { buildCommandCenterViewModel } from "../html/view-models/command-center.vm";
+import { buildCommandCenterViewModel, buildTaskMission } from "../html/view-models/command-center.vm";
 import type {
   LogEntryData,
   DashboardData,
 } from "../html/components";
-import {
-  timelineEntriesFragment,
-  notesFragment,
-  runningAgentsFragment,
-} from "../html/realtime-components";
 import type { TaskNote } from "../html/realtime-components";
-import { notesPanel } from "../html/panels/notes.panel";
-import { taskEscalationsSection, type EscalationCardData } from "../html/panels/escalation-card.panel";
 import { dashboardSteerListFragment, steerCardInfoMarkup, type SteeringOption } from "../html/dashboardLatestSteerFragment";
 import { buildTeamAgentTiles } from "../data/queries";
 import { dashboardNotesFragment } from "../html/dashboardNotesFragment";
-import { taskMessagesFragment } from "../html/fragments/task-message.fragment";
 import { taskTimelineFragment } from "../html/fragments/task-timeline.fragment";
 import { PRIMARY_ARTIFACT_LIST_VARIANT, artifactListFragment } from "../html/fragments/artifact-list.fragment";
-import { MessageManager } from "../messages/manager";
 import type { TaskNoteData } from "../html/components";
 import { renderPhaseStripFragment, escalationHeaderSlot } from "../html/pages/command-center.page";
 import {
@@ -57,7 +34,6 @@ import {
   fetchDashboardRealtimeTimeline,
   fetchDashboardPhaseIndicatorTask,
   fetchDashboardRunningInstances,
-  fetchRecentActivity,
 } from "../data/queries";
 import { fetchRealtimeTimeline, fetchRealtimeTaskAgents } from "../data/realtime";
 import { deriveDisplayStatus } from "../tasks/status";
@@ -103,19 +79,14 @@ export class UIWebSocketManager {
   private readonly clients = new Set<ServerWebSocket<WSData>>();
   private readonly debounceTimers = new Map<string, Timer>();
   private heartbeatTimer: Timer | null = null;
-  // Last steer-panel HTML we broadcast. Agent/task/instance state changes fire
-  // constantly while work runs; re-pushing the identical panel OOB-swaps the
-  // form out from under the user mid-type/mid-click. Only push on real change.
-  private lastSteeringFragment = "";
   private lastV2SteerRuntimeIds = new Map<string, string>();
-
-  private readonly messageManager: MessageManager;
 
   constructor(
     private readonly db: Database,
-    private readonly daemon: Pick<ManagerDaemon, "listRuntimeSteeringOptions">,
+    // Nothing here reads the daemon since the dead dashboard steer-panel push
+    // went away; the parameter stays so the construction sites are unchanged.
+    _daemon: Pick<ManagerDaemon, "listRuntimeSteeringOptions">,
   ) {
-    this.messageManager = new MessageManager(db);
     this.registerEventHandlers();
     this.startHeartbeat();
   }
@@ -231,10 +202,13 @@ export class UIWebSocketManager {
 
   /**
    * Broadcast HTML fragment to clients subscribed to the given topics.
-   * Injects hx-swap-oob="true" for htmx auto-swap.
+   * Injects hx-swap-oob="true" for htmx auto-swap. Pass a render function
+   * when the fragment costs a query or a render: it only runs when at least
+   * one HTML socket would receive the push.
    */
-  private broadcast(html: string, topics: string[] = []): void {
-    const oobHtml = oob(html);
+  private broadcast(html: string | (() => string), topics: string[] = []): void {
+    if (!this.hasClients("html", topics)) return;
+    const oobHtml = oob(typeof html === "function" ? html() : html);
     for (const ws of this.clients) {
       const data = ws.data as UiPushWSData;
       if (data.format === "json") continue;
@@ -243,12 +217,15 @@ export class UIWebSocketManager {
     }
   }
 
-  private broadcastRaw(html: string, topics: string[] = []): void {
+  /** Same as broadcast, sent as-is (the caller places its own hx-swap-oob). */
+  private broadcastRaw(html: string | (() => string), topics: string[] = []): void {
+    if (!this.hasClients("html", topics)) return;
+    const payload = typeof html === "function" ? html() : html;
     for (const ws of this.clients) {
       const data = ws.data as UiPushWSData;
       if (data.format === "json") continue;
       if (topics.length > 0 && !topicMatches(data.subscriptions, topics)) continue;
-      try { ws.send(html); } catch { this.clients.delete(ws); }
+      try { ws.send(payload); } catch { this.clients.delete(ws); }
     }
   }
 
@@ -271,6 +248,8 @@ export class UIWebSocketManager {
   }
 
   broadcastJson(event: string, resource: string, id: string | null, data: unknown, topics: string[] = []): void {
+    // Serialize only when a JSON socket would receive it.
+    if (!this.hasClients("json", topics)) return;
     const message = JSON.stringify({
       event,
       resource,
@@ -291,7 +270,9 @@ export class UIWebSocketManager {
    * True when at least one socket of `format` would receive a push on
    * `topics`. The heavy debounced renders (1000-row logs table, dashboard
    * activity) used to run their queries on every agent:output tick and only
-   * THEN discover nobody was listening.
+   * THEN discover nobody was listening. The JSON-lane pushers call it before
+   * their query, and broadcast / broadcastRaw / broadcastJson return early on
+   * it, so a render function handed to them never runs for nobody.
    */
   /** Public form for out-of-file pushers (glyph engine) that gate model calls on an open overlay. */
   hasJsonClients(topics: string[]): boolean {
@@ -326,12 +307,10 @@ export class UIWebSocketManager {
     this.trackOn("task:state_changed", (event) => {
       this.pushDashboardTasks();
       this.pushDashboardInstances();
-      this.pushDashboardSteering();
       this.pushDashboardRealtimeTimeline();
       this.pushDashboardPhaseIndicator();
       this.pushV2PhaseStrip(event.taskId);
       this.pushV2SteerPanel(event.taskId);
-      this.triggerDashboardRerender();
       this.pushTaskList();
       this.pushTaskDetail(event.taskId);
       // V2 command-center sidebar (Running/Queue/Recent/Drafts groupings) is
@@ -387,7 +366,6 @@ export class UIWebSocketManager {
       // activeAgentCount lives in the metrics lane; without this it only moved
       // on task events and went stale when agents exited on a resting task.
       this.pushDashboardMetrics();
-      this.pushDashboardSteering();
       if (event.taskId) this.pushRtRunningAgents(event.taskId);
       if (event.taskId) this.pushV2SteerPanel(event.taskId);
       // The timeline's transient live-agents indicator tracks instance
@@ -401,18 +379,17 @@ export class UIWebSocketManager {
     // --- Agent state changed ---
     this.trackOn("agent:state_changed", () => {
       this.pushDashboardInstances();
-      this.pushDashboardSteering();
     });
 
     // --- Agent output (debounced) ---
     this.trackOn("agent:output", (event) => {
-      this.debounced("recent-activity", () => this.pushRecentActivity());
       this.debounced("log-entries", () => this.pushLogEntries());
       this.debounced("dashboard-activity", () => this.pushDashboardActivity());
-      const chunk = renderTerminalOutputChunk(event.stream, event.data);
+      // #terminal-lines lives only on the agent terminal page, which
+      // subscribes to agent:<instanceId>; no other page gets the chunk.
       this.broadcastRaw(
-        `<div id="terminal-lines" hx-swap-oob="beforeend">${chunk}</div>`,
-        ["dashboard", `agent:${event.agentId}`],
+        () => `<div id="terminal-lines" hx-swap-oob="beforeend">${renderTerminalOutputChunk(event.stream, event.data)}</div>`,
+        [`agent:${event.agentId}`],
       );
       const taskRow = this.db.prepare("SELECT task_id FROM agent_instances WHERE id = ?").get(event.agentId) as { task_id: string } | null;
       if (taskRow?.task_id) {
@@ -425,7 +402,6 @@ export class UIWebSocketManager {
     this.trackOn("agent:exit", (event) => {
       this.pushDashboardTasks();
       this.pushDashboardInstances();
-      this.pushDashboardSteering();
       this.pushDashboardPhaseIndicator();
       // Settle the V2 command-center orb roster the instant the process dies.
       // agent:exit carries no taskId, so resolve it from the instance. Without
@@ -440,6 +416,10 @@ export class UIWebSocketManager {
 
     // --- Streams drained ---
     this.trackOn("agent:streams_drained", (event) => {
+      // Re-renders the whole session for the agent terminal page (the same
+      // read its /agents/:id/output load does); skip it unless one is open.
+      const topics = [`agent:${event.agentId}`];
+      if (!this.hasClients("html", topics)) return;
       const session = this.db.prepare(
         "SELECT id FROM agent_sessions WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
       ).get(event.agentId) as { id: string } | null;
@@ -451,7 +431,7 @@ export class UIWebSocketManager {
       const html = terminalOutputFragment(rows);
       this.broadcastRaw(
         `<div id="terminal-lines" hx-swap-oob="innerHTML">${html}</div>`,
-        [`agent:${event.agentId}`],
+        topics,
       );
     });
 
@@ -494,8 +474,8 @@ export class UIWebSocketManager {
     });
 
     // --- Operator message posted (experimental) ---
+    // Messages render only in the timeline (no page has a messages column).
     this.trackOn("task:message_posted", (event) => {
-      this.pushV2Messages(event.taskId);
       this.pushV2Timeline(event.taskId);
     });
 
@@ -531,7 +511,6 @@ export class UIWebSocketManager {
     this.trackOn("escalation:created", (event) => {
       this.pushDashboardEscalations();
       this.pushCommandCenterSidebar();
-      if (event.taskId) this.pushV2TaskEscalations(event.taskId);
       if (event.taskId) this.pushV2TaskHeaderEscalation(event.taskId);
       if (event.taskId) this.pushV2Timeline(event.taskId);
     });
@@ -542,7 +521,6 @@ export class UIWebSocketManager {
       // fallbacks in EscalationManager.injectResponse) — refresh running instances so the
       // dashboard count reflects the latest state and the user isn't misled into a second resolve.
       this.pushDashboardInstances();
-      if (event.taskId) this.pushV2TaskEscalations(event.taskId);
       if (event.taskId) this.pushV2TaskHeaderEscalation(event.taskId);
       if (event.taskId) this.pushV2Timeline(event.taskId);
     });
@@ -579,30 +557,23 @@ export class UIWebSocketManager {
     }));
   }
 
+  // The dashboard:* / tasks / task:* pushes are JSON only: no page renders the
+  // old HTML dashboard ids any more. Their readers are the terminal dashboard
+  // (topic `dashboard`) and the VS Code extension (an unscoped JSON socket,
+  // which receives every topic). Each one checks for a listener before it
+  // queries.
+
   private pushDashboardTasks(): void {
-    const dashboardTasks = this.fetchDashboardTaskRows();
-    const focusTasks = selectDashboardFocusTasks(dashboardTasks);
-    this.broadcast(`<div id="active-tasks" class="cmd-layout-focus">${dashboardActiveTaskFragment(focusTasks)}</div>`, ["dashboard"]);
-    const queueTasks = dashboardTasks.filter((task) => task.display_status === "queued");
-    this.broadcast(`<div id="dashboard-queue" class="cmd-panel-body-flush cmd-scroll-compact">${dashboardQueueFragment(queueTasks)}</div>`, ["dashboard"]);
-    this.broadcastJson("updated", "dashboard:tasks", null, { tasks: focusTasks }, ["dashboard"]);
+    if (this.hasClients("json", ["dashboard"])) {
+      const focusTasks = selectDashboardFocusTasks(this.fetchDashboardTaskRows());
+      this.broadcastJson("updated", "dashboard:tasks", null, { tasks: focusTasks }, ["dashboard"]);
+    }
     this.pushDashboardMetrics();
   }
 
-  private triggerDashboardRerender(): void {
-    this.broadcast(`<div id="dashboard-rerender-trigger" style="display:none;" hx-get="/" hx-trigger="load" hx-target="body" hx-swap="outerHTML"></div>`, ["dashboard"]);
-  }
-
   private pushDashboardMetrics(): void {
+    if (!this.hasClients("json", ["dashboard"])) return;
     const { running, queued, completed, failed, activeAgentCount } = this.dashboardCounts();
-
-    this.broadcast(`<div id="dashboard-metrics" class="cmd-metrics">
-      <div class="cmd-metric"><span class="cmd-metric-value cmd-metric-value-primary">${running}</span><span class="cmd-metric-label">Running</span></div>
-      <div class="cmd-metric"><span class="cmd-metric-value cmd-metric-value-muted">${queued}</span><span class="cmd-metric-label">Queued</span></div>
-      <div class="cmd-metric"><span class="cmd-metric-value cmd-metric-value-secondary">${activeAgentCount}</span><span class="cmd-metric-label">Active Agents</span></div>
-      <div class="cmd-metric"><span class="cmd-metric-value cmd-metric-value-tertiary">${completed}</span><span class="cmd-metric-label">Completed</span></div>
-      <div class="cmd-metric"><span class="cmd-metric-value ${failed > 0 ? "cmd-metric-value-error" : "cmd-metric-value-muted"}">${failed}</span><span class="cmd-metric-label">Failed</span></div>
-    </div>`, ["dashboard"]);
     this.broadcastJson("updated", "dashboard:metrics", null, { running, queued, completed, failed, activeAgentCount }, ["dashboard"]);
   }
 
@@ -661,6 +632,7 @@ export class UIWebSocketManager {
   }
 
   private pushDashboardDelegations(): void {
+    if (!this.hasClients("json", ["dashboard"])) return;
     const groups = this.db.prepare(
       `SELECT id, task_id, parent_instance_id, settled_count, expected_count, failed_count, status, created_at, completed_at
        FROM delegation_groups
@@ -669,106 +641,64 @@ export class UIWebSocketManager {
        ORDER BY COALESCE(completed_at, created_at) DESC
        LIMIT 10`,
     ).all() as NonNullable<DashboardData["activeDelegationGroups"]>;
-    this.broadcast(`<span id="dashboard-delegations-count" class="cmd-progress-value">${groups.length > 0 ? "latest" : "0"}</span>`, ["dashboard"]);
-    this.broadcast(`<span id="dashboard-progress-delegations-stat" class="cmd-progress-stat">${groups.length} delegations</span>`, ["dashboard"]);
-    this.broadcast(`<div id="dashboard-delegations" class="cmd-progress-section-body">${dashboardDelegationGroupsFragment(groups)}</div>`, ["dashboard"]);
     this.broadcastJson("updated", "dashboard:delegations", null, { delegationGroups: groups }, ["dashboard"]);
   }
 
   private pushDashboardEscalations(): void {
+    if (!this.hasClients("json", ["dashboard"])) return;
     const escalations = this.db.prepare(
       `SELECT id, agent_id, task_id, question, created_at
        FROM escalations WHERE status = 'open' ORDER BY created_at DESC LIMIT 5`,
     ).all() as NonNullable<DashboardData["openEscalations"]>;
-    this.broadcast(`<div id="dashboard-escalations">${dashboardEscalationsFragment(escalations)}</div>`, ["dashboard"]);
     this.broadcastJson("updated", "dashboard:escalations", null, { escalations }, ["dashboard"]);
   }
 
   private pushDashboardInstances(): void {
+    if (!this.hasClients("json", ["dashboard"])) return;
     const runningInstances = fetchDashboardRunningInstances(this.db);
-    this.broadcast(`<div id="running-instances" class="cmd-progress-section-body">${dashboardRunningInstancesFragment(runningInstances)}</div>`, ["dashboard"]);
-    this.broadcast(dashboardActiveAgentsCountFragment(runningInstances.length), ["dashboard"]);
-    this.broadcast(`<span id="dashboard-progress-agents-stat" class="cmd-progress-stat">${runningInstances.length} agents</span>`, ["dashboard"]);
     this.broadcastJson("updated", "dashboard:instances", null, { running_instances: runningInstances }, ["dashboard"]);
   }
 
-  private pushDashboardSteering(): void {
-    const agents = this.db.prepare(
-      "SELECT id, name FROM agents ORDER BY created_at",
-    ).all() as { id: string; name: string }[];
-    const hasRunningTask = (this.db.prepare(
-      "SELECT EXISTS(SELECT 1 FROM tasks WHERE status = 'active') AS has_running_task",
-    ).get() as { has_running_task: number }).has_running_task === 1;
-    const steeringOptions = agents.flatMap((agent) =>
-      this.daemon.listRuntimeSteeringOptions(agent.id).map((option) => ({
-        template_agent_id: agent.id,
-        agent_name: agent.name,
-        runtime_id: option.id,
-        task_id: option.task_id,
-        task_title: option.task_title,
-        session_id: option.session_id,
-        process_pid: option.process_pid,
-        can_steer: option.can_steer,
-        disabled_reason: option.disabled_reason,
-      })),
-    );
-    const fragment = dashboardSteerPanelSlotFragment(steeringOptions, hasRunningTask && steeringOptions.length > 0);
-    if (fragment === this.lastSteeringFragment) return;
-    this.lastSteeringFragment = fragment;
-    this.broadcast(fragment, ["dashboard"]);
-  }
-
   private pushDashboardRealtimeTimeline(): void {
+    if (!this.hasClients("json", ["dashboard"])) return;
     const timeline = fetchDashboardRealtimeTimeline(this.db);
-    this.broadcast(`<div id="dashboard-rt-timeline" class="cmd-panel-body-flush cmd-scroll-compact">${dashboardRealtimeTimelineFragment(timeline ?? null)}</div>`, ["dashboard"]);
     this.broadcastJson("updated", "dashboard:realtime-timeline", null, { timeline }, ["dashboard"]);
   }
 
   private pushDashboardPhaseIndicator(): void {
+    if (!this.hasClients("json", ["dashboard"])) return;
     const task = fetchDashboardPhaseIndicatorTask(this.db);
-    const countLabel = task
-      ? (task.needs_review ? `phase ${task.current_phase + 1} \u270E` : `phase ${task.current_phase + 1}`)
-      : "idle";
-    this.broadcast(`<span id="dashboard-phase-indicator-count" class="cmd-progress-value">${countLabel}</span>`, ["dashboard"]);
-    this.broadcast(`<span id="dashboard-progress-phase-stat" class="cmd-progress-stat">${countLabel}</span>`, ["dashboard"]);
-    this.broadcast(`<div id="dashboard-phase-indicator" class="cmd-progress-phase-body">${dashboardPhaseIndicatorFragment(task ?? null)}</div>`, ["dashboard"]);
     this.broadcastJson("updated", "dashboard:phase-indicator", task?.id ?? null, { task }, ["dashboard"]);
   }
 
-  private pushRecentActivity(): void {
-    if (!this.hasClients("html", ["dashboard"])) return;
-    const hasRunningTask = (this.db.prepare(
-      "SELECT EXISTS(SELECT 1 FROM tasks WHERE status = 'active') AS has_running_task",
-    ).get() as { has_running_task: number }).has_running_task === 1;
-    if (!hasRunningTask) {
-      this.broadcast(`<div id="recent-activity" class="cmd-panel-body-flush cmd-scroll-compact">${recentActivityFragment([])}</div>`, ["dashboard"]);
-      return;
-    }
-    const recentLogs = fetchRecentActivity(this.db, DASHBOARD_ACTIVITY_LIMIT);
-    this.broadcast(`<div id="recent-activity" class="cmd-panel-body-flush cmd-scroll-compact">${recentActivityFragment(recentLogs)}</div>`, ["dashboard"]);
-  }
-
+  /**
+   * Every task row with every column, for a JSON client that keeps the whole
+   * list (the VS Code extension reads resource `tasks`). Topic `tasks-page`
+   * only: the terminal dashboard (topic `dashboard`) never reads it, and an
+   * unscoped JSON socket still gets it. The full-table read runs only when
+   * such a socket is connected.
+   */
   private pushTaskList(): void {
+    const topics = ["tasks-page"];
+    if (!this.hasClients("json", topics)) return;
     const tasks = fetchTasksWithTeams(this.db);
-    this.broadcast(`<div id="task-list">${taskListFragment(tasks)}</div>`, ["tasks-page"]);
-    this.broadcastJson("updated", "tasks", null, { tasks }, ["tasks-page", "dashboard"]);
+    this.broadcastJson("updated", "tasks", null, { tasks }, topics);
   }
 
   private pushTaskDetail(taskId: string): void {
+    const topics = [`task:${taskId}`, "dashboard"];
+    if (!this.hasClients("json", topics)) return;
     const task = fetchTaskById(this.db, taskId);
     if (!task) return;
-    // v1 fragment IDs (consumed by legacy /tasks page polling fragments)
-    this.broadcast(taskDetailSummaryFragment(task), [`task:${taskId}`]);
-    this.broadcast(taskPhaseStepperFragment(task), [`task:${taskId}`]);
     const delegations = fetchTaskDelegations(this.db, taskId);
-    this.broadcast(taskDelegationsFragment(taskId, delegations), [`task:${taskId}`]);
-    this.broadcastJson("updated", "task", taskId, { task, delegations }, [`task:${taskId}`, "dashboard"]);
+    this.broadcastJson("updated", "task", taskId, { task, delegations }, topics);
   }
 
   private pushTaskDelegations(taskId: string): void {
+    const topics = [`task:${taskId}`, "dashboard"];
+    if (!this.hasClients("json", topics)) return;
     const delegations = fetchTaskDelegations(this.db, taskId);
-    this.broadcast(taskDelegationsFragment(taskId, delegations), [`task:${taskId}`, "dashboard"]);
-    this.broadcastJson("updated", "task:delegations", taskId, { delegations }, [`task:${taskId}`, "dashboard"]);
+    this.broadcastJson("updated", "task:delegations", taskId, { delegations }, topics);
   }
 
   private pushLogEntries(): void {
@@ -787,37 +717,34 @@ export class UIWebSocketManager {
   }
 
   private pushRtNotes(taskId: string): void {
+    const topics = [`task:${taskId}`, "dashboard"];
+    if (!this.hasClients("json", topics)) return;
     // Tiebreaker on id so rapid-fire notes in the same second have a stable order
     const notes = this.db.prepare(
       `SELECT id, agent_id, content, created_at
        FROM task_notes WHERE task_id = ?
        ORDER BY created_at DESC, id DESC LIMIT 50`,
     ).all(taskId) as TaskNote[];
-    // Legacy realtime fragment (id="rt-notes")
-    this.broadcast(`<div id="rt-notes">${notesFragment(notes)}</div>`, [`task:${taskId}`, "dashboard"]);
-    // v2 notes panel (id="sk-notes")
-    const v2Notes = this.db.prepare(
-      `SELECT n.id, n.agent_id, COALESCE(a.name, n.agent_id) AS agent_name, n.content, n.created_at
-       FROM task_notes n LEFT JOIN agents a ON a.id = n.agent_id
-       WHERE n.task_id = ? ORDER BY n.created_at DESC, n.id DESC LIMIT 50`,
-    ).all(taskId) as Array<{ id: string; agent_id: string; agent_name: string; content: string; created_at: string }>;
-    this.broadcast(notesPanel(taskId, v2Notes), [`task:${taskId}`]);
-    this.broadcastJson("updated", "task:notes", taskId, { notes }, [`task:${taskId}`, "dashboard"]);
+    this.broadcastJson("updated", "task:notes", taskId, { notes }, topics);
   }
 
   private pushRtTimeline(taskId: string): void {
+    const topics = [`task:${taskId}`];
+    if (!this.hasClients("json", topics)) return;
     const timeline = fetchRealtimeTimeline(this.db, taskId);
-    this.broadcast(`<div id="timeline-entries">${timelineEntriesFragment(timeline)}</div>`, [`task:${taskId}`]);
-    this.broadcastJson("updated", "task:timeline", taskId, { timeline }, [`task:${taskId}`]);
+    this.broadcastJson("updated", "task:timeline", taskId, { timeline }, topics);
   }
 
   private pushRtRunningAgents(taskId: string): void {
+    const topics = [`task:${taskId}`];
+    if (!this.hasClients("json", topics)) return;
     const agents = fetchRealtimeTaskAgents(this.db, taskId);
-    this.broadcast(`<div id="rt-running-agents">${runningAgentsFragment(agents)}</div>`, [`task:${taskId}`]);
-    this.broadcastJson("updated", "task:running-agents", taskId, { agents }, [`task:${taskId}`]);
+    this.broadcastJson("updated", "task:running-agents", taskId, { agents }, topics);
   }
 
   private pushArtifactList(taskId: string): void {
+    const topics = [`task:${taskId}`, "dashboard"];
+    if (!this.hasClients("json", topics)) return;
     const rows = this.db.prepare(
       `SELECT a.id, a.name, a.version, a.kind, a.description, a.created_at
        FROM task_artifacts a
@@ -830,23 +757,7 @@ export class UIWebSocketManager {
        WHERE a.task_id = ?
        ORDER BY a.created_at DESC LIMIT 50`,
     ).all(taskId, taskId) as { id: string; name: string; version: number; kind: string; description: string | null; created_at: string }[];
-
-    let content: string;
-    if (rows.length === 0) {
-      content = `<p class="muted">No artifacts yet.</p>`;
-    } else {
-      const tableRows = rows.map((r) =>
-        `<tr>
-          <td><a href="#" onclick="skOpenArtifactPanel(); return false;" hx-get="/fragments/tasks/${taskId}/artifacts/${encodeURIComponent(r.name)}" hx-target="#sk-artifact-detail" hx-swap="innerHTML">${esc(r.name)}</a></td>
-          <td>${esc(r.kind)}</td>
-          <td>v${r.version}</td>
-          <td>${r.created_at}</td>
-        </tr>`,
-      ).join("");
-      content = `<table class="mini-table"><thead><tr><th>Name</th><th>Kind</th><th>Version</th><th>Created</th></tr></thead><tbody>${tableRows}</tbody></table>`;
-    }
-    this.broadcast(`<div id="artifact-list">${content}</div>`, [`task:${taskId}`, "dashboard"]);
-    this.broadcastJson("updated", "task:artifacts", taskId, { artifacts: rows }, [`task:${taskId}`, "dashboard"]);
+    this.broadcastJson("updated", "task:artifacts", taskId, { artifacts: rows }, topics);
   }
 
   /**
@@ -869,12 +780,11 @@ export class UIWebSocketManager {
   }
 
   private pushCommandCenterSidebar(): void {
-    const vm = buildCommandCenterViewModel(this.db);
-    const body = renderSidebarListBody(vm, null);
-    this.broadcastRaw(
-      `<div id="mc-sidebar-list" class="mc-sidebar__list" hx-swap-oob="outerHTML">${body}</div>`,
-      ["dashboard"],
-    );
+    this.broadcastRaw(() => {
+      const vm = buildCommandCenterViewModel(this.db);
+      const body = renderSidebarListBody(vm, null);
+      return `<div id="mc-sidebar-list" class="mc-sidebar__list" hx-swap-oob="outerHTML">${body}</div>`;
+    }, ["dashboard"]);
   }
 
   private pushV2WorkspaceRefresh(taskId?: string): void {
@@ -901,44 +811,27 @@ export class UIWebSocketManager {
         ["dashboard"],
       );
     }
-
-    // Also update the sidebar stats
-    const { running, completed, failed } = this.dashboardCounts();
-    this.broadcastRaw(
-      `<div id="mc-nav-stats-live" hx-swap-oob="innerHTML"><span><span class="mc-nav-stat-value${running > 0 ? " mc-nav-stat-value--active" : ""}">${running}</span> running</span><span>${completed} done</span>${failed > 0 ? `<span style="color:var(--sk-accent-danger)">${failed} failed</span>` : ""}</div>`,
-      ["dashboard"],
-    );
   }
 
   // ── v2 command-center targeted pushes ──────────────────────────────────
-
-  private pushV2TaskEscalations(taskId: string): void {
-    const escalations = this.db.prepare(
-      `SELECT e.id, e.agent_id, e.task_id, t.title AS task_title,
-              e.type, e.question, e.status, e.response, e.created_at, e.resolved_at,
-              COALESCE(a.name, e.agent_id) AS agent_name
-       FROM escalations e
-       LEFT JOIN tasks t ON t.id = e.task_id
-       LEFT JOIN agents a ON a.id = e.agent_id
-       WHERE e.task_id = ?
-       ORDER BY CASE WHEN e.status = 'open' THEN 0 ELSE 1 END, e.created_at DESC`,
-    ).all(taskId) as EscalationCardData[];
-
-    const content = taskEscalationsSection(escalations);
-    this.broadcast(`<div id="mc-task-escalations-${esc(taskId)}">${content}</div>`, [`dashboard`, `task:${taskId}`]);
-  }
 
   // OOB-swap the task-header escalation label so it appears/clears live when an
   // escalation is raised or resolved while the task is open (the header itself
   // is not otherwise re-pushed on escalation events).
   private pushV2TaskHeaderEscalation(taskId: string): void {
-    const row = this.db
-      .prepare("SELECT COUNT(*) AS n FROM escalations WHERE task_id = ? AND status = 'open'")
-      .get(taskId) as { n: number } | null;
-    this.broadcast(escalationHeaderSlot(taskId, row?.n ?? 0), [`dashboard`, `task:${taskId}`]);
+    this.broadcast(() => {
+      const row = this.db
+        .prepare("SELECT COUNT(*) AS n FROM escalations WHERE task_id = ? AND status = 'open'")
+        .get(taskId) as { n: number } | null;
+      return escalationHeaderSlot(taskId, row?.n ?? 0);
+    }, [`dashboard`, `task:${taskId}`]);
   }
 
   private pushV2SteerPanel(taskId: string): void {
+    const topics = [`dashboard`, `task:${taskId}`];
+    // No steer panel on screen: skip the roster read. The roster key below is
+    // not advanced either, which only costs one full tile rebuild later.
+    if (!this.hasClients("html", topics)) return;
     const instances = this.db.prepare(
       `SELECT ai.id AS runtime_id, ai.template_agent_id,
               COALESCE(a.name, ai.template_agent_id) AS agent_name,
@@ -969,7 +862,6 @@ export class UIWebSocketManager {
       latest_message: fetchLatestAssistantMessage(this.db, inst.runtime_id),
     }));
 
-    const topics = [`dashboard`, `task:${taskId}`];
     const steerable = options.filter(o => o.can_steer);
     // Change-detection key spans the full active roster (running AND
     // waiting_delegation) plus each status — not just the steerable subset.
@@ -991,24 +883,24 @@ export class UIWebSocketManager {
   }
 
   private pushV2PhaseStrip(taskId: string): void {
-    const vm = buildCommandCenterViewModel(this.db);
-    const task = vm.allTasks.find((t: any) => t.id === taskId);
-    if (!task) return;
-    const mission = vm.missionsByTask?.[taskId];
-    const phases = mission?.phases ?? [];
-    const isRunning = task.status === "active" || task.status === "running";
+    const topics = [`dashboard`, `task:${taskId}`];
+    if (!this.hasClients("html", topics)) return;
+    // One task's mission, not the whole command-center view model.
+    const strip = buildTaskMission(this.db, taskId);
+    if (!strip) return;
+    const phases = strip.mission?.phases ?? [];
+    const isRunning = strip.task.status === "active" || strip.task.status === "running";
     const fragment = renderPhaseStripFragment(phases, taskId, isRunning);
     this.broadcastRaw(
       fragment.replace(/^(<\w+)/, '$1 hx-swap-oob="outerHTML"'),
-      [`dashboard`, `task:${taskId}`],
+      topics,
     );
   }
 
   /** v2: re-render the timeline (message/escalation events + instance liveness for the transient indicator). */
   private pushV2Timeline(taskId: string): void {
-    const content = taskTimelineFragment(this.db, taskId);
     this.broadcastRaw(
-      `<div hx-swap-oob="innerHTML:#mc-timeline-inner-${esc(taskId)}">${content}</div>`,
+      () => `<div hx-swap-oob="innerHTML:#mc-timeline-inner-${esc(taskId)}">${taskTimelineFragment(this.db, taskId)}</div>`,
       [`dashboard`, `task:${taskId}`],
     );
   }
@@ -1031,28 +923,24 @@ export class UIWebSocketManager {
   }
 
   private pushV2Notes(taskId: string): void {
-    const notes = this.db.prepare(
-      `SELECT n.*, a.name AS agent_name
-       FROM task_notes n
-       LEFT JOIN agents a ON a.id = n.agent_id
-       WHERE n.task_id = ?
-       ORDER BY n.created_at DESC
-       LIMIT 30`,
-    ).all(taskId) as TaskNoteData[];
-    this.broadcastRaw(`<div hx-swap-oob="innerHTML:#mc-notes-${esc(taskId)}">${dashboardNotesFragment(notes, taskId)}</div>`, [`dashboard`, `task:${taskId}`]);
-  }
-
-  private pushV2Messages(taskId: string): void {
-    const messages = this.messageManager.listMessages(taskId);
-    this.broadcastRaw(
-      `<div hx-swap-oob="innerHTML:#mc-messages-${esc(taskId)}">${taskMessagesFragment(messages)}</div>`,
-      [`dashboard`, `task:${taskId}`],
-    );
+    this.broadcastRaw(() => {
+      const notes = this.db.prepare(
+        `SELECT n.*, a.name AS agent_name
+         FROM task_notes n
+         LEFT JOIN agents a ON a.id = n.agent_id
+         WHERE n.task_id = ?
+         ORDER BY n.created_at DESC
+         LIMIT 30`,
+      ).all(taskId) as TaskNoteData[];
+      return `<div hx-swap-oob="innerHTML:#mc-notes-${esc(taskId)}">${dashboardNotesFragment(notes, taskId)}</div>`;
+    }, [`dashboard`, `task:${taskId}`]);
   }
 
   private pushV2Artifacts(taskId: string): void {
-    const content = artifactListFragment(this.db, taskId, PRIMARY_ARTIFACT_LIST_VARIANT);
-    this.broadcastRaw(`<div hx-swap-oob="innerHTML:#mc-artifacts-${esc(taskId)}">${content}</div>`, [`dashboard`, `task:${taskId}`]);
+    this.broadcastRaw(
+      () => `<div hx-swap-oob="innerHTML:#mc-artifacts-${esc(taskId)}">${artifactListFragment(this.db, taskId, PRIMARY_ARTIFACT_LIST_VARIANT)}</div>`,
+      [`dashboard`, `task:${taskId}`],
+    );
   }
 }
 

@@ -103,15 +103,32 @@ function decorateTaskCompat(db: Database, task: TaskData, row: Record<string, un
 }
 
 export function fetchTasksWithTeams(db: ReturnType<typeof getDb>): TaskData[] {
-  const rows = db.prepare(
-    `SELECT t.*, tm.name AS team_name
-     FROM tasks t
-     LEFT JOIN teams tm ON tm.id = t.team_id
-     ORDER BY
-       CASE t.status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,
-       COALESCE(t.updated_at, t.created_at) DESC,
-       t.rowid DESC`,
-  ).all() as Record<string, unknown>[];
+  // Sort only the ids, then read the full rows unsorted and put them in that
+  // order: an ORDER BY on `t.*` made SQLite's sorter carry every description
+  // and result blob. One read transaction, so both reads see the same rows.
+  const rows = db.transaction((): Record<string, unknown>[] => {
+    const order = db.prepare(
+      `SELECT id FROM tasks
+       ORDER BY
+         CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,
+         COALESCE(updated_at, created_at) DESC,
+         rowid DESC`,
+    ).all() as { id: string }[];
+    const byId = new Map<string, Record<string, unknown>>();
+    for (const r of db.prepare(
+      `SELECT t.*, tm.name AS team_name
+       FROM tasks t
+       LEFT JOIN teams tm ON tm.id = t.team_id`,
+    ).all() as Record<string, unknown>[]) {
+      byId.set(r.id as string, r);
+    }
+    const sorted: Record<string, unknown>[] = [];
+    for (const { id } of order) {
+      const r = byId.get(id);
+      if (r) sorted.push(r);
+    }
+    return sorted;
+  })();
   return rows.map((r) =>
     decorateTaskCompat(db, parseRow(r, ["result", "orchestration_state"]) as unknown as TaskData, r),
   );
@@ -348,7 +365,9 @@ export function fetchTaskForensics(db: ReturnType<typeof getDb>, taskId: string)
     const tokens = tokenStmt.get(
       inst.id, inst.created_at, inst.updated_at,
     ) as { input_tokens: number | null; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; output_tokens: number | null; num_turns: number | null; duration_ms: number | null } | null;
-    const state = agentStateStmt.get(inst.template_agent_id) as { context_compact_needed: number; nudge_count: number } | null;
+    // Keyed by the runtime: StateTracker keeps nudge_count per runtime instance,
+    // and the compaction flag is written per runtime too.
+    const state = agentStateStmt.get(inst.id) as { context_compact_needed: number; nudge_count: number } | null;
     return {
       instance_id: inst.id,
       agent_name: inst.agent_name,

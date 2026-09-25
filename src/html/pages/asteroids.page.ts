@@ -14,5 +14,5 @@ export function asteroidsPage(vm: AsteroidsPageViewModel): string {
       <canvas id="game-canvas" style="display:block;"></canvas>
     </div>
     <script src="/asteroids.js"></script>
-  `, "/games/asteroids");
+  `, "/games/asteroids", ["asteroids"]);
 }

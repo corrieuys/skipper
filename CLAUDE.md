@@ -138,7 +138,7 @@ repo's GitHub Releases.
 ## Entry
 
 - `index.ts` — boot DB, build `ManagerDaemon`, register routes + WebSocket upgrade handlers, start Bun server, SIGINT/SIGTERM shutdown. Reached via `bin/cli.ts serve`.
-- `GET /connect/local` — inbound consumer WebSocket for apps running on this machine (the native Mac client), speaking the same protocol as the Skipper Connect integrator's consumer socket. **Unauthenticated and loopback only**: the upgrade is refused (403) for any non-127.0.0.0/8 / non-`::1` peer, even when `SKIPPER_HOST` exposes the daemon. See [src/connect/CLAUDE.md](src/connect/CLAUDE.md).
+- `GET /connect/local` — inbound consumer WebSocket for apps running on this machine (the native Mac client), speaking the same protocol as the Skipper Connect integrator's consumer socket. **Unauthenticated and loopback only**: the upgrade is refused (403) for any non-127.0.0.0/8 / non-`::1` peer, even when `SKIPPER_HOST` exposes the daemon. Loopback does not keep a browser page out, so, like every route, the upgrade is also refused when it carries a foreign `Origin` or a non-local `Host` (`src/server.ts:rejectForeignRequest`, see `SKIPPER_ALLOWED_HOSTS` and the config page's Allowed Hosts). See [src/connect/CLAUDE.md](src/connect/CLAUDE.md).
 - `src/server.ts` — tiny router. `addRoute()`. static served from embedded `public/*` assets (uploaded wallpapers from the data dir)
 - `src/assets.ts` — embedded-asset access layer (`assetTextSync`, `assetFile`, `listAssets`, `isCompiledBinary`)
 
@@ -148,6 +148,7 @@ repo's GitHub Releases.
 |---|---|---|
 | `PORT` | 5005 | HTTP port |
 | `SKIPPER_HOST` | 127.0.0.1 | bind address (loopback only by default — most of the HTTP surface has no auth; `--host`/`SKIPPER_HOST` to expose deliberately) |
+| `SKIPPER_ALLOWED_HOSTS` | (unset) | extra hostnames (comma separated, port ignored) accepted in the `Host` header, e.g. `my-mac.local` to open the UI by name. The config page's **Allowed Hosts** section keeps a second list (runtime `app_settings`, see `src/config/allowed-hosts.ts`; a save applies at once, no restart) and shows this var, `SKIPPER_HOST` and the bind address read-only. The gate allows the union of both lists. Every request first passes `src/server.ts:rejectForeignRequest`: a `Host` that is not `localhost`, an IP literal, the `SKIPPER_HOST` name or one of these gets 403 (DNS rebinding); a write (not GET/HEAD/OPTIONS) or WebSocket upgrade with a foreign `Origin` (`null` included) or `Sec-Fetch-Site: cross-site` gets 403 (CSRF). Clients that send no `Origin` (TUI, Mac app, agents, curl) are unaffected. GET routes must stay side-effect free: cross-site GETs are not Origin-checked |
 | `SKIPPER_DATA_DIR` | `~/.skipper` | writable state (DB, greg.db, config copy, pid/log, `launch-flags.json`) |
 | `SKIPPER_RUNTIME_DB_PATH` | `<data dir>/skipper-runtime.db` | runtime DB file |
 | `SKIPPER_CONFIG_DIR` | `<data dir>/config` (binary) · `./config` (dev) | config snapshots |

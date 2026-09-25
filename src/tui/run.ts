@@ -343,6 +343,11 @@ class Controller implements Ctx {
     return this.ui.recurring;
   }
 
+  async readTask(taskId: string): Promise<TaskDetail | null> {
+    const raw = await this.transport.request<Record<string, unknown> | null>("tasks", "read", { id: taskId });
+    return raw ? toDetail(raw) : null;
+  }
+
   selectTask(id: string | null): void {
     if (this.ui.selectedTaskId !== id) {
       this.ui.detailScroll = 0;
@@ -1004,7 +1009,7 @@ function toTeam(o: Record<string, unknown>): Team {
   };
 }
 
-function toSeries(o: Record<string, unknown>): RecurringSeries {
+export function toSeries(o: Record<string, unknown>): RecurringSeries {
   const runs = Array.isArray(o.runs) ? (o.runs as Record<string, unknown>[]) : [];
   return {
     id: String(o.id ?? ""),
@@ -1014,6 +1019,8 @@ function toSeries(o: Record<string, unknown>): RecurringSeries {
     teamName: o.teamName == null ? null : String(o.teamName),
     scheduleUnit: o.scheduleUnit == null ? null : String(o.scheduleUnit),
     scheduleAmount: o.scheduleAmount == null ? null : Number(o.scheduleAmount),
+    // A JSON string on the wire; kept as-is so an edit can send it back untouched.
+    scheduleMatrix: o.scheduleMatrix == null || o.scheduleMatrix === "" ? null : typeof o.scheduleMatrix === "string" ? o.scheduleMatrix : JSON.stringify(o.scheduleMatrix),
     status: String(o.status ?? ""),
     starred: o.starred === true,
     nextRunAt: o.nextRunAt == null ? null : String(o.nextRunAt),

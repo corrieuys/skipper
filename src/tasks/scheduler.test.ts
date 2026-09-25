@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
-import { eventBus, type TaskCreatedEvent, type TaskPhaseChangedEvent } from "../events/bus";
+import {
+  eventBus,
+  type InstanceStateChangedEvent,
+  type TaskCreatedEvent,
+  type TaskPhaseChangedEvent,
+} from "../events/bus";
 import { TaskScheduler } from "./scheduler";
 import { unlinkSync } from "fs";
 
@@ -381,6 +386,85 @@ describe("settling with undelivered input (regression: stuck 'queued for agent')
     const settled = scheduler.completeRun(id);
     expect(settled.status).toBe("settled");
   });
+
+  it("failRun after a failed start settles anyway, wakes nothing, and leaves the input for the next revive (regression: endless fail/wake loop)", () => {
+    const id = startedTask();
+    const entryId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO realtime_timeline (id, task_id, entry_type, content, priority) VALUES (?, ?, 'text', 'please continue', 'high')",
+    ).run(entryId, id);
+
+    const wakes: string[] = [];
+    const onWake = (e: { taskId: string }) => wakes.push(e.taskId);
+    eventBus.on("task:wake_requested", onWake);
+    try {
+      const failed = scheduler.failRun(id, "Failed to spawn agent: boom", { startFailed: true });
+      expect(failed.status).toBe("settled");
+      expect(failed.wake_requested_at).toBeNull();
+      expect(failed.result).toEqual({ error: "Failed to spawn agent: boom" });
+    } finally {
+      eventBus.off("task:wake_requested", onWake);
+    }
+    expect(wakes).toEqual([]);
+    expect(scheduler.getNextStartableTask()).toBeNull();
+    const entry = db.prepare("SELECT fed_to_skipper FROM realtime_timeline WHERE id = ?").get(entryId) as { fed_to_skipper: number };
+    expect(entry.fed_to_skipper).toBe(0);
+
+    // New input / Resume revives and queues it again; that start carries the
+    // still-unfed entry in its INPUT_FEED.
+    scheduler.reviveTask(id);
+    scheduler.requestWake(id);
+    expect(scheduler.getNextStartableTask()!.id).toBe(id);
+  });
+});
+
+describe("settling announces the instances it closes (UI contract: instance:state_changed)", () => {
+  function seedInstances(taskId: string): { root: string; child: string; finished: string } {
+    const root = crypto.randomUUID();
+    const child = crypto.randomUUID();
+    const finished = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, status, process_pid) VALUES (?, ?, 'default-agent', 'running', 4242)",
+    ).run(root, taskId);
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status) VALUES (?, ?, 'default-agent', ?, ?, 'waiting_delegation')",
+    ).run(child, taskId, root, root);
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES (?, ?, 'default-agent', 'completed')",
+    ).run(finished, taskId);
+    return { root, child, finished };
+  }
+
+  const cases: Array<[string, (id: string) => unknown, string]> = [
+    ["completeRun", (id) => scheduler.completeRun(id), "completed"],
+    ["failRun", (id) => scheduler.failRun(id, "boom"), "failed"],
+    ["settleTask with an error (cancel)", (id) => scheduler.settleTask(id, { error: "Cancelled by user" }), "failed"],
+    ["settleTask without an error", (id) => scheduler.settleTask(id, { result: { stopped_by: "user" } }), "completed"],
+  ];
+
+  for (const [name, settle, status] of cases) {
+    it(`${name} announces each live instance it closed as ${status}, after the transaction commits`, () => {
+      const id = startedTask();
+      const { root, child, finished } = seedInstances(id);
+      const seen: Array<{ instanceId: string; taskId: string; status: string; inTransaction: boolean }> = [];
+      const onInstance = (e: InstanceStateChangedEvent) => {
+        seen.push({ instanceId: e.instanceId, taskId: e.taskId, status: e.status, inTransaction: db.inTransaction });
+      };
+      eventBus.on("instance:state_changed", onInstance);
+      try {
+        settle(id);
+      } finally {
+        eventBus.off("instance:state_changed", onInstance);
+      }
+      expect(seen.map((e) => e.instanceId).sort()).toEqual([root, child].sort());
+      expect(seen.map((e) => e.instanceId)).not.toContain(finished);
+      for (const e of seen) {
+        expect(e.taskId).toBe(id);
+        expect(e.status).toBe(status);
+        expect(e.inTransaction).toBe(false);
+      }
+    });
+  }
 });
 
 describe("failRun", () => {

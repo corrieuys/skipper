@@ -6,7 +6,7 @@ Server code. TS, Bun runtime.
 
 | file | use |
 |---|---|
-| `server.ts` | tiny HTTP router. `addRoute()`, path-param match, static from embedded `public/*` assets, `/health`. Per-request `[http]` log skips high-frequency UI poll paths (`shouldLogRequest` / `QUIET_LOG_PATTERNS`) unless error/slow; `SKIPPER_HTTP_LOG=all` logs everything |
+| `server.ts` | tiny HTTP router. `addRoute()`, path-param match, static from embedded `public/*` assets, `/health`. Every request (routes and WS upgrades) first passes `rejectForeignRequest`: 403 for a non-local `Host` (DNS rebinding; `SKIPPER_ALLOWED_HOSTS` and the config page's Allowed Hosts list extend it, the latter swapped into the running gate by `setConfiguredAllowedHosts` on save, never read from the DB per request) or, on writes and upgrades, a foreign `Origin` / `Sec-Fetch-Site: cross-site` (CSRF). Per-request `[http]` log skips high-frequency UI poll paths (`shouldLogRequest` / `QUIET_LOG_PATTERNS`) unless error/slow; `SKIPPER_HTTP_LOG=all` logs everything |
 | `logging.ts` | DB-backed error log (`error_log`), console fallback |
 | `paths.ts` | resolve data/config/pid/log paths. Data dir (`~/.skipper`) for mutable state; `getConfigDir()` + `ensureConfigSeeded()` relocate + seed config in the binary |
 | `assets.ts` | embedded-asset access (`assetTextSync`, `assetFile`, `listAssets`, `isCompiledBinary`) over the generated manifest baked in by `bun build --compile`. See root [CLAUDE.md](../CLAUDE.md) Package section |

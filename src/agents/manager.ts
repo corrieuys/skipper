@@ -818,12 +818,19 @@ export class AgentManager {
       stdin: proc ? proc.stdin : NOOP_STDIN,
       stdoutBuffer: "",
       stderrBuffer: "",
-      outputSequence: 0,
+      // A respawn reuses its runtime id (resume, compaction, pause/resume, an
+      // escalation answer) and terminal_outputs rows are keyed by that id, so
+      // continue the id's sequence instead of restarting at 0. Readers that
+      // ORDER BY sequence across spawns (delegation-manager's
+      // gatherTerminalOutput keeps the LAST result frame) would otherwise
+      // interleave an older spawn's frames with this one's.
+      outputSequence: this.lastOutputSequence(runtimeId),
       sessionId: options.sessionId ?? null,
       spawnSessionId,
-      // An in-process agent has no streams to drain. Counting them as already
-      // drained keeps `waitForExit` / `waitForStreamsDrained` from stalling for
-      // their full timeout on every custom-agent teardown.
+      // An in-process agent has no streams to drain and never emits
+      // agent:streams_drained. Counting both as already drained makes its
+      // agent:exit carry streamsDrained, so the daemon handles the exit at
+      // once instead of waiting out the drain timeout on every run.
       drainedStreams: inProcess ? 2 : 0,
       mcpCleanupPaths: mcpOverrides.cleanupPaths,
       mcpRestoreFiles: mcpOverrides.restoreFiles ?? [],
@@ -1019,6 +1026,19 @@ export class AgentManager {
     }
     if (queued.length > 0) {
       this.queuedSignals.delete(runningAgent.id);
+    }
+  }
+
+  /** Highest terminal_outputs.sequence already stored for a runtime id (0 when none). */
+  private lastOutputSequence(runtimeId: string): number {
+    try {
+      const row = this.db
+        .prepare("SELECT MAX(sequence) AS seq FROM terminal_outputs WHERE agent_id = ?")
+        .get(runtimeId) as { seq: number | null } | null;
+      return row?.seq ?? 0;
+    } catch (err) {
+      logError(this.db, "agent.last_output_sequence", { runtimeId }, err);
+      return 0;
     }
   }
 
@@ -1263,6 +1283,11 @@ export class AgentManager {
     const stderrSnippet = runningAgent?.stderrBuffer
       ? runningAgent.stderrBuffer.slice(-1024)
       : "";
+    // Whether THIS process's readers already finished (readStream counts each
+    // stream's end). Captured now, while `runtime` is still this process's
+    // entry (pid checked above): a later lookup by id could find a respawn
+    // under the same runtime id.
+    const streamsDrained = (runtime?.drainedStreams ?? 0) >= 2;
 
     // Check if this is a respawn exit
     const isRespawn = this.respawningAgents.has(agentId);
@@ -1296,12 +1321,23 @@ export class AgentManager {
       // completed/failed in the brief window before the respawn.
       if (!isRespawn) {
         this.syncTemplateRuntimeState(runtime.templateAgentId);
+        // Only a live row takes the exit code's status. A row another writer
+        // already closed keeps its status: a settle marks the task's instances
+        // completed/failed and then stops the processes, and that stop's
+        // non-zero exit (143) must not turn a completed run's root into failed.
+        // The pid and exit code are recorded either way.
+        let exitStatus: string = code === 0 ? "completed" : "failed";
         try {
-          this.db
+          const row = this.db
             .prepare(
-              "UPDATE agent_instances SET status = ?, process_pid = NULL, state_metadata = json_set(state_metadata, '$.exit_code', ?), updated_at = datetime('now') WHERE id = ?",
+              `UPDATE agent_instances
+               SET status = CASE WHEN status IN ('running', 'waiting_delegation', 'pending') THEN ? ELSE status END,
+                   process_pid = NULL, state_metadata = json_set(state_metadata, '$.exit_code', ?), updated_at = datetime('now')
+               WHERE id = ?
+               RETURNING status`,
             )
-            .run(code === 0 ? "completed" : "failed", code, agentId);
+            .get(exitStatus, code, agentId) as { status: string } | null;
+          if (row) exitStatus = row.status;
         } catch (err) {
           if (this.closed) return;
           logError(this.db, "agent.update_instance_on_exit", { agentId }, err);
@@ -1313,7 +1349,7 @@ export class AgentManager {
             taskId: runtime.taskId,
             parentInstanceId: runtime.parentInstanceId,
             rootInstanceId: runtime.rootInstanceId,
-            status: code === 0 ? "completed" : "failed",
+            status: exitStatus,
           });
         }
       }
@@ -1339,6 +1375,7 @@ export class AgentManager {
       isRespawn,
       hasDelegation,
       stderrSnippet,
+      streamsDrained,
     });
   }
 

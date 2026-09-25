@@ -4,6 +4,7 @@ import { parseJsonOr } from "../db/json";
 import { getDb } from "../db/connection";
 import { eventBus } from "../events/bus";
 import { autoResolveEscalations } from "../escalations/auto-resolve";
+import { emitInstanceState } from "../agents/instance-status";
 import { logError } from "../logging";
 
 // workflow: the system drives the task to the end of its phases (pokes, recovery).
@@ -536,6 +537,7 @@ export class TaskScheduler {
       new Error("completeRun invoked"),
     );
 
+    let closedInstances: string[] = [];
     this.db.transaction(() => {
       if (pendingInput) {
         this.db
@@ -554,7 +556,7 @@ export class TaskScheduler {
           )
           .run(result ? JSON.stringify(result) : null, id);
       }
-      this.finalizeTaskRuntime(id, {
+      closedInstances = this.finalizeTaskRuntime(id, {
         instanceStatus: "completed",
         delegationStatus: "completed",
         delegationActiveStatuses: ["running", "waiting_delegation", "pending"],
@@ -563,6 +565,8 @@ export class TaskScheduler {
         escalationResponse: "Auto-resolved: run completed.",
       });
     })();
+    // Announce each instance the run closed, once the transaction has committed.
+    for (const instanceId of closedInstances) emitInstanceState(this.db, instanceId);
 
     const updated = this.getTask(id)!;
     eventBus.emit("task:run_completed", { taskId: id, result: result ?? null });
@@ -581,15 +585,23 @@ export class TaskScheduler {
    * A run hit an unrecoverable error. The task settles to its resting state
    * (stored `settled`, presented as Failed): the error lands in result + a
    * note, and new input revives it (inputTask auto-revives + wakes).
+   *
+   * `startFailed`: the queue could not start the run (task-runner), so no
+   * pending input reached an agent. The task settles anyway: keeping it active
+   * with a wake would send the queue straight back into the same failing start,
+   * an endless fail/wake loop. The input stays unfed and the next revive (new
+   * input or Resume) delivers it with the rest of the INPUT_FEED.
    */
-  failRun(id: string, error?: string): Task {
+  failRun(id: string, error?: string, opts: { startFailed?: boolean } = {}): Task {
     this.requireTaskStatus(id, "active", "fail a run on active tasks");
 
     const result = error ? JSON.stringify({ error }) : null;
     // Same pending-input rule as completeRun: undelivered operator input keeps
-    // the task active with a wake so the next run picks it up.
-    const pendingInput = this.countUnfedInput(id) > 0;
+    // the task active with a wake so the next run picks it up. Not after a
+    // failed start (see startFailed above).
+    const pendingInput = !opts.startFailed && this.countUnfedInput(id) > 0;
 
+    let closedInstances: string[] = [];
     this.db.transaction(() => {
       if (pendingInput) {
         this.db
@@ -608,7 +620,7 @@ export class TaskScheduler {
           )
           .run(result, id);
       }
-      this.finalizeTaskRuntime(id, {
+      closedInstances = this.finalizeTaskRuntime(id, {
         instanceStatus: "failed",
         delegationStatus: "failed",
         delegationActiveStatuses: ["pending", "running"],
@@ -617,6 +629,7 @@ export class TaskScheduler {
         escalationResponse: "Auto-resolved: run failed.",
       });
     })();
+    for (const instanceId of closedInstances) emitInstanceState(this.db, instanceId);
 
     if (error) {
       // Best effort: the failure is already recorded in result; a missing team
@@ -656,6 +669,7 @@ export class TaskScheduler {
         ? JSON.stringify(opts.result)
         : null;
 
+    let closedInstances: string[] = [];
     this.db.transaction(() => {
       this.db
         .prepare(
@@ -664,7 +678,7 @@ export class TaskScheduler {
            WHERE id = ? AND status = 'active'`,
         )
         .run(result, id);
-      this.finalizeTaskRuntime(id, {
+      closedInstances = this.finalizeTaskRuntime(id, {
         instanceStatus: failed ? "failed" : "completed",
         delegationStatus: failed ? "failed" : "completed",
         delegationActiveStatuses: ["pending", "running", "waiting_delegation"],
@@ -673,6 +687,7 @@ export class TaskScheduler {
         escalationResponse: "Auto-resolved: task settled.",
       });
     })();
+    for (const instanceId of closedInstances) emitInstanceState(this.db, instanceId);
 
     const updated = this.getTask(id)!;
     eventBus.emit("task:state_changed", {
@@ -1054,6 +1069,13 @@ export class TaskScheduler {
    * settles (run complete/fail, cancel). Runs inside the caller's transaction.
    * The delegation active-status sets and result messages differ per transition
    * and are preserved verbatim from the original per-method SQL.
+   *
+   * Returns the ids of the instances it moved out of a live status. The caller
+   * announces each (`emitInstanceState`) after the transaction commits: every
+   * roster reconciles agent liveness from `instance:state_changed`. It only
+   * rewrites rows; stopping the processes is the daemon's settle cleanup
+   * (RecoveryManager.cleanupTerminalTaskState), which reads the in-memory
+   * runtimes because these rows no longer look live.
    */
   private finalizeTaskRuntime(
     id: string,
@@ -1065,8 +1087,11 @@ export class TaskScheduler {
       clearAgentPointer: boolean;
       escalationResponse: string;
     },
-  ): void {
+  ): string[] {
     const activeIn = opts.delegationActiveStatuses.map((s) => `'${s}'`).join(", ");
+    const closedInstances = (this.db
+      .prepare(`SELECT id FROM agent_instances WHERE task_id = ? AND status IN ${LIVE_INSTANCE_STATUSES}`)
+      .all(id) as Array<{ id: string }>).map((r) => r.id);
     this.db
       .prepare(
         `UPDATE agent_instances
@@ -1095,6 +1120,7 @@ export class TaskScheduler {
         .run(id);
     }
     this.resolveOpenEscalationsForTask(id, opts.escalationResponse);
+    return closedInstances;
   }
 
   private resolveOpenEscalationsForTask(taskId: string, response: string): void {

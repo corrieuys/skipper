@@ -8,6 +8,7 @@ import { agentIdentityPicker, agentIdentityPickerScript } from "../atoms/agent-i
 import type { NotificationPreference } from "../../notifications/store";
 import type { ModelChoice, AgentTypeOption } from "../../config/model-settings";
 import type { SlackConfigView } from "../../config/slack-settings";
+import type { AllowedHostsView } from "../../config/allowed-hosts";
 import { taskMemoryPanel, type TaskMemoryPanelData } from "../fragments/task-memory-config.fragment";
 
 export interface ConfigPageViewModel {
@@ -42,6 +43,8 @@ export interface ConfigPageViewModel {
   skipperIdentity: { color: string; character: string };
   /** Real-time transcription: audio chunk cadence + summarize-or-raw default. */
   realtime: { cadenceSeconds: number; summaryEnabled: boolean; cadenceMin: number; cadenceMax: number };
+  /** Allowed Hosts: the Host allowlist's sources (environment, read-only) + the saved list. */
+  allowedHosts?: AllowedHostsView;
 }
 
 /** One provider (agent type) + model row for a subsystem. Model list is filtered
@@ -344,6 +347,9 @@ export function configPage(vm: ConfigPageViewModel): string {
         </div>
       </div>
 
+      <!-- Allowed Hosts Section -->
+      ${vm.allowedHosts ? allowedHostsPanel(vm.allowedHosts) : ""}
+
       <!-- Task Auto-Delete Section (experimental only) -->
       ${isExperimental() ? `
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
@@ -449,7 +455,7 @@ export function configPage(vm: ConfigPageViewModel): string {
         document.body.addEventListener('htmx:afterSwap', apply);
       })();</script>
     </div>
-  `, "/config");
+  `, "/config", ["config"]);
 }
 
 export function slackPanel(slack: SlackConfigView): string {
@@ -587,6 +593,83 @@ export function apiKeysPanel(keys: ApiKeyData[], newKey?: { name: string; key: s
         <input type="text" name="name" placeholder="Key name" class="sk-input sk-input--sm" required>
         <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Create</button>
       </form>
+    </div>
+  </div>`;
+}
+
+/** After a Save: the refused text with its errors, or `saved` once it went through. */
+export interface AllowedHostsFormState {
+  input?: string;
+  errors?: string[];
+  saved?: boolean;
+  /**
+   * Render the section expanded. A Save response sets it: the Save came from the
+   * open section, and the accordion script's htmx:afterSwap restore never sees an
+   * outerHTML swap started from inside the replaced element.
+   */
+  open?: boolean;
+}
+
+/**
+ * Allowed Hosts: the Host names the foreign-request gate (src/server.ts) accepts.
+ * The environment's part is shown read-only, for visibility; the list is the
+ * editable part. Save self-swaps this panel (#sk-allowed-hosts-panel) with the
+ * route's re-render, errors inline, no page reload.
+ */
+export function allowedHostsPanel(view: AllowedHostsView, form: AllowedHostsFormState = {}): string {
+  const errors = form.errors ?? [];
+  const text = errors.length > 0 ? form.input ?? "" : view.hosts.join("\n");
+  const row = (label: string, value: string) => `
+        <div style="display:flex;align-items:flex-start;gap:var(--sk-space-3);">
+          <span class="sk-muted sk-text-xs" style="width:200px;flex:none;overflow-wrap:anywhere;">${label}</span>
+          <span class="sk-text-xs" style="flex:1;min-width:0;overflow-wrap:anywhere;">${value}</span>
+        </div>`;
+  const bindHost = view.bindHostEnv !== null
+    ? `<code>${escapeHtml(view.bindHostEnv)}</code> (the bind address)`
+    : `<span class="sk-muted">not set</span>, so Skipper binds <code>${escapeHtml(view.bindAddress)}</code> (the default)`;
+  const bindAdds = view.bindHostname !== null
+    ? `Adds <code>${escapeHtml(view.bindHostname)}</code> to the allowed hosts.`
+    : "Adds no hostname: IP addresses and localhost are always allowed.";
+  const envHosts = view.envAllowedHosts !== null
+    ? `<code>${escapeHtml(view.envAllowedHosts)}</code>`
+    : `<span class="sk-muted">not set</span>`;
+  const errorBlock = errors.length > 0 ? `
+          <div class="sk-text-xs" style="color:var(--sk-danger);">
+            Not saved:
+            <ul style="margin:var(--sk-space-1) 0 0;padding-left:var(--sk-space-4);">${errors.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul>
+          </div>` : "";
+  return `<div id="sk-allowed-hosts-panel" class="sk-panel${form.open ? " sk-open" : ""}" style="margin-bottom: var(--sk-space-6);">
+    <div class="sk-panel__header">
+      <span class="sk-panel__title">Allowed Hosts</span>
+    </div>
+    <div class="sk-panel__body">
+      <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
+        The hostnames Skipper answers to. A request whose <code>Host</code> header names anything else is refused (403),
+        which keeps other websites from reaching Skipper through DNS rebinding. Add a name to open Skipper by it,
+        for example <code>my-mac.local</code>. Everything below is allowed together.
+      </p>
+      <div style="display:flex;flex-direction:column;gap:var(--sk-space-3);">
+        ${row("Always allowed", "<code>localhost</code> and any IP address")}
+        ${row("SKIPPER_HOST", `${bindHost}. ${bindAdds}`)}
+        ${row("SKIPPER_ALLOWED_HOSTS", envHosts)}
+        <p class="sk-muted sk-text-xs" style="margin:0;">
+          The two environment variables are read-only here (<code>skipper start --host</code> sets <code>SKIPPER_HOST</code>):
+          change them where Skipper is started, then restart it. The list below is stored on this machine and applies as soon as you save.
+        </p>
+        <form hx-post="/api/config/allowed-hosts" hx-target="#sk-allowed-hosts-panel" hx-swap="outerHTML"
+          style="display:flex;flex-direction:column;gap:var(--sk-space-3);">
+          <div style="display:flex;align-items:flex-start;gap:var(--sk-space-3);">
+            <label class="sk-muted sk-text-xs" style="width:200px;flex:none;" for="allowed-hosts">Extra hostnames</label>
+            <textarea id="allowed-hosts" name="hosts" rows="3" spellcheck="false" autocomplete="off"
+              placeholder="my-mac.local (one per line or comma separated)"
+              class="sk-input sk-input--sm" style="flex:1;">${escapeHtml(text)}</textarea>
+          </div>${errorBlock}
+          <div style="display:flex;align-items:center;gap:var(--sk-space-2);">
+            <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Save</button>
+            ${form.saved ? `<span class="sk-text-xs sk-muted">Saved. Applies now, no restart needed.</span>` : ""}
+          </div>
+        </form>
+      </div>
     </div>
   </div>`;
 }

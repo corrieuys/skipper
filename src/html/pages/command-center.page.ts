@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import { v2layout } from "../shell/layout";
 import { navbar } from "../shell/navbar";
 import { escapeHtml } from "../atoms/escape-html";
@@ -919,6 +920,19 @@ function renderPhaseStepper(phases: Array<{ name: string; status: string }>, tas
 
 export function renderPhaseStripFragment(phases: Array<{ name: string; status: string }>, taskId: string, isRunning: boolean): string {
   return renderPhaseStepper(phases, taskId, isRunning);
+}
+
+/**
+ * One task's phase strip from that task's row alone, for the 5 s strip poll
+ * (and any push that re-renders one strip). Same HTML the full view model gave:
+ * "" when the task is not in the command-center list or its team has no
+ * phases, and the poll stays on only while the task is working.
+ */
+export function renderTaskPhaseStrip(db: Database, taskId: string): string {
+  const { buildTaskMission } = require("../view-models/command-center.vm") as typeof import("../view-models/command-center.vm");
+  const strip = buildTaskMission(db, taskId);
+  if (!strip) return "";
+  return renderPhaseStepper(strip.mission?.phases ?? [], taskId, strip.task.display_status === "working");
 }
 
 export function renderAgentList(agents: AgentTreeNode[]): string {

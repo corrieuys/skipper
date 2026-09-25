@@ -21,6 +21,38 @@ export interface TaskWakeFeeder {
   consumePendingFeed(taskId: string): { text: string; commit: () => void } | null;
 }
 
+const PARALLEL_MAX_CONCURRENT = 5;
+
+/**
+ * A task occupies a concurrency slot while it has live agents or is paused.
+ * A paused task keeps its slot — pausing must NOT free the daemon to start
+ * the next queued task (critical when parallel execution is disabled, cap=1).
+ * Idle active tasks hold no slot: running-with-no-agents is a resting state.
+ */
+function countOccupiedSlots(db: Database): number {
+  return (db
+    .prepare(
+      `SELECT COUNT(*) as c FROM tasks t
+       WHERE t.status = 'active'
+         AND (t.paused = 1 OR EXISTS (
+           SELECT 1 FROM agent_instances ai
+           WHERE ai.task_id = t.id AND ai.status IN ('running', 'waiting_delegation', 'pending')
+         ))`,
+    )
+    .get() as { c: number }).c;
+}
+
+/**
+ * True when one more task may run agents under the concurrency cap (5 with
+ * parallel execution on, 1 with it off). The queue checks it before a start;
+ * the idle poke checks it before it spawns a root outside the queue.
+ */
+export function hasFreeTaskSlot(db: Database): boolean {
+  const parallel = getBoolSetting(db, SETTING_PARALLEL_TASKS, true);
+  const cap = parallel ? PARALLEL_MAX_CONCURRENT : 1;
+  return countOccupiedSlots(db) < cap;
+}
+
 export class TaskRunner {
   private wakeFeeder: TaskWakeFeeder | null = null;
 
@@ -38,31 +70,8 @@ export class TaskRunner {
     private readonly writeCheckpoint: (taskId: string, type: string, snapshot?: Record<string, unknown>) => void,
   ) {}
 
-  private static readonly PARALLEL_MAX_CONCURRENT = 5;
-
-  /**
-   * A task occupies a concurrency slot while it has live agents or is paused.
-   * A paused task keeps its slot — pausing must NOT free the daemon to start
-   * the next queued task (critical when parallel execution is disabled, cap=1).
-   * Idle active tasks hold no slot: running-with-no-agents is a resting state.
-   */
-  private countOccupiedSlots(): number {
-    return (this.db
-      .prepare(
-        `SELECT COUNT(*) as c FROM tasks t
-         WHERE t.status = 'active'
-           AND (t.paused = 1 OR EXISTS (
-             SELECT 1 FROM agent_instances ai
-             WHERE ai.task_id = t.id AND ai.status IN ('running', 'waiting_delegation', 'pending')
-           ))`,
-      )
-      .get() as { c: number }).c;
-  }
-
   async processTaskQueue(): Promise<{ processed: number }> {
-    const parallel = getBoolSetting(this.db, SETTING_PARALLEL_TASKS, true);
-    const cap = parallel ? TaskRunner.PARALLEL_MAX_CONCURRENT : 1;
-    if (this.countOccupiedSlots() >= cap) {
+    if (!hasFreeTaskSlot(this.db)) {
       return { processed: 0 };
     }
 
@@ -88,16 +97,20 @@ export class TaskRunner {
       return { processed: 1 };
     }
 
+    // Every start failure below settles the task (`startFailed`) even when the
+    // wake carried input: that input never reached an agent, and keeping the
+    // task active would wake it straight back into this same failing start.
+    // The input stays unfed for the next revive to deliver.
     const teamExec = this.teamManager.getTeamForExecution(startedTask.team_id);
     if (!teamExec) {
-      this.taskScheduler.failRun(task.id, "Team has no entrypoint agent");
+      this.taskScheduler.failRun(task.id, "Team has no entrypoint agent", { startFailed: true });
       return { processed: 1 };
     }
 
     const entrypointAgentId = teamExec.entrypoint_agent_id;
     const agent = this.agentManager.getAgent(entrypointAgentId);
     if (!agent) {
-      this.taskScheduler.failRun(task.id, `Entrypoint agent not found: ${entrypointAgentId}`);
+      this.taskScheduler.failRun(task.id, `Entrypoint agent not found: ${entrypointAgentId}`, { startFailed: true });
       return { processed: 1 };
     }
 
@@ -193,6 +206,7 @@ export class TaskRunner {
       this.taskScheduler.failRun(
         task.id,
         `Failed to spawn agent: ${err instanceof Error ? err.message : String(err)}`,
+        { startFailed: true },
       );
       return { processed: 1 };
     }
@@ -214,9 +228,11 @@ export class TaskRunner {
       }
     } catch (err) {
       logError(this.db, "task_startup_send_input", { taskId: task.id, agentId: entrypointAgentId, method: "processTaskQueue" }, err);
+      // The spawned runtime is still alive; the settle cleanup stops it.
       this.taskScheduler.failRun(
         task.id,
         `Failed to send initial prompt: ${err instanceof Error ? err.message : String(err)}`,
+        { startFailed: true },
       );
       return { processed: 1 };
     }

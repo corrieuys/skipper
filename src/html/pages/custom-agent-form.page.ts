@@ -473,7 +473,7 @@ export function customAgentFormPage(vm: CustomAgentFormViewModel): string {
     </script>
     ${agentIdentityPickerScript()}`;
 
-  return v2layout(isNew ? "New custom agent" : agent.name, content, "/agent-library");
+  return v2layout(isNew ? "New custom agent" : agent.name, content, "/agent-library", ["agent-library"]);
 }
 
 function checkboxRow(

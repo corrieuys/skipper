@@ -984,41 +984,51 @@ describe("Delegation manager — target validation", () => {
 
 
 describe("StateTracker — last_signal_at tracking", () => {
-  it("should record last_signal_at when updateLastSignalAt is called", () => {
+  // StateTracker keys agent_states by runtime instance, and only a live
+  // instance (running, with a pid) is ever a stuck candidate.
+  function createLiveRuntime(): string {
     const agentId = createAgent("worker");
+    const taskId = createRunningTask(createTeamWithEntrypoint(agentId));
+    const runtimeId = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, status, process_pid) VALUES (?, ?, ?, 'running', 999999)",
+    ).run(runtimeId, taskId, agentId);
+    return runtimeId;
+  }
 
-    daemon.getStateTracker().updateLastSignalAt(agentId);
+  it("should record last_signal_at when updateLastSignalAt is called", () => {
+    const runtimeId = createLiveRuntime();
 
-    const row = db.prepare("SELECT last_signal_at FROM agent_states WHERE agent_id = ?").get(agentId) as { last_signal_at: string | null } | null;
+    daemon.getStateTracker().updateLastSignalAt(runtimeId);
+
+    const row = db.prepare("SELECT last_signal_at FROM agent_states WHERE agent_id = ?").get(runtimeId) as { last_signal_at: string | null } | null;
     expect(row).not.toBeNull();
     expect(row!.last_signal_at).not.toBeNull();
   });
 
   it("should NOT flag agent as stuck purely on stale last_signal_at when heartbeat is fresh", () => {
-    // Regression: last_signal_at is per-template, so a freshly-spawned instance
-    // inherited the prior instance's signal age and got escalated immediately
-    // for long-running doer agents (Tester, Coder). The signal-stale OR-clause
-    // was removed; stuck candidacy now requires a stale fingerprint heartbeat.
-    const agentId = createAgent("worker");
-    db.prepare("UPDATE agents SET process_pid = 999999 WHERE id = ?").run(agentId);
+    // Regression: a freshly-spawned instance inherited the prior instance's
+    // signal age and got escalated immediately for long-running doer agents
+    // (Tester, Coder). The signal-stale OR-clause was removed; stuck candidacy
+    // now requires a stale fingerprint heartbeat.
+    const runtimeId = createLiveRuntime();
 
     db.prepare(
       `INSERT INTO agent_states (agent_id, state, heartbeat_at, nudge_count, last_signal_at)
        VALUES (?, 'working', datetime('now'), 0, datetime('now', '-1 hour'))`,
-    ).run(agentId);
+    ).run(runtimeId);
 
     const candidates = daemon.getStateTracker().getStuckCandidates();
-    expect(candidates).not.toContain(agentId);
+    expect(candidates).not.toContain(runtimeId);
   });
 
   it("should not flag agent with fresh last_signal_at even if heartbeat is stale", () => {
-    const agentId = createAgent("worker");
-    db.prepare("UPDATE agents SET process_pid = 999999 WHERE id = ?").run(agentId);
+    const runtimeId = createLiveRuntime();
 
     db.prepare(
       `INSERT INTO agent_states (agent_id, state, heartbeat_at, nudge_count, last_signal_at)
        VALUES (?, 'working', datetime('now', '-1 hour'), 0, datetime('now'))`,
-    ).run(agentId);
+    ).run(runtimeId);
 
     const candidates = daemon.getStateTracker().getStuckCandidates();
     // heartbeat stale but signal fresh — agent is making progress
@@ -1029,17 +1039,27 @@ describe("StateTracker — last_signal_at tracking", () => {
   });
 
   it("should not flag agent with null last_signal_at (never emitted a signal)", () => {
-    const agentId = createAgent("worker");
-    db.prepare("UPDATE agents SET process_pid = 999999 WHERE id = ?").run(agentId);
+    const runtimeId = createLiveRuntime();
 
     // Fresh heartbeat, null last_signal_at
     db.prepare(
       `INSERT INTO agent_states (agent_id, state, heartbeat_at, nudge_count, last_signal_at)
        VALUES (?, 'working', datetime('now'), 0, NULL)`,
-    ).run(agentId);
+    ).run(runtimeId);
 
     const candidates = daemon.getStateTracker().getStuckCandidates();
-    expect(candidates).not.toContain(agentId);
+    expect(candidates).not.toContain(runtimeId);
+  });
+
+  it("flags a live runtime whose heartbeat went stale, keyed by its runtime id", () => {
+    const runtimeId = createLiveRuntime();
+
+    db.prepare(
+      `INSERT INTO agent_states (agent_id, state, heartbeat_at, nudge_count, last_signal_at)
+       VALUES (?, 'working', datetime('now', '-1 hour'), 0, NULL)`,
+    ).run(runtimeId);
+
+    expect(daemon.getStateTracker().getStuckCandidates()).toContain(runtimeId);
   });
 });
 

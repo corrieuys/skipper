@@ -463,6 +463,29 @@ describe("connect tasks read/list projections + v3 actions", () => {
     expect((again as { ok: false; error: string }).error).toContain("not paused");
   });
 
+  // Same order as POST /api/tasks/:id/{pause,resume-from-pause}: pause flips the
+  // flag, THEN stops the agents; resume respawns them, THEN clears the flag.
+  it("tasks/pause stops the agents and tasks/resume-from-pause respawns them, in the web route's order", async () => {
+    const id = seedTask("active");
+    const pausedFlag = () => (getDb().prepare("SELECT paused FROM tasks WHERE id = ?").get(id) as { paused: number }).paused;
+    const calls: Array<[string, string, number]> = [];
+    const d = taskDeps({
+      pauseTaskAgents: async (taskId) => { calls.push(["pause", taskId, pausedFlag()]); return []; },
+      resumeTaskAgents: async (taskId) => { calls.push(["resume", taskId, pausedFlag()]); },
+    });
+
+    const paused = await handleResourceRequest("tasks", "pause", { id }, d);
+    expect((paused as { ok: true; data: Record<string, unknown> }).data).toMatchObject({ paused: true, display_status: "paused" });
+    const resumed = await handleResourceRequest("tasks", "resume-from-pause", { id }, d);
+    expect((resumed as { ok: true; data: Record<string, unknown> }).data).toMatchObject({ paused: false });
+    expect(calls).toEqual([["pause", id, 1], ["resume", id, 1]]);
+
+    // A task that is not paused is refused before any agent is respawned.
+    const again = await handleResourceRequest("tasks", "resume-from-pause", { id }, d);
+    expect(again.ok).toBe(false);
+    expect(calls).toHaveLength(2);
+  });
+
   it("tasks/set-memory flips the flag, backfills on enable, and the projection carries it", async () => {
     const id = seedTask("active");
     const backfilled: string[] = [];

@@ -6,6 +6,7 @@ import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { GlobalStoreManager } from "../global-store/manager";
 import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { eventBus } from "../events/bus";
+import { createLocalTeam, getLocalTeam } from "../teams/local-teams";
 import { registerTaskTools, taskToolNamesFor, type ToolAudience } from "./task-tools";
 import type { DaemonDeps } from "./tools";
 import type { AgentIdentity } from "./auth";
@@ -207,6 +208,33 @@ describe("lifecycle: pause / resume / cancel / complete", () => {
     expect(db.prepare("SELECT paused FROM tasks WHERE id = ?").get(id)).toMatchObject({ paused: 0 });
   });
 
+  // Same order as POST /api/tasks/:id/{pause,resume-from-pause}: pause flips the
+  // flag, THEN stops the agents; resume respawns them, THEN clears the flag.
+  it("stops the agents on pause and respawns them on resume, in the web route's order", async () => {
+    const id = await activeTask();
+    const pausedFlag = () => (db.prepare("SELECT paused FROM tasks WHERE id = ?").get(id) as { paused: number }).paused;
+    const calls: Array<[string, string, number]> = [];
+    const f = fakeServer();
+    registerTaskTools(f.server as never, {
+      ...deps(),
+      pauseTaskAgents: async (taskId) => { calls.push(["pause", taskId, pausedFlag()]); return []; },
+      resumeTaskAgents: async (taskId) => { calls.push(["resume", taskId, pausedFlag()]); },
+    }, () => EXTERNAL_IDENTITY, "external");
+    handlers = f.map;
+
+    expect((await call("pause_task", { task_id: id })).status).toBe("active");
+    expect((await call("resume_task", { task_id: id })).status).toBe("active");
+    expect(calls).toEqual([["pause", id, 1], ["resume", id, 1]]);
+    expect(pausedFlag()).toBe(0);
+
+    // A task in the wrong state is refused before any agent is touched.
+    expect(await call("resume_task", { task_id: id })).toContain("not paused");
+    const draft = await call("create_task", { title: "D", team_id: "team-1" });
+    expect(await call("pause_task", { task_id: draft.id })).toContain("pause an active task");
+    expect(await call("resume_task", { task_id: draft.id })).toContain("resume a paused task");
+    expect(calls).toHaveLength(2);
+  });
+
   it("completes (archives) an active task", async () => {
     const id = await activeTask();
     expect((await call("complete_task", { task_id: id, result: "done" })).status).toBe("settled");
@@ -227,6 +255,23 @@ describe("lifecycle: pause / resume / cancel / complete", () => {
   it("pause_task rejects a draft task", async () => {
     const t = await call("create_task", { title: "D", team_id: "team-1" });
     expect(await call("pause_task", { task_id: t.id })).toContain("pause an active task");
+  });
+});
+
+describe("update_team", () => {
+  // The tool cannot set skipper_prompt or hooks, so a rename must carry both
+  // forward instead of writing toTeamInput's "" / [] defaults over them.
+  it("keeps the team's Skipper prompt and hooks on a rename", async () => {
+    const hook = { event: "task.completed", command: "echo done" };
+    const team = createLocalTeam(db, { name: "Crew", skipper_prompt: "KEEP ME", hooks: [hook], phases: [] });
+
+    const out = await call("update_team", { team_id: team.id, name: "Renamed crew" });
+    expect(out.name).toBe("Renamed crew");
+
+    const stored = getLocalTeam(db, team.id)!;
+    expect(stored.name).toBe("Renamed crew");
+    expect(stored.skipper_prompt).toBe("KEEP ME");
+    expect(stored.hooks).toEqual([hook]);
   });
 });
 

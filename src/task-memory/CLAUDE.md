@@ -51,7 +51,7 @@ Images, files, pipeline errors and raw agent stdout are not memory.
 
 - Toggle: `memoryEnabled` checkbox on the three create forms, the **Memory** pill
   beside Autopilot on the task view (`POST /api/tasks/:id/memory`, backfills on
-  enable), `TaskScheduler.setMemoryEnabled`. Field on `TaskSummary.memory_enabled`.
+  enable), `TaskScheduler.setMemoryEnabled`. Field on the Connect task projection (`memory_enabled` / `memory_mode`, `connect/serializers.ts`).
 - Recurring: tri-state + retention on the create form (Schedule = Recurring), the
   draft Configuration form, and the approved detail's **Memory** panel
   (`renderSeriesMemoryPanel`: summary + Clear memory; `POST

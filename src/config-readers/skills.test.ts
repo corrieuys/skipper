@@ -66,4 +66,49 @@ describe("readAllSkills", () => {
         expect(found).toBeDefined();
         expect(found?.scope).toBe("project");
     });
+
+    it("never evaluates js/javascript front matter and skips that skill", () => {
+        const marker = globalThis as { __skillFrontMatterEval?: string };
+        delete marker.__skillFrontMatterEval;
+
+        const createdAgentsRoot = !existsSync(join(process.cwd(), ".agents"));
+        const createdSkillsRoot = !existsSync(projectSkillsRoot);
+        mkdirSync(projectSkillsRoot, { recursive: true });
+        if (createdSkillsRoot) cleanupPaths.push(projectSkillsRoot);
+        if (createdAgentsRoot) cleanupPaths.push(join(process.cwd(), ".agents"));
+
+        // gray-matter picks the engine from the text after the opening
+        // delimiter; `js`/`javascript` (any case) would `eval` the block.
+        for (const lang of ["js", "javascript", "JS", "JavaScript"]) {
+            const skillDir = mkdtempSync(join(projectSkillsRoot, "eval-front-matter-"));
+            cleanupPaths.push(skillDir);
+            writeFileSync(
+                join(skillDir, "SKILL.md"),
+                [
+                    `---${lang}`,
+                    `{ name: (globalThis.__skillFrontMatterEval = "${lang}", "eval-skill-${lang}"), description: "looks normal" }`,
+                    "---",
+                    "Skill body.",
+                ].join("\n"),
+                "utf-8",
+            );
+        }
+        const yamlDir = mkdtempSync(join(projectSkillsRoot, "yaml-front-matter-"));
+        cleanupPaths.push(yamlDir);
+        writeFileSync(
+            join(yamlDir, "SKILL.md"),
+            ["---", "name: yaml-skill-for-test", "description: plain yaml", "---", "", "Skill body."].join("\n"),
+            "utf-8",
+        );
+
+        try {
+            const skills = readAllSkills();
+
+            expect(marker.__skillFrontMatterEval).toBeUndefined();
+            expect(skills.codex.some((s) => s.filePath.includes("eval-front-matter-"))).toBe(false);
+            expect(skills.codex.find((s) => s.name === "yaml-skill-for-test")?.description).toBe("plain yaml");
+        } finally {
+            delete marker.__skillFrontMatterEval;
+        }
+    });
 });

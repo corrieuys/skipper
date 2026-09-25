@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS task_checkpoints (
 -- Real-time agent state tracking
 CREATE TABLE IF NOT EXISTS agent_states (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,                    -- runtime instance id (StateTracker) or template id; no FK, as in schema.runtime.sql
   state TEXT NOT NULL DEFAULT 'stopped',     -- working, stuck, escalated, waiting_delegation, stopped
   state_metadata TEXT NOT NULL DEFAULT '{}', -- JSON
   heartbeat_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -280,7 +280,7 @@ CREATE TABLE IF NOT EXISTS manager_runs (
 -- Stuck detection analysis records
 CREATE TABLE IF NOT EXISTS stuck_detection_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_id TEXT NOT NULL REFERENCES agents(id),
+  agent_id TEXT NOT NULL,                    -- runtime instance id; no FK, as in schema.runtime.sql
   detection_type TEXT NOT NULL,              -- stuck, nudged, escalated
   screen_fingerprint TEXT,
   details TEXT,                              -- JSON

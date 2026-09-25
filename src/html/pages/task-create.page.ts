@@ -305,5 +305,5 @@ export function taskCreatePage(vm: TaskCreateViewModel, selectedTeamId = ""): st
       </div>
     </div>
     ${iconIdentityPickerScript()}
-  `, "/tasks");
+  `, "/tasks", ["task-create"]);
 }

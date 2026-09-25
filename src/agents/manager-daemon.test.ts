@@ -708,28 +708,156 @@ describe("handleAgentExit", () => {
     const taskId = createApprovedTask(teamId);
 
     await daemon.processTaskQueue();
+    const runtime = daemon.getAgentManager().getRunningInstanceForTask("skipper", taskId);
+    expect(runtime).toBeDefined();
 
     daemon.getEscalationManager().createEscalation({
       agentId: "skipper",
-      runtimeAgentId: "skipper",
+      runtimeAgentId: runtime!.id,
       taskId,
       type: "agent_request",
       question: "Need operator decision",
     });
 
+    // A clean exit as AgentManager emits it for a drained process: handled at
+    // once, with no agent:streams_drained to wait for.
     const exitEvent: AgentExitEvent = {
-      agentId: "skipper",
+      agentId: runtime!.id,
       code: 0,
       isRespawn: false,
       hasDelegation: false,
+      stderrSnippet: "",
+      streamsDrained: true,
     };
     eventBus.emit("agent:exit", exitEvent);
 
     await new Promise((r) => setTimeout(r, 50));
 
+    // The handler ran and took the open-escalation branch: the instance is
+    // parked 'stopped' and the task was NOT marked idle (a clean exit without
+    // an escalation would have been).
+    const instance = db
+      .prepare("SELECT status FROM agent_instances WHERE id = ?")
+      .get(runtime!.id) as { status: string } | null;
+    expect(instance?.status).toBe("stopped");
+    const idleRow = db
+      .prepare("SELECT value FROM daemon_state WHERE key = ?")
+      .get(`idle_since:${taskId}`) as { value: string } | null;
+    expect(idleRow).toBeNull();
+
     const task = scheduler.getTask(taskId);
     expect(task?.status).toBe("active");
     expect(task?.completed_at).toBeNull(); // run not settled while escalation is open
+  });
+
+  it("handles a drained process exit at once instead of waiting out the drain timeout", async () => {
+    // A root that finishes its turn on its own: prints a result frame and exits 0.
+    db.prepare(
+      `INSERT OR REPLACE INTO agent_types (name, command, args, supports_stdin, supports_resume)
+       VALUES ('quick-exit', 'bash', ?, 1, 0)`,
+    ).run(JSON.stringify(["-c", `echo '{"type":"result","result":"turn done"}'`]));
+    db.prepare("UPDATE agents SET type = 'quick-exit' WHERE id = 'skipper'").run();
+    clearAgentTypeCache();
+    const teamId = createTeamWithEntrypoint(createAgent("Dev Agent"));
+    const taskId = createRunningTask(teamId);
+
+    const exited = new Promise<AgentExitEvent>((resolve) => {
+      const handler = (e: AgentExitEvent) => {
+        eventBus.off("agent:exit", handler);
+        resolve(e);
+      };
+      eventBus.on("agent:exit", handler);
+    });
+    const running = await daemon.getAgentManager().spawnAgent("skipper", { workingDir: process.cwd(), taskId });
+    const exit = await exited;
+    expect(exit.agentId).toBe(running.id);
+    const exitedAt = Date.now();
+
+    // The clean exit marks the task idle. Before, this took the full 5 s drain
+    // timeout, because agent:streams_drained had already fired before agent:exit.
+    let idleRow: { value: string } | null = null;
+    while (!idleRow && Date.now() - exitedAt < 1_000) {
+      await new Promise((r) => setTimeout(r, 10));
+      idleRow = db
+        .prepare("SELECT value FROM daemon_state WHERE key = ?")
+        .get(`idle_since:${taskId}`) as { value: string } | null;
+    }
+    expect(idleRow).not.toBeNull();
+    const instance = db
+      .prepare("SELECT status FROM agent_instances WHERE id = ?")
+      .get(running.id) as { status: string } | null;
+    expect(instance?.status).toBe("completed");
+  });
+
+  it("still waits for the streams when the exit arrives before they drain", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+    const taskId = createApprovedTask(teamId);
+
+    await daemon.processTaskQueue();
+    const runtime = daemon.getAgentManager().getRunningInstanceForTask("skipper", taskId);
+    expect(runtime).toBeDefined();
+
+    const idleMarker = () => db
+      .prepare("SELECT value FROM daemon_state WHERE key = ?")
+      .get(`idle_since:${taskId}`) as { value: string } | null;
+
+    eventBus.emit("agent:exit", {
+      agentId: runtime!.id,
+      code: 0,
+      isRespawn: false,
+      hasDelegation: false,
+      stderrSnippet: "",
+      streamsDrained: false,
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    // Not handled yet: the handler must see every frame before it reads output.
+    expect(idleMarker()).toBeNull();
+
+    eventBus.emit("agent:streams_drained", { agentId: runtime!.id });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(idleMarker()).not.toBeNull();
+  });
+
+  it("prompt-too-long recovery restarts its own task's root and never kills a sibling task's", async () => {
+    const agentId = createAgent("Dev Agent", "test-echo", "Build software");
+    const teamId = createTeamWithEntrypoint(agentId);
+
+    // Task B's root is live on the shared 'skipper' template.
+    const taskB = createApprovedTask(teamId, "Task B");
+    await daemon.processTaskQueue();
+    const rootB = daemon.getAgentManager().getRunningInstanceForTask("skipper", taskB);
+    expect(rootB).toBeDefined();
+    const rootBPid = rootB!.process.pid;
+
+    // Task A's root just exited with a prompt-too-long error (its process is
+    // gone; AgentManager already marked the instance failed).
+    const taskA = createRunningTask(teamId, "Task A");
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, root_instance_id, status, attempt)
+       VALUES ('root-a-too-long', ?, 'skipper', 'root-a-too-long', 'failed', 1)`,
+    ).run(taskA);
+
+    eventBus.emit("agent:exit", {
+      agentId: "root-a-too-long",
+      code: 1,
+      isRespawn: false,
+      hasDelegation: false,
+      stderrSnippet: "Error: Prompt is too long",
+      streamsDrained: true,
+    });
+    eventBus.emit("agent:streams_drained", { agentId: "root-a-too-long" });
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Task B's root survives: killAgent("skipper") used to resolve to it.
+    const liveB = daemon.getAgentManager().getRunningAgents().get(rootB!.id);
+    expect(liveB).toBeDefined();
+    expect(liveB?.process.pid).toBe(rootBPid);
+    // Task A got its reduced-context retry root.
+    const retryA = daemon.getAgentManager().getRunningInstanceForTask("skipper", taskA);
+    expect(retryA).toBeDefined();
+    expect(retryA!.id).not.toBe(rootB!.id);
+    expect(scheduler.getTask(taskA)?.status).toBe("active");
   });
 
   it("marks task idle on successful exit; does not auto-complete (Skipper must call complete_task)", async () => {
@@ -2282,23 +2410,41 @@ describe("recoverTask", () => {
   });
 
   it("fails second recovery without progress (one-shot exhausted)", async () => {
+    // The root dies the way orphan recovery exists for: a clean exit with no
+    // completed-turn marker (non-streaming, exits 0 on SIGTERM). handleAgentExit
+    // leaves the task active with no live root and writes no checkpoint. A
+    // SIGTERM exit (143) would record AGENT_INTERRUPTED, which counts as
+    // progress; the old version of this test only escaped that because the
+    // exit was handled 5 s later, after the test had finished.
+    db.prepare(
+      `INSERT OR REPLACE INTO agent_types (name, command, args, supports_stdin, supports_resume)
+       VALUES ('no-turn-exit', 'bash', ?, 0, 0)`,
+    ).run(JSON.stringify(["-c", "trap 'exit 0' TERM; while :; do sleep 0.05; done"]));
+    db.prepare("UPDATE agents SET type = 'no-turn-exit' WHERE id = 'skipper'").run();
+    clearAgentTypeCache();
     const agentId = createAgent("Dev Agent", "test-echo", "Build software");
     const teamId = createTeamWithEntrypoint(agentId);
     const taskId = createApprovedTask(teamId);
 
     await daemon.processTaskQueue();
 
+    // Crash the root and let its exit be handled before recovery looks, as the
+    // recovery tick finds a dead root.
+    const crashRoot = async (): Promise<void> => {
+      const root = daemon.getAgentManager().getRunningInstanceForTask("skipper", taskId);
+      expect(root).toBeDefined();
+      daemon.getAgentManager().killAgent(root!.id);
+      await daemon.getAgentManager().waitForExit(root!.id, 2000);
+      await new Promise((r) => setTimeout(r, 20));
+    };
+
     // Simulate crash and first recovery
-    daemon.getAgentManager().killAgent("skipper");
-    daemon.getAgentManager().getRunningAgents().delete("skipper");
-    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = 'skipper'").run();
+    await crashRoot();
     const first = await daemon.recoverTask(taskId);
     expect(first).toBe(true);
 
     // Crash again without phase/checkpoint progress
-    daemon.getAgentManager().killAgent("skipper");
-    daemon.getAgentManager().getRunningAgents().delete("skipper");
-    db.prepare("UPDATE agents SET process_pid = NULL, status = 'idle' WHERE id = 'skipper'").run();
+    await crashRoot();
     const second = await daemon.recoverTask(taskId);
     expect(second).toBe(false);
 

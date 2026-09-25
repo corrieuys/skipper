@@ -225,5 +225,5 @@ export function grugPage(vm: GrugPageViewModel): string {
         Model: claude-haiku-4-5 via Claude Code CLI · Tick interval: 10s · Compacts every 20 ticks · Persistent session via --resume
       </p>
     </div>
-  `, "/grug");
+  `, "/grug", ["grug"]);
 }

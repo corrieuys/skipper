@@ -58,7 +58,10 @@ export class FragmentRegistry {
 /**
  * Check if a client's subscriptions match any of the fragment's topics.
  * Supports exact match and wildcard patterns (e.g., "task:*" matches "task:abc123").
- * If client has no subscriptions, they receive everything (backward compat).
+ * If client has no subscriptions, they receive everything (backward compat):
+ * the VS Code extension's JSON socket (/ws/ui?format=json, no topics) relies
+ * on it. A web page should name its topics (v2layout wsTopics) so it does
+ * not receive, or force the render of, pushes it has no element for.
  */
 export function topicMatches(clientTopics: Set<string>, fragmentTopics: string[]): boolean {
   if (clientTopics.size === 0) return true; // no subscriptions = receive all

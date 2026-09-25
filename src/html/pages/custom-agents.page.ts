@@ -172,7 +172,7 @@ export function customAgentsPage(vm: CustomAgentsPageViewModel): string {
     })();
     </script>`;
 
-  return v2layout("Agents", content, "/agent-library");
+  return v2layout("Agents", content, "/agent-library", ["agent-library"]);
 }
 
 function hostOf(url: string): string {

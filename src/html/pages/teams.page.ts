@@ -284,5 +284,5 @@ export function teamsPage(vm: TeamsPageViewModel): string {
       });
     })();
     </script>
-  `, "/teams");
+  `, "/teams", ["teams"]);
 }

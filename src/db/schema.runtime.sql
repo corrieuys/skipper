@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at);
 -- idx_tasks_starred is created in legacy-migrations.ts (after the schema runs), so
 -- it lands whether the DB is fresh or predates the starred column.
+-- idx_tasks_source_scheduled (source_scheduled_task_id, created_at) lives in
+-- migrations/0028_cascade_and_run_indexes.sql for the same reason.
 
 -- Task checkpoints for long-running tasks
 CREATE TABLE IF NOT EXISTS task_checkpoints (
@@ -51,6 +53,7 @@ CREATE TABLE IF NOT EXISTS task_checkpoints (
   terminal_seq INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_task_checkpoints_task_seq ON task_checkpoints(task_id, sequence);
 
 -- Real-time agent state tracking
 CREATE TABLE IF NOT EXISTS agent_states (
@@ -352,6 +355,7 @@ CREATE TABLE IF NOT EXISTS task_artifact_refs (
 );
 CREATE INDEX IF NOT EXISTS idx_task_artifact_refs_artifact ON task_artifact_refs(artifact_id);
 CREATE INDEX IF NOT EXISTS idx_task_artifact_refs_window ON task_artifact_refs(window_id);
+CREATE INDEX IF NOT EXISTS idx_task_artifact_refs_input_stream ON task_artifact_refs(input_stream_id);
 
 -- Global real-time processing configuration (like skipper_config)
 CREATE TABLE IF NOT EXISTS realtime_config (
@@ -404,7 +408,9 @@ CREATE TABLE IF NOT EXISTS agent_note_receipts (
   delivered_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (agent_instance_id, note_id)
 );
-CREATE INDEX IF NOT EXISTS idx_agent_note_receipts_instance ON agent_note_receipts(agent_instance_id);
+-- Lookups by agent_instance_id use the primary key; note_id serves the cascade
+-- from task_notes.
+CREATE INDEX IF NOT EXISTS idx_agent_note_receipts_note ON agent_note_receipts(note_id);
 
 -- Task Templates (reusable prompt configurations per team)
 CREATE TABLE IF NOT EXISTS task_templates (

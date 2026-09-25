@@ -5,7 +5,8 @@ import { AgentManager, extractTextFromJsonEvent, detectAllSignalsInText, detectS
 import type { RunningAgent, JsonEvent } from "./manager";
 import { clearAgentTypeCache } from "./types";
 import { eventBus } from "../events/bus";
-import type { AgentOutputEvent, AgentExitEvent } from "../events/bus";
+import type { AgentOutputEvent, AgentExitEvent, InstanceStateChangedEvent } from "../events/bus";
+import { createCustomAgent, customAgentTypeName } from "../custom-agents/store";
 import { unlinkSync } from "fs";
 
 const TEST_DB = "test-agent-manager.db";
@@ -533,6 +534,171 @@ describe("spawnAgent", () => {
       .prepare("SELECT data FROM terminal_outputs WHERE agent_id = ? AND stream = 'stdout'")
       .all(running.id) as { data: string }[];
     expect(rows.map((r) => r.data).join("")).toContain("inline hello");
+  });
+});
+
+describe("agent:exit streamsDrained", () => {
+  // Records the order of agent:streams_drained and agent:exit for one tracked runtime id.
+  function watchExitOrder(): { order: string[]; exit: () => AgentExitEvent | undefined; track: (id: string) => void; stop: () => void } {
+    const order: string[] = [];
+    let exitEvent: AgentExitEvent | undefined;
+    let runtimeId = "";
+    const onDrained = (e: { agentId: string }) => { if (e.agentId === runtimeId) order.push("drained"); };
+    const onExit = (e: AgentExitEvent) => {
+      if (e.agentId !== runtimeId) return;
+      order.push("exit");
+      exitEvent = e;
+    };
+    eventBus.on("agent:streams_drained", onDrained);
+    eventBus.on("agent:exit", onExit);
+    return {
+      order,
+      exit: () => exitEvent,
+      track: (id) => { runtimeId = id; },
+      stop: () => {
+        eventBus.off("agent:streams_drained", onDrained);
+        eventBus.off("agent:exit", onExit);
+      },
+    };
+  }
+
+  it("is true exactly when this process's streams were read before its exit", async () => {
+    const { agentId } = createTestEchoAgent(`echo '{"type":"result","result":"ok"}'`);
+    const watch = watchExitOrder();
+    try {
+      const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+      watch.track(running.id);
+      await running.process.exited;
+      await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      watch.stop();
+    }
+
+    expect(watch.order).toContain("drained");
+    expect(watch.order).toContain("exit");
+    const drainedFirst = watch.order.indexOf("drained") < watch.order.indexOf("exit");
+    expect(watch.exit()?.streamsDrained).toBe(drainedFirst);
+  });
+
+  it("is false while a grandchild still holds the pipe open", async () => {
+    // bash forks sleep (a compound command, so no exec); killing bash alone
+    // leaves sleep holding stdout/stderr, so the exit arrives before the drain.
+    const { agentId } = createTestEchoAgent("sleep 3; echo late");
+    const watch = watchExitOrder();
+    let runningId = "";
+    const drained = new Promise<void>((resolve) => {
+      const handler = (e: { agentId: string }) => {
+        if (e.agentId !== runningId) return;
+        eventBus.off("agent:streams_drained", handler);
+        resolve();
+      };
+      eventBus.on("agent:streams_drained", handler);
+    });
+    try {
+      const running = await manager.spawnAgent(agentId, { workingDir: "/tmp" });
+      runningId = running.id;
+      watch.track(running.id);
+      await new Promise((r) => setTimeout(r, 100));
+      manager.killAgent(running.id);
+      await running.process.exited;
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(watch.order).toEqual(["exit"]);
+      expect(watch.exit()?.streamsDrained).toBe(false);
+
+      // Release the pipe: the process group (spawned detached, pid === pgid)
+      // still holds this test's sleep.
+      try { process.kill(-running.process.pid!, "SIGKILL"); } catch { /* already gone */ }
+      await drained;
+    } finally {
+      watch.stop();
+    }
+  });
+
+  it("is true for an in-process agent, which has no streams to drain", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      id: "x", object: "chat.completion", created: 0, model: "fake",
+      choices: [{ index: 0, message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
+    try {
+      const definition = createCustomAgent(db, {
+        name: "In Process",
+        description: "",
+        baseUrl: "http://model.test/v1",
+        modelId: "fake",
+        apiKey: "sk-test",
+        headers: {},
+        queryParams: {},
+        systemPrompt: "You are a tester.",
+        enabledTools: [],
+        enabledMcpTools: [],
+        enabledSkills: [],
+        maxSteps: 2,
+        temperature: null,
+      });
+      const agent = manager.createAgent({ name: "In Process", type: customAgentTypeName(definition.id) });
+      db.prepare("INSERT INTO tasks (id, title, status, started_at) VALUES ('task-in-process', 'T', 'active', datetime('now'))").run();
+
+      const exited = new Promise<AgentExitEvent>((resolve) => {
+        const handler = (e: AgentExitEvent) => {
+          eventBus.off("agent:exit", handler);
+          resolve(e);
+        };
+        eventBus.on("agent:exit", handler);
+      });
+      const running = await manager.spawnAgent(agent.id, { workingDir: "/tmp", taskId: "task-in-process", initialPrompt: "hi" });
+      const exit = await exited;
+
+      expect(running.process.pid).toBeNull();
+      expect(exit.agentId).toBe(running.id);
+      expect(exit.streamsDrained).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+describe("terminal output sequence", () => {
+  it("continues the sequence when a respawn reuses the runtime id, so the newest result sorts last", async () => {
+    const { agentId } = createTestEchoAgent(
+      `echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'; echo '{"type":"result","result":"first run"}'`,
+    );
+    db.prepare("INSERT INTO tasks (id, title) VALUES ('task-seq', 'Seq')").run();
+    const runtimeId = "runtime-seq-reuse";
+    const spawnOnce = async (): Promise<void> => {
+      const running = await manager.spawnAgentInstance(agentId, runtimeId, {
+        workingDir: "/tmp",
+        taskId: "task-seq",
+        parentInstanceId: null,
+        rootInstanceId: runtimeId,
+        attempt: 1,
+      });
+      await running.process.exited;
+      await new Promise((r) => setTimeout(r, 100));
+    };
+
+    await spawnOnce();
+    // The respawn (same runtime id, e.g. resumed after an escalation) prints
+    // fewer frames than the first run did.
+    db.prepare("UPDATE agent_types SET args = ? WHERE name = 'test-echo'").run(
+      JSON.stringify(["-c", `echo '{"type":"result","result":"second run"}'`]),
+    );
+    clearAgentTypeCache();
+    await spawnOnce();
+
+    const rows = db
+      .prepare("SELECT data, sequence FROM terminal_outputs WHERE agent_id = ? AND stream = 'stdout' ORDER BY sequence")
+      .all(runtimeId) as { data: string; sequence: number }[];
+    expect(rows.map((r) => r.sequence)).toEqual([1, 2, 3]);
+    // delegation-manager's gatherTerminalOutput reads this order and keeps the
+    // LAST result frame as the child's result.
+    const results = rows
+      .map((r) => JSON.parse(r.data) as { type?: string; result?: string })
+      .filter((frame) => frame.type === "result")
+      .map((frame) => frame.result);
+    expect(results).toEqual(["first run", "second run"]);
   });
 });
 
@@ -1709,5 +1875,50 @@ describe("compactFrameForStorage", () => {
     const stored = compactFrameForStorage("X".repeat(40_000));
     expect(Buffer.byteLength(stored, "utf-8")).toBeLessThan(40_000);
     expect(stored).toContain("frame truncated");
+  });
+});
+
+describe("instance status on process exit", () => {
+  // Spawns `exec sleep 10` as a task instance, optionally closes its row the way
+  // a settle does, then stops it (SIGTERM, a non-zero exit) and reports the row
+  // and every status the exit announced.
+  async function stopInstance(closeFirst: string | null): Promise<{ status: string; pid: number | null; exitCode: number | null; announced: string[] }> {
+    const { agentId } = createTestEchoAgent("exec sleep 10");
+    const taskId = `task-exit-${crypto.randomUUID()}`;
+    db.prepare("INSERT INTO tasks (id, title) VALUES (?, 'Exit status')").run(taskId);
+    const id = crypto.randomUUID();
+    const running = await manager.spawnAgentInstance(agentId, id, {
+      workingDir: "/tmp", taskId, parentInstanceId: null, rootInstanceId: id, attempt: 1,
+    });
+    const announced: string[] = [];
+    const onState = (e: InstanceStateChangedEvent) => { if (e.instanceId === id) announced.push(e.status); };
+    eventBus.on("instance:state_changed", onState);
+    try {
+      if (closeFirst) db.prepare("UPDATE agent_instances SET status = ? WHERE id = ?").run(closeFirst, id);
+      manager.killAgent(running.id);
+      await manager.waitForExit(running.id, 10_000);
+    } finally {
+      eventBus.off("instance:state_changed", onState);
+    }
+    const row = db
+      .prepare("SELECT status, process_pid AS pid, json_extract(state_metadata, '$.exit_code') AS exitCode FROM agent_instances WHERE id = ?")
+      .get(id) as { status: string; pid: number | null; exitCode: number | null };
+    return { ...row, announced };
+  }
+
+  it("keeps the status a settle already wrote: the stop's non-zero exit does not turn a completed root into failed", async () => {
+    const result = await stopInstance("completed");
+    expect(result.status).toBe("completed");
+    expect(result.pid).toBeNull();
+    expect(result.exitCode).not.toBe(0);
+    expect(result.announced.at(-1)).toBe("completed");
+  });
+
+  it("still gives a live row the exit code's status", async () => {
+    const result = await stopInstance(null);
+    expect(result.status).toBe("failed");
+    expect(result.pid).toBeNull();
+    expect(result.exitCode).not.toBe(0);
+    expect(result.announced.at(-1)).toBe("failed");
   });
 });

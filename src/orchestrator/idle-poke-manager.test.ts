@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { IdlePokeManager } from "./idle-poke-manager";
 import { getAgentTypeDefinition } from "../agents/types";
+import { setBoolSetting, SETTING_PARALLEL_TASKS } from "../config/app-settings";
 import { unlinkSync } from "fs";
 
 const TEST_DB = "test-idle-poke-manager.db";
@@ -70,8 +71,10 @@ function buildManager(
   database: Database,
   overrides: {
     getActiveDelegationForParent?: (id: string) => unknown;
-    spawnAgent?: () => Promise<void>;
+    spawnAgent?: (...args: any[]) => Promise<unknown>;
     getRunningAgent?: (id: string) => unknown;
+    getRunningInstanceForTask?: (templateAgentId: string, taskId: string) => unknown;
+    killAgent?: (id: string) => boolean;
     getAgent?: (id: string) => { id: string; type: string } | null;
   } = {},
 ): { manager: IdlePokeManager; escalateMock: ReturnType<typeof mock>; spawnMock: ReturnType<typeof mock>; } {
@@ -82,9 +85,10 @@ function buildManager(
 
   const agentManager = {
     getRunningAgent: overrides.getRunningAgent ?? mock(() => null),
-    // Stale-instance teardown is now task-scoped (not template-keyed) to avoid
-    // killing a sibling same-team task's entrypoint under parallel runs.
-    getRunningInstanceForTask: mock(() => undefined),
+    // The live-entrypoint gate and stale-instance teardown are task-scoped (not
+    // template-keyed), so a sibling task's live root neither blocks the poke nor
+    // gets killed by it under parallel runs.
+    getRunningInstanceForTask: overrides.getRunningInstanceForTask ?? mock(() => undefined),
     getAgent: overrides.getAgent ?? mock(() => ({ id: "skipper", type: "claude-code" })),
     getEffectiveRootTypeDef: (id: string) => {
       const agent = (overrides.getAgent ?? (() => ({ id: "skipper", type: "claude-code" })))(id);
@@ -92,7 +96,7 @@ function buildManager(
     },
     getRootSpawnOverrides: () => ({}),
     getEntrypointSessionIdForTask: () => "session-1",
-    killAgent: mock(() => true),
+    killAgent: overrides.killAgent ?? mock(() => true),
     waitForExit: mock(async () => {}),
     spawnAgent: spawnMock,
     sendInput: mock(() => {}),
@@ -168,23 +172,108 @@ describe("IdlePokeManager", () => {
     const taskId = createRunningTask(db, teamId);
     setIdleSince(db, taskId, ago(75_000));
 
-    // First getRunningAgent call is the "live entrypoint" gate (must be null so
-    // the poke proceeds); the second is the post-spawn confirmation (must return
-    // the freshly spawned runtime). Stale teardown is now task-scoped via
-    // getRunningInstanceForTask (mocked to undefined), which does not consume a
-    // getRunningAgent call.
-    let runningCalls = 0;
+    // The "live entrypoint" gate and stale teardown are task-scoped via
+    // getRunningInstanceForTask (mocked to undefined), so getRunningAgent is
+    // only the post-spawn confirmation, by the spawned runtime id.
     const { manager, spawnMock } = buildManager(db, {
-      getRunningAgent: () => {
-        runningCalls++;
-        return runningCalls === 1 ? null : ({ id: "rt-spawn" } as unknown);
-      },
+      getRunningAgent: (id) => (id === "rt-spawn" ? ({ id: "rt-spawn" } as unknown) : null),
     });
     const acted = await manager.runIdlePokes();
 
     expect(acted).toBe(1);
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(getDaemonState(db, `idle_since:${taskId}`)).toBeNull();
+    expect(getDaemonState(db, `idle_poke_count:${taskId}`)).toBe("1");
+  });
+
+  // Every team shares one entrypoint template (e.g. `skipper`). This fake keeps
+  // AgentManager's lookup semantics: a template id passed to getRunningAgent
+  // resolves to ANY task's live instance; getRunningInstanceForTask only to the
+  // given task's.
+  function sharedTemplateAgents() {
+    const running = new Map<string, { id: string; taskId: string; templateAgentId: string }>();
+    return {
+      running,
+      getRunningAgent: (id: string) =>
+        running.get(id) ?? [...running.values()].find((a) => a.templateAgentId === id),
+      getRunningInstanceForTask: (templateAgentId: string, taskId: string) =>
+        [...running.values()].find((a) => a.templateAgentId === templateAgentId && a.taskId === taskId),
+      spawnAgent: mock(async (templateAgentId: string, opts: { taskId: string }) => {
+        const agent = { id: `rt-${opts.taskId}`, taskId: opts.taskId, templateAgentId };
+        running.set(agent.id, agent);
+        return agent;
+      }),
+      killAgent: mock((_id: string) => true),
+    };
+  }
+
+  it("pokes an idle task while another task's root on the same template is live", async () => {
+    const agentId = createAgent(db);
+    const teamId = createTeam(db, agentId);
+    const taskId = createRunningTask(db, teamId);
+    createRunningTask(db, teamId, "task-other");
+    setIdleSince(db, taskId, ago(75_000));
+
+    const agents = sharedTemplateAgents();
+    agents.running.set("rt-other", { id: "rt-other", taskId: "task-other", templateAgentId: agentId });
+
+    const { manager } = buildManager(db, agents);
+    const acted = await manager.runIdlePokes();
+
+    expect(acted).toBe(1);
+    expect(agents.spawnAgent).toHaveBeenCalledTimes(1);
+    expect(agents.spawnAgent.mock.calls[0]![1].taskId).toBe(taskId);
+    // The other task's root is left alone.
+    expect(agents.killAgent).not.toHaveBeenCalled();
+    expect(agents.running.has("rt-other")).toBe(true);
+    expect(getDaemonState(db, `idle_since:${taskId}`)).toBeNull();
+    expect(getDaemonState(db, `idle_poke_count:${taskId}`)).toBe("1");
+  });
+
+  it("does not poke while this task's own root is still live", async () => {
+    const agentId = createAgent(db);
+    const teamId = createTeam(db, agentId);
+    const taskId = createRunningTask(db, teamId);
+    setIdleSince(db, taskId, ago(75_000));
+
+    const agents = sharedTemplateAgents();
+    agents.running.set("rt-mine", { id: "rt-mine", taskId, templateAgentId: agentId });
+
+    const { manager } = buildManager(db, agents);
+    const acted = await manager.runIdlePokes();
+
+    expect(acted).toBe(0);
+    expect(agents.spawnAgent).not.toHaveBeenCalled();
+    expect(agents.killAgent).not.toHaveBeenCalled();
+    expect(getDaemonState(db, `idle_since:${taskId}`)).not.toBeNull();
+  });
+
+  it("waits for a free concurrency slot before it pokes (parallel execution off)", async () => {
+    setBoolSetting(db, SETTING_PARALLEL_TASKS, false);
+    const agentId = createAgent(db);
+    const teamId = createTeam(db, agentId);
+    const taskId = createRunningTask(db, teamId);
+    createRunningTask(db, teamId, "task-busy");
+    // The busy task holds the only slot: it has a live agent instance.
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES (?, ?, ?, 'running')")
+      .run("rt-busy", "task-busy", agentId);
+    setIdleSince(db, taskId, ago(75_000));
+
+    const agents = sharedTemplateAgents();
+    agents.running.set("rt-busy", { id: "rt-busy", taskId: "task-busy", templateAgentId: agentId });
+    const { manager } = buildManager(db, agents);
+
+    expect(await manager.runIdlePokes()).toBe(0);
+    expect(agents.spawnAgent).not.toHaveBeenCalled();
+    expect(getDaemonState(db, `idle_since:${taskId}`)).not.toBeNull();
+    expect(getDaemonState(db, `idle_poke_count:${taskId}`)).toBeNull();
+
+    // The busy task's agent ends and frees the slot: the next tick pokes.
+    db.prepare("UPDATE agent_instances SET status = 'completed' WHERE id = ?").run("rt-busy");
+    agents.running.delete("rt-busy");
+    expect(await manager.runIdlePokes()).toBe(1);
+    expect(agents.spawnAgent).toHaveBeenCalledTimes(1);
+    expect(agents.spawnAgent.mock.calls[0]![1].taskId).toBe(taskId);
     expect(getDaemonState(db, `idle_poke_count:${taskId}`)).toBe("1");
   });
 

@@ -1,15 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { resolveMemoryScope } from "../../task-memory/scope";
 import type { TaskMemorySummary } from "../../task-memory/summary";
-
-function memoryFlags(db: Database, taskId: string): { memory_enabled: boolean; memory_mode: string } {
-  try {
-    const scope = resolveMemoryScope(db, taskId);
-    return { memory_enabled: scope.scopeId !== null, memory_mode: scope.mode };
-  } catch {
-    return { memory_enabled: false, memory_mode: "off" };
-  }
-}
 import {
   getBoolSetting,
   SETTING_SKIPPER_CONNECT_ENABLED, getStringSetting, SETTING_SKIPPER_CONNECT_KEY,
@@ -17,24 +7,18 @@ import {
 import { getOpenEscalationCount, isDaemonPaused } from "../../data/queries";
 import {
   fetchCommandCenterTasks,
-  fetchActiveInstanceRows,
-  fetchDelegationsByChildInstance,
-  fetchRunningDelegationGroupCounts,
+  fetchCommandCenterTask,
   fetchTeamPhasesById,
   fetchStandardTaskTeams,
   fetchOpenEscalationCountsByTask,
   hasDaemonOwner,
-  fetchTokenTotalsByTask,
   fetchScheduledTaskRows,
-  fetchRealtimeSessionActive,
   fetchRecentScheduledRuns,
   type CommandCenterTaskRow,
   type DelegationPillInfo,
   type ScheduledRunRow,
 } from "../../data/command-center";
 import type { ActiveMissionData } from "../panels/active-mission.panel";
-import type { MetricsData } from "../panels/metrics-bar.panel";
-import type { QueuedTask } from "../panels/task-queue.panel";
 import type { AgentTreeNode } from "../fragments/tree-node.fragment";
 import type { PhaseStepData } from "../fragments/phase-step.fragment";
 import { taskResultHasError } from "../fragments/status-chip.fragment";
@@ -49,10 +33,6 @@ export interface TaskSummary {
   display_status: string;
   /** Task mode: workflow | conversational. */
   mode: string;
-  /** Per-task memory on (one-off toggle, or the recurring series' mode for a run). */
-  memory_enabled: boolean;
-  /** off | run | shared (resolved via task-memory/scope.ts). */
-  memory_mode: string;
   /** Paused flag on active tasks ('paused' is no longer a status). */
   paused: boolean;
   /** True when the task result carries an error (settled-with-error = old "failed"). */
@@ -76,12 +56,6 @@ export interface TaskSummary {
   has_attention: boolean;
   /** Number of open escalations on the task — drives the task-header escalation label. */
   open_escalation_count: number;
-  tokens: {
-    input: number;
-    output: number;
-    cache_creation: number;
-    cache_read: number;
-  };
 }
 
 export interface ScheduledTaskSummary {
@@ -117,25 +91,24 @@ export interface ScheduledTaskSummary {
   icon_color?: string | null;
 }
 
+/**
+ * Only what the command-center renderers read. It is built on every page load
+ * and on every task:state_changed (ui-push sidebar), so a field nothing renders
+ * still costs its queries on each build.
+ */
 export interface CommandCenterViewModel {
   isIdle: boolean;
   mission: ActiveMissionData | null;
   missionsByTask: Record<string, ActiveMissionData>;
-  metrics: MetricsData;
-  agentTree: AgentTreeNode[];
-  delegationSummary: string;
-  queue: QueuedTask[];
   allTasks: TaskSummary[];
   scheduledTasks: ScheduledTaskSummary[];
   /** Last 5 runs per recurring task, newest first — the v2 sidebar run strip. */
   scheduledRuns: Record<string, ScheduledRunRow[]>;
-  recentTasks: Array<{ id: string; title: string; status: string; completed_at: string | null }>;
   teams: Array<{ id: string; name: string; icon?: string | null; icon_color?: string | null }>;
   escalationCount: number;
   daemonState: string;
   daemonUptime: number;
   skipperConnectEnabled: boolean;
-  realtimeSessionActive: Record<string, boolean>;
 }
 
 function buildMissionForTask(
@@ -184,31 +157,6 @@ export function buildCommandCenterViewModel(
 
   const runningTasks = allTasks.filter((t) => t.display_status === "working");
   const runningTask = runningTasks[0] ?? null;
-  const queuedTasks = allTasks.filter((t) => t.display_status === "queued");
-  const recentTasks = allTasks.filter((t) => t.status === "settled").slice(0, 5);
-
-  // Metrics. Archived tasks split into the old completed/failed buckets by
-  // whether the final result carries an error.
-  const running = runningTasks.length;
-  const queued = queuedTasks.length;
-  const completed = allTasks.filter((t) => t.status === "settled" && !taskResultHasError(t.result)).length;
-  const failed = allTasks.filter((t) => t.status === "settled" && taskResultHasError(t.result)).length;
-
-  const runningInstances = fetchActiveInstanceRows(db);
-
-  // Delegation-by-child map: unifies the agent tree with delegations so each
-  // delegated instance shows a clickable pill (prompt preview + status) that
-  // opens the full prompt in a modal. Keyed by the delegation's child_instance_id.
-  const delegationsByChild = fetchDelegationsByChildInstance(db, runningInstances.map((i) => i.id));
-
-  // Build agent tree
-  const agentTree = buildAgentTree(runningInstances, delegationsByChild);
-
-  // Delegation summary
-  const groups = fetchRunningDelegationGroupCounts(db);
-  const delegationSummary = groups.length > 0
-    ? `${groups.length} group${groups.length > 1 ? "s" : ""}, ${groups.reduce((a, g) => a + g.settled_count, 0)}/${groups.reduce((a, g) => a + g.expected_count, 0)} settled`
-    : "";
 
   // Mission data — one teams read serves every task (was a per-task lookup).
   const teamsById = fetchTeamPhasesById(db);
@@ -233,8 +181,6 @@ export function buildCommandCenterViewModel(
   // Daemon
   const daemonState = isDaemonPaused(db) ? "paused" : hasDaemonOwner(db) ? "running" : "stopped";
 
-  const tokensByTask = fetchTokenTotalsByTask(db);
-
   // Build task summaries with result info
   const taskSummaries: TaskSummary[] = allTasks.map((t) => {
     let resultSummary: string | null = null;
@@ -253,7 +199,6 @@ export function buildCommandCenterViewModel(
       status: t.status,
       display_status: t.display_status ?? t.status,
       mode: t.mode ?? "workflow",
-      ...memoryFlags(db, t.id),
       paused: !!t.paused,
       result_has_error: taskResultHasError(t.result),
       task_type: t.task_type,
@@ -270,38 +215,39 @@ export function buildCommandCenterViewModel(
       icon_color: t.icon_color ?? null,
       has_attention: t.needs_review === 1 || (openEscalationCounts.get(t.id) ?? 0) > 0,
       open_escalation_count: openEscalationCounts.get(t.id) ?? 0,
-      tokens: tokensByTask[t.id] ?? { input: 0, output: 0, cache_creation: 0, cache_read: 0 },
     };
   });
 
   const scheduledTasks: ScheduledTaskSummary[] = fetchScheduledTaskRows(db);
   const scheduledRuns = fetchRecentScheduledRuns(db);
 
-  // Realtime sessions can exist on any active task now, not just conversational ones.
-  const realtimeSessionActive = fetchRealtimeSessionActive(
-    db,
-    allTasks.filter((t) => t.status === "active").map((t) => t.id),
-  );
-
   return {
     isIdle: runningTasks.length === 0,
     mission,
     missionsByTask,
-    metrics: { running, queued, activeAgents: runningInstances.length, completed, failed },
-    agentTree,
-    delegationSummary,
     allTasks: taskSummaries,
     scheduledTasks,
     scheduledRuns,
-    queue: queuedTasks.map((t) => ({ id: t.id, title: t.title, status: t.status, created_at: t.created_at })),
-    recentTasks: recentTasks.map((t) => ({ id: t.id, title: t.title, status: t.status, completed_at: t.completed_at })),
     teams,
     escalationCount,
     daemonState,
     daemonUptime: process.uptime(),
     skipperConnectEnabled: !!getStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, "") && getBoolSetting(db, SETTING_SKIPPER_CONNECT_ENABLED, false),
-    realtimeSessionActive,
   };
+}
+
+/**
+ * One task's phase-strip inputs without building the whole view model: its row
+ * (null when the command-center list hides it, as allTasks would) and the same
+ * mission missionsByTask would hold. See command-center.page renderTaskPhaseStrip.
+ */
+export function buildTaskMission(
+  db: Database,
+  taskId: string,
+): { task: CommandCenterTaskRow; mission: ActiveMissionData | null } | null {
+  const task = fetchCommandCenterTask(db, taskId);
+  if (!task) return null;
+  return { task, mission: buildMissionForTask(task, fetchTeamPhasesById(db)) };
 }
 
 /** Build a flat list of tree nodes with depth and connector info from agent instances */

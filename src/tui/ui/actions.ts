@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Store } from "../model/store";
 import type { Transport } from "../transport/types";
-import type { TaskItem, Team, RecurringSeries, Artifact, RemoteTeamRepo } from "../model/types";
+import type { TaskItem, TaskDetail, Team, RecurringSeries, Artifact, RemoteTeamRepo } from "../model/types";
 import { TextBuffer } from "../input/text-editor";
 import type { KeyEvent } from "../input/keyboard";
 import { C, agentColor } from "../render/theme";
@@ -31,6 +31,8 @@ export interface Ctx {
   /** Everything a task can be assigned to: teams plus custom/single agents projected as solo teams. */
   loadAssignees(force?: boolean): Promise<Assignee[]>;
   loadRecurring(force?: boolean): Promise<RecurringSeries[]>;
+  /** The stored task, read fresh (`tasks/read`); null when it is gone. Rejects when the daemon cannot answer. */
+  readTask(taskId: string): Promise<TaskDetail | null>;
   selectTask(id: string | null): void;
   openComposer(): void;
   quit(): void;
@@ -750,8 +752,23 @@ function fileLoadKeyHandler(bufKey: string): (key: KeyEvent, modal: FormModal) =
 }
 
 export async function openTaskForm(ctx: Ctx, existing: TaskItem | null): Promise<void> {
+  // An edit pre-fills from the stored task, read fresh: the cached bundle may not
+  // be loaded yet (or its load failed), and a blank form hides the real brief and
+  // assignee from the operator about to change them. No read, no form.
+  let detail: TaskDetail | null = null;
+  if (existing) {
+    try {
+      detail = await ctx.readTask(existing.id);
+    } catch (err) {
+      ctx.toast(`cannot edit: ${err instanceof Error ? err.message : String(err)}`, "error");
+      return;
+    }
+    if (!detail) {
+      ctx.toast("cannot edit: the task no longer exists", "error");
+      return;
+    }
+  }
   const assignees = await ctx.loadAssignees().catch(() => [] as Assignee[]);
-  const detail = existing ? ctx.store.peekBundle(existing.id)?.detail : null;
   const kindLabel = (a: Assignee) => (a.kind === "custom-agent" ? "custom agent" : a.kind === "single-agent" ? "single agent" : `team · ${a.phaseCount} phases`);
   const order = { team: 0, "custom-agent": 1, "single-agent": 2 } as const;
   const sorted = [...assignees].sort((a, b) => order[a.kind] - order[b.kind] || a.name.localeCompare(b.name));
@@ -759,7 +776,17 @@ export async function openTaskForm(ctx: Ctx, existing: TaskItem | null): Promise
     { value: "", label: "none (solo / conversational)" },
     ...sorted.map((a) => ({ value: a.id, label: `${a.kind === "team" ? "⬢" : "◉"} ${a.name}`, hint: kindLabel(a) })),
   ];
-  const teamIdx = Math.max(0, teamOptions.findIndex((o) => o.value === (existing?.team_id ?? "")));
+  // The current assignee stays pickable when the list lacks it (the list failed
+  // to load, or the team is no longer assignable), so an untouched picker keeps
+  // it instead of reading as "none".
+  const currentTeamId = detail?.team_id ?? "";
+  if (currentTeamId && !teamOptions.some((o) => o.value === currentTeamId)) {
+    const solo = currentTeamId.startsWith("ca:") || currentTeamId.startsWith("sa:");
+    teamOptions.push({ value: currentTeamId, label: `${solo ? "◉" : "⬢"} ${detail?.team_name ?? currentTeamId}`, hint: "current" });
+  }
+  const teamIdx = Math.max(0, teamOptions.findIndex((o) => o.value === currentTeamId));
+  const descriptionBuf = new TextBuffer(detail?.description ?? "", true);
+  const initialDescription = descriptionBuf.value;
   const modeOptions = [
     { value: "workflow", label: "⚡ autopilot (workflow)", hint: "system drives to the end of the phases" },
     { value: "conversational", label: "☾ manual (conversational)", hint: "you drive; agents finish the instruction and rest" },
@@ -767,7 +794,7 @@ export async function openTaskForm(ctx: Ctx, existing: TaskItem | null): Promise
   const isDraftEdit = !!existing && existing.status === "draft";
   const fields: FormModal["fields"] = [
     { kind: "text", key: "title", label: "Title", buf: new TextBuffer(existing?.title ?? ""), placeholder: ctx.store.titleGeneratorConfigured ? "blank = generated from the description" : "what should happen?", required: !ctx.store.titleGeneratorConfigured || !!existing },
-    { kind: "textarea", key: "description", label: "Description", buf: new TextBuffer(detail?.description ?? "", true), rows: 8, placeholder: "the brief the team receives. ctrl+j for a new line, paste is fine." },
+    { kind: "textarea", key: "description", label: "Description", buf: descriptionBuf, rows: 8, placeholder: "the brief the team receives. ctrl+j for a new line, paste is fine." },
     { kind: "select", key: "teamId", label: "Assign to", options: teamOptions, index: teamIdx, hint: "←/→ cycle · type a letter to jump" },
   ];
   if (!existing || isDraftEdit) {
@@ -808,10 +835,17 @@ export async function openTaskForm(ctx: Ctx, existing: TaskItem | null): Promise
       const mode = String(v.mode ?? "");
       const workingDirectory = String(v.workingDirectory ?? "").trim();
       if (existing) {
+        // Only what the operator changed: both edit paths (tasks/update and the
+        // loopback update route) keep the stored description / assignee when the
+        // field is left out.
+        const changed = {
+          ...(String(v.description) !== initialDescription ? { description: String(v.description) } : {}),
+          ...(teamId !== currentTeamId ? { teamId } : {}),
+        };
         if (isDraftEdit) {
-          await ctx.transport.request("tasks", "update", { id: existing.id, title, description: String(v.description), teamId, mode });
+          await ctx.transport.request("tasks", "update", { id: existing.id, title, ...changed, mode });
         } else {
-          await ctx.transport.updateTask(existing.id, { title, description: String(v.description), teamId, ...(workingDirectory ? { workingDirectory } : {}) });
+          await ctx.transport.updateTask(existing.id, { title, ...changed, ...(workingDirectory ? { workingDirectory } : {}) });
         }
         return `saved: ${title}`;
       }
@@ -843,20 +877,26 @@ export async function openRecurringForm(ctx: Ctx, existing: RecurringSeries | nu
     ctx.toast("a recurring task needs a team. import or create one first (T).", "warn");
     return;
   }
+  // A weekly series runs on an hour grid the TUI cannot edit. "weekly" is offered
+  // only for a series that has one, and keeping it sends the stored grid back
+  // unchanged: recurring/update takes the schedule as a whole, so a save without
+  // the grid would clear it and the series would stop running.
+  const weekly = existing?.scheduleMatrix ?? null;
   const cadence = [
     { value: "", label: "manual only" },
     { value: "minutes", label: "every N minutes" },
     { value: "hours", label: "every N hours" },
     { value: "days", label: "every N days" },
+    ...(weekly ? [{ value: "weekly", label: "weekly", hint: "hours set in the web UI, kept as they are" }] : []),
   ];
   const teamIdx = Math.max(0, teamOptions.findIndex((o) => o.value === (existing?.teamId ?? "")));
-  const unitIdx = existing ? Math.max(0, cadence.findIndex((o) => o.value === (existing.scheduleUnit ?? ""))) : 2;
+  const unitIdx = existing ? Math.max(0, cadence.findIndex((o) => o.value === (weekly ? "weekly" : existing.scheduleUnit ?? ""))) : 2;
   const fields: FormModal["fields"] = [
     { kind: "text", key: "title", label: "Title", buf: new TextBuffer(existing?.title ?? ""), required: true },
     { kind: "textarea", key: "description", label: "Description", buf: new TextBuffer(existing?.description ?? "", true), rows: 6 },
     { kind: "select", key: "teamId", label: "Team", options: teamOptions, index: teamIdx },
     { kind: "select", key: "unit", label: "Cadence", options: cadence, index: unitIdx },
-    { kind: "text", key: "amount", label: "N", buf: new TextBuffer(String(existing?.scheduleAmount ?? 1)), hint: "ignored for manual" },
+    { kind: "text", key: "amount", label: "N", buf: new TextBuffer(String(existing?.scheduleAmount ?? 1)), hint: weekly ? "ignored for manual and weekly" : "ignored for manual" },
   ];
   if (existing) fields.push({ kind: "static", key: "status", label: "Status", text: `${existing.status}  (a approve · u back to draft)` });
   else fields.push({ kind: "toggle", key: "approve", label: "Approve immediately", value: true, hint: "off = inert draft series" });
@@ -869,16 +909,16 @@ export async function openRecurringForm(ctx: Ctx, existing: RecurringSeries | nu
     submitLabel: existing ? "Save" : "Create",
     onSubmit: async (v) => {
       const unit = String(v.unit);
+      const keepWeekly = unit === "weekly";
       const amount = Number(String(v.amount).trim());
-      if (unit && (!Number.isFinite(amount) || amount <= 0)) throw new Error("N must be a positive number");
+      if (unit && !keepWeekly && (!Number.isFinite(amount) || amount <= 0)) throw new Error("N must be a positive number");
       if (existing) {
         await ctx.transport.request("recurring", "update", {
           id: existing.id,
           title: String(v.title).trim(),
           description: String(v.description),
           teamId: String(v.teamId),
-          scheduleUnit: unit || undefined,
-          scheduleAmount: unit ? amount : undefined,
+          ...(keepWeekly ? { scheduleMatrix: weekly } : { scheduleUnit: unit || undefined, scheduleAmount: unit ? amount : undefined }),
         });
         await ctx.loadRecurring(true);
         return `saved: ${String(v.title).trim()}`;

@@ -281,6 +281,14 @@ export interface ResourceDeps {
   inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>;
   /** Kill a task's live agent process trees (settle/cancel parity with the web routes). */
   killTaskRuntimes?: (taskId: string) => void;
+  /**
+   * Stop / respawn a task's agents around the paused flag (`daemon.pauseTaskAgents`
+   * / `daemon.resumeTaskAgents`), so `tasks/pause` / `tasks/resume-from-pause`
+   * match POST /api/tasks/:id/{pause,resume-from-pause}. Without them only the
+   * flag flips.
+   */
+  pauseTaskAgents?: (taskId: string) => Promise<unknown>;
+  resumeTaskAgents?: (taskId: string) => Promise<void>;
   /** Per-task memory: `tasks/set-memory` / `recurring/set-memory` backfill through it, clear actions delete through it. */
   taskMemory?: Pick<TaskMemoryManager, "backfill" | "backfillSeries" | "clearScope" | "prune">;
   /**
@@ -652,14 +660,20 @@ export async function handleResourceRequest(
             return { ok: true, data: { ...delivered, task: toTaskDetailItem(db, id) } };
           }
           case "pause": {
+            // Parity with POST /api/tasks/:id/pause: flip the paused flag first
+            // so recovery/health/queue loops stop treating the task as live,
+            // THEN stop its agents and their process trees.
             const id = String(params.id ?? "");
             if (!id) return { ok: false, error: "id is required" };
             taskScheduler.pauseTask(id);
+            if (deps.pauseTaskAgents) await deps.pauseTaskAgents(id);
             return { ok: true, data: toTaskDetailItem(db, id) };
           }
           case "resume-from-pause": {
-            // Clear the paused flag. Agent respawn is the daemon's job, not
-            // this relay's. A settled task is revived with `revive` instead.
+            // Parity with POST /api/tasks/:id/resume-from-pause: respawn the
+            // agents first (from the snapshots the pause stored), THEN clear the
+            // paused flag so the task is only live once they are back. A settled
+            // task is revived with `revive` instead.
             const id = String(params.id ?? "");
             if (!id) return { ok: false, error: "id is required" };
             const task = taskScheduler.getTask(id);
@@ -667,6 +681,7 @@ export async function handleResourceRequest(
             if (task.status !== "active" || !task.paused) {
               return { ok: false, error: "Task is not paused" };
             }
+            if (deps.resumeTaskAgents) await deps.resumeTaskAgents(id);
             taskScheduler.resumeFromPause(id);
             return { ok: true, data: toTaskDetailItem(db, id) };
           }

@@ -17,6 +17,21 @@ interface AgentStateRow {
   last_signal_at: string | null;
 }
 
+interface InstanceRow {
+  task_id: string;
+  template_agent_id: string;
+}
+
+/**
+ * Stuck detection per runtime instance. Every agent_states row this tracker
+ * reads or writes is keyed by a runtime id (agent_instances.id), because one
+ * template (above all the shared `skipper` root) runs in many tasks at once:
+ * each runtime gets its own heartbeat, fingerprint, nudges and escalation.
+ * Template-keyed agent_states rows still exist (the delegation and escalation
+ * managers write them, and heartbeats were once stored there). They never
+ * join to a live agent_instances row, so they are never candidates, nudged
+ * or escalated.
+ */
 export class StateTracker {
   private db: Database;
   private agentManager: AgentManager;
@@ -27,143 +42,162 @@ export class StateTracker {
   }
 
   /**
-   * For all agents with active PIDs, compute a screen fingerprint from recent
-   * terminal output and compare it with the stored one. If the output has
-   * changed, update heartbeat_at; otherwise leave it stale so that
-   * getStuckCandidates() can identify the agent as a potential stuck candidate.
+   * For every live runtime (running or waiting on a delegation, with a pid),
+   * compute a screen fingerprint from that runtime's own recent terminal
+   * output and compare it with the stored one. If the output has changed,
+   * update heartbeat_at; otherwise leave it stale so that getStuckCandidates()
+   * can identify the runtime as a potential stuck candidate.
    */
   updateHeartbeats(): void {
-    const agentRows = this.db
-      .prepare("SELECT id FROM agents WHERE process_pid IS NOT NULL")
+    const runtimeRows = this.db
+      .prepare(
+        `SELECT id FROM agent_instances
+         WHERE status IN ('running', 'waiting_delegation') AND process_pid IS NOT NULL`,
+      )
       .all() as { id: string }[];
 
-    for (const { id: agentId } of agentRows) {
-      const fingerprint = this.computeFingerprint(agentId);
-      const state = this.getAgentState(agentId);
+    for (const { id: runtimeId } of runtimeRows) {
+      // Per runtime, so one failed write cannot stop the sweep for the rest
+      // (the single-DB schema that tests use still points agent_states.agent_id
+      // at agents(id), which a runtime id is not).
+      try {
+        const fingerprint = this.computeFingerprint(runtimeId);
+        const state = this.getAgentState(runtimeId);
 
-      if (!state) {
-        // No state record yet — create one with heartbeat = now
-        this.db
-          .prepare(
-            `INSERT INTO agent_states (agent_id, state, screen_fingerprint, heartbeat_at)
-             VALUES (?, 'working', ?, datetime('now'))
-             ON CONFLICT(agent_id) DO UPDATE SET
-               screen_fingerprint = excluded.screen_fingerprint,
-               heartbeat_at = datetime('now'),
-               updated_at = datetime('now')`,
-          )
-          .run(agentId, fingerprint);
-      } else if (state.screen_fingerprint !== fingerprint) {
-        // Output changed → agent is active, refresh heartbeat and reset nudge count
-        this.db
-          .prepare(
-            `UPDATE agent_states
-             SET screen_fingerprint = ?, heartbeat_at = datetime('now'), nudge_count = 0, updated_at = datetime('now')
-             WHERE agent_id = ?`,
-          )
-          .run(fingerprint, agentId);
+        if (!state) {
+          // No state record yet: create one with heartbeat = now
+          this.db
+            .prepare(
+              `INSERT INTO agent_states (agent_id, state, screen_fingerprint, heartbeat_at)
+               VALUES (?, 'working', ?, datetime('now'))
+               ON CONFLICT(agent_id) DO UPDATE SET
+                 screen_fingerprint = excluded.screen_fingerprint,
+                 heartbeat_at = datetime('now'),
+                 updated_at = datetime('now')`,
+            )
+            .run(runtimeId, fingerprint);
+        } else {
+          this.rearmClearedGate(runtimeId, state.state);
+          if (state.screen_fingerprint !== fingerprint) {
+            // Output changed → runtime is active, refresh heartbeat and reset nudge count
+            this.db
+              .prepare(
+                `UPDATE agent_states
+                 SET screen_fingerprint = ?, heartbeat_at = datetime('now'), nudge_count = 0, updated_at = datetime('now')
+                 WHERE agent_id = ?`,
+              )
+              .run(fingerprint, runtimeId);
+          }
+        }
+        // If fingerprint is unchanged → heartbeat stays old (no update)
+      } catch (err) {
+        logError(this.db, "state_tracker.update_heartbeat", { runtimeId }, err);
       }
-      // If fingerprint is unchanged → heartbeat stays old (no update)
     }
   }
 
   /**
-   * Return agent IDs whose fingerprint heartbeat has been stale for over
-   * STUCK_THRESHOLD_SECONDS. `last_signal_at` is intentionally NOT consulted
-   * here — it is per-template, so a freshly-spawned instance inherits the
-   * previous instance's signal age and triggers an immediate false positive
-   * for long-running doer agents (Tester, Coder) that produce stdout but
-   * don't emit orchestration signals on every turn. Genuinely-looping agents
-   * still get caught because repetitive output produces an unchanged
-   * fingerprint, which lets the heartbeat go stale.
+   * Return runtime ids whose fingerprint heartbeat has been stale for over
+   * STUCK_THRESHOLD_SECONDS. The join to a live agent_instances row is what
+   * keeps template-keyed rows out. `last_signal_at` is intentionally NOT
+   * consulted here: doer agents (Tester, Coder) produce stdout for long
+   * stretches without emitting an orchestration signal, so signal age alone
+   * would flag them falsely. Genuinely-looping agents still get caught because
+   * repetitive output produces an unchanged fingerprint, which lets the
+   * heartbeat go stale.
    */
   getStuckCandidates(): string[] {
     const rows = this.db
       .prepare(
         `SELECT as_.agent_id
          FROM agent_states as_
-         JOIN agents a ON a.id = as_.agent_id
-         WHERE a.process_pid IS NOT NULL
+         JOIN agent_instances ai ON ai.id = as_.agent_id
+         WHERE ai.status IN ('running', 'waiting_delegation')
+           AND ai.process_pid IS NOT NULL
            AND unixepoch(as_.heartbeat_at) < (unixepoch('now') - ?)
            AND as_.state NOT IN ('waiting_delegation', 'escalated', 'stopped')`,
       )
       .all(STUCK_THRESHOLD_SECONDS) as { agent_id: string }[];
     return rows
       .map((r) => r.agent_id)
-      .filter((agentId) => !this.isActivelyWaitingOnDelegation(agentId));
+      .filter((runtimeId) => !this.isActivelyWaitingOnDelegation(runtimeId) && !this.hasOpenEscalation(runtimeId));
   }
 
   /**
-   * Secondary check: compare the live screen fingerprint against the stored
-   * one. Returns true when the screen hasn't changed (confirming the agent is
-   * stuck). Automatically skips waiting_delegation and escalated agents.
-   * When the screen has changed it updates the stored fingerprint / heartbeat.
+   * Secondary check: compare the runtime's live screen fingerprint against the
+   * stored one. Returns true when the screen hasn't changed (confirming the
+   * runtime is stuck). Automatically skips waiting_delegation and escalated
+   * runtimes. When the screen has changed it updates the stored fingerprint / heartbeat.
    */
-  analyzeStuckAgent(agentId: string): boolean {
-    const state = this.getAgentState(agentId);
+  analyzeStuckAgent(runtimeId: string): boolean {
+    const state = this.getAgentState(runtimeId);
     if (!state) return false;
 
     if (state.state === "waiting_delegation" || state.state === "escalated") {
       return false;
     }
-    if (this.isActivelyWaitingOnDelegation(agentId)) {
+    if (this.isActivelyWaitingOnDelegation(runtimeId) || this.hasOpenEscalation(runtimeId)) {
       return false;
     }
 
-    const currentFingerprint = this.computeFingerprint(agentId);
+    const currentFingerprint = this.computeFingerprint(runtimeId);
 
     if (currentFingerprint === state.screen_fingerprint) {
-      // Before confirming stuck, check if the agent process has active child
-      // processes (e.g. a test suite, build, or other long-running command).
+      // Before confirming stuck, check if the runtime's OS process has active
+      // child processes (e.g. a test suite, build, or other long-running command).
       // A quiet parent with busy children is waiting, not stuck.
-      if (this.hasActiveChildProcesses(agentId)) {
+      if (this.hasActiveChildProcesses(runtimeId)) {
         this.db
           .prepare(
             `UPDATE agent_states
              SET heartbeat_at = datetime('now'), nudge_count = 0, updated_at = datetime('now')
              WHERE agent_id = ?`,
           )
-          .run(agentId);
-        this.logStuckDetection(agentId, "skipped_active_children", currentFingerprint, {
+          .run(runtimeId);
+        this.logStuckDetection(runtimeId, "skipped_active_children", currentFingerprint, {
           heartbeat_at: state.heartbeat_at,
         });
         return false;
       }
 
       // Screen unchanged → confirmed stuck
-      this.logStuckDetection(agentId, "stuck", currentFingerprint, {
+      this.logStuckDetection(runtimeId, "stuck", currentFingerprint, {
         heartbeat_at: state.heartbeat_at,
         nudge_count: state.nudge_count,
       });
       return true;
     }
 
-    // Screen changed since last check → agent is active, reset heartbeat and nudge count
+    // Screen changed since last check → runtime is active, reset heartbeat and nudge count
     this.db
       .prepare(
         `UPDATE agent_states
          SET screen_fingerprint = ?, heartbeat_at = datetime('now'), nudge_count = 0, updated_at = datetime('now')
          WHERE agent_id = ?`,
       )
-      .run(currentFingerprint, agentId);
+      .run(currentFingerprint, runtimeId);
     return false;
   }
 
   /**
-   * Handle a confirmed stuck agent: send a nudge (up to MAX_NUDGES times)
-   * then auto-escalate when nudges are exhausted.
+   * Handle a confirmed stuck runtime: send it a nudge (up to MAX_NUDGES times)
+   * then auto-escalate when nudges are exhausted. Only this runtime is nudged,
+   * escalated and killed; the other live instances of its template belong to
+   * other tasks or delegations and are checked on their own rows.
    */
-  handleStuckAgent(agentId: string): void {
-    const state = this.getAgentState(agentId);
+  handleStuckAgent(runtimeId: string): void {
+    const state = this.getAgentState(runtimeId);
     if (!state) return;
-    if (this.isActivelyWaitingOnDelegation(agentId)) return;
+    if (this.isActivelyWaitingOnDelegation(runtimeId)) return;
 
-    const currentFingerprint = this.computeFingerprint(agentId);
-    const nudgeTargets = this.resolveLiveRuntimeIds(agentId);
+    const currentFingerprint = this.computeFingerprint(runtimeId);
+    // A template-keyed row, or a runtime that is no longer live, has none:
+    // it is never nudged or escalated.
+    const instance = this.getLiveInstance(runtimeId);
 
     if (state.nudge_count < MAX_NUDGES) {
-      if (nudgeTargets.length === 0) {
-        this.logStuckDetection(agentId, "nudge_skipped", currentFingerprint, {
+      if (!instance) {
+        this.logStuckDetection(runtimeId, "nudge_skipped", currentFingerprint, {
           reason: "no_live_runtime",
           nudge_count: state.nudge_count,
         });
@@ -173,18 +207,14 @@ export class StateTracker {
       const nudgeCount = state.nudge_count + 1;
       const nudgeMessage = `[SYSTEM] You appear to be idle. Please continue your work. (nudge ${nudgeCount}/${MAX_NUDGES})`;
 
-      this.logStuckDetection(agentId, "nudged", currentFingerprint, {
+      this.logStuckDetection(runtimeId, "nudged", currentFingerprint, {
         nudge_count: nudgeCount,
-        runtime_ids: nudgeTargets,
       });
 
-      // Attempt to send a nudge to each live runtime for this template agent.
-      for (const runtimeId of nudgeTargets) {
-        try {
-          this.agentManager.sendInput(runtimeId, nudgeMessage);
-        } catch (err) {
-          logError(this.db, "state_tracker.send_nudge", { agentId, runtimeId }, err);
-        }
+      try {
+        this.agentManager.sendInput(runtimeId, nudgeMessage);
+      } catch (err) {
+        logError(this.db, "state_tracker.send_nudge", { agentId: instance.template_agent_id, runtimeId }, err);
       }
 
       // Increment nudge count and reset heartbeat so we don't immediately
@@ -195,25 +225,21 @@ export class StateTracker {
            SET nudge_count = ?, heartbeat_at = datetime('now'), updated_at = datetime('now')
            WHERE agent_id = ?`,
         )
-        .run(nudgeCount, agentId);
+        .run(nudgeCount, runtimeId);
     } else {
-      // Max nudges exhausted → escalate
-      const agentRow = this.db
-        .prepare("SELECT current_task_id FROM agents WHERE id = ?")
-        .get(agentId) as { current_task_id: string | null } | null;
+      // Max nudges exhausted → escalate. The escalation is filed on this
+      // runtime's own task, keeps the template as agent_id and carries this
+      // runtime as runtime_agent_id, so the resolve flow resumes the exact
+      // runtime that got stuck (otherwise injectResponse falls back to a fresh
+      // spawn that loses the conversation context).
+      if (!instance) return;
+      const { task_id: taskId, template_agent_id: templateAgentId } = instance;
 
-      if (!agentRow?.current_task_id) return;
-
-      this.logStuckDetection(agentId, "escalated", currentFingerprint, {
+      this.logStuckDetection(runtimeId, "escalated", currentFingerprint, {
         nudge_count: state.nudge_count,
         reason: "max nudges reached",
       });
 
-      // Capture the runtime instance that was being nudged. nudgeTargets is
-      // ordered most-recent-first; pick the first live one so the resolve flow
-      // can resume the exact runtime that got stuck (otherwise injectResponse
-      // falls back to a fresh spawn that loses the conversation context).
-      const escalatingRuntimeId = nudgeTargets[0] ?? null;
       const escalationId = crypto.randomUUID();
       this.db
         .prepare(
@@ -222,47 +248,47 @@ export class StateTracker {
         )
         .run(
           escalationId,
-          agentId,
-          escalatingRuntimeId,
-          agentRow.current_task_id,
+          templateAgentId,
+          runtimeId,
+          taskId,
           `Agent appears stuck after ${MAX_NUDGES} nudge attempts. Screen fingerprint has not changed.`,
         );
 
-      // Mark agent state as escalated so we stop nudging
+      // Mark the runtime's state as escalated so we stop nudging
       this.db
         .prepare(
           `UPDATE agent_states
            SET state = 'escalated', updated_at = datetime('now')
            WHERE agent_id = ?`,
         )
-        .run(agentId);
+        .run(runtimeId);
 
       eventBus.emit("escalation:created", {
         escalationId,
-        agentId,
-        taskId: agentRow.current_task_id,
+        agentId: templateAgentId,
+        taskId,
         type: "stuck_agent",
         question: `Agent stuck after ${MAX_NUDGES} nudges`,
       });
 
-      // Kill the stuck agent process. With an open escalation now in place,
-      // handleAgentExit will mark the instance stopped and bail (it won't
-      // fail the task or route to Skipper) — the task hangs until the
+      // Kill the stuck runtime itself. With an open escalation now in place
+      // on its task, handleAgentExit will mark the instance stopped and bail
+      // (it won't fail the task or route to Skipper); the task hangs until the
       // operator resolves the escalation, which resumes this runtime.
       try {
-        this.agentManager.killAgent(agentId);
+        this.agentManager.killAgent(runtimeId);
       } catch (err) {
-        logError(this.db, "state_tracker.kill_stuck_agent", { agentId }, err);
+        logError(this.db, "state_tracker.kill_stuck_agent", { agentId: templateAgentId, runtimeId }, err);
       }
     }
   }
 
   /**
-   * Record the time of the last meaningful orchestration signal for this agent.
-   * Called whenever the agent emits a signal (note, delegate, escalate, etc.).
-   * Used to detect agents that are active (producing output) but not making progress.
+   * Record the time of the last meaningful orchestration signal for this
+   * runtime. Called with the runtime id carried by each signal the agent
+   * emits (note, delegate, escalate, etc.).
    */
-  updateLastSignalAt(agentId: string): void {
+  updateLastSignalAt(runtimeId: string): void {
     try {
       this.db
         .prepare(
@@ -272,38 +298,48 @@ export class StateTracker {
              last_signal_at = datetime('now'),
              updated_at = datetime('now')`,
         )
-        .run(agentId);
+        .run(runtimeId);
     } catch (err) {
-      logError(this.db, "state_tracker.update_last_signal_at", { agentId }, err);
+      logError(this.db, "state_tracker.update_last_signal_at", { runtimeId }, err);
     }
   }
 
   // --- Private helpers ---
 
-  private computeFingerprint(agentId: string): string {
+  /** Fingerprint of this runtime's own stdout, never merged with its siblings'. */
+  private computeFingerprint(runtimeId: string): string {
     try {
-      const sourceIds = this.resolveLiveRuntimeIds(agentId);
-      if (sourceIds.length === 0) {
-        return "";
-      }
-
-      const placeholders = sourceIds.map(() => "?").join(", ");
       const rows = this.db
         .prepare(
           `SELECT data FROM terminal_outputs
-           WHERE agent_id IN (${placeholders}) AND stream = 'stdout'
+           WHERE agent_id = ? AND stream = 'stdout'
            ORDER BY id DESC LIMIT 20`,
         )
-        .all(...sourceIds) as { data: string }[];
+        .all(runtimeId) as { data: string }[];
       const combined = rows
         .reverse()
         .map((r) => r.data)
         .join("");
       return combined.slice(-FINGERPRINT_CHARS);
     } catch (err) {
-      logError(this.db, "state_tracker.compute_fingerprint", { agentId }, err);
+      logError(this.db, "state_tracker.compute_fingerprint", { runtimeId }, err);
       return "";
     }
+  }
+
+  /**
+   * The runtime's own instance row while it is live, by the same rule
+   * updateHeartbeats and getStuckCandidates use. Null for a template id.
+   */
+  private getLiveInstance(runtimeId: string): InstanceRow | null {
+    return (
+      (this.db
+        .prepare(
+          `SELECT task_id, template_agent_id FROM agent_instances
+           WHERE id = ? AND status IN ('running', 'waiting_delegation') AND process_pid IS NOT NULL`,
+        )
+        .get(runtimeId) as InstanceRow | null) ?? null
+    );
   }
 
   private getAgentState(agentId: string): AgentStateRow | null {
@@ -315,7 +351,7 @@ export class StateTracker {
   }
 
   private logStuckDetection(
-    agentId: string,
+    runtimeId: string,
     detectionType: string,
     fingerprint: string | null,
     details: Record<string, unknown>,
@@ -326,66 +362,60 @@ export class StateTracker {
           `INSERT INTO stuck_detection_logs (agent_id, detection_type, screen_fingerprint, details)
            VALUES (?, ?, ?, ?)`,
         )
-        .run(agentId, detectionType, fingerprint, JSON.stringify(details));
+        .run(runtimeId, detectionType, fingerprint, JSON.stringify(details));
     } catch (err) {
-      logError(this.db, "state_tracker.log_stuck_detection", { agentId, detectionType }, err);
+      logError(this.db, "state_tracker.log_stuck_detection", { runtimeId, detectionType }, err);
     }
-  }
-
-  private resolveLiveRuntimeIds(agentId: string): string[] {
-    const runtimeIds = this.db
-      .prepare(
-        `SELECT id
-         FROM agent_instances
-         WHERE template_agent_id = ?
-           AND status IN ('running', 'waiting_delegation')
-           AND process_pid IS NOT NULL
-         ORDER BY created_at DESC`,
-      )
-      .all(agentId) as { id: string }[];
-
-    const merged = [
-      ...this.agentManager.getRunningInstancesForTemplate(agentId),
-      ...runtimeIds.map((row) => row.id),
-      agentId,
-    ];
-
-    const seen = new Set<string>();
-    const resolved: string[] = [];
-    for (const runtimeId of merged) {
-      if (!runtimeId || seen.has(runtimeId)) continue;
-      seen.add(runtimeId);
-      resolved.push(runtimeId);
-    }
-
-    const delegatedRuntimeIds = resolved.filter((runtimeId) => runtimeId !== agentId);
-    return delegatedRuntimeIds.length > 0 ? delegatedRuntimeIds : resolved;
   }
 
   /**
-   * Return true when the template agent is intentionally blocked waiting on
-   * active delegated children. This guards against stale agent_states rows
-   * (e.g. state drift back to "working") causing false stuck nudges/escalations.
+   * Only this tracker parks a runtime's row in 'waiting_delegation' or
+   * 'escalated': the delegation and escalation managers reset the TEMPLATE
+   * row when the wait or the escalation ends. Put the runtime back to
+   * 'working' once its own wait or escalation is over, or it would never be
+   * checked again.
    */
-  private isActivelyWaitingOnDelegation(agentId: string): boolean {
-    // Check 1: agent has an instance in waiting_delegation with active child delegations
+  private rearmClearedGate(runtimeId: string, state: string): void {
+    const cleared =
+      (state === "waiting_delegation" && !this.isWaitingOnOwnDelegations(runtimeId)) ||
+      (state === "escalated" && !this.hasOpenEscalation(runtimeId));
+    if (!cleared) return;
+    this.db
+      .prepare(
+        `UPDATE agent_states
+         SET state = 'working', updated_at = datetime('now')
+         WHERE agent_id = ?`,
+      )
+      .run(runtimeId);
+  }
+
+  /**
+   * True while an escalation raised by or for this runtime is open: its own
+   * `escalate` call or an earlier stuck escalation. The escalation manager
+   * marks only the TEMPLATE row 'escalated', so this is what keeps a runtime
+   * that is waiting on the operator from being nudged. Both kinds are filed on
+   * the runtime's own task, which keeps the lookup on the task/status index.
+   */
+  private hasOpenEscalation(runtimeId: string): boolean {
     const row = this.db
       .prepare(
-        `SELECT ai.id
-         FROM agent_instances ai
-         WHERE ai.template_agent_id = ?
-           AND ai.status = 'waiting_delegation'
-           AND EXISTS (
-             SELECT 1
-             FROM delegations d
-             WHERE d.parent_instance_id = ai.id
-               AND d.status IN ('pending', 'running')
-           )
+        `SELECT 1 FROM escalations
+         WHERE task_id = (SELECT task_id FROM agent_instances WHERE id = ?)
+           AND runtime_agent_id = ? AND status = 'open'
          LIMIT 1`,
       )
-      .get(agentId) as { id: string } | null;
+      .get(runtimeId, runtimeId);
+    return !!row;
+  }
 
-    if (row) {
+  /**
+   * Return true when this runtime is intentionally blocked waiting on active
+   * delegated children. This guards against stale agent_states rows
+   * (e.g. state drift back to "working") causing false stuck nudges/escalations.
+   */
+  private isActivelyWaitingOnDelegation(runtimeId: string): boolean {
+    // Check 1: the runtime is in waiting_delegation with active child delegations of its own
+    if (this.isWaitingOnOwnDelegations(runtimeId)) {
       // Reconcile stale state row to avoid repeated false positives.
       this.db
         .prepare(
@@ -395,18 +425,20 @@ export class StateTracker {
                updated_at = datetime('now')
            WHERE agent_id = ?`,
         )
-        .run(agentId);
+        .run(runtimeId);
       return true;
     }
 
-    // Check 2: agent's current task has other running/pending child instances.
+    // Check 2: the runtime's own task has other running/pending child instances.
     // This covers the entrypoint agent (e.g. skipper) which waits while delegated
-    // children work — its stdout won't change but it's not stuck.
-    const agentRow = this.db
-      .prepare("SELECT current_task_id FROM agents WHERE id = ?")
-      .get(agentId) as { current_task_id: string | null } | null;
+    // children work: its stdout won't change but it's not stuck. The task comes
+    // from the runtime's instance row, not agents.current_task_id, which is one
+    // slot shared by every task running the template.
+    const instance = this.db
+      .prepare("SELECT task_id, template_agent_id FROM agent_instances WHERE id = ?")
+      .get(runtimeId) as InstanceRow | null;
 
-    if (agentRow?.current_task_id) {
+    if (instance) {
       const activeChild = this.db
         .prepare(
           `SELECT id FROM agent_instances
@@ -414,7 +446,7 @@ export class StateTracker {
              AND status IN ('running', 'pending')
            LIMIT 1`,
         )
-        .get(agentRow.current_task_id, agentId) as { id: string } | null;
+        .get(instance.task_id, instance.template_agent_id) as { id: string } | null;
 
       if (activeChild) return true;
     }
@@ -422,31 +454,40 @@ export class StateTracker {
     return false;
   }
 
+  /** Check 1 of isActivelyWaitingOnDelegation, without its reconcile write. */
+  private isWaitingOnOwnDelegations(runtimeId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT ai.id
+         FROM agent_instances ai
+         WHERE ai.id = ?
+           AND ai.status = 'waiting_delegation'
+           AND EXISTS (
+             SELECT 1
+             FROM delegations d
+             WHERE d.parent_instance_id = ai.id
+               AND d.status IN ('pending', 'running')
+           )
+         LIMIT 1`,
+      )
+      .get(runtimeId) as { id: string } | null;
+    return !!row;
+  }
+
   /**
-   * Check whether the agent's OS process has active child processes.
+   * Check whether the runtime's own OS process has active child processes.
    * When an agent spawns a long-running subprocess (test suite, build, etc.)
    * the agent's stdout goes quiet while the child runs. This prevents false
-   * stuck detection for agents legitimately waiting on subprocesses.
+   * stuck detection for agents legitimately waiting on subprocesses. The pid
+   * is the runtime's own, not agents.process_pid, which is one slot holding
+   * the pid of one of the template's live instances, possibly another task's.
    */
-  private hasActiveChildProcesses(agentId: string): boolean {
+  private hasActiveChildProcesses(runtimeId: string): boolean {
     const row = this.db
-      .prepare("SELECT process_pid FROM agents WHERE id = ?")
-      .get(agentId) as { process_pid: number | null } | null;
+      .prepare("SELECT process_pid FROM agent_instances WHERE id = ?")
+      .get(runtimeId) as { process_pid: number | null } | null;
 
-    if (!row?.process_pid) {
-      // Also check agent_instances for the PID
-      const instanceRow = this.db
-        .prepare(
-          `SELECT process_pid FROM agent_instances
-           WHERE template_agent_id = ? AND status = 'running' AND process_pid IS NOT NULL
-           ORDER BY created_at DESC LIMIT 1`,
-        )
-        .get(agentId) as { process_pid: number | null } | null;
-
-      if (!instanceRow?.process_pid) return false;
-      return this.pidHasChildren(instanceRow.process_pid);
-    }
-
+    if (!row?.process_pid) return false;
     return this.pidHasChildren(row.process_pid);
   }
 

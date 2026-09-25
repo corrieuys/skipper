@@ -637,6 +637,93 @@ describe("RealtimeSessionManager", () => {
       }
     });
 
+    // Every root shares the 'skipper' template. This fake keeps AgentManager's
+    // lookup semantics: a template id passed to getRunningAgent resolves to ANY
+    // task's live instance; getRunningInstanceForTask only to the given task's.
+    function sharedSkipperAgents(live: Array<{ id: string; taskId: string }>) {
+      const running = live.map((a) => ({ ...a, templateAgentId: "skipper" }));
+      const resumed: string[] = [];
+      const spawnedFor: string[] = [];
+      const manager = {
+        getRunningAgent: (id: string) =>
+          running.find((a) => a.id === id) ?? running.find((a) => a.templateAgentId === id),
+        getRunningInstanceForTask: (templateAgentId: string, taskId: string) =>
+          running.find((a) => a.templateAgentId === templateAgentId && a.taskId === taskId),
+        sendResumeMessage: async (agentId: string) => { resumed.push(agentId); },
+        spawnAgent: async (_agentId: string, opts: { taskId: string }) => {
+          spawnedFor.push(opts.taskId);
+          return { id: `rt-new-${opts.taskId}` };
+        },
+        sendInput: () => { },
+        clearSessionId: () => { },
+        getEntrypointSessionIdForTask: () => null,
+        getTemplateAgentId: () => null,
+        getAgent: () => null,
+        getEffectiveRootTypeDef: () => null,
+      } as unknown as RealtimeSessionManager["agentManager"];
+      return { manager, resumed, spawnedFor };
+    }
+
+    function seedTeamlessPair(): void {
+      db.prepare(
+        "INSERT OR IGNORE INTO agents (id, name, type, model) VALUES ('skipper', 'Skipper', 'claude-code', 'default')",
+      ).run();
+      db.prepare(
+        "INSERT INTO tasks (id, title, team_id, status, mode) VALUES ('task-a', 'Teamless A', NULL, 'active', 'conversational')",
+      ).run();
+      db.prepare(
+        "INSERT INTO tasks (id, title, team_id, status, mode) VALUES ('task-b', 'Other B', NULL, 'active', 'workflow')",
+      ).run();
+      db.prepare(
+        "INSERT INTO realtime_timeline (id, task_id, entry_type, content) VALUES ('tl-a', 'task-a', 'text', 'input meant for A')",
+      ).run();
+    }
+
+    function isFed(entryId: string): number {
+      return (db.prepare("SELECT fed_to_skipper FROM realtime_timeline WHERE id = ?").get(entryId) as {
+        fed_to_skipper: number;
+      }).fed_to_skipper;
+    }
+
+    it("never resumes another task's live root with this task's feed", async () => {
+      seedTeamlessPair();
+      // Task B's root is mid-turn; task A has no live root.
+      const agents = sharedSkipperAgents([{ id: "rt-b", taskId: "task-b" }]);
+      const mgr = new RealtimeSessionManager(db, artifactManager, agents.manager);
+      try {
+        expect(mgr.isSkipperBusy("task-a")).toBe(false);
+        expect(await mgr.feedTask("task-a")).toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        // B is untouched; A's input goes to a root spawned for A.
+        expect(agents.resumed).toEqual([]);
+        expect(agents.spawnedFor).toEqual(["task-a"]);
+        expect(isFed("tl-a")).toBe(1);
+      } finally {
+        mgr.dispose();
+      }
+    });
+
+    it("resumes this task's own live root by its runtime id", async () => {
+      seedTeamlessPair();
+      // B's instance comes first, so a template-wide lookup would pick it.
+      const agents = sharedSkipperAgents([
+        { id: "rt-b", taskId: "task-b" },
+        { id: "rt-a", taskId: "task-a" },
+      ]);
+      const mgr = new RealtimeSessionManager(db, artifactManager, agents.manager);
+      try {
+        mgr.feedSkipper("task-a");
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(agents.resumed).toEqual(["rt-a"]);
+        expect(agents.spawnedFor).toEqual([]);
+        expect(isFed("tl-a")).toBe(1);
+      } finally {
+        mgr.dispose();
+      }
+    });
+
     it("uses main skipper prompt when realtime prompt is empty", async () => {
       const taskId = seedRealtimeTaskWithoutTeam(db, "task-rt-prompt-fallback");
       db.prepare(

@@ -280,5 +280,5 @@ export function singleAgentFormPage(vm: SingleAgentFormViewModel): string {
       window.addEventListener('beforeunload', function(e){ if (!dirty) return; e.preventDefault(); e.returnValue = ''; });
     })();
     </script>
-  `, "/agent-library");
+  `, "/agent-library", ["agent-library"]);
 }

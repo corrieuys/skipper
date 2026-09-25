@@ -521,17 +521,18 @@ export class HealthMonitor {
   }
 
   /**
-   * Update terminal-output fingerprints / heartbeats for all active agents,
-   * then detect and handle any that appear stuck.
+   * Update terminal-output fingerprints / heartbeats for every live runtime
+   * instance, then detect and handle any that appear stuck. Candidates are
+   * runtime ids, so each runtime is judged, nudged and escalated on its own.
    */
   runStuckDetection(): void {
     this.stateTracker.updateHeartbeats();
 
     const candidates = this.stateTracker.getStuckCandidates();
-    for (const agentId of candidates) {
-      const isStuck = this.stateTracker.analyzeStuckAgent(agentId);
+    for (const runtimeId of candidates) {
+      const isStuck = this.stateTracker.analyzeStuckAgent(runtimeId);
       if (isStuck) {
-        this.stateTracker.handleStuckAgent(agentId);
+        this.stateTracker.handleStuckAgent(runtimeId);
       }
     }
   }

@@ -29,13 +29,14 @@ Storage is the runtime DB (`task_messages`, migration `0015_task_messages.sql`).
 `TaskScheduler.deleteTask` clears the rows explicitly, like other task-scoped
 tables.
 
-Two delivery surfaces, both fed by `task:message_posted`: the Messages column below,
+Two delivery surfaces, both fed by `task:message_posted`: the task timeline below,
 and — when the task has a Slack origin — its Slack thread, posted by
 `SlackPushManager` under the same gates as an escalation (see
 [../slack/CLAUDE.md](../slack/CLAUDE.md)).
 
-UI: the **Messages** dock column on the task view
-(`html/fragments/task-message.fragment.ts`, served by
-`GET /fragments/tasks/:id/messages`, 404 without the flag). Live updates arrive by
-WS on `task:message_posted` (`ws/ui-push.ts:pushV2Messages`, OOB-swaps
-`#mc-messages-<taskId>`).
+UI: messages render as cards in the task timeline
+(`html/fragments/task-timeline.fragment.ts`). Live updates arrive by WS on
+`task:message_posted` (`ws/ui-push.ts` re-pushes the timeline via
+`pushV2Timeline`). The old column fragment (`html/fragments/task-message.fragment.ts`,
+`GET /fragments/tasks/:id/messages`, 404 without the flag) is still served, but no
+page renders it.

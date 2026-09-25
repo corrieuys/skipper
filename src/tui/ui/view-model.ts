@@ -256,6 +256,7 @@ export function activitySparkline(activity: ActivityRow[], nowMs = Date.now(), b
 }
 
 export function scheduleLabel(s: RecurringSeries): string {
+  if (s.scheduleMatrix) return "weekly";
   if (s.scheduleUnit && s.scheduleAmount) return `every ${s.scheduleAmount} ${s.scheduleUnit}`;
   return "manual";
 }

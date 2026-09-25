@@ -32,6 +32,7 @@ export class ConnectClient {
   private inputTask?: (taskId: string, text: string, source?: string) => Promise<{ delivered: string }>;
   private killTaskRuntimes?: (taskId: string) => void;
   private steering?: Pick<ResourceDeps, "steerRuntime" | "listRuntimeSteeringOptions">;
+  private pausing?: Pick<ResourceDeps, "pauseTaskAgents" | "resumeTaskAgents">;
   private taskMemory?: ResourceDeps["taskMemory"];
 
   constructor(
@@ -45,6 +46,7 @@ export class ConnectClient {
     killTaskRuntimes?: (taskId: string) => void,
     taskMemory?: ResourceDeps["taskMemory"],
     steering?: Pick<ResourceDeps, "steerRuntime" | "listRuntimeSteeringOptions">,
+    pausing?: Pick<ResourceDeps, "pauseTaskAgents" | "resumeTaskAgents">,
   ) {
     this.taskScheduler = taskScheduler;
     this.scheduledTaskScheduler = scheduledTaskScheduler;
@@ -56,6 +58,7 @@ export class ConnectClient {
     this.killTaskRuntimes = killTaskRuntimes;
     this.taskMemory = taskMemory;
     this.steering = steering;
+    this.pausing = pausing;
   }
 
   start(): void {
@@ -93,6 +96,8 @@ export class ConnectClient {
       realtimeSessionManager: this.realtimeSessionManager,
       inputTask: this.inputTask,
       killTaskRuntimes: this.killTaskRuntimes,
+      pauseTaskAgents: this.pausing?.pauseTaskAgents,
+      resumeTaskAgents: this.pausing?.resumeTaskAgents,
       taskMemory: this.taskMemory,
       steerRuntime: this.steering?.steerRuntime,
       listRuntimeSteeringOptions: this.steering?.listRuntimeSteeringOptions,
@@ -228,8 +233,9 @@ export function initConnectClient(
   killTaskRuntimes?: (taskId: string) => void,
   taskMemory?: ResourceDeps["taskMemory"],
   steering?: Pick<ResourceDeps, "steerRuntime" | "listRuntimeSteeringOptions">,
+  pausing?: Pick<ResourceDeps, "pauseTaskAgents" | "resumeTaskAgents">,
 ): ConnectClient {
-  _connectClient = new ConnectClient(taskScheduler, scheduledTaskScheduler, escalationManager, artifactManager, phaseManager, realtimeSessionManager, inputTask, killTaskRuntimes, taskMemory, steering);
+  _connectClient = new ConnectClient(taskScheduler, scheduledTaskScheduler, escalationManager, artifactManager, phaseManager, realtimeSessionManager, inputTask, killTaskRuntimes, taskMemory, steering, pausing);
   return _connectClient;
 }
 

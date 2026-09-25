@@ -98,7 +98,10 @@ views share the same shell.
   container `#mc-timeline-<id>` / inner `#mc-timeline-inner-<id>`; scroll sticks
   to bottom (`tcStickTimeline` in skipper.js). WS pushes re-render it on
   agent:output (debounced), task:message_posted, escalation:created/resolved,
-  realtime:timeline_updated. Operator uploads render as "You · image" (lazy
+  realtime:timeline_updated. It is a window of the NEWEST entries (up to 300
+  input rows and 200 operator messages, read newest first and shown oldest
+  first, 300 items max); an open escalation that falls outside it is pinned to
+  the top. Operator uploads render as "You · image" (lazy
   `<img>` max-height 320px, opens full size) / "You · file" (glyph, name, size,
   caption, download) cards (`uploadEntryHtml`, `.tc-entry--upload`), read via a
   LEFT JOIN from `realtime_timeline.artifact_id` to `task_artifacts`; both use
@@ -163,8 +166,8 @@ views share the same shell.
 - Styles in `styles/team-center.ts` (`tc-` prefix), theme-token based;
   identity picker in `styles/identity.ts`, creature/orb animation in
   `styles/animations.ts`.
-| `shell/` | Layout + navbar wrappers |
-| `view-models/` | Data shape feeding renderers (e.g. `command-center.vm.ts`). Pure assemblers — SQL lives in `src/data` (`command-center.ts`), never here |
+| `shell/` | Layout + navbar wrappers. `v2layout(title, content, currentPath, wsTopics)`: a page passes the `/ws/ui` topics it renders (`dashboard` + `task:<id>` command center, `agent:<id>` terminal, `tasks`, `logs`, `teams`; a page with no live element passes its own name, e.g. `config`). No topics means an empty subscription set, which receives every push (see [../ws/CLAUDE.md](../ws/CLAUDE.md)) |
+| `view-models/` | Data shape feeding renderers (e.g. `command-center.vm.ts`). Pure assemblers — SQL lives in `src/data` (`command-center.ts`), never here. Keep the view model to fields a renderer reads. `buildTaskMission` (+ `command-center.page:renderTaskPhaseStrip`) renders one task's phase strip without the whole view model (the 5 s poll and the WS push) |
 | `styles/` | CSS strings. `themes.ts` holds the static named themes (`[data-theme=...]` var maps baked into the hashed stylesheet; the picker + boot script default a fresh browser to `artemis`, or to `omarchy` on an Omarchy machine when experimental) and `glassCss(selector, palette)`, the frosted-glass override block shared by Artemis and Omarchy. `omarchy-theme.ts` is the one **dynamic** theme: vars + flat background + glass derived at request time from the active Omarchy palette (`config-readers/omarchy.ts`), served as its own `<link id="sk-omarchy-theme">` (`/omarchy/theme.css?v=`) from both layouts so an OS theme switch only swaps that link. Dark-only in v1 |
 | `public/` | Static assets served by Bun. `glyph.js` is the **Canvas** overlay (plain-JS port of glyph-ui protocol + FLIP engine, `Skipper.glyph.open/close/reset`, fresh-change highlight; see [../glyph/CLAUDE.md](../glyph/CLAUDE.md)); its node styles live in `styles/glyph.ts`. `realtime-audio.js` also drives mirror Record/Stop/status controls marked `data-rt-start`/`data-rt-stop`/`data-rt-status` (the Canvas bar) |
 

@@ -368,3 +368,28 @@ describe("activity feed paging", () => {
     expect((await fetch(`${baseUrl}/workspace/activity/999999`)).status).toBe(404);
   });
 });
+
+describe("phase strip poll", () => {
+  it("renders the task's strip, polling only while it works, and nothing for an unknown task", async () => {
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO tasks (id, title, team_id, status, current_phase, started_at)
+       VALUES ('task-live', 'Live', 'team-1', 'active', 1, datetime('now'))`,
+    ).run();
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('inst-live', 'task-live', 'agent-1', 'running')").run();
+
+    const live = await (await fetch(`${baseUrl}/workspace/task/task-live/phase-strip`)).text();
+    expect(live).toContain('id="mc-phase-stepper-task-live"');
+    expect(live).toContain('hx-get="/workspace/task/task-live/phase-strip" hx-trigger="every 5s"');
+    expect(live).toContain("mc-phase-step--completed");
+    expect(live).toContain("mc-phase-step--current");
+
+    const settled = await (await fetch(`${baseUrl}/workspace/task/task-1/phase-strip`)).text();
+    expect(settled).toContain('id="mc-phase-stepper-task-1"');
+    expect(settled).not.toContain("hx-trigger");
+
+    const missing = await fetch(`${baseUrl}/workspace/task/nope/phase-strip`);
+    expect(missing.status).toBe(200);
+    expect(await missing.text()).toBe("");
+  });
+});

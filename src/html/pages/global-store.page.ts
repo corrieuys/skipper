@@ -47,5 +47,5 @@ export function globalStorePage(vm: GlobalStorePageViewModel): string {
         </div>
       </div>
     </div>
-  `, "/global-store");
+  `, "/global-store", ["global-store"]);
 }

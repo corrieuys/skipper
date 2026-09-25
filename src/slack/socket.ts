@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
 import { logError } from "../logging";
-import { getSlackAppToken } from "../config/slack-settings";
+import { getSlackAppToken, isSlackUserAllowed } from "../config/slack-settings";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import type { EscalationManager } from "../escalations/manager";
@@ -265,6 +265,13 @@ export class SlackSocketManager {
       return;
     }
     try {
+      // Same fail-closed allowlist as slash commands and buttons: a reply drives
+      // the task (input, review response, revive), so only allowlisted users may
+      // send one. A missing user id is denied.
+      if (!isSlackUserAllowed(this.db, event.user ?? "")) {
+        slackLog("in.thread_reply.skip", { reason: "user_not_allowed", userId: event.user, channel, threadTs });
+        return;
+      }
       const match = findTaskByThread(this.db, channel, threadTs);
       if (!match) {
         slackLog("in.thread_reply.no_task", { channel, threadTs });

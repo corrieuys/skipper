@@ -1453,12 +1453,18 @@ export class RealtimeSessionManager {
       "[END_REALTIME_FEED]",
     ].join("\n");
 
-    // Check if entrypoint is already running (resume with new entries)
-    const existingAgent = this.agentManager.getRunningAgent(entrypointAgentId);
+    // Check if THIS task's entrypoint is already running (resume with new
+    // entries). Scoped to the task's own runtime instance, and resumed by that
+    // runtime id: the shared 'skipper' template can have live instances under
+    // other tasks, and a template-wide lookup/resume would kill another task's
+    // turn, resume it with this task's feed and mark the feed delivered.
+    const existingAgent = typeof this.agentManager.getRunningInstanceForTask === "function"
+      ? this.agentManager.getRunningInstanceForTask(entrypointAgentId, taskId)
+      : undefined;
     if (existingAgent) {
       console.log(`[realtime-session] feedSkipper: resuming entrypoint with ${unfed.length} new timeline entries for task=${taskId}`);
       this.agentManager
-        .sendResumeMessage(entrypointAgentId, feedMessage, true)
+        .sendResumeMessage(existingAgent.id, feedMessage, true)
         .then(() => { markFed(); })
         .catch((err) => {
           logError(this.db, "realtime.feed_skipper_resume", { taskId, entryCount: unfed.length }, err);

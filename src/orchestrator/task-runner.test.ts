@@ -9,6 +9,8 @@ import { clearAgentTypeCache, getAgentTypeDefinition } from "../agents/types";
 import { setBoolSetting, SETTING_PARALLEL_TASKS } from "../config/app-settings";
 import type { OrchestrationState } from "./types";
 import { ArtifactManager } from "./artifact-manager";
+import { RealtimeSessionManager } from "./realtime-session";
+import { eventBus } from "../events/bus";
 import { unlinkSync } from "fs";
 
 const TEST_DB = "test-task-runner.db";
@@ -298,6 +300,137 @@ describe("TaskRunner", () => {
 
       expect(result.processed).toBe(0);
       expect(scheduler.getTask(stdTaskId)?.started_at).toBeNull();
+    });
+  });
+
+  describe("start failure with undelivered input (regression: endless fail/wake loop)", () => {
+    // Same wiring as ManagerDaemon's task:wake_requested handler: every wake
+    // dispatches the queue at once. Capped, so a regression fails here instead
+    // of freezing the suite (microtask loop) or overflowing the stack.
+    const WAKE_CAP = 25;
+
+    function addUnfedInput(taskId: string, content: string): string {
+      const id = crypto.randomUUID();
+      db.prepare(
+        "INSERT INTO realtime_timeline (id, task_id, entry_type, content, priority) VALUES (?, ?, 'text', ?, 'high')",
+      ).run(id, taskId, content);
+      return id;
+    }
+
+    /** A started task at rest whose operator input is waiting behind a wake (what daemon.inputTask leaves). */
+    function idleTaskWithInput(teamId: string): { taskId: string; entryId: string } {
+      const taskId = crypto.randomUUID();
+      db.prepare(
+        `INSERT INTO tasks (id, title, team_id, status, approved_at, started_at, wake_requested_at)
+         VALUES (?, 'Idle Task', ?, 'active', datetime('now', '-1 hour'), datetime('now', '-1 hour'), datetime('now'))`,
+      ).run(taskId, teamId);
+      return { taskId, entryId: addUnfedInput(taskId, "please continue") };
+    }
+
+    async function withDaemonWakeWiring(
+      runner: TaskRunner,
+      taskId: string,
+      trigger: () => Promise<unknown>,
+    ): Promise<{ wakes: number; runFailed: number }> {
+      let wakes = 0;
+      let runFailed = 0;
+      const dispatched: Promise<unknown>[] = [];
+      const onWake = (e: { taskId: string }) => {
+        if (e.taskId !== taskId) return;
+        wakes++;
+        if (wakes > WAKE_CAP) return;
+        dispatched.push(runner.processTaskQueue().catch(() => {}));
+      };
+      const onRunFailed = (e: { taskId: string }) => {
+        if (e.taskId === taskId) runFailed++;
+      };
+      eventBus.on("task:wake_requested", onWake);
+      eventBus.on("task:run_failed", onRunFailed);
+      try {
+        await trigger();
+        for (let i = 0; i < dispatched.length; i++) await dispatched[i];
+      } finally {
+        eventBus.off("task:wake_requested", onWake);
+        eventBus.off("task:run_failed", onRunFailed);
+      }
+      return { wakes, runFailed };
+    }
+
+    const startFailures: Array<[string, () => string]> = [
+      ["the spawn throws (missing CLI, unknown provider)", () => {
+        mockAgentManager.spawnAgent = async () => { throw new Error('Executable not found in $PATH: "claude"'); };
+        return createTeam();
+      }],
+      ["the initial prompt cannot be written", () => {
+        mockAgentManager.sendInput = () => { throw new Error("EPIPE: broken pipe"); };
+        return createTeam();
+      }],
+      ["the entrypoint agent is gone (synchronous path)", () => {
+        mockAgentManager.getAgent = () => null;
+        return createTeam();
+      }],
+      ["the team has no entrypoint (synchronous path)", () => {
+        const teamId = createTeam();
+        db.prepare("UPDATE teams SET entrypoint_agent_id = NULL WHERE id = ?").run(teamId);
+        return teamId;
+      }],
+    ];
+
+    for (const [name, arrange] of startFailures) {
+      it(`settles the task once when ${name}, leaving the input unfed`, async () => {
+        const { taskId, entryId } = idleTaskWithInput(arrange());
+        const runner = createRunner();
+
+        const { wakes, runFailed } = await withDaemonWakeWiring(runner, taskId, () => runner.processTaskQueue());
+
+        expect(wakes).toBe(0);
+        expect(runFailed).toBe(1);
+        const task = scheduler.getTask(taskId)!;
+        expect(task.status).toBe("settled");
+        expect(task.wake_requested_at).toBeNull();
+        expect((task.result as { error?: string }).error).toBeTruthy();
+        const entry = db.prepare("SELECT fed_to_skipper FROM realtime_timeline WHERE id = ?").get(entryId) as { fed_to_skipper: number };
+        expect(entry.fed_to_skipper).toBe(0);
+      });
+    }
+
+    it("the next operator input revives the task and its start delivers the older input with the new one", async () => {
+      const { taskId, entryId } = idleTaskWithInput(createTeam());
+      let spawnFails = true;
+      const prompts: string[] = [];
+      mockAgentManager.spawnAgent = async () => {
+        if (spawnFails) throw new Error('Executable not found in $PATH: "claude"');
+        return { id: "runtime-mock" };
+      };
+      mockAgentManager.sendInput = (_runtimeId: string, prompt: string) => { prompts.push(prompt); };
+      const runner = createRunner();
+      const pipeline = new RealtimeSessionManager(db, artifactManager, mockAgentManager, scheduler);
+      runner.setWakeFeeder(pipeline);
+      try {
+        await withDaemonWakeWiring(runner, taskId, () => runner.processTaskQueue());
+        expect(scheduler.getTask(taskId)!.status).toBe("settled");
+        expect(prompts).toEqual([]);
+
+        // The CLI is back and the operator types again: daemon.inputTask's path
+        // (revive, then ingest, which wakes the task through the queue).
+        spawnFails = false;
+        const { wakes } = await withDaemonWakeWiring(runner, taskId, async () => {
+          pipeline.prepareTaskForInput(taskId);
+          await pipeline.ingestInput(taskId, { sourceType: "text", contentBody: "second try", metadata: { source: "test" } }, "test");
+        });
+
+        expect(wakes).toBe(1);
+        expect(prompts.length).toBe(1);
+        expect(prompts[0]).toContain("please continue");
+        expect(prompts[0]).toContain("second try");
+        const unfed = db.prepare("SELECT COUNT(*) AS c FROM realtime_timeline WHERE task_id = ? AND fed_to_skipper = 0").get(taskId) as { c: number };
+        expect(unfed.c).toBe(0);
+        const older = db.prepare("SELECT fed_to_skipper FROM realtime_timeline WHERE id = ?").get(entryId) as { fed_to_skipper: number };
+        expect(older.fed_to_skipper).toBe(1);
+        expect(scheduler.getTask(taskId)!.status).toBe("active");
+      } finally {
+        pipeline.dispose();
+      }
     });
   });
 });

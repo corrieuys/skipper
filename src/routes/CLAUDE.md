@@ -1,6 +1,7 @@
 # src/routes
 
 HTTP handlers. Registered in `index.ts` against `server.ts` router. Each gets `ManagerDaemon` facade.
+Every request passes `server.ts:rejectForeignRequest` before routing (non-local `Host` refused; writes and WS upgrades refused on a foreign `Origin`), so a GET route must never change state: cross-site GETs are not Origin-checked.
 
 | file | use |
 |---|---|
@@ -8,7 +9,7 @@ HTTP handlers. Registered in `index.ts` against `server.ts` router. Each gets `M
 | `teams.ts` | Team CRUD (teams embed their own agents + phases) under `/api/teams`, plus `/api/teams/export` + `/api/teams/import` |
 | `remote-teams.ts` | Experimental (404 without `--experimental`): remote team repos. `GET/POST /api/remote-team-repos` (POST = link + first sync, waits for git), `POST /api/remote-team-repos/:id/refresh`, `DELETE /api/remote-team-repos/:id`, `POST /api/teams/:id/duplicate` (editable local copy of a read-only team). htmx callers get only the element they swap: the `#tm-remote-repos` list for link/unlink (a bad URL comes back as the list with an error line, 200), the one `.tm-repo` block for refresh. See [../teams/CLAUDE.md](../teams/CLAUDE.md) |
 | `daemon.ts` | Pause/resume/status + dashboard refresh fragment |
-| `pages.ts` | Server-rendered HTML pages + polling fragments. Custom agents live on `/custom-agents` and `/custom-agents/:id` (experimental; `/agents` is the agent terminal). Dashboard, tasks, escalations, logs, events, config. Teams live on `/teams`, `/teams/new`, `/teams/:id` (index grid + interactive team map). The old config-page team form is gone; `/config/teams/new`, `/config/teams/:id/edit` and `/local-teams` redirect to the new pages |
+| `pages.ts` | Server-rendered HTML pages + polling fragments. Custom agents live on `/custom-agents` and `/custom-agents/:id` (experimental; `/agents` is the agent terminal). Dashboard, tasks, escalations, logs, events, config. Teams live on `/teams`, `/teams/new`, `/teams/:id` (index grid + interactive team map). The old config-page team form is gone; `/config/teams/new`, `/config/teams/:id/edit` and `/local-teams` redirect to the new pages. `POST /api/config/allowed-hosts` (config page Allowed Hosts, not experimental; field `hosts`, required): `config/allowed-hosts.ts:saveAllowedHosts` validates, saves and swaps the list into the running gate. An htmx Save gets the re-rendered `#sk-allowed-hosts-panel` for its self-swap (errors inline, 200 so htmx swaps it; no redirect); JSON callers get `{hosts}` or 400 `{errors}` |
 | `realtime.ts` | Legacy input-pipeline API kept for embedded JS + iOS: session start/stop/resume/close, text input, timeline/notes/agents/pipeline reads, per-task agent assign, global transcription config. No type guards — valid for any active task. Create/edit/list of conversational tasks goes through the unified task routes |
 | `realtime-ws.ts` | WebSocket endpoint for the input pipeline (audio/text ingest + session events) — any task |
 | `skipper.ts` | Skipper config `GET/PUT` w/ agent-type+model validate. Optional HTML fragment render |

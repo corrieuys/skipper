@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Store } from "../model/store";
 import type { RecurringSeries, TaskItem } from "../model/types";
 import { initialUIState } from "./state";
-import { railRows, selectedIndex, nearestSelectable, isSelectable, seriesRuns, type RailRow } from "./view-model";
+import { railRows, selectedIndex, nearestSelectable, isSelectable, seriesRuns, scheduleLabel, type RailRow } from "./view-model";
 
 function task(over: Partial<TaskItem>): TaskItem {
   return {
@@ -13,7 +13,7 @@ function task(over: Partial<TaskItem>): TaskItem {
   } as TaskItem;
 }
 const series = (over: Partial<RecurringSeries>): RecurringSeries => ({
-  id: "s1", title: "Nightly", description: null, teamId: null, teamName: null, scheduleUnit: null, scheduleAmount: null,
+  id: "s1", title: "Nightly", description: null, teamId: null, teamName: null, scheduleUnit: null, scheduleAmount: null, scheduleMatrix: null,
   status: "approved", starred: false, nextRunAt: null, lastRunAt: null, memoryMode: "off", runs: [], ...over,
 });
 
@@ -86,5 +86,14 @@ describe("Latest board rows", () => {
     const rows = railRows(store, ui);
     expect(rows.every((r) => r.kind === "task")).toBe(true);
     expect(rows).toHaveLength(19);
+  });
+});
+
+describe("scheduleLabel", () => {
+  test("a series with an hour grid reads weekly; an interval reads every N; neither reads manual", () => {
+    const grid = JSON.stringify(Array.from({ length: 7 }, () => Array.from({ length: 24 }, (_, h) => (h === 9 ? 1 : 0))));
+    expect(scheduleLabel(series({ scheduleMatrix: grid }))).toBe("weekly");
+    expect(scheduleLabel(series({ scheduleUnit: "hours", scheduleAmount: 6 }))).toBe("every 6 hours");
+    expect(scheduleLabel(series({}))).toBe("manual");
   });
 });

@@ -119,7 +119,7 @@ describe("drawFrame", () => {
 
   it("lists recurring series on Latest, opens one to its latest runs, and shows the series in the main pane", () => {
     const { store, ui } = world();
-    ui.recurring = [{ id: "s1", title: "Nightly sweep", description: "Sweep the repo", teamId: "team-1", teamName: "Core Team", scheduleUnit: "hours", scheduleAmount: 6, status: "approved", starred: false, nextRunAt: null, lastRunAt: null, memoryMode: "shared", runs: [] }];
+    ui.recurring = [{ id: "s1", title: "Nightly sweep", description: "Sweep the repo", teamId: "team-1", teamName: "Core Team", scheduleUnit: "hours", scheduleAmount: 6, scheduleMatrix: null, status: "approved", starred: false, nextRunAt: null, lastRunAt: null, memoryMode: "shared", runs: [] }];
     ui.recurringLoadedAt = Date.now();
     store.apply({ kind: "task", task: task({ id: "r1", title: "Nightly sweep · run 41", status: "settled", display_status: "completed", source_scheduled_task_id: "s1", created_at: "2026-09-02 01:00:00" }) });
     const draw = (): string => {
@@ -140,6 +140,20 @@ describe("drawFrame", () => {
     expect(t).toContain("run 41");
     expect(t).toContain("LATEST RUNS"); // main pane shows the series
     expect(t).toContain("memory shared");
+  });
+
+  it("labels a weekly series (hour grid, no interval) weekly in the rail and the main pane, never manual", () => {
+    const { store, ui } = world();
+    const grid = JSON.stringify(Array.from({ length: 7 }, (_, d) => Array.from({ length: 24 }, (_, h) => (d === 0 && h === 9 ? 1 : 0))));
+    ui.recurring = [{ id: "s1", title: "Monday digest", description: null, teamId: "team-1", teamName: "Core Team", scheduleUnit: null, scheduleAmount: null, scheduleMatrix: grid, status: "approved", starred: false, nextRunAt: "2026-09-28 07:00:00", lastRunAt: null, memoryMode: "off", runs: [] }];
+    ui.recurringLoadedAt = Date.now();
+    ui.railKind = "series";
+    ui.selectedSeriesId = "s1";
+    const s = new Screen(180, 48);
+    drawFrame(s, { store, ui });
+    const t = text(s);
+    expect(t.match(/Core Team · weekly/g)?.length).toBe(2); // rail row + main pane
+    expect(t).not.toContain("· manual");
   });
 
   it("renders a single column on a narrow terminal and the detail view on demand", () => {

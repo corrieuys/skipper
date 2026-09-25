@@ -272,8 +272,12 @@ const TASK_TOOLS: TaskToolSpec[] = [
     description: "Pause an active task. The daemon stops its agents; resume later with resume_task.",
     audience: "external",
     schema: { task_id: z.string().describe("Task ID to pause") },
-    handler: ({ task_id }, deps) => {
+    handler: async ({ task_id }, deps) => {
+      // Same order as POST /api/tasks/:id/pause: flip the paused flag first so
+      // recovery/health/queue loops stop treating the task as live, THEN stop
+      // its agents and their process trees.
       const task = deps.taskScheduler.pauseTask(task_id);
+      if (deps.pauseTaskAgents) await deps.pauseTaskAgents(task_id);
       return ok({ id: task.id, status: task.status });
     },
   },
@@ -282,7 +286,15 @@ const TASK_TOOLS: TaskToolSpec[] = [
     description: "Resume a paused task. Only paused tasks can be resumed.",
     audience: "external",
     schema: { task_id: z.string().describe("Task ID to resume") },
-    handler: ({ task_id }, deps) => {
+    handler: async ({ task_id }, deps) => {
+      // Same order as POST /api/tasks/:id/resume-from-pause: respawn the agents
+      // first, THEN clear the paused flag so the task is only live once they are
+      // back. Only a paused task respawns; any other state falls through to
+      // resumeFromPause, which throws the reason.
+      const existing = deps.taskScheduler.getTask(task_id);
+      if (existing?.status === "active" && existing.paused && deps.resumeTaskAgents) {
+        await deps.resumeTaskAgents(task_id);
+      }
       const task = deps.taskScheduler.resumeFromPause(task_id);
       return ok({ id: task.id, status: task.status });
     },
@@ -495,11 +507,14 @@ const TASK_TOOLS: TaskToolSpec[] = [
       // Merge over the current team: an omitted field is preserved, a provided
       // agents/phases list replaces wholesale. Same coercion + flatten path as
       // the web /api/teams update, with existing.config passed so slack/icon/etc
-      // survive.
+      // survive. This tool cannot set skipper_prompt or hooks, so both are
+      // carried forward (toTeamInput would default them to "" and []).
       const input = toTeamInput(
         {
           id: team_id,
           name: name ?? existing.name,
+          skipper_prompt: existing.skipper_prompt,
+          hooks: existing.hooks,
           agents: agents ?? existing.agents,
           phases: phases ?? existing.phases,
           config: { ...(mode ? { mode } : {}) },

@@ -5,6 +5,7 @@ import type { EscalationManager } from "../escalations/manager";
 import type { PromptBuilder } from "../agents/prompt-builder";
 import { agentTypeUsesInlinePrompt } from "../agents/types";
 import { logError } from "../logging";
+import { hasFreeTaskSlot } from "./task-runner";
 
 const IDLE_SINCE_KEY_PREFIX = "idle_since:";
 const IDLE_POKE_COUNT_KEY_PREFIX = "idle_poke_count:";
@@ -101,6 +102,11 @@ export class IdlePokeManager {
           continue;
         }
 
+        // A poke spawns the root outside the queue, so it needs a concurrency
+        // slot like a queued start. With none free the task stays idle and is
+        // poked on a later tick; its poke count is untouched.
+        if (!hasFreeTaskSlot(this.db)) continue;
+
         const ok = await this.pokeSkipper(taskId);
         if (ok) {
           this.writePokeCount(taskId, count + 1);
@@ -167,8 +173,11 @@ export class IdlePokeManager {
     if (!teamExec) return false;
     const entrypointAgentId = teamExec.entrypoint_agent_id;
 
-    // Live entrypoint? Skipper is already running, nothing to poke
-    if (this.agentManager.getRunningAgent(entrypointAgentId)) return false;
+    // Live entrypoint? Skipper is already running, nothing to poke. Scoped to
+    // THIS task's instance: every team shares the entrypoint template, so a
+    // template-wide lookup matches any other task's live root and the idle
+    // task would never be poked while another task runs.
+    if (this.agentManager.getRunningInstanceForTask(entrypointAgentId, taskId)) return false;
 
     // Any active delegation on this task — regardless of which Skipper instance
     // issued it — means a child agent is still in flight and Skipper must wait

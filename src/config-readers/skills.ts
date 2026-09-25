@@ -19,6 +19,19 @@ export interface SkillsByProvider {
 
 const PROJECT_ROOT = process.cwd();
 
+// gray-matter's default engines include `javascript` (alias `js`, any case),
+// which `eval`s front matter opened with `---js` / `---javascript`. SKILL.md
+// files come from folders Skipper does not own, so that engine must never run:
+// override both names with a parse that throws, and the catch in
+// scanSkillsDir skips the skill. The only other engines are YAML (js-yaml
+// safeLoad, safe schema) and JSON, neither of which runs code.
+function refuseCodeFrontMatter(): never {
+  throw new Error("SKILL.md front matter must be YAML or JSON");
+}
+const FRONT_MATTER_OPTIONS = {
+  engines: { js: refuseCodeFrontMatter, javascript: refuseCodeFrontMatter },
+};
+
 function scanSkillsDir(dir: string, scope: "user" | "project"): SkillEntry[] {
   if (!existsSync(dir)) return [];
 
@@ -38,7 +51,7 @@ function scanSkillsDir(dir: string, scope: "user" | "project"): SkillEntry[] {
 
     try {
       const raw = readFileSync(skillMdPath, "utf-8");
-      const { data, content } = matter(raw);
+      const { data, content } = matter(raw, FRONT_MATTER_OPTIONS);
       entries.push({
         name: (data.name as string) ?? skillDirName,
         description: (data.description as string) ?? "",

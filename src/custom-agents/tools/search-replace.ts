@@ -76,9 +76,11 @@ export function searchReplaceTool(ctx: ToolContext) {
         );
       }
 
+      // A function replacer, not the string: a string replacement expands `$&`,
+      // `$'`, `` $` `` and `$$`, which would write something other than new_string.
       const updated = replace_all
         ? content.split(old_string).join(new_string)
-        : content.replace(old_string, new_string);
+        : content.replace(old_string, () => new_string);
       writeFileSync(target, updated, "utf-8");
 
       return replace_all
