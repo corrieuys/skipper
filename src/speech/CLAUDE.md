@@ -54,7 +54,9 @@ acquire would first have to load (null when it already serves it or transcriptio
 is not local); `acquireRecording(..., { onPreparing })` passes it on before the
 load, and the web socket sends `recording.preparing { model }`, so
 `realtime-audio.js` shows "Loading <model>…" on a disabled, pulsing Record until
-the lock is granted. A failed start still grants the recording but returns
+the lock is granted. Connect clients (the apps) acquire in the background
+instead: granted at once, `preparing` in the reply and lock events, chunks held
+until the load settles (see [../connect/CLAUDE.md](../connect/CLAUDE.md)). A failed start still grants the recording but returns
 `warning` (in the `recording.start` ack), shown as "Recording, but transcription is
 unavailable: …". Their responses carry the model select as an
 `hx-swap-oob` element, so its "downloaded" markers follow without a reload. `/api/whisper/start|stop|status` (dictation warm-up) drive

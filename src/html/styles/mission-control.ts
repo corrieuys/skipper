@@ -458,6 +458,12 @@ export function missionControlStyles(): string {
       box-shadow: 0 0 10px color-mix(in srgb, var(--sk-accent-secondary) 18%, transparent);
     }
     .mc-rt-composer__audio { display: flex; gap: 0.5rem; align-items: center; flex-shrink: 0; }
+    /* Another client is recording into this task: a live dot before the status. */
+    .mc-rt-live { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--sk-text); }
+    .mc-rt-live::before {
+      content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; flex-shrink: 0;
+      background: var(--sk-accent-danger); animation: sk-pulse 1.6s ease-in-out infinite;
+    }
     .mc-rt-composer__viz {
       flex-basis: 100%; overflow: hidden; background: var(--sk-surface-0);
       border: 1px solid var(--sk-border-subtle); border-radius: var(--sk-radius);

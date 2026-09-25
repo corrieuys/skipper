@@ -106,6 +106,13 @@ export class RealtimeSessionManager {
   // Per-chunk path: the last 3 s of each task's previous decoded chunk, to cut
   // the audio the next chunk repeats (its overlap) before transcription.
   private chunkTails: Map<string, Uint8Array> = new Map();
+  // A model load started by a background acquire, per task. Transcription of
+  // the task's chunks waits for it, so audio sent while the model loads is
+  // kept pending instead of failing as "not configured".
+  private engineLoads: Map<string, Promise<void>> = new Map();
+  // The `preparing` / `warning` of the last lock event per locked task, so a
+  // client that opens the task later (getRecordingOwner) sees them too.
+  private lockNotices: Map<string, { preparing?: string; warning?: string }> = new Map();
   private lockSweepTimer: ReturnType<typeof setInterval> | null = null;
   private readonly onAgentSignal = (event: import("../events/bus").AgentSignalEvent): void => {
     this.handleSummarizerSignal(event);
@@ -458,8 +465,8 @@ export class RealtimeSessionManager {
   async acquireRecording(
     taskId: string,
     source: { id: string; label: string },
-    opts: { onPreparing?: (modelLabel: string) => void } = {},
-  ): Promise<{ ok: true; state: string; warning?: string } | { ok: false; error: string; ownerLabel?: string }> {
+    opts: { onPreparing?: (modelLabel: string) => void; background?: boolean } = {},
+  ): Promise<{ ok: true; state: string; warning?: string; preparing?: string } | { ok: false; error: string; ownerLabel?: string }> {
     // Recording is allowed on any ACTIVE task — audio input is universal.
     // Drafts and settled tasks are rejected (approve/revive first).
     const task = this.db
@@ -491,6 +498,29 @@ export class RealtimeSessionManager {
     // Loading a local model takes seconds: let the caller show that first.
     const pendingModel = this.whisper?.pendingStartLabel?.(this.db) ?? null;
     if (pendingModel) opts.onPreparing?.(pendingModel);
+
+    // Background: grant now and load the model behind it (a Connect client's
+    // request would otherwise time out during a long load). The lock event
+    // carries `preparing`, then a second one without it (and with `warning` if
+    // the load failed) once the load settles.
+    if (opts.background && pendingModel) {
+      const load = this.whisper!.acquire(source.id, this.db).then(
+        () => undefined as string | undefined,
+        (err) => {
+          logError(this.db, "realtime.whisper_acquire", { taskId, owner: source.id }, err);
+          return err instanceof Error ? err.message : String(err);
+        },
+      );
+      const settled = load.then((loadWarning) => {
+        if (this.engineLoads.get(taskId) === settled) this.engineLoads.delete(taskId);
+        if (this.sessions.get(taskId)?.recordingOwner !== source.id) return;
+        this.emitAudioLock(taskId, true, source.id, source.label, { warning: loadWarning });
+      });
+      this.engineLoads.set(taskId, settled);
+      this.emitAudioLock(taskId, true, source.id, source.label, { preparing: pendingModel });
+      return { ok: true, state: "active", preparing: pendingModel };
+    }
+
     let warning: string | undefined;
     try {
       await this.whisper?.acquire(source.id, this.db);
@@ -500,7 +530,7 @@ export class RealtimeSessionManager {
       warning = err instanceof Error ? err.message : String(err);
     }
 
-    this.emitAudioLock(taskId, true, source.id, source.label);
+    this.emitAudioLock(taskId, true, source.id, source.label, { warning });
     return warning ? { ok: true, state: "active", warning } : { ok: true, state: "active" };
   }
 
@@ -511,11 +541,11 @@ export class RealtimeSessionManager {
     await this.clearRecordingOwner(taskId, session, sourceId);
   }
 
-  /** Current lock owner id, or null. Used by WS/SSE open handlers and render. */
-  getRecordingOwner(taskId: string): { owner: string; ownerLabel: string } | null {
+  /** Current lock owner, or null. Used by WS/SSE open handlers and Connect `realtime/lock`. */
+  getRecordingOwner(taskId: string): { owner: string; ownerLabel: string; preparing?: string; warning?: string } | null {
     const session = this.sessions.get(taskId);
     if (!session || !session.recordingOwner) return null;
-    return { owner: session.recordingOwner, ownerLabel: session.recordingOwnerLabel ?? "another client" };
+    return { owner: session.recordingOwner, ownerLabel: session.recordingOwnerLabel ?? "another client", ...this.lockNotices.get(taskId) };
   }
 
   private async clearRecordingOwner(taskId: string, session: ActiveSession, ownerId: string): Promise<void> {
@@ -566,8 +596,27 @@ export class RealtimeSessionManager {
       .run(owner, label, activityAt != null ? new Date(activityAt).toISOString() : null, taskId);
   }
 
-  private emitAudioLock(taskId: string, locked: boolean, owner?: string, ownerLabel?: string): void {
-    eventBus.emit("realtime:audio_lock", { taskId, locked, owner, ownerLabel });
+  private emitAudioLock(
+    taskId: string,
+    locked: boolean,
+    owner?: string,
+    ownerLabel?: string,
+    extra: { preparing?: string; warning?: string } = {},
+  ): void {
+    const notice = {
+      ...(extra.preparing ? { preparing: extra.preparing } : {}),
+      ...(extra.warning ? { warning: extra.warning } : {}),
+    };
+    if (locked) this.lockNotices.set(taskId, notice);
+    else this.lockNotices.delete(taskId);
+    eventBus.emit("realtime:audio_lock", {
+      taskId,
+      locked,
+      owner,
+      ownerLabel,
+      ...(extra.preparing ? { preparing: extra.preparing } : {}),
+      ...(extra.warning ? { warning: extra.warning } : {}),
+    });
   }
 
   async ingestInput(taskId: string, input: InputChunk, source?: string): Promise<void> {
@@ -821,6 +870,8 @@ export class RealtimeSessionManager {
   }
 
   private async transcribePendingSegments(taskId: string, opts: { finalizeStream?: boolean } = {}): Promise<void> {
+    const load = this.engineLoads.get(taskId);
+    if (load) await load;
     const config = getRealtimeConfig(this.db);
     if (config.transcription_provider === "local") {
       const target = this.speechStream?.target() ?? null;

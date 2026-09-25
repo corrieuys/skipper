@@ -4,6 +4,7 @@ import { initializeDatabase } from "../db/connection";
 import { updateRealtimeConfig } from "../realtime/config";
 import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { RealtimeSessionManager } from "../orchestrator/realtime-session";
+import { eventBus } from "../events/bus";
 import { overlapBytes, StreamTranscriber } from "./stream-transcriber";
 
 /**
@@ -228,6 +229,37 @@ describe("RealtimeSessionManager streaming", () => {
     const result = await sessions.acquireRecording(taskId, { id: "web:a", label: "web" }, { onPreparing: (m) => loads.push(m) });
     expect(loads).toEqual(["Model X"]);
     expect(result).toEqual({ ok: true, state: "active", warning: "Speech model X is not downloaded" });
+  });
+
+  it("background acquire: grants at once, holds transcription until the model loads, then reports the result", async () => {
+    let finishLoad!: (err?: Error) => void;
+    sessions.setWhisperControls({
+      acquire: () => new Promise<void>((resolve, reject) => { finishLoad = (err) => (err ? reject(err) : resolve()); }),
+      release: () => {},
+      pendingStartLabel: () => "Model X",
+    });
+    const locks: unknown[] = [];
+    const onLock = (e: unknown) => locks.push(e);
+    eventBus.on("realtime:audio_lock", onLock);
+    try {
+      const result = await sessions.acquireRecording(taskId, { id: "connect:a", label: "ios" }, { background: true });
+      expect(result).toEqual({ ok: true, state: "active", preparing: "Model X" });
+      await sessions.ingestInput(taskId, { sourceType: "audio", contentType: "audio/wav", contentBody: wavBase64(1), metadata: { format: "wav", overlap_seconds: 0 } }, "connect:a");
+      let drained = false;
+      const drain = sessions.transcribePendingForTask(taskId).then(() => { drained = true; });
+      await Bun.sleep(20);
+      // Still loading: the chunk is kept pending, not failed as "not configured".
+      expect(drained).toBe(false);
+      expect(rows()[0]!.status).toBe("pending");
+      finishLoad(new Error("Speech model X is not downloaded"));
+      await drain;
+      expect(locks).toEqual([
+        { taskId, locked: true, owner: "connect:a", ownerLabel: "ios", preparing: "Model X" },
+        { taskId, locked: true, owner: "connect:a", ownerLabel: "ios", warning: "Speech model X is not downloaded" },
+      ]);
+    } finally {
+      eventBus.off("realtime:audio_lock", onLock);
+    }
   });
 
   it.skipIf(!hasFfmpeg)("per-chunk path: cuts the repeated audio before transcription", async () => {

@@ -118,7 +118,20 @@ lists the `timeline` feature.
 
 **realtime input:** `clientId` names the owner of the single-writer recording
 lock, so it is required for `acquire`, `release` and audio `ingest` only. A
-`format: 'text'` ingest is sessionless and needs no `clientId`.
+`format: 'text'` ingest is sessionless and needs no `clientId`. `acquire`
+grants at once (`acquireRecording(..., { background: true })`): when a local
+speech model must load first, the reply is `{ state, preparing: <model> }` and
+the load runs behind the grant (the task's chunks wait for it instead of failing),
+so a cold load never outlasts the client's or the relay's request timeout. The
+`realtime:audio_lock` events for that owner carry `preparing`, then (load done)
+no `preparing` and `warning` if the engine failed to start; the reply carries
+`warning` too when the load was not in the background. The iOS and Android apps
+show "Loading <model>…" and "Recording, but transcription is unavailable: …".
+`realtime/lock { taskId }` (a read, no `clientId`) returns the current lock
+(`{ locked, owner?, ownerLabel?, preparing?, warning? }`); the apps read it when
+a task view opens, then follow the events. Every surface (web, iOS, Android)
+shows another client's recording the same way: "Recording on <label>" (+ the
+loading model or the warning), a live dot, Record disabled.
 
 **task memory over connect:** `connect:capabilities` lists the `task_memory`
 feature. Team rows (`teams/list-all`, `create`, `update`) carry `skipperPrompt`, the extra context for the root Skipper (the web team map's Skipper card); `teams/create` / `teams/update` take an optional `skipperPrompt` string: sent = replace (empty clears), absent = the stored prompt is kept, so older clients never wipe it. Forwarded events also include `recurring:changed` (+ fat `recurring`, the `recurring/list` row) and `team:changed` (+ fat `team`, the `teams/list-all` row); both omit the row when `change` is `deleted`. `escalation:resolved` may carry `auto: true` (system close). Live agent instances: `instances/list { taskId }` projects a task's

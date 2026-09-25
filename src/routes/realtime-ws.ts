@@ -72,6 +72,8 @@ export const realtimeWsHandlers = {
       locked: !!initialLock,
       owner: initialLock?.owner,
       owner_label: initialLock?.ownerLabel,
+      preparing: initialLock?.preparing,
+      warning: initialLock?.warning,
     }));
 
     // Subscribe to event bus for live push events
@@ -131,6 +133,8 @@ export const realtimeWsHandlers = {
           locked: event.locked,
           owner: event.owner,
           owner_label: event.ownerLabel,
+          preparing: event.preparing,
+          warning: event.warning,
         }));
       } catch { /* ws closed */ }
     };

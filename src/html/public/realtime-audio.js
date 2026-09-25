@@ -39,6 +39,16 @@
   })();
   var mySource = 'web:' + clientId;
   var audioLockedByOther = false;
+  // The other client's recording, from audio.lock: its label ("ios",
+  // "android", "web"), the model the server is still loading for it, and why
+  // its transcription is unavailable. Shown on our idle Record control.
+  var otherLock = null;
+  // True while the status text shows otherLock, so it is cleared on release.
+  var otherLockShown = false;
+  // Task the socket belongs to. The socket opens as soon as a task's Record
+  // control is on the page (not only on Record), so a recording started on
+  // another client shows here at once.
+  var wsTaskId = null;
   var pendingStart = null;
   // Label of the speech model the server is loading before recording can start.
   var preparingModel = null;
@@ -72,18 +82,47 @@
     eachMirror('[data-rt-status]', function (m) { m.textContent = text; });
   }
 
+  // Keep a socket open for the task whose Record control is on the page, to
+  // receive its lock state. Never switch sockets during our own recording.
+  function watchTask() {
+    if (isRecording || pendingStart) return;
+    var ctl = document.querySelector('#btn-start-recording[data-task-id], [data-rt-start][data-task-id]');
+    var taskId = ctl ? ctl.getAttribute('data-task-id') : null;
+    if (taskId === wsTaskId && (ws || !taskId)) return;
+    if (ws) { try { ws.close(); } catch (e) { /* already closed */ } ws = null; window._realtimeWs = null; }
+    wsTaskId = null;
+    audioLockedByOther = false;
+    otherLock = null;
+    if (taskId) connectWs(taskId);
+  }
+
+  function otherLockStatus() {
+    var who = otherLock && otherLock.label ? otherLock.label : 'another client';
+    if (otherLock && otherLock.warning) return 'Recording on ' + who + ', but transcription is unavailable: ' + otherLock.warning;
+    if (otherLock && otherLock.preparing) return 'Recording on ' + who + ' (loading ' + otherLock.preparing + '…)';
+    return 'Recording on ' + who;
+  }
+
+  function setLiveStatus(on) {
+    var el = getEl('audio-status');
+    if (el) el.classList.toggle('mc-rt-live', on);
+    eachMirror('[data-rt-status]', function (m) { m.classList.toggle('mc-rt-live', on); });
+  }
+
   function syncUi() {
+    watchTask();
     var startBtn = getEl('btn-start-recording');
     var stopBtn = getEl('btn-stop-recording');
     var vizWrap = getEl('audio-visualizer-wrap');
 
     if (!startBtn && !stopBtn && !vizWrap && !document.querySelector('[data-rt-start]')) return;
+    setLiveStatus(!isRecording && audioLockedByOther);
 
     var loading = !isRecording && !!preparingModel;
     eachMirror('[data-rt-start]', function (m) {
       m.style.display = isRecording ? 'none' : '';
       m.disabled = !isRecording && (audioLockedByOther || loading);
-      m.title = (!isRecording && audioLockedByOther) ? 'Recording is in use by another client' : loading ? 'Loading ' + preparingModel : '';
+      m.title = (!isRecording && audioLockedByOther) ? otherLockStatus() : loading ? 'Loading ' + preparingModel : '';
       m.classList.toggle('sk-animate-pulse', loading);
     });
     eachMirror('[data-rt-stop]', function (m) { m.style.display = isRecording ? '' : 'none'; });
@@ -102,30 +141,37 @@
       // Disable Record while another client holds the recording lock, or while
       // the speech model loads (pulsing, with the model named in the status).
       startBtn.disabled = audioLockedByOther || loading;
-      startBtn.title = audioLockedByOther ? 'Recording is in use by another client' : loading ? 'Loading ' + preparingModel : '';
+      startBtn.title = audioLockedByOther ? otherLockStatus() : loading ? 'Loading ' + preparingModel : '';
       startBtn.classList.toggle('sk-animate-pulse', loading);
     }
     if (stopBtn) stopBtn.style.display = 'none';
     if (vizWrap) vizWrap.style.display = 'none';
-    if (audioLockedByOther) updateStatus('Recording in use by another client');
+    if (audioLockedByOther) { updateStatus(otherLockStatus()); otherLockShown = true; }
     else if (loading) updateStatus('Loading ' + preparingModel + '…');
+    else if (otherLockShown) { updateStatus(''); otherLockShown = false; }
   }
 
   function connectWs(taskId) {
-    if (ws && ws.readyState === WebSocket.OPEN) return;
+    if (ws && wsTaskId === taskId && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    if (ws) { try { ws.close(); } catch (e) { /* already closed */ } }
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var wsUrl = proto + '//' + location.host + '/ws/tasks/' + encodeURIComponent(taskId) + '/realtime';
     console.log('[realtime-audio] Connecting to WebSocket:', wsUrl);
-    ws = new WebSocket(wsUrl);
+    var sock = new WebSocket(wsUrl);
+    ws = sock;
+    wsTaskId = taskId;
     window._realtimeWs = ws;
 
     ws.onopen = function() {
       console.log('[realtime-audio] WebSocket connected:', wsUrl);
-      updateStatus('Connected');
       // If the user pressed Record before the socket opened, claim the lock now.
       if (pendingStart) requestRecordingLock();
     };
-    ws.onclose = function() { ws = null; window._realtimeWs = null; };
+    ws.onclose = function() {
+      // A replaced socket closing must not clear its successor.
+      if (ws !== sock) return;
+      ws = null; wsTaskId = null; window._realtimeWs = null;
+    };
     ws.onerror = function() { updateStatus('Connection error'); };
     ws.onmessage = function(e) {
       var msg;
@@ -175,6 +221,9 @@
       // Lock state changed elsewhere → enable/disable our Record button.
       if (msg.type === 'audio.lock') {
         audioLockedByOther = !!msg.locked && msg.owner !== mySource;
+        otherLock = audioLockedByOther
+          ? { label: msg.owner_label || null, preparing: msg.preparing || null, warning: msg.warning || null }
+          : null;
         syncUi();
         return;
       }

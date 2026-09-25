@@ -191,6 +191,8 @@ export interface RealtimeAudioLockEvent {
   locked: boolean;
   owner?: string;        // opaque source id, e.g. "web:<id>" / "connect:<id>"
   ownerLabel?: string;   // human label, e.g. "web" / "ios"
+  preparing?: string;    // local model still loading for this owner (background acquire)
+  warning?: string;      // transcription unavailable: the engine failed to start
 }
 
 export interface TaskNeedsReviewChangedEvent {

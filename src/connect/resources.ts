@@ -1679,6 +1679,13 @@ export async function handleResourceRequest(
           return { ok: true, data: { reopened: true } };
         }
 
+        // Current recording-lock state, for a client opening the task view
+        // (later changes arrive as realtime:audio_lock events). A read: no clientId.
+        if (action === "lock") {
+          const lock = deps.realtimeSessionManager.getRecordingOwner(taskId);
+          return { ok: true, data: lock ? { locked: true, ...lock } : { locked: false } };
+        }
+
         const clientId = String(params.clientId ?? "");
         const sourceId = `connect:${clientId}`;
         const label = String(params.label ?? "connect");
@@ -1693,7 +1700,10 @@ export async function handleResourceRequest(
 
         switch (action) {
           case "acquire": {
-            const result = await mgr.acquireRecording(taskId, { id: sourceId, label });
+            // background: a cold model load can outlast the client's and the
+            // relay's request timeout, so the lock is granted at once and the
+            // load finishes behind it (see acquireRecording).
+            const result = await mgr.acquireRecording(taskId, { id: sourceId, label }, { background: true });
             if (!result.ok) {
               return {
                 ok: false,
@@ -1702,7 +1712,14 @@ export async function handleResourceRequest(
                   : result.error,
               };
             }
-            return { ok: true, data: { state: result.state } };
+            return {
+              ok: true,
+              data: {
+                state: result.state,
+                ...(result.preparing ? { preparing: result.preparing } : {}),
+                ...(result.warning ? { warning: result.warning } : {}),
+              },
+            };
           }
           case "ingest": {
             const data = String(params.data ?? "");
