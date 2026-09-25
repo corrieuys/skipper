@@ -12,6 +12,9 @@ import {
 } from "../data/realtime";
 import { getRealtimeConfig, clampCadenceSeconds, updateRealtimeConfig } from "../realtime/config";
 import type { RealtimeConfig } from "../realtime/config";
+import { findSpeechModel } from "../speech/catalogue";
+import { getSpeechEngine } from "../speech/engine-manager";
+import { isExperimental } from "../config/feature-flags";
 import type { ManagerDaemon } from "../agents/manager-daemon";
 import {
   timelineEntriesFragment,
@@ -347,11 +350,30 @@ export function registerRealtimeRoutes(daemon?: ManagerDaemon): void {
       if (openaiModel !== null && openaiModel.toString().trim()) {
         updates.openai_transcription_model = openaiModel.toString().trim();
       }
+      // Local model choice + speaker labels (experimental config controls).
+      if (isExperimental()) {
+        const localModel = formData.get("local_model");
+        if (localModel !== null && findSpeechModel(localModel.toString())) {
+          updates.local_model = localModel.toString();
+        }
+        const speakerLabels = formData.get("speaker_labels");
+        if (speakerLabels !== null) {
+          const v = speakerLabels.toString();
+          updates.speaker_labels = v === "true" || v === "1" || v === "on";
+        }
+      }
     } else {
       updates = await req.json();
     }
 
     const config = updateRealtimeConfig(updates);
+    // A live speech engine moves onto the new model / speaker setting now, so an
+    // open recording keeps transcribing with what the operator just picked.
+    if ("local_model" in updates || "speaker_labels" in updates) {
+      getSpeechEngine().restartIfRunning(getDb()).catch((err) => {
+        console.error(`[speech] restart after config change failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
 
     // The config panel's inputs post with hx-swap="none" (in-place, no reload);
     // a full-form legacy submit still gets the redirect.

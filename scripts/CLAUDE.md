@@ -4,7 +4,7 @@ Dev helpers.
 
 | file | use |
 |---|---|
-| `setup-whisper.sh` | Build `vendor/whisper.cpp` + fetch model. Required before `--start-whisper` |
+| `setup-whisper.sh` | Build `vendor/whisper.cpp` + fetch the base.en model (dev/macOS source of `whisper-server`; the speech engine finds it, see [../src/speech/CLAUDE.md](../src/speech/CLAUDE.md)) |
 | `test-preload.ts` | Bun preload for test runs |
 | `test-with-cleanup.ts` | Test runner wrapper that nukes leftover DB files |
 | `gen-assets.ts` | Generate `src/generated/embedded-assets.js` (+ `.d.ts`) — the manifest of files baked into the binary. Re-run on asset add/remove (`bun run gen:assets`) |

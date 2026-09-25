@@ -231,7 +231,10 @@ export const realtimeWsHandlers = {
           const clientId = (parsed.clientId as string) || crypto.randomUUID();
           const label = (parsed.label as string) || "web";
           const source = `web:${clientId}`;
-          const result = await realtimeSessionManager.acquireRecording(taskId, { id: source, label });
+          const result = await realtimeSessionManager.acquireRecording(taskId, { id: source, label }, {
+            // Shown on the Record control while the speech model loads.
+            onPreparing: (model: string) => ws.send(JSON.stringify({ type: "recording.preparing", model })),
+          });
           if (!result.ok) {
             ws.send(JSON.stringify({
               type: "error",
@@ -246,7 +249,7 @@ export const realtimeWsHandlers = {
             return;
           }
           (ws.data as RealtimeWSData).recordingSource = source;
-          ws.send(JSON.stringify({ type: "ack", ref: "recording.start", source }));
+          ws.send(JSON.stringify({ type: "ack", ref: "recording.start", source, ...(result.warning ? { warning: result.warning } : {}) }));
           ws.send(JSON.stringify({ type: "session.state", state: result.state }));
           return;
         }

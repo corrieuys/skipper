@@ -74,8 +74,10 @@ it must fall under a `gen-assets.ts` embed rule (`prompts/`, `config/`, `public/
 Mutable state lives in the data dir (`~/.skipper`, or `SKIPPER_DATA_DIR` /
 `XDG_DATA_HOME`), never the binary: runtime DB, `greg.db`, and the config working
 copy (seeded from embedded defaults on first run — see `ensureConfigSeeded`).
-Whisper transcription needs a separately-built `vendor/whisper.cpp` and is not in
-the binary (opt-in, fails gracefully if absent).
+Local transcription engines are not in the binary: the speech engine downloads
+NeMo-Speech.cpp and speech models into `<data dir>/speech/`, and uses a
+`whisper-server` from the dev build (`vendor/whisper.cpp`) or PATH (see
+[src/speech/CLAUDE.md](src/speech/CLAUDE.md); fails gracefully if absent).
 
 ## CLI
 
@@ -179,7 +181,7 @@ repo's GitHub Releases.
 | escalations | [src/escalations/CLAUDE.md](src/escalations/CLAUDE.md) |
 | operator messages (agent → human progress updates, experimental) | [src/messages/CLAUDE.md](src/messages/CLAUDE.md) |
 | realtime audio/transcribe | [src/realtime/CLAUDE.md](src/realtime/CLAUDE.md) |
-| whisper.cpp local server | [src/whisper/CLAUDE.md](src/whisper/CLAUDE.md) |
+| local speech engine (whisper.cpp / NVIDIA NeMo-Speech.cpp, model catalogue + download, speaker labels) | [src/speech/CLAUDE.md](src/speech/CLAUDE.md) |
 | MCP server (typed tools alt to stdout signals) | [src/mcp/CLAUDE.md](src/mcp/CLAUDE.md) |
 | slack app integration (post as app via bot token; inbound slash commands via Socket Mode) | [src/slack/CLAUDE.md](src/slack/CLAUDE.md) |
 | user hooks (task/escalation events → shell) | [src/hooks/CLAUDE.md](src/hooks/CLAUDE.md) |

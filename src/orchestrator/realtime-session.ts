@@ -13,7 +13,11 @@ import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/typ
 import { getLocalTeam } from "../teams/local-teams";
 import { deduplicateOverlap } from "../realtime/dedup";
 import { emitInstanceState } from "../agents/instance-status";
-import { unlinkSync, readdirSync } from "fs";
+import { unlinkSync, readdirSync, statSync } from "fs";
+import { StreamTranscriber, decodeToPcm16, overlapBytes, pcm16ToWav, type StreamTarget } from "../speech/stream-transcriber";
+
+/** Age before boot cleanup treats a temp audio file as left over from a crash. */
+const STALE_TEMP_AUDIO_MS = 10 * 60 * 1000;
 
 export interface InputChunk {
   sourceType: "audio" | "text";
@@ -63,6 +67,22 @@ interface ActiveSession {
 interface WhisperControls {
   acquire(ownerKey: string, db?: Database): Promise<void>;
   release(ownerKey: string, db?: Database): void;
+  /** Label of the local model an acquire would have to start first (it takes seconds), else null. */
+  pendingStartLabel?(db?: Database): string | null;
+}
+
+/** A pending chunk ready for per-chunk transcription (see trimChunkOverlap). */
+interface PreparedChunk {
+  body: string;
+  format: string;
+  audioTrimmed: boolean;
+  empty: boolean;
+}
+
+// Injected source of the live speech-stream target (the NeMo realtime socket
+// when a streaming model runs; null otherwise → per-chunk HTTP transcription).
+interface SpeechStreamSource {
+  target(): StreamTarget | null;
 }
 
 interface SummarizerRun {
@@ -80,6 +100,12 @@ export class RealtimeSessionManager {
   private activeSummarizerRuns: Map<string, SummarizerRun> = new Map();
   private disposed = false;
   private whisper: WhisperControls | null = null;
+  private speechStream: SpeechStreamSource | null = null;
+  // One live speech stream per recording task (streaming models only).
+  private streams: Map<string, StreamTranscriber> = new Map();
+  // Per-chunk path: the last 3 s of each task's previous decoded chunk, to cut
+  // the audio the next chunk repeats (its overlap) before transcription.
+  private chunkTails: Map<string, Uint8Array> = new Map();
   private lockSweepTimer: ReturnType<typeof setInterval> | null = null;
   private readonly onAgentSignal = (event: import("../events/bus").AgentSignalEvent): void => {
     this.handleSummarizerSignal(event);
@@ -352,18 +378,27 @@ export class RealtimeSessionManager {
     this.whisper = controls;
   }
 
+  /** Wire the speech-stream target source (called once at boot). */
+  setSpeechStreamSource(source: SpeechStreamSource): void {
+    this.speechStream = source;
+  }
+
   /**
-   * Remove any leftover /tmp/skipper-*.webm and /tmp/skipper-*.wav files
-   * from prior runs that may have crashed mid-transcription.
+   * Remove temp audio left in /tmp by a run that crashed mid-transcription:
+   * `skipper-<uuid>-in.<format>` (any recorder format), `skipper-<uuid>-16k.wav`,
+   * and the older `skipper-<uuid>.webm|wav` names. Only files older than
+   * STALE_TEMP_AUDIO_MS, so a second daemon's in-flight files are left alone.
    */
   static cleanupStaleTempFiles(): void {
+    const tempAudio = /^skipper-[0-9a-f-]{36}(-in\.[a-z0-9]+|-16k\.wav|\.webm|\.wav)$/i;
+    const cutoff = Date.now() - STALE_TEMP_AUDIO_MS;
     try {
-      const files = readdirSync("/tmp");
-      for (const f of files) {
-        if (f.startsWith("skipper-") && (f.endsWith(".webm") || f.endsWith(".wav"))) {
-          // Best effort: stale temp audio — another process may have removed it.
-          try { unlinkSync(`/tmp/${f}`); } catch { }
-        }
+      for (const f of readdirSync("/tmp")) {
+        if (!tempAudio.test(f)) continue;
+        // Best effort: stale temp audio — another process may have removed it.
+        try {
+          if (statSync(`/tmp/${f}`).mtimeMs < cutoff) unlinkSync(`/tmp/${f}`);
+        } catch { }
       }
     } catch { /* best effort: /tmp unreadable — skip cleanup */ }
   }
@@ -423,7 +458,8 @@ export class RealtimeSessionManager {
   async acquireRecording(
     taskId: string,
     source: { id: string; label: string },
-  ): Promise<{ ok: true; state: string } | { ok: false; error: string; ownerLabel?: string }> {
+    opts: { onPreparing?: (modelLabel: string) => void } = {},
+  ): Promise<{ ok: true; state: string; warning?: string } | { ok: false; error: string; ownerLabel?: string }> {
     // Recording is allowed on any ACTIVE task — audio input is universal.
     // Drafts and settled tasks are rejected (approve/revive first).
     const task = this.db
@@ -452,14 +488,20 @@ export class RealtimeSessionManager {
     session.recordingActivityAt = now;
     this.persistRecordingOwner(taskId, source.id, source.label, now);
 
+    // Loading a local model takes seconds: let the caller show that first.
+    const pendingModel = this.whisper?.pendingStartLabel?.(this.db) ?? null;
+    if (pendingModel) opts.onPreparing?.(pendingModel);
+    let warning: string | undefined;
     try {
       await this.whisper?.acquire(source.id, this.db);
     } catch (err) {
       logError(this.db, "realtime.whisper_acquire", { taskId, owner: source.id }, err);
+      // Recording still starts (audio is kept); transcription will fail until fixed.
+      warning = err instanceof Error ? err.message : String(err);
     }
 
     this.emitAudioLock(taskId, true, source.id, source.label);
-    return { ok: true, state: "active" };
+    return warning ? { ok: true, state: "active", warning } : { ok: true, state: "active" };
   }
 
   /** Release the recording lock if `sourceId` currently holds it. */
@@ -482,8 +524,10 @@ export class RealtimeSessionManager {
     session.recordingActivityAt = null;
     this.persistRecordingOwner(taskId, null, null, null);
     this.emitAudioLock(taskId, false);
-    // Flush the owner's pending audio, then release the shared transcriber.
-    try { await this.drainAndTranscribe(taskId); } catch (err) { logError(this.db, "realtime.release_drain", { taskId }, err); }
+    // Flush the owner's pending audio (ending its speech stream), then release
+    // the shared transcriber. The next recording starts without a previous chunk.
+    try { await this.drainAndTranscribe(taskId, { finalizeStream: true }); } catch (err) { logError(this.db, "realtime.release_drain", { taskId }, err); }
+    this.chunkTails.delete(taskId);
     try { this.whisper?.release(ownerId, this.db); } catch { /* best effort */ }
   }
 
@@ -745,10 +789,10 @@ export class RealtimeSessionManager {
     return this.transcribePendingSegments(taskId);
   }
 
-  async drainAndTranscribe(taskId: string): Promise<void> {
+  async drainAndTranscribe(taskId: string, opts: { finalizeStream?: boolean } = {}): Promise<void> {
     const session = this.sessions.get(taskId);
     if (!session) {
-      await this.transcribePendingSegments(taskId);
+      await this.transcribePendingSegments(taskId, opts);
       return;
     }
 
@@ -773,11 +817,15 @@ export class RealtimeSessionManager {
     }
 
     // Transcribe any remaining pending segments
-    await this.transcribePendingSegments(taskId);
+    await this.transcribePendingSegments(taskId, opts);
   }
 
-  private async transcribePendingSegments(taskId: string): Promise<void> {
+  private async transcribePendingSegments(taskId: string, opts: { finalizeStream?: boolean } = {}): Promise<void> {
     const config = getRealtimeConfig(this.db);
+    if (config.transcription_provider === "local") {
+      const target = this.speechStream?.target() ?? null;
+      if (await this.streamPendingSegments(taskId, target, !!opts.finalizeStream)) return;
+    }
     const adapter = createTranscriptionAdapter(config);
 
     const pending = this.db
@@ -819,6 +867,11 @@ export class RealtimeSessionManager {
       return;
     }
 
+    // Cut each chunk's repeated audio first, in order (each chunk is matched
+    // against the one before it); transcription then runs in parallel.
+    const prepared = new Map<string, PreparedChunk>();
+    for (const segment of pending) prepared.set(segment.id, await this.trimChunkOverlap(taskId, segment));
+
     // Process in parallel batches of 5
     const BATCH_SIZE = 5;
     for (let i = 0; i < pending.length; i += BATCH_SIZE) {
@@ -833,9 +886,14 @@ export class RealtimeSessionManager {
             }
           } catch { /* metadata parse failure — fall back to webm */ }
 
+          const debugDir = process.env.SKIPPER_SPEECH_DEBUG_DIR;
+          if (debugDir) await Bun.write(`${debugDir}/${taskId}-${segment.sequence}-chunk.${format}`, Buffer.from(segment.content_body, "base64"));
+          const chunk = prepared.get(segment.id);
+          // Nothing left after the repeat was cut: no new speech in this chunk.
+          if (chunk?.empty) return { id: segment.id, text: "" };
           const transcribed = await adapter.transcribe(
-            segment.content_body,
-            format,
+            chunk?.body ?? segment.content_body,
+            chunk?.format ?? format,
           );
           return { id: segment.id, text: transcribed };
         }),
@@ -850,9 +908,11 @@ export class RealtimeSessionManager {
 
           // Deduplicate overlap: if this segment was recorded with audio overlap,
           // the first few seconds duplicate the tail of the previous segment.
+          // Text matching is the fallback for when the audio could not be matched.
           try {
             const meta = JSON.parse(segment.metadata || "{}");
-            if (meta.overlap_seconds > 0) {
+            const audioTrimmed = !!(segment && prepared.get(segment.id)?.audioTrimmed);
+            if (meta.overlap_seconds > 0 && !audioTrimmed) {
               const prevSegment = this.db
                 .prepare(
                   "SELECT transcribed_text FROM task_input_streams WHERE task_id = ? AND sequence < ? AND transcription_status = 'transcribed' ORDER BY sequence DESC LIMIT 1",
@@ -913,6 +973,177 @@ export class RealtimeSessionManager {
         }
       }
     }
+  }
+
+  /**
+   * Streaming path (NeMo streaming model running): push each pending chunk's
+   * audio into the task's one live speech stream instead of transcribing it
+   * alone, so text and speaker numbers carry across chunk boundaries. Chunks
+   * are decoded to 16 kHz PCM, their leading overlap (a repeat of the previous
+   * chunk's tail) dropped, then marked transcribed with empty text; the text
+   * the stream finalized for them lands as one `streamed` transcript row, which
+   * the summarizer / raw-transcript path reads like any transcribed chunk.
+   * `finalize` (recording released / session stopped) commits and ends the
+   * stream. Returns false when the HTTP per-chunk path should handle the
+   * pending chunks (no streaming target, or the stream could not be used).
+   */
+  private async streamPendingSegments(taskId: string, target: StreamTarget | null, finalize: boolean): Promise<boolean> {
+    let stream = this.streams.get(taskId) ?? null;
+    // A stream for another target (engine restarted onto a new model or speaker
+    // setting) or one that dropped: keep what it recognized, then end it.
+    if (stream && (!target || !stream.isOpen() || stream.target.url !== target.url || stream.target.speakerLabels !== target.speakerLabels)) {
+      await this.endStream(taskId, stream);
+      stream = null;
+    }
+    if (!target) return false;
+
+    const pending = this.db
+      .prepare(
+        "SELECT id, content_body, sequence, metadata FROM task_input_streams WHERE task_id = ? AND transcription_status = 'pending' ORDER BY sequence",
+      )
+      .all(taskId) as Array<{ id: string; content_body: string; sequence: number; metadata: string }>;
+
+    if (pending.length > 0 && !stream) {
+      const fresh = new StreamTranscriber(target);
+      try {
+        await fresh.open();
+      } catch (err) {
+        fresh.close();
+        logError(this.db, "realtime.stream_open", { taskId, url: target.url }, err);
+        return false;
+      }
+      stream = fresh;
+      this.streams.set(taskId, stream);
+    }
+    console.log(`[realtime-session] streamPending: task=${taskId} pending=${pending.length} finalize=${finalize} speakers=${target.speakerLabels}`);
+
+    if (stream) {
+      for (const segment of pending) {
+        let meta: { format?: unknown; overlap_seconds?: unknown } = {};
+        try { meta = JSON.parse(segment.metadata || "{}"); } catch { /* defaults */ }
+        const format = typeof meta.format === "string" && meta.format.trim() ? meta.format.trim() : "webm";
+        let pcm: Uint8Array;
+        try {
+          pcm = await decodeToPcm16(segment.content_body, format);
+        } catch (err) {
+          this.markSegmentFailed(taskId, segment.id, err);
+          continue;
+        }
+        const debugDir = process.env.SKIPPER_SPEECH_DEBUG_DIR;
+        if (debugDir) await Bun.write(`${debugDir}/${taskId}-${segment.sequence}-decoded.pcm`, pcm);
+        // Cut the audio this chunk repeats from what was already streamed (the
+        // first chunk of a stream has nothing before it).
+        pcm = stream.trimRepeat(pcm, Number(meta.overlap_seconds) || 0).pcm;
+        if (debugDir) await Bun.write(`${debugDir}/${taskId}-${segment.sequence}-pushed.pcm`, pcm);
+        try {
+          stream.push(pcm);
+        } catch (err) {
+          // The socket dropped: keep what was recognized, and let the HTTP path
+          // transcribe this chunk and the rest.
+          logError(this.db, "realtime.stream_push", { taskId, segmentId: segment.id }, err);
+          await this.endStream(taskId, stream);
+          return false;
+        }
+        this.db
+          .prepare("UPDATE task_input_streams SET transcription_status = 'transcribed', transcribed_text = '', content_body = '' WHERE id = ?")
+          .run(segment.id);
+      }
+      try {
+        if (pending.length > 0) await stream.sync();
+      } catch (err) {
+        logError(this.db, "realtime.stream_sync", { taskId }, err);
+      }
+      this.insertStreamTranscript(taskId, stream.takeText());
+      if (finalize) await this.endStream(taskId, stream);
+    }
+    return true;
+  }
+
+  /**
+   * Per-chunk path: decode a chunk and cut the audio it repeats from the
+   * previous chunk (the recorder's overlap, located by matching audio, see
+   * `speech/stream-transcriber.ts:overlapBytes`), so the transcriber never hears
+   * it. Returned as 16 kHz WAV. `audioTrimmed` false (no previous chunk, no
+   * trusted match, or a decode failure) leaves the overlap to the text dedup.
+   */
+  private async trimChunkOverlap(
+    taskId: string,
+    segment: { content_body: string; metadata: string },
+  ): Promise<PreparedChunk> {
+    let meta: { format?: unknown; overlap_seconds?: unknown } = {};
+    try { meta = JSON.parse(segment.metadata || "{}"); } catch { /* defaults */ }
+    const format = typeof meta.format === "string" && meta.format.trim() ? meta.format.trim() : "webm";
+    let pcm: Uint8Array;
+    try {
+      pcm = await decodeToPcm16(segment.content_body, format);
+    } catch {
+      // The adapter reports the decode failure itself.
+      this.chunkTails.delete(taskId);
+      return { body: segment.content_body, format, audioTrimmed: false, empty: false };
+    }
+    const tail = this.chunkTails.get(taskId);
+    this.chunkTails.set(taskId, pcm.slice(Math.max(0, pcm.byteLength - 3 * 32_000)));
+    const overlap = Number(meta.overlap_seconds) || 0;
+    let audio = pcm;
+    let audioTrimmed = false;
+    if (tail && overlap > 0) {
+      const cut = overlapBytes(tail, pcm, overlap);
+      if (cut.matched) {
+        audio = pcm.subarray(cut.bytes);
+        audioTrimmed = true;
+      }
+    }
+    return {
+      body: Buffer.from(pcm16ToWav(audio)).toString("base64"),
+      format: "wav",
+      audioTrimmed,
+      // Under 0.1 s of new audio is no speech to transcribe.
+      empty: audio.byteLength < 3_200,
+    };
+  }
+
+  /** Commit + close a task's speech stream, storing the text it still held. */
+  private async endStream(taskId: string, stream: StreamTranscriber): Promise<void> {
+    if (this.streams.get(taskId) === stream) this.streams.delete(taskId);
+    let tail = "";
+    try {
+      tail = await stream.finish();
+    } catch (err) {
+      tail = stream.takeText();
+      logError(this.db, "realtime.stream_finish", { taskId }, err);
+    }
+    this.insertStreamTranscript(taskId, tail);
+  }
+
+  /** One transcribed row carrying text a speech stream finalized (no audio of its own). */
+  private insertStreamTranscript(taskId: string, text: string): void {
+    const cleaned = stripFillerMarkers(text);
+    if (!cleaned) return;
+    const session = this.sessions.get(taskId);
+    const sequence = session ? ++session.sequenceCounter : this.getMaxSequence(taskId) + 1;
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO task_input_streams (id, task_id, source_type, source_ref, content_type, content_body, chunk_start_at, chunk_end_at, sequence, metadata, transcription_status, transcribed_text)
+         VALUES (?, ?, 'audio', NULL, 'text/plain', '', ?, ?, ?, ?, 'transcribed', ?)`,
+      )
+      .run(crypto.randomUUID(), taskId, now, now, sequence, JSON.stringify({ streamed: true }), cleaned);
+  }
+
+  private markSegmentFailed(taskId: string, segmentId: string, err: unknown): void {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    this.db
+      .prepare("UPDATE task_input_streams SET transcription_status = 'failed', transcribed_text = ?, content_body = '' WHERE id = ?")
+      .run(`[Transcription failed: ${errorMessage}]`, segmentId);
+    const timelineId = crypto.randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO realtime_timeline (id, task_id, entry_type, content, source_segment_ids)
+         VALUES (?, ?, 'error', ?, ?)`,
+      )
+      .run(timelineId, taskId, `Transcription failed: ${errorMessage}`, JSON.stringify([segmentId]));
+    this.emitTimelineUpdated(taskId, timelineId, "error");
+    logError(this.db, "realtime.transcription", { taskId, segmentId }, err);
   }
 
   /**
@@ -1558,9 +1789,9 @@ export class RealtimeSessionManager {
       });
     }
 
-    // Flush any pending audio segments before pausing
+    // Flush any pending audio segments before pausing (ending a speech stream)
     console.log(`[realtime-session] stopSession: task=${taskId} — flushing pending transcriptions`);
-    await this.transcribePendingSegments(taskId);
+    await this.transcribePendingSegments(taskId, { finalizeStream: true });
 
     // Spawn summarizer for any freshly transcribed segments
     this.spawnSummarizer(taskId);
@@ -1686,6 +1917,9 @@ export class RealtimeSessionManager {
   dispose(): void {
     if (this.disposed) return;
     if (this.lockSweepTimer) { clearInterval(this.lockSweepTimer); this.lockSweepTimer = null; }
+    for (const stream of this.streams.values()) stream.close();
+    this.streams.clear();
+    this.chunkTails.clear();
     this.closeAllSessions();
     eventBus.off("agent:signal", this.onAgentSignal);
     eventBus.off("agent:exit", this.onAgentExit);

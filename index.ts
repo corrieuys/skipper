@@ -29,7 +29,8 @@ import { logError } from "./src/logging";
 import { tryUpgradeRealtimeWs, realtimeWsHandlers } from "./src/routes/realtime-ws";
 import { UIWebSocketManager } from "./src/ws/ui-push";
 import { NotificationManager } from "./src/notifications/manager";
-import { WhisperManager } from "./src/whisper/manager";
+import { getSpeechEngine } from "./src/speech/engine-manager";
+import { registerSpeechRoutes } from "./src/routes/speech";
 import { DaemonMcpServer } from "./src/mcp/server";
 import { MonkeyEngine } from "./src/monkey/tick";
 import { getGregDb, closeGregDb } from "./src/monkey/db";
@@ -99,14 +100,20 @@ const mcpServer = new DaemonMcpServer(getDb(), {
   resumeTaskAgents: (taskId) => daemon.resumeTaskAgents(taskId),
   taskMemoryManager: taskMemory,
 });
-const whisperManager = new WhisperManager();
+// The local speech engine (whisper.cpp or NeMo-Speech.cpp, by the configured model).
+const speechEngine = getSpeechEngine();
 
-// Drive the shared transcriber from the recording lock: whisper starts when the
+// Drive the shared transcriber from the recording lock: the engine starts when the
 // first client acquires and stops when the last releases (ref-counted), so a
 // remote connect/iOS client starts it too and one stop can't kill another's.
 daemon.getRealtimeSessionManager().setWhisperControls({
-  acquire: (ownerKey, db) => whisperManager.acquire(ownerKey, db),
-  release: (ownerKey, db) => whisperManager.release(ownerKey, db),
+  acquire: (ownerKey, db) => speechEngine.acquire(ownerKey, db),
+  release: (ownerKey, db) => speechEngine.release(ownerKey, db),
+  pendingStartLabel: (db) => speechEngine.pendingStartLabel(db),
+});
+// A NeMo streaming model runs a recording through one realtime socket.
+daemon.getRealtimeSessionManager().setSpeechStreamSource({
+  target: () => speechEngine.getStreamTarget(),
 });
 
 registerTaskRoutes(daemon);
@@ -147,25 +154,26 @@ addRoute("DELETE", "/mcp", mcpHandler);
 
 addRoute("GET", "/ping", () => Response.json({ pong: true }));
 
-// Whisper lifecycle routes (called by realtime-audio.js on record start/stop)
+// Speech engine lifecycle routes (dictation.js warms the engine while the user
+// talks). Paths keep their historical /api/whisper name; they drive whichever
+// engine the configured model needs.
 addRoute("GET", "/api/whisper/status", () => {
-  return Response.json({ running: whisperManager.isRunning(), endpoint: whisperManager.isRunning() ? whisperManager.getEndpoint() : null });
+  return Response.json({ running: speechEngine.isRunning(), endpoint: speechEngine.isRunning() ? speechEngine.getEndpoint() : null });
 });
 addRoute("POST", "/api/whisper/start", async () => {
-  if (whisperManager.isRunning()) {
-    return Response.json({ running: true, endpoint: whisperManager.getEndpoint() });
-  }
   try {
-    await whisperManager.start(getDb());
-    return Response.json({ running: true, endpoint: whisperManager.getEndpoint() });
+    await speechEngine.ensureRunning(getDb());
+    return Response.json({ running: true, endpoint: speechEngine.getEndpoint() });
   } catch (err) {
     return Response.json({ running: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
 });
 addRoute("POST", "/api/whisper/stop", () => {
-  whisperManager.stop(getDb());
+  speechEngine.stop(getDb());
   return Response.json({ running: false });
 });
+// Config page: local speech model status + download (experimental).
+registerSpeechRoutes();
 
 
 const connectClient = initConnectClient(
@@ -278,7 +286,7 @@ function shutdown() {
   daemon.stop();
   taskMemory.stop();
   embeddingServer.stop();
-  whisperManager.stop(getDb());
+  speechEngine.stop(getDb());
   uiPush.destroy();
   stopOmarchyFollower();
   connectLocal.destroy();

@@ -1414,6 +1414,17 @@ function registerV2PageRoutes(): void {
         const rt = getRealtimeConfig(db);
         return { cadenceSeconds: rt.cadence_seconds, summaryEnabled: rt.summary_enabled, cadenceMin: CADENCE_MIN_SECONDS, cadenceMax: CADENCE_MAX_SECONDS };
       })(),
+      speech: isExperimental() ? (() => {
+        const { getRealtimeConfig } = require("../realtime/config");
+        const { getSpeechEngine } = require("../speech/engine-manager");
+        const rt = getRealtimeConfig(db);
+        return {
+          provider: rt.transcription_provider,
+          openaiModel: rt.openai_transcription_model,
+          speakerLabels: rt.speaker_labels,
+          status: getSpeechEngine().getStatus(db),
+        };
+      })() : undefined,
       allowedHosts: getAllowedHostsView(db),
     }));
   });

@@ -40,6 +40,10 @@
   var mySource = 'web:' + clientId;
   var audioLockedByOther = false;
   var pendingStart = null;
+  // Label of the speech model the server is loading before recording can start.
+  var preparingModel = null;
+  // Why transcription is unavailable for this recording (model failed to start).
+  var transcriptionWarning = null;
 
   // Overlap state: retain the last N 1-second chunks from each flush so the
   // next blob includes overlapping audio, preventing words from being cut at
@@ -75,10 +79,12 @@
 
     if (!startBtn && !stopBtn && !vizWrap && !document.querySelector('[data-rt-start]')) return;
 
+    var loading = !isRecording && !!preparingModel;
     eachMirror('[data-rt-start]', function (m) {
       m.style.display = isRecording ? 'none' : '';
-      m.disabled = !isRecording && audioLockedByOther;
-      m.title = (!isRecording && audioLockedByOther) ? 'Recording is in use by another client' : '';
+      m.disabled = !isRecording && (audioLockedByOther || loading);
+      m.title = (!isRecording && audioLockedByOther) ? 'Recording is in use by another client' : loading ? 'Loading ' + preparingModel : '';
+      m.classList.toggle('sk-animate-pulse', loading);
     });
     eachMirror('[data-rt-stop]', function (m) { m.style.display = isRecording ? '' : 'none'; });
 
@@ -86,20 +92,23 @@
       if (startBtn) startBtn.style.display = 'none';
       if (stopBtn) stopBtn.style.display = '';
       if (vizWrap) vizWrap.style.display = '';
-      updateStatus('Recording...');
+      updateStatus(transcriptionWarning ? 'Recording, but transcription is unavailable: ' + transcriptionWarning : 'Recording...');
       if (analyser) drawVisualizer();
       return;
     }
 
     if (startBtn) {
       startBtn.style.display = '';
-      // Disable Record while another client holds the recording lock.
-      startBtn.disabled = audioLockedByOther;
-      startBtn.title = audioLockedByOther ? 'Recording is in use by another client' : '';
+      // Disable Record while another client holds the recording lock, or while
+      // the speech model loads (pulsing, with the model named in the status).
+      startBtn.disabled = audioLockedByOther || loading;
+      startBtn.title = audioLockedByOther ? 'Recording is in use by another client' : loading ? 'Loading ' + preparingModel : '';
+      startBtn.classList.toggle('sk-animate-pulse', loading);
     }
     if (stopBtn) stopBtn.style.display = 'none';
     if (vizWrap) vizWrap.style.display = 'none';
     if (audioLockedByOther) updateStatus('Recording in use by another client');
+    else if (loading) updateStatus('Loading ' + preparingModel + '…');
   }
 
   function connectWs(taskId) {
@@ -122,12 +131,26 @@
       var msg;
       try { msg = JSON.parse(e.data); } catch (err) { return; }
 
+      // The server is loading the speech model first (can take several
+      // seconds): say so on the Record control until the lock is granted.
+      if (msg.type === 'recording.preparing') {
+        if (pendingStart) {
+          preparingModel = msg.model || 'speech model';
+          syncUi();
+        }
+        return;
+      }
+
       // Recording lock granted → begin capturing the pending request.
       if (msg.type === 'ack' && msg.ref === 'recording.start') {
+        preparingModel = null;
+        transcriptionWarning = msg.warning || null;
         if (pendingStart && recordingTaskId === pendingStart.taskId) {
           var ps = pendingStart;
           pendingStart = null;
           beginCapture(ps.taskId, ps.cadenceSeconds, ps.overlapSeconds);
+        } else {
+          syncUi();
         }
         return;
       }
@@ -142,6 +165,7 @@
         // Any error while starting aborts the pending start so the user can retry.
         if (pendingStart) {
           pendingStart = null;
+          preparingModel = null;
           recordingTaskId = null;
           syncUi();
         }
@@ -155,6 +179,29 @@
         return;
       }
     };
+  }
+
+  /**
+   * The first MediaRecorder chunk is the WebM header (EBML + Segment + Info +
+   * Tracks) FOLLOWED by the first ~1 s of audio (its first Cluster). Every later
+   * flush is prefixed with headerChunk, so without this the recording's first
+   * second of audio was repeated at the start of every chunk. Keep only the
+   * bytes before the first Cluster element (ID 0x1F43B675) as the prefix. The
+   * full first chunk stays in audioChunks for the first flush. If no Cluster is
+   * found, the whole chunk stays the prefix (the old behaviour).
+   */
+  function trimHeaderToClusters(firstChunk) {
+    firstChunk.arrayBuffer().then(function(buf) {
+      var bytes = new Uint8Array(buf);
+      for (var i = 0; i + 3 < bytes.length; i++) {
+        if (bytes[i] === 0x1F && bytes[i + 1] === 0x43 && bytes[i + 2] === 0xB6 && bytes[i + 3] === 0x75) {
+          if (headerChunk === firstChunk) {
+            headerChunk = new Blob([bytes.slice(0, i)], { type: firstChunk.type });
+          }
+          return;
+        }
+      }
+    }).catch(function() { /* keep the full first chunk as the prefix */ });
   }
 
   /**
@@ -189,13 +236,16 @@
       // Every subsequent flush: allChunks is Cluster-only data (the header was
       // spliced out on the first flush), so we MUST prepend the saved headerChunk
       // to make a valid standalone WebM. overlapChunks (Cluster data from the tail
-      // of the previous period) go between the header and the new chunks; on the
-      // final post-stop flush overlapChunks is empty and we just send header+tail.
+      // of the previous period) go between the header and the new chunks, also
+      // on the final post-stop flush (the server removes the repeat).
       // Do NOT gate the header on overlapChunks.length — a headerless blob makes
       // whisper's ffmpeg fail with "EBML header parsing failed".
       blobParts = (headerChunk ? [headerChunk] : []).concat(overlapChunks, allChunks);
       hasOverlap = overlapChunks.length > 0;
     }
+    // Seconds of overlap actually prepended (1 s MediaRecorder slices).
+    var prependedOverlap = hasOverlap ? overlapChunks.length : 0;
+    var headerBytes = flushCount === 1 || !headerChunk ? 0 : headerChunk.size;
 
     // Save tail of the NEW chunks (not including old overlap) for next flush
     if (overlapCount > 0 && allChunks.length > overlapCount) {
@@ -208,14 +258,15 @@
 
     var blob = new Blob(blobParts, { type: 'audio/webm;codecs=opus' });
     var chunkTimestamp = new Date().toISOString();
-    var sentOverlap = hasOverlap ? overlapCount : 0;
+    var sentOverlap = prependedOverlap;
 
     console.log('[realtime-audio] Flushing audio — chunks:', allChunks.length,
       '(+' + (blobParts.length - allChunks.length) + ' overlap/header)',
       'blob size:', blob.size, 'bytes, overlap:', sentOverlap + 's',
       'timestamp:', chunkTimestamp);
 
-    return new Promise(function(resolve) {
+    return startAtCluster(blob, headerBytes).then(function(clean) {
+      return new Promise(function(resolve) {
       var reader = new FileReader();
       reader.onloadend = function() {
         var base64 = reader.result.split(',')[1];
@@ -229,8 +280,31 @@
         }));
         resolve();
       };
-      reader.readAsDataURL(blob);
+      reader.readAsDataURL(clean);
+      });
     });
+  }
+
+  /**
+   * MediaRecorder slices are byte cuts of one WebM stream: every slice after the
+   * first starts ~1 KB inside the previous Cluster, and only then does its own
+   * Cluster (ID 0x1F43B675) begin. After the header those leftover bytes make
+   * ffmpeg read one huge broken packet ("Truncating packet of size ..."), which
+   * can swallow the chunk's audio. Drop the bytes between the header and the
+   * first Cluster so every chunk starts cleanly. headerBytes 0 = send as is.
+   */
+  function startAtCluster(blob, headerBytes) {
+    if (!headerBytes) return Promise.resolve(blob);
+    return blob.arrayBuffer().then(function(buf) {
+      var bytes = new Uint8Array(buf);
+      for (var i = headerBytes; i + 3 < bytes.length; i++) {
+        if (bytes[i] === 0x1F && bytes[i + 1] === 0x43 && bytes[i + 2] === 0xB6 && bytes[i + 3] === 0x75) {
+          if (i === headerBytes) return blob;
+          return new Blob([bytes.subarray(0, headerBytes), bytes.subarray(i)], { type: blob.type });
+        }
+      }
+      return blob;
+    }).catch(function() { return blob; });
   }
 
   // Ask the server to grant this client the single-writer recording lock. The
@@ -290,6 +364,7 @@
           // to make subsequent flushes into valid standalone WebM files.
           if (!headerChunk) {
             headerChunk = e.data;
+            trimHeaderToClusters(e.data);
           }
           audioChunks.push(e.data);
         }
@@ -317,6 +392,7 @@
   function stopRecording() {
     if (!isRecording) return;
     isRecording = false;
+    transcriptionWarning = null;
 
     if (flushIntervalId) {
       clearInterval(flushIntervalId);
@@ -338,10 +414,9 @@
       ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
 
-    // Clear overlap state before the final flush so we don't prepend duplicated
-    // tail audio, but keep the original header until the recorder has emitted
-    // its last chunk. That final chunk is usually cluster-only WebM data.
-    overlapChunks = [];
+    // Keep the overlap and the header for the final flush: the recorder's last
+    // chunk is cluster-only WebM data, and the overlap puts its leading partial
+    // Cluster over audio the server already has (it removes the repeat).
 
     function cleanupAfterStop() {
       if (stream) {

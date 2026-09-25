@@ -393,8 +393,12 @@ export class AgentManager {
   close(): void {
     this.closed = true;
     // Kill all running agents
+    // handleProcessExit returns early once closed, so the spawn-time temp MCP
+    // configs and patched config files are cleaned up here instead.
     for (const [, agent] of this.agents) {
       try { agent.process.kill(); } catch { }
+      if (agent.mcpCleanupPaths?.length) cleanupMcpTempFiles(agent.mcpCleanupPaths);
+      if (agent.mcpRestoreFiles?.length) restoreMcpConfigFiles(agent.mcpRestoreFiles);
     }
     this.agents.clear();
     this.templateToInstances.clear();

@@ -34,4 +34,17 @@ describe("realtime config", () => {
     expect(clampCadenceSeconds("abc", 60)).toBe(60);
     expect(clampCadenceSeconds(90.7)).toBe(90);
   });
+
+  it("defaults the local speech model and reads an unknown stored id as the default", () => {
+    db = new Database(TEST_DB);
+    initializeDatabase(db);
+    const initial = getRealtimeConfig(db);
+    expect(initial.local_model).toBe("whisper-base.en");
+    expect(initial.speaker_labels).toBe(false);
+    const updated = updateRealtimeConfig({ local_model: "nemotron-3.5", speaker_labels: true }, db);
+    expect(updated.local_model).toBe("nemotron-3.5");
+    expect(updated.speaker_labels).toBe(true);
+    updateRealtimeConfig({ local_model: "no-such-model" }, db);
+    expect(getRealtimeConfig(db).local_model).toBe("whisper-base.en");
+  });
 });

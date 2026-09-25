@@ -10,6 +10,7 @@ import type { ModelChoice, AgentTypeOption } from "../../config/model-settings";
 import type { SlackConfigView } from "../../config/slack-settings";
 import type { AllowedHostsView } from "../../config/allowed-hosts";
 import { taskMemoryPanel, type TaskMemoryPanelData } from "../fragments/task-memory-config.fragment";
+import { speechConfigRows, type SpeechPanelData } from "../fragments/speech-config.fragment";
 
 export interface ConfigPageViewModel {
   notificationPreferences: NotificationPreference[];
@@ -43,6 +44,8 @@ export interface ConfigPageViewModel {
   skipperIdentity: { color: string; character: string };
   /** Real-time transcription: audio chunk cadence + summarize-or-raw default. */
   realtime: { cadenceSeconds: number; summaryEnabled: boolean; cadenceMin: number; cadenceMax: number };
+  /** Transcription provider + local speech model and its engine status (experimental). */
+  speech?: SpeechPanelData;
   /** Allowed Hosts: the Host allowlist's sources (environment, read-only) + the saved list. */
   allowedHosts?: AllowedHostsView;
 }
@@ -344,6 +347,7 @@ export function configPage(vm: ConfigPageViewModel): string {
               <option value="false"${vm.realtime.summaryEnabled ? "" : " selected"}>Off (raw transcript to timeline)</option>
             </select>
           </div>
+          ${vm.speech ? speechConfigRows(vm.speech) : ""}
         </div>
       </div>
 

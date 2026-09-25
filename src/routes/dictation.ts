@@ -45,7 +45,8 @@ export function registerDictationRoutes(): void {
     }
 
     const db = getDb();
-    const adapter = createTranscriptionAdapter(getRealtimeConfig(db));
+    // A dictated description is one voice; speaker labels would only add noise.
+    const adapter = createTranscriptionAdapter(getRealtimeConfig(db), { speakerLabels: false });
     if (!adapter.isConfigured()) {
       return Response.json({ error: adapter.notConfiguredReason() }, { status: 503 });
     }

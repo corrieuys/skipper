@@ -4,8 +4,8 @@ Realtime task pipeline. Audio/text ingest → transcribe → dedup → summarize
 
 | file | use |
 |---|---|
-| `config.ts` | Read/update realtime config — transcription provider, model, chunk cadence (`cadence_seconds`, 5..600, `clampCadenceSeconds`), overlap, and the global `summary_enabled` default (summarize each window vs feed the raw transcript) |
-| `transcription.ts` | Provider impls — local whisper.cpp server + OpenAI API. Also `stripFillerMarkers()` (whisper `[pause]`/`[music]` markers), shared with dictation |
+| `config.ts` | Read/update realtime config — transcription provider, model, chunk cadence (`cadence_seconds`, 5..600, `clampCadenceSeconds`), overlap, the global `summary_enabled` default (summarize each window vs feed the raw transcript), the local speech model `local_model` (see [../speech/CLAUDE.md](../speech/CLAUDE.md); unknown ids read as the default) and `speaker_labels` |
+| `transcription.ts` | Provider impls — local speech server (whisper.cpp `/inference` or NeMo-Speech.cpp `/v1/audio/transcriptions`; with speaker labels it asks for `verbose_json` + `diarization` and renders `formatSpeakerTranscript` lines) + OpenAI API. `createTranscriptionAdapter(config, { speakerLabels })` gates labels on the model (dictation passes false). The ffmpeg temp input and output names differ (`-in.<format>` / `-16k.wav`) because the app recorders send `wav` chunks. Also `stripFillerMarkers()` (whisper `[pause]`/`[music]` markers), shared with dictation |
 | `dedup.ts` | Dedup overlapping audio segments |
 | `dictation.ts` | `cleanupTranscript()` — one-shot LLM rewrite of a dictated task description via `agents/oneshot.ts`. Provider+model from the config page (Dictation Rewriter row, experimental) |
 

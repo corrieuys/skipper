@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
+import { DEFAULT_SPEECH_MODEL_ID, findSpeechModel } from "../speech/catalogue";
 
 export interface RealtimeConfig {
   transcription_provider: "local" | "openai";
@@ -12,6 +13,10 @@ export interface RealtimeConfig {
   overlap_seconds: number;
   /** Global default: summarize transcribed windows with the summarizer agent (true) or feed the raw transcript (false). Per-task `summary_enabled` overrides. */
   summary_enabled: boolean;
+  /** Local speech model id (`speech/catalogue.ts`) the managed engine runs. Unknown ids read as the default. */
+  local_model: string;
+  /** Ask a `speakers` model to label who spoke (NeMo engine + Sortformer diarizer). */
+  speaker_labels: boolean;
 }
 
 const DEFAULTS: RealtimeConfig = {
@@ -23,6 +28,8 @@ const DEFAULTS: RealtimeConfig = {
   cadence_seconds: 60,
   overlap_seconds: 5,
   summary_enabled: true,
+  local_model: DEFAULT_SPEECH_MODEL_ID,
+  speaker_labels: false,
 };
 
 export const CADENCE_MIN_SECONDS = 5;
@@ -66,6 +73,12 @@ export function getRealtimeConfig(db?: Database): RealtimeConfig {
         break;
       case "summary_enabled":
         config.summary_enabled = !(row.value === "false" || row.value === "0" || row.value === "off");
+        break;
+      case "local_model":
+        config.local_model = findSpeechModel(row.value) ? row.value : DEFAULTS.local_model;
+        break;
+      case "speaker_labels":
+        config.speaker_labels = row.value === "true" || row.value === "1" || row.value === "on";
         break;
       case "overlap_seconds": {
         const val = parseInt(row.value, 10);

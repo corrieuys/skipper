@@ -1,5 +1,6 @@
 import { unlinkSync, writeFileSync } from "fs";
 import type { RealtimeConfig } from "./config";
+import { findSpeechModel } from "../speech/catalogue";
 
 export interface TranscriptionAdapter {
   isConfigured(): boolean;
@@ -18,12 +19,45 @@ export function stripFillerMarkers(text: string): string {
     .trim();
 }
 
+interface SpeakerWord {
+  word?: string;
+  speaker?: number | string;
+}
+
 /**
- * Local whisper-server adapter.
- * Converts audio to WAV via ffmpeg, then POSTs to a local whisper-server endpoint.
+ * Turn a word list tagged with speakers (NeMo `verbose_json` with diarization)
+ * into one line per speaker turn: "Speaker 1: ...". Words without a speaker
+ * join the current turn. Returns "" when no word carries a speaker.
+ */
+export function formatSpeakerTranscript(words: SpeakerWord[]): string {
+  const turns: Array<{ speaker: string; words: string[] }> = [];
+  let sawSpeaker = false;
+  for (const w of words) {
+    const text = typeof w.word === "string" ? w.word.trim() : "";
+    if (!text) continue;
+    const speaker = w.speaker === undefined || w.speaker === null ? null : String(w.speaker);
+    if (speaker !== null) sawSpeaker = true;
+    const last = turns[turns.length - 1];
+    if (last && (speaker === null || speaker === last.speaker)) {
+      last.words.push(text);
+    } else {
+      turns.push({ speaker: speaker ?? "?", words: [text] });
+    }
+  }
+  if (!sawSpeaker) return "";
+  return turns.map((t) => `Speaker ${t.speaker}: ${t.words.join(" ")}`).join("\n");
+}
+
+/**
+ * Local speech server adapter (whisper.cpp `/inference` or NeMo-Speech.cpp
+ * `/v1/audio/transcriptions`; both take a multipart `file` and answer `{ text }`).
+ * Converts audio to 16 kHz mono WAV via ffmpeg, then POSTs it to the endpoint the
+ * managed engine wrote to `realtime_config.transcription_endpoint`. With
+ * `speakerLabels` it asks for `verbose_json` + `diarization` and renders the
+ * speaker-tagged words as "Speaker N:" lines (NeMo engine with a diarizer only).
  */
 export class LocalWhisperAdapter implements TranscriptionAdapter {
-  constructor(private endpoint: string) {}
+  constructor(private endpoint: string, private opts: { speakerLabels?: boolean } = {}) {}
 
   isConfigured(): boolean {
     return !!this.endpoint;
@@ -35,8 +69,10 @@ export class LocalWhisperAdapter implements TranscriptionAdapter {
 
   async transcribe(audioData: string, format: string): Promise<string> {
     const tempId = crypto.randomUUID();
-    const tempPath = `/tmp/skipper-${tempId}.${format}`;
-    const wavPath = `/tmp/skipper-${tempId}.wav`;
+    // Distinct names: the app recorders send "wav", and an input path equal to
+    // the output path makes ffmpeg refuse ("same as Input").
+    const tempPath = `/tmp/skipper-${tempId}-in.${format}`;
+    const wavPath = `/tmp/skipper-${tempId}-16k.wav`;
 
     console.log(`[transcription:local] converting audio — ${format}: ${tempPath} → wav: ${wavPath}`);
     console.log(`[transcription:local] will POST to whisper endpoint: ${this.endpoint}`);
@@ -72,7 +108,12 @@ export class LocalWhisperAdapter implements TranscriptionAdapter {
         new Blob([wavBuffer], { type: "audio/wav" }),
         "audio.wav",
       );
-      formData.append("response_format", "json");
+      if (this.opts.speakerLabels) {
+        formData.append("response_format", "verbose_json");
+        formData.append("diarization", "true");
+      } else {
+        formData.append("response_format", "json");
+      }
 
       const res = await fetch(this.endpoint, {
         method: "POST",
@@ -86,8 +127,9 @@ export class LocalWhisperAdapter implements TranscriptionAdapter {
         );
       }
 
-      const json = (await res.json()) as { text?: string };
-      const result = json.text ?? "";
+      const json = (await res.json()) as { text?: string; words?: SpeakerWord[] };
+      const labelled = this.opts.speakerLabels && Array.isArray(json.words) ? formatSpeakerTranscript(json.words) : "";
+      const result = labelled || (json.text ?? "");
       console.log(`[transcription:local] result — ${result.length} chars: "${result.slice(0, 120)}${result.length > 120 ? "…" : ""}"`);
       return result;
     } finally {
@@ -163,13 +205,22 @@ export class OpenAIAdapter implements TranscriptionAdapter {
 
 /**
  * Factory: create the appropriate transcription adapter based on config.
+ * Speaker labels apply only to a local model that supports them and only when
+ * the caller allows them (dictation passes `speakerLabels: false`).
  */
-export function createTranscriptionAdapter(config: RealtimeConfig): TranscriptionAdapter {
+export function createTranscriptionAdapter(
+  config: RealtimeConfig,
+  opts: { speakerLabels?: boolean } = {},
+): TranscriptionAdapter {
   switch (config.transcription_provider) {
     case "openai":
       return new OpenAIAdapter(config.openai_transcription_model);
     case "local":
-    default:
-      return new LocalWhisperAdapter(config.transcription_endpoint);
+    default: {
+      const speakerLabels = (opts.speakerLabels ?? true)
+        && config.speaker_labels
+        && !!findSpeechModel(config.local_model)?.speakers;
+      return new LocalWhisperAdapter(config.transcription_endpoint, { speakerLabels });
+    }
   }
 }
