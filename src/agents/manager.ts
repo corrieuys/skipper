@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/connection";
 import { agentSpawnPath } from "../paths";
-import { agentTypeUsesInlinePrompt, getAgentTypeDefinition, providerSupportsUsageTracking, type AgentTypeDefinition } from "./types";
+import { agentTypeUsesInlinePrompt, getAgentTypeDefinition, normalizeProviderModel, providerSupportsUsageTracking, type AgentTypeDefinition } from "./types";
 import { eventBus } from "../events/bus";
 import type { AgentExitEvent } from "../events/bus";
 import { logError } from "../logging";
@@ -24,8 +24,12 @@ const MAX_BUFFER_SIZE = 16 * 1024 * 1024; // 16MB
 const MAX_STDERR_BUFFER_SIZE = 1024 * 1024; // 1MB
 
 // ~100KB prompt limit — leaves headroom for system prompt and conversation context
-const MAX_PROMPT_BYTES = 100_000;
+export const MAX_PROMPT_BYTES = 100_000;
 const TRUNCATION_MARKER = "\n\n[PROMPT TRUNCATED — original exceeded size limit. Work with the information above.]\n";
+// Where joinPromptKeepingTail cut a prompt's head to keep its tail whole. Not
+// TRUNCATION_MARKER: that one sends the agent to the text above it, and here
+// the complete block is the one below.
+const HEAD_TRUNCATION_MARKER = "\n\n[PROMPT TRUNCATED: the text above was cut to fit the size limit. The text below is complete.]";
 // Cap the STORED size of a single terminal_outputs frame. A few tasks emitting
 // giant tool-output dumps (file reads, build logs) grew terminal_outputs to
 // ~200MB on one task, which made the timeline query (fetches the raw `data` for
@@ -284,6 +288,39 @@ function truncatePrompt(prompt: string, agentId: string, db: Database, method: s
   return truncateToByteLimit(prompt, MAX_PROMPT_BYTES) + TRUNCATION_MARKER;
 }
 
+/**
+ * `head`, a blank line and `tail`, sized so truncatePrompt delivers it as is.
+ * truncatePrompt keeps an oversized prompt's head and cuts its tail, so a block
+ * appended to a long prompt is the first thing lost. For a block that must
+ * arrive whole (task-runner's INPUT_FEED, marked fed once the prompt is out)
+ * this cuts `head` instead; `headCut` says whether it did. Null when `tail`
+ * alone does not fit, leaving that case to the caller.
+ */
+export function joinPromptKeepingTail(
+  head: string,
+  tail: string,
+  agentId: string,
+  db: Database,
+  method: string,
+): { prompt: string; headCut: boolean } | null {
+  const joined = `${head}\n\n${tail}`;
+  const joinedBytes = Buffer.byteLength(joined, "utf-8");
+  if (joinedBytes <= MAX_PROMPT_BYTES) return { prompt: joined, headCut: false };
+
+  const kept = `${HEAD_TRUNCATION_MARKER}\n\n${tail}`;
+  const headBudget = MAX_PROMPT_BYTES - Buffer.byteLength(kept, "utf-8");
+  if (headBudget < 0) return null;
+
+  logError(db, "agent.prompt_truncated", {
+    agentId,
+    originalBytes: joinedBytes,
+    maxBytes: MAX_PROMPT_BYTES,
+    method,
+    keptTailBytes: Buffer.byteLength(tail, "utf-8"),
+  });
+  return { prompt: truncateToByteLimit(head, headBudget) + kept, headCut: true };
+}
+
 const SIGNAL_PATTERNS = {
   message: /^\[MSG:(\S+)\s+to:(\S+)\]\s*(.*)/,
   delegateComplete: /^\[DELEGATE_COMPLETE\]\s*(.*)/,
@@ -320,7 +357,6 @@ export class AgentManager {
   private providerTypeCache: Map<string, string> = new Map();
   private spawnLocks: Set<string> = new Set();
   private closed = false;
-  private decoder = new TextDecoder();
   private contextCompactThreshold = parseContextCompactThreshold(process.env.SKIPPER_CONTEXT_COMPACT_THRESHOLD);
 
   constructor(db?: Database) {
@@ -571,7 +607,10 @@ export class AgentManager {
       if (overrideModel === undefined) overrideModel = persisted.model;
     }
     const resolvedType = overrideType || agent.type;
-    const resolvedModel = overrideModel || agent.model;
+    // opencode needs provider-qualified model ids (`opencode/<model>`); a bare
+    // configured name kills the child instantly (UnknownError, exit 1), so
+    // normalize once here — argv and persisted state both get the real id.
+    const resolvedModel = normalizeProviderModel(resolvedType, overrideModel || agent.model);
 
     const typeDef = getAgentTypeDefinition(resolvedType, this.db);
     if (!typeDef) {
@@ -952,14 +991,23 @@ export class AgentManager {
     streamType: "stdout" | "stderr",
   ): Promise<void> {
     const reader = stream.getReader();
+    // One decoder per stream. With `stream: true` a character split across two
+    // reads waits in the decoder for its last bytes, so a decoder shared by
+    // every agent's stdout and stderr put those bytes in front of whichever
+    // stream it decoded next, breaking that agent's JSON line.
+    const decoder = new TextDecoder();
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const text = this.decoder.decode(value, { stream: true });
+        const text = decoder.decode(value, { stream: true });
         this.ingestChunk(runningAgent, text, streamType);
       }
+      // The stream ended mid-character: what the decoder still holds comes out
+      // as U+FFFD at the end of this stream's own output.
+      const rest = decoder.decode();
+      if (rest.length > 0) this.ingestChunk(runningAgent, rest, streamType);
     } catch (err) {
       // Stream closed or errored - expected on process exit
     } finally {

@@ -330,6 +330,11 @@ export class UIWebSocketManager {
       }
     });
 
+    // --- Task created ---
+    // A new task shows in the sidebar (Active list + its team group). A draft
+    // created from the TUI, the apps or another tab emits nothing else.
+    this.trackOn("task:created", () => this.pushCommandCenterSidebar());
+
     // --- Run settled (task stays active; completion pushes key on these now) ---
     this.trackOn("task:run_completed", (event) => {
       this.pushDashboardTasks();
@@ -373,6 +378,12 @@ export class UIWebSocketManager {
       if (event.taskId) {
         const taskId = event.taskId;
         this.debounced(`v2-timeline-live:${taskId}`, () => this.pushV2Timeline(taskId));
+      }
+      // The sidebar shows each task's derived status (working vs idle), which
+      // follows agent liveness with no task event. One global key, so a burst
+      // across tasks costs one render; nothing is armed while no page shows it.
+      if (this.hasClients("html", ["dashboard"])) {
+        this.debounced("command-center-sidebar", () => this.pushCommandCenterSidebar());
       }
     });
 

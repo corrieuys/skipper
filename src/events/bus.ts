@@ -42,6 +42,8 @@ export interface EscalationResolvedEvent {
    * either way; user hooks and notification sounds skip system closes.
    */
   auto?: boolean;
+  /** True when the operator dismissed it (no answer to deliver). */
+  dismissed?: boolean;
 }
 
 export interface TaskNoteAddedEvent {

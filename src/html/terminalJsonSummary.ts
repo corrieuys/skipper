@@ -128,19 +128,40 @@ export function terminalJsonSummary(event: Record<string, unknown>): string {
 
     // OpenCode (`--format json`): whole-message text as {type:"text",part:{text}}.
     // Distinct from grok's {type:"text",data} above (part vs top-level data). The
-    // step_start / step_finish / tool wrapper frames carry no prose and fall
-    // through to "" so the feed drops them, which is what we want.
+    // step_start / step_finish wrapper frames carry nothing and fall through to ""
+    // so the feed drops them.
     if (event.type === "text" && event.part && typeof event.part === "object") {
         const partText = (event.part as Record<string, unknown>).text;
         if (typeof partText === "string" && partText.trim()) return trunc(partText.trim());
     }
 
-    // error. Claude nests it ({error:{message}}); grok puts a plain string at the
-    // top level, which the object branch above deliberately skips.
+    // OpenCode tool call: one finished frame per call,
+    // {type:"tool_use",part:{tool,state:{status,input,output|error}}}. Summarised
+    // like a claude-code tool_use block (`<tool>: <brief input>`); a failed call
+    // carries its error so it is not mistaken for a success.
+    if (event.type === "tool_use" && event.part && typeof event.part === "object") {
+        const part = event.part as Record<string, unknown>;
+        if (typeof part.tool === "string") {
+            const state = part.state && typeof part.state === "object" ? part.state as Record<string, unknown> : {};
+            const brief = openCodeToolBrief(part.tool, state.input);
+            if (state.status === "error") {
+                const err = typeof state.error === "string" && state.error.trim() ? state.error.trim() : "failed";
+                return trunc(`${brief} | error: ${err}`);
+            }
+            return trunc(brief);
+        }
+    }
+
+    // error. Claude nests it ({error:{message}}); OpenCode one level deeper
+    // ({error:{name,data:{message}}}); grok puts a plain string at the top
+    // level, which the object branch here deliberately skips.
     const error = event.error;
     if (error && typeof error === "object") {
-        const msg = (error as Record<string, unknown>).message;
-        if (typeof msg === "string") return trunc(msg);
+        const e = error as Record<string, unknown>;
+        if (typeof e.message === "string") return trunc(e.message);
+        const data = e.data && typeof e.data === "object" ? e.data as Record<string, unknown> : null;
+        if (typeof data?.message === "string") return trunc(data.message);
+        if (typeof e.name === "string") return trunc(e.name);
     }
     if (event.type === "error" && typeof event.message === "string") {
         return trunc(event.message);
@@ -159,6 +180,19 @@ function toolInputBrief(name: string, input: unknown): string {
         return `${name}: ${short}`;
     }
     return name;
+}
+
+/** OpenCode tool inputs use camelCase `filePath` and `pattern`; fall back to the shared picker. */
+function openCodeToolBrief(name: string, input: unknown): string {
+    if (input && typeof input === "object") {
+        const inp = input as Record<string, unknown>;
+        const hint = inp.filePath ?? inp.pattern;
+        if (typeof hint === "string" && hint.trim()) {
+            const short = hint.trim().length > 80 ? hint.trim().slice(0, 80) + "…" : hint.trim();
+            return `${name}: ${short}`;
+        }
+    }
+    return toolInputBrief(name, input);
 }
 
 function prettyToolResult(raw: string): string {

@@ -6,6 +6,7 @@ import { TaskScheduler } from "../tasks/scheduler";
 import { TeamManager } from "../teams/manager";
 import { PromptBuilder } from "../agents/prompt-builder";
 import { clearAgentTypeCache, getAgentTypeDefinition } from "../agents/types";
+import { MAX_PROMPT_BYTES, truncateToByteLimit } from "../agents/manager";
 import { setBoolSetting, SETTING_PARALLEL_TASKS } from "../config/app-settings";
 import type { OrchestrationState } from "./types";
 import { ArtifactManager } from "./artifact-manager";
@@ -431,6 +432,78 @@ describe("TaskRunner", () => {
       } finally {
         pipeline.dispose();
       }
+    });
+  });
+
+  describe("INPUT_FEED on an oversized prompt (regression: the feed was cut off yet marked fed)", () => {
+    /** A started task at rest with a pending wake, two operator inputs and one agent note. */
+    function wokenTaskWithInput(description: string): { taskId: string; entryIds: string[]; noteId: string } {
+      const taskId = crypto.randomUUID();
+      db.prepare(
+        `INSERT INTO tasks (id, title, description, team_id, status, approved_at, started_at, wake_requested_at)
+         VALUES (?, 'Big Task', ?, ?, 'active', datetime('now', '-1 hour'), datetime('now', '-1 hour'), datetime('now'))`,
+      ).run(taskId, description, createTeam());
+      const entryIds = ["first instruction", "second instruction: ship it"].map((content) => {
+        const id = crypto.randomUUID();
+        db.prepare(
+          "INSERT INTO realtime_timeline (id, task_id, entry_type, content, priority) VALUES (?, ?, 'text', ?, 'high')",
+        ).run(id, taskId, content);
+        return id;
+      });
+      const noteId = crypto.randomUUID();
+      db.prepare("INSERT INTO task_notes (id, task_id, agent_id, content) VALUES (?, ?, ?, 'findings so far')")
+        .run(noteId, taskId, ENTRYPOINT_AGENT_ID);
+      return { taskId, entryIds, noteId };
+    }
+
+    /** Starts the woken task; returns the feed block and the prompt as delivery would hand it to the agent. */
+    async function startWithFeed(taskId: string): Promise<{ feed: string; received: string[] }> {
+      const received: string[] = [];
+      // sendInput's truncatePrompt: over the limit it keeps the head and cuts the tail.
+      mockAgentManager.sendInput = (_runtimeId: string, prompt: string) => {
+        received.push(truncateToByteLimit(prompt, MAX_PROMPT_BYTES));
+      };
+      const runner = createRunner();
+      const pipeline = new RealtimeSessionManager(db, artifactManager, mockAgentManager, scheduler);
+      runner.setWakeFeeder(pipeline);
+      try {
+        const feed = pipeline.consumePendingFeed(taskId)!.text; // read only: not committed
+        await runner.processTaskQueue();
+        return { feed, received };
+      } finally {
+        pipeline.dispose();
+      }
+    }
+
+    const isFed = (entryId: string): number =>
+      (db.prepare("SELECT fed_to_skipper FROM realtime_timeline WHERE id = ?").get(entryId) as { fed_to_skipper: number }).fed_to_skipper;
+    const noteRecorded = (noteId: string): boolean =>
+      db.prepare("SELECT 1 FROM agent_note_receipts WHERE agent_instance_id = ? AND note_id = ?").get(ENTRYPOINT_AGENT_ID, noteId) !== null;
+
+    it("hands the agent the whole feed, cutting the base prompt instead, and marks every entry fed", async () => {
+      const { taskId, entryIds, noteId } = wokenTaskWithInput("Background detail line.\n".repeat(6_000));
+
+      const { feed, received } = await startWithFeed(taskId);
+
+      expect(received.length).toBe(1);
+      expect(Buffer.byteLength(received[0]!, "utf-8")).toBeLessThanOrEqual(MAX_PROMPT_BYTES);
+      expect(received[0]!.endsWith(`\n\n${feed}`)).toBe(true);
+      expect(received[0]).toContain("TASK: Big Task");
+      for (const entryId of entryIds) expect(isFed(entryId)).toBe(1);
+      // The note sat in the part of the base that was cut: it stays unseen for the next prompt.
+      expect(noteRecorded(noteId)).toBe(false);
+    });
+
+    it("leaves a prompt within the limit as base plus feed, and records its notes", async () => {
+      const { taskId, entryIds, noteId } = wokenTaskWithInput("A short description.");
+
+      const { feed, received } = await startWithFeed(taskId);
+
+      expect(received.length).toBe(1);
+      expect(received[0]!.endsWith(`\n\n${feed}`)).toBe(true);
+      expect(received[0]).toContain("findings so far");
+      for (const entryId of entryIds) expect(isFed(entryId)).toBe(1);
+      expect(noteRecorded(noteId)).toBe(true);
     });
   });
 });

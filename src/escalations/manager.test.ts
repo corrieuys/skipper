@@ -110,6 +110,40 @@ describe("createEscalation", () => {
 
     expect(esc.severity).toBe("high");
   });
+
+  // The writer announces its own rows: callers such as the idle poke's
+  // exhaustion escalation used to insert silently and reach no surface.
+  it("announces the new escalation once on escalation:created", () => {
+    setupAgentType();
+    const agentId = createAgent("agent-1");
+    const taskId = createRunningTask(agentId);
+
+    // The row must already be readable when listeners run (Connect enriches
+    // the event from it).
+    const seen: Array<{ event: unknown; storedStatus: string | null }> = [];
+    eventBus.on("escalation:created", (e) => {
+      const row = db.prepare("SELECT status FROM escalations WHERE id = ?").get(e.escalationId) as { status: string } | null;
+      seen.push({ event: e, storedStatus: row?.status ?? null });
+    });
+
+    const esc = escalationManager.createEscalation({
+      agentId,
+      runtimeAgentId: null,
+      taskId,
+      type: "idle_poke_exhausted",
+      question: "What next?",
+    });
+
+    expect(seen.length).toBe(1);
+    expect(seen[0]!.event).toEqual({
+      escalationId: esc.id,
+      agentId,
+      taskId,
+      type: "idle_poke_exhausted",
+      question: "What next?",
+    });
+    expect(seen[0]!.storedStatus).toBe("open");
+  });
 });
 
 describe("getEscalation", () => {
@@ -227,6 +261,32 @@ describe("handleEscalation", () => {
     // Should have emitted state change
     expect(stateEvents.length).toBe(1);
     expect(stateEvents[0].newState).toBe("escalated");
+  });
+
+  it("emits escalation:created once, after the agent state is escalated", () => {
+    setupAgentType();
+    const agentId = createAgent("agent-1");
+    const taskId = createRunningTask(agentId);
+
+    // A listener that reads agent state from the DB must see the escalated
+    // state when the escalation is announced, and hear it only once.
+    const seen: Array<{ event: unknown; agentState: string | null }> = [];
+    eventBus.on("escalation:created", (e) => {
+      const row = db.prepare("SELECT state FROM agent_states WHERE agent_id = ?").get(agentId) as { state: string } | null;
+      seen.push({ event: e, agentState: row?.state ?? null });
+    });
+
+    const esc = escalationManager.handleEscalation(agentId, "Blocked on Y")!;
+
+    expect(seen.length).toBe(1);
+    expect(seen[0]!.agentState).toBe("escalated");
+    expect(seen[0]!.event).toEqual({
+      escalationId: esc.id,
+      agentId,
+      taskId,
+      type: "agent_request",
+      question: "Blocked on Y",
+    });
   });
 
   it("returns null when agent has no task", () => {

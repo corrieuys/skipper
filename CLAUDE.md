@@ -139,7 +139,7 @@ repo's GitHub Releases.
 
 ## Entry
 
-- `index.ts` — boot DB, build `ManagerDaemon`, register routes + WebSocket upgrade handlers, start Bun server, SIGINT/SIGTERM shutdown. Reached via `bin/cli.ts serve`.
+- `index.ts` — boot DB, build `ManagerDaemon`, register routes + WebSocket upgrade handlers, bind the Bun server, then `startup()`. The bind comes first: `daemon.start()` SIGTERMs the recorded owner pid and SIGKILLs recorded agent pids, so a daemon whose port is taken exits 1 before touching them (`src/boot-order.test.ts`). SIGINT/SIGTERM shutdown. Reached via `bin/cli.ts serve`.
 - `GET /connect/local` — inbound consumer WebSocket for apps running on this machine (the native Mac client), speaking the same protocol as the Skipper Connect integrator's consumer socket. **Unauthenticated and loopback only**: the upgrade is refused (403) for any non-127.0.0.0/8 / non-`::1` peer, even when `SKIPPER_HOST` exposes the daemon. Loopback does not keep a browser page out, so, like every route, the upgrade is also refused when it carries a foreign `Origin` or a non-local `Host` (`src/server.ts:rejectForeignRequest`, see `SKIPPER_ALLOWED_HOSTS` and the config page's Allowed Hosts). See [src/connect/CLAUDE.md](src/connect/CLAUDE.md).
 - `src/server.ts` — tiny router. `addRoute()`. static served from embedded `public/*` assets (uploaded wallpapers from the data dir)
 - `src/assets.ts` — embedded-asset access layer (`assetTextSync`, `assetFile`, `listAssets`, `isCompiledBinary`)

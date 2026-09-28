@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { AgentManager } from "../agents/manager";
+import { joinPromptKeepingTail, type AgentManager } from "../agents/manager";
 import type { PromptBuilder, AgentInfo, PhaseInfo } from "../agents/prompt-builder";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { TeamManager, Phase } from "../teams/manager";
@@ -181,7 +181,15 @@ export class TaskRunner {
     // replacement for the old iterate / resume / realtime-feed paths. Entries
     // are only marked fed after the prompt actually reaches the agent.
     const pendingFeed = this.wakeFeeder?.consumePendingFeed(task.id) ?? null;
-    const prompt = pendingFeed ? `${basePrompt}\n\n${pendingFeed.text}` : basePrompt;
+    // Delivery (truncatePrompt) cuts an oversized prompt from the end, where
+    // the feed sits, and the feed is marked fed all the same. So the base is
+    // cut to make room and the feed goes out whole. A feed over the limit on
+    // its own is still appended as before: it is one block with one commit,
+    // and left unfed it would be handed to every following run.
+    const joined = pendingFeed
+      ? joinPromptKeepingTail(basePrompt, pendingFeed.text, entrypointAgentId, this.db, "processTaskQueue")
+      : null;
+    const prompt = joined?.prompt ?? (pendingFeed ? `${basePrompt}\n\n${pendingFeed.text}` : basePrompt);
 
     const usesInlinePrompt = typeDef ? agentTypeUsesInlinePrompt(typeDef) : false;
     // Agents spawn in the orchestrator's cwd (where Claude Code config/hooks live).
@@ -212,7 +220,9 @@ export class TaskRunner {
     }
     // agent_instances row created by spawnAgent → spawnRuntimeAgent with unique UUID
 
-    if (noteIds.length > 0) {
+    // Notes sit near the end of the base prompt, so a base cut for the feed may
+    // have lost some: leave them unrecorded and the next prompt carries them.
+    if (noteIds.length > 0 && !joined?.headCut) {
       this.promptBuilder.recordNoteDelivery(entrypointAgentId, noteIds);
     }
 

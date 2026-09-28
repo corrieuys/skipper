@@ -927,6 +927,13 @@ export class TaskScheduler {
            AND id NOT IN (
              SELECT task_id FROM delegation_groups WHERE status = 'running'
            )
+           -- An open escalation parks the task until the operator answers, and
+           -- the answer resumes the escalating runtime (injectResponse). A wake
+           -- started here ran a second root next to that resumed one. The wake
+           -- stays pending and is taken after the escalation closes.
+           AND id NOT IN (
+             SELECT task_id FROM escalations WHERE status = 'open'
+           )
          ORDER BY COALESCE(wake_requested_at, approved_at, created_at) ASC, rowid ASC
          LIMIT 1`,
       )

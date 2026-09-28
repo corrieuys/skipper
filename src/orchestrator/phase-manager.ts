@@ -27,6 +27,19 @@ export type PhaseCompleteOutcome =
   | "noop_not_running"  // task isn't active (draft, settled, or paused)
   | "noop_unresolved";  // couldn't resolve task or team
 
+/**
+ * Outcome of a handlePhaseRegression call, surfaced through the MCP
+ * `regress_phase` tool so Skipper learns when a regression was refused instead
+ * of always getting "regressed". Same contract as PhaseCompleteOutcome: the
+ * string lands verbatim in the MCP response body.
+ */
+export type PhaseRegressionOutcome =
+  | "regressed"               // phase moved back to the target; entrypoint respawning there
+  | "denied_max_regressions"  // MAX_REGRESSIONS reached; escalated to the operator, phase unchanged
+  | "noop_invalid_target"     // target is not an earlier phase of this task
+  | "noop_not_running"        // task isn't active (draft, settled, or paused)
+  | "noop_unresolved";        // couldn't resolve the caller's task
+
 export class PhaseManager {
   private phaseCompleteHandled: Set<string> = new Set(); // "taskId:phase" dedup
   // Per-task in-flight guard. The await inside handlePhaseComplete yields the
@@ -148,15 +161,15 @@ export class PhaseManager {
     }
   }
 
-  async handlePhaseRegression(agentId: string, targetPhaseOneIndexed: number, reason: string): Promise<void> {
+  async handlePhaseRegression(agentId: string, targetPhaseOneIndexed: number, reason: string): Promise<PhaseRegressionOutcome> {
     const taskId = this.resolveTaskForRuntime(agentId);
-    if (!taskId) return;
+    if (!taskId) return "noop_unresolved";
     const task = this.taskScheduler.getTask(taskId);
-    if (!task || task.status !== "active" || task.paused) return;
+    if (!task || task.status !== "active" || task.paused) return "noop_not_running";
 
     const targetPhase = targetPhaseOneIndexed - 1;
 
-    if (targetPhase < 0 || targetPhase >= task.current_phase) return;
+    if (targetPhase < 0 || targetPhase >= task.current_phase) return "noop_invalid_target";
 
     try {
       const noteId = crypto.randomUUID();
@@ -172,7 +185,7 @@ export class PhaseManager {
 
     if (task.regression_count >= MAX_REGRESSIONS) {
       this.autoEscalateRegression(task, agentId, reason);
-      return;
+      return "denied_max_regressions";
     }
 
     this.taskScheduler.regressPhase(taskId, targetPhase);
@@ -190,10 +203,11 @@ export class PhaseManager {
     const teamExec = task.team_id
       ? this.teamManager.getTeamForExecution(task.team_id)
       : null;
-    if (!teamExec) return;
+    if (!teamExec) return "regressed";
     const phases = (teamExec.team.phases as Phase[]) ?? [];
 
     await this.respawnForRegression(task, teamExec.entrypoint_agent_id, phases, targetPhase, reason);
+    return "regressed";
   }
 
   async respawnForRegression(
@@ -455,9 +469,13 @@ export class PhaseManager {
     }
     this.writeCheckpoint(taskId, "PHASE_REVIEW_REJECTED", { rejected_phase: task.current_phase, target_phase: targetPhase, reason: rejectionReason });
 
-    // Clear dedup key so the re-run can trigger review again
-    const dedupKey = `${taskId}:${targetPhase}`;
-    this.phaseCompleteHandled.delete(dedupKey);
+    // Clear the dedup key of every phase that runs again, targetPhase through
+    // the rejected phase (current_phase: a review holds the phase, it does not
+    // advance it). Clearing only targetPhase left the rejected phase's key, so
+    // its redo returned noop_dedup and the task stalled.
+    for (let i = targetPhase; i <= task.current_phase; i++) {
+      this.phaseCompleteHandled.delete(`${taskId}:${i}`);
+    }
 
     const teamExec = task.team_id
       ? this.teamManager.getTeamForExecution(task.team_id)

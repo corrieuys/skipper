@@ -5,6 +5,7 @@ import {
   getAgentTypeDefinition,
   listAgentTypes,
   clearAgentTypeCache,
+  normalizeProviderModel,
 } from "./types";
 import { unlinkSync } from "fs";
 
@@ -147,5 +148,28 @@ describe("listAgentTypes", () => {
     expect(Array.isArray(claudeCode.available_models)).toBe(true);
     expect(typeof claudeCode.env_vars).toBe("object");
     expect(claudeCode.env_vars).toEqual({});
+  });
+});
+
+describe("normalizeProviderModel", () => {
+  it("prefixes bare opencode models with opencode/", () => {
+    expect(normalizeProviderModel("opencode", "muse-spark-1.3-contributor-free"))
+      .toBe("opencode/muse-spark-1.3-contributor-free");
+    expect(normalizeProviderModel("opencode", "deepseek-v4.1-flash"))
+      .toBe("opencode/deepseek-v4.1-flash");
+  });
+
+  it("leaves qualified opencode models untouched", () => {
+    expect(normalizeProviderModel("opencode", "opencode/big-pickle"))
+      .toBe("opencode/big-pickle");
+    expect(normalizeProviderModel("opencode", "custom-provider/some-model"))
+      .toBe("custom-provider/some-model");
+  });
+
+  it("leaves default and other providers untouched", () => {
+    expect(normalizeProviderModel("opencode", "default")).toBe("default");
+    expect(normalizeProviderModel("claude-code", "claude-opus-4-8")).toBe("claude-opus-4-8");
+    expect(normalizeProviderModel("codex", "gpt-5.4")).toBe("gpt-5.4");
+    expect(normalizeProviderModel(undefined, "whatever")).toBe("whatever");
   });
 });

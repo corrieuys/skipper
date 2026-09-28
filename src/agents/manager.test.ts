@@ -803,6 +803,107 @@ describe("processStdoutBuffer", () => {
   });
 });
 
+describe("readStream decoding (regression: one TextDecoder shared by every stream)", () => {
+  const encoder = new TextEncoder();
+
+  function trackedAgent(id: string): RunningAgent {
+    const running: RunningAgent = {
+      id,
+      templateAgentId: id,
+      providerType: "claude-code",
+      resolvedModel: "default",
+      taskId: null,
+      parentInstanceId: null,
+      rootInstanceId: id,
+      workingDir: "/tmp",
+      process: null as any,
+      stdin: null as any,
+      stdoutBuffer: "",
+      stderrBuffer: "",
+      outputSequence: 0,
+      sessionId: null,
+      spawnSessionId: `spawn-${id}`,
+      drainedStreams: 0,
+      mcpCleanupPaths: [],
+      mcpRestoreFiles: [],
+    };
+    db.prepare("INSERT INTO agent_sessions (id, agent_id) VALUES (?, ?)").run(running.spawnSessionId, id);
+    manager.getRunningAgents().set(id, running);
+    return running;
+  }
+
+  /** A stdout pipe whose reads are exactly the chunks pushed into it. */
+  function pipe(): { stream: ReadableStream<Uint8Array>; push: (chunk: Uint8Array) => void; end: () => void } {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({ start(c) { controller = c; } });
+    return { stream, push: (chunk) => controller.enqueue(chunk), end: () => controller.close() };
+  }
+
+  // readStream is private; driving it with hand-made pipes pins the chunk boundaries.
+  function readStdout(running: RunningAgent, stream: ReadableStream<Uint8Array>): Promise<void> {
+    const internal = manager as unknown as {
+      readStream(agent: RunningAgent, s: ReadableStream<Uint8Array>, type: "stdout" | "stderr"): Promise<void>;
+    };
+    return internal.readStream(running, stream, "stdout");
+  }
+
+  const letReadersRun = () => new Promise((r) => setTimeout(r, 5));
+
+  function storedLines(agentId: string): string[] {
+    const rows = db
+      .prepare("SELECT data FROM terminal_outputs WHERE agent_id = ? AND stream = 'stdout' ORDER BY sequence")
+      .all(agentId) as { data: string }[];
+    return rows.map((r) => r.data);
+  }
+
+  const initFrameB = `{"type":"system","subtype":"init","session_id":"sess-b"}`;
+
+  it("keeps a character split across two reads in its own agent's line while another agent's read lands between them", async () => {
+    const a = trackedAgent("agent-split-a");
+    const b = trackedAgent("agent-split-b");
+    const lineA = encoder.encode(`{"type":"result","result":"costs 5€"}\n`);
+    const cut = lineA.indexOf(0xe2) + 1; // after the first of the euro sign's three bytes
+    const pipeA = pipe();
+    const pipeB = pipe();
+    const readA = readStdout(a, pipeA.stream);
+    const readB = readStdout(b, pipeB.stream);
+
+    pipeA.push(lineA.slice(0, cut));
+    await letReadersRun();
+    pipeB.push(encoder.encode(`${initFrameB}\n`));
+    await letReadersRun();
+    pipeA.push(lineA.slice(cut));
+    pipeA.end();
+    pipeB.end();
+    await Promise.all([readA, readB]);
+
+    expect(storedLines(b.id)).toEqual([initFrameB]);
+    expect(b.sessionId).toBe("sess-b");
+    expect(storedLines(a.id).map((line) => JSON.parse(line))).toEqual([{ type: "result", result: "costs 5€" }]);
+  });
+
+  it("flushes a character a stream ended in the middle of into that stream, not the next one decoded", async () => {
+    const a = trackedAgent("agent-cutoff-a");
+    const b = trackedAgent("agent-cutoff-b");
+    const cutOff = encoder.encode(`partial 5€`).slice(0, -1); // killed mid-character
+    const pipeA = pipe();
+    const pipeB = pipe();
+
+    const readA = readStdout(a, pipeA.stream);
+    pipeA.push(cutOff);
+    pipeA.end();
+    await readA;
+    const readB = readStdout(b, pipeB.stream);
+    pipeB.push(encoder.encode(`${initFrameB}\n`));
+    pipeB.end();
+    await readB;
+
+    expect(storedLines(b.id)).toEqual([initFrameB]);
+    expect(b.sessionId).toBe("sess-b");
+    expect(storedLines(a.id)).toEqual(["partial 5\uFFFD"]);
+  });
+});
+
 describe("sendInput", () => {
   it("throws for nonexistent running agent", () => {
     expect(() => manager.sendInput("nonexistent", "hello")).toThrow(

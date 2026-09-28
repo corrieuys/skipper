@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { getAgentTypeDefinition } from "./types";
+import { getAgentTypeDefinition, normalizeProviderModel } from "./types";
 import { extractTextFromJsonEvent, type JsonEvent } from "./manager";
 import { agentSpawnPath } from "../paths";
 
@@ -104,7 +104,11 @@ export function buildOneShotCommand(
   }
 
   if (opts.model && opts.model !== "default" && typeDef.model_flag) {
-    args.push(typeDef.model_flag, opts.model);
+    // Same rule as the daemon spawn path: opencode needs `provider/model`.
+    const model = typeDef.command === "opencode"
+      ? normalizeProviderModel("opencode", opts.model)
+      : opts.model;
+    args.push(typeDef.model_flag, model);
   }
   if (isClaude && opts.systemPrompt) {
     args.push("--system-prompt", opts.systemPrompt);

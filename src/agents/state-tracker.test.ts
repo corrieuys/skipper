@@ -786,6 +786,26 @@ describe("active child instances guard", () => {
     expect(tracker.getStuckCandidates()).toContain(runtimeId);
   });
 
+  it("does not let two silent sibling children shield each other", () => {
+    const taskId = createTask();
+    const rootId = startRuntime(createAgent("Skipper Root"), { taskId, status: "completed", pid: null });
+    const qaId = startRuntime(createAgent("QA"), { taskId, pid: 45833 });
+    const plannerId = startRuntime(createAgent("Planner"), { taskId, pid: 45835 });
+    for (const childId of [qaId, plannerId]) {
+      db.prepare("UPDATE agent_instances SET parent_instance_id = ?, root_instance_id = ? WHERE id = ?")
+        .run(rootId, rootId, childId);
+      createAgentState(childId, {
+        state: "working",
+        screen_fingerprint: "frozen",
+        heartbeat_at: minutesAgo(40),
+      });
+    }
+
+    const candidates = tracker.getStuckCandidates();
+    expect(candidates).toContain(qaId);
+    expect(candidates).toContain(plannerId);
+  });
+
   it("ignores agents.current_task_id: another task's children do not shield the runtime", () => {
     const templateId = createAgent("Skipper Shared");
     // The shared slot names task B, which has a running child.

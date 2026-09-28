@@ -5,6 +5,7 @@ import { resolveAgentFromToken, describeTokenState, type AgentIdentity } from ".
 import { registerDaemonTools, registerExternalTools, type DaemonDeps, registerRendererTools } from "./tools";
 import { isSoloTeamId } from "../agents/solo";
 import { logError } from "../logging";
+import { eventBus, type AgentExitEvent } from "../events/bus";
 
 /**
  * MCP server that agents connect to for structured communication with the daemon.
@@ -21,7 +22,29 @@ export class DaemonMcpServer {
   constructor(db: Database, deps: DaemonDeps) {
     this.db = db;
     this.deps = deps;
+    eventBus.on("agent:exit", this.onAgentExit);
   }
+
+  /**
+   * A killed agent CLI never sends DELETE /mcp, so without this every killed
+   * process left its McpServer + transport in `sessions` for the life of the
+   * daemon. Its exit ends the session: close it and drop the entry. Covers
+   * in-process custom agents too (their MCP client closes without a DELETE).
+   *
+   * Runs synchronously inside the `agent:exit` emit, so a respawn under the
+   * same runtime id cannot have connected yet: `handleProcessExit` drops the
+   * exit of a process whose id a newer spawn already holds, and no request is
+   * served mid-emit. Every matched session belongs to a dead process; the
+   * respawn opens a new one afterwards.
+   */
+  private readonly onAgentExit = (event: AgentExitEvent): void => {
+    for (const [sessionId, session] of this.sessions) {
+      if (session.identity?.type !== "internal" || session.identity.runtimeId !== event.agentId) continue;
+      this.sessions.delete(sessionId);
+      // Best effort: the client is gone, nothing is waiting on the close.
+      session.server.close().catch(() => {});
+    }
+  };
 
   /**
    * Create a per-session McpServer + transport pair. The identity locked in
@@ -206,6 +229,7 @@ export class DaemonMcpServer {
   }
 
   close(): void {
+    eventBus.off("agent:exit", this.onAgentExit);
     for (const [, session] of this.sessions) {
       // Best effort: shutdown teardown — a transport that fails to close is
       // going away with the process anyway.

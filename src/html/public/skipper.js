@@ -1255,6 +1255,43 @@
     tcRestoreRailWidth(evt.detail && evt.detail.target);
     tcRestoreBoard();
   });
+  // ── Sidebar list re-render (WS push, star route OOB) ──
+  // #mc-sidebar-list arrives rendered with no open task (one render serves
+  // every page), and an OOB swap fires no htmx:afterSwap. Carry the selection
+  // over from the list being replaced: the same rows (by href) and recurring
+  // series (by key) stay active with their group open, then the saved group
+  // toggles (a user collapse wins, as on page load) and the board re-apply.
+  var tcSidebarActive = { hrefs: [], groups: [] };
+  document.addEventListener("htmx:oobBeforeSwap", function (evt) {
+    var old = evt.detail && evt.detail.target;
+    if (!old || old.id !== "mc-sidebar-list") return;
+    tcSidebarActive = { hrefs: [], groups: [] };
+    old.querySelectorAll(".mc-sidebar__item--active").forEach(function (a) {
+      tcSidebarActive.hrefs.push(a.getAttribute("href"));
+    });
+    old.querySelectorAll("details.tc-rec.tc-team--active").forEach(function (d) {
+      tcSidebarActive.groups.push(d.getAttribute("data-tc-team"));
+    });
+  });
+  document.addEventListener("htmx:oobAfterSwap", function (evt) {
+    var list = evt.target;
+    if (!list || list.id !== "mc-sidebar-list") return;
+    function activate(group) {
+      if (!group) return;
+      group.classList.add("tc-team--active");
+      group.open = true;
+    }
+    list.querySelectorAll(".mc-sidebar__item").forEach(function (a) {
+      if (tcSidebarActive.hrefs.indexOf(a.getAttribute("href")) === -1) return;
+      a.classList.add("mc-sidebar__item--active");
+      activate(a.closest("details.tc-team"));
+    });
+    list.querySelectorAll("details.tc-rec").forEach(function (d) {
+      if (tcSidebarActive.groups.indexOf(d.getAttribute("data-tc-team")) !== -1) activate(d);
+    });
+    tcRestoreTeamState(list);
+    tcRestoreBoard();
+  });
   // Escalation modal: close it once a Respond/Dismiss submitted from inside the
   // modal succeeds. Recorded at beforeRequest (the form/button is still attached
   // to the DOM) because the outerHTML swap detaches it before afterRequest fires.

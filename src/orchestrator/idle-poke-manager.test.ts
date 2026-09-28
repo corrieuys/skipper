@@ -4,6 +4,8 @@ import { initializeDatabase } from "../db/connection";
 import { IdlePokeManager } from "./idle-poke-manager";
 import { getAgentTypeDefinition } from "../agents/types";
 import { setBoolSetting, SETTING_PARALLEL_TASKS } from "../config/app-settings";
+import { EscalationManager } from "../escalations/manager";
+import { eventBus, type EscalationCreatedEvent } from "../events/bus";
 import { unlinkSync } from "fs";
 
 const TEST_DB = "test-idle-poke-manager.db";
@@ -76,6 +78,7 @@ function buildManager(
     getRunningInstanceForTask?: (templateAgentId: string, taskId: string) => unknown;
     killAgent?: (id: string) => boolean;
     getAgent?: (id: string) => { id: string; type: string } | null;
+    escalationManager?: EscalationManager;
   } = {},
 ): { manager: IdlePokeManager; escalateMock: ReturnType<typeof mock>; spawnMock: ReturnType<typeof mock>; } {
   // spawnAgent returns the RunningAgent — pokeSkipper reads .id off it to target
@@ -127,7 +130,7 @@ function buildManager(
     },
   } as any;
 
-  const escalationManager = { createEscalation: escalateMock } as any;
+  const escalationManager = overrides.escalationManager ?? ({ createEscalation: escalateMock } as any);
 
   const manager = new IdlePokeManager(
     database,
@@ -295,6 +298,46 @@ describe("IdlePokeManager", () => {
     expect(escalateMock).toHaveBeenCalledTimes(1);
     expect(getDaemonState(db, `idle_since:${taskId}`)).toBeNull();
     expect(getDaemonState(db, `idle_poke_count:${taskId}`)).toBeNull();
+  });
+
+  // The exhaustion escalation used to be inserted silently: the task showed
+  // blocked, but no surface (web, apps, TUI, Slack, sounds, hooks) was told.
+  it("announces the exhaustion escalation once on escalation:created", async () => {
+    const agentId = createAgent(db);
+    const teamId = createTeam(db, agentId);
+    const taskId = createRunningTask(db, teamId);
+    setIdleSince(db, taskId, ago(75_000));
+    db.prepare("INSERT OR REPLACE INTO daemon_state (key, value) VALUES (?, ?)")
+      .run(`idle_poke_count:${taskId}`, "2");
+
+    // The real writer (createEscalation never touches the AgentManager).
+    const escalationManager = new EscalationManager(db, {} as any);
+    const events: EscalationCreatedEvent[] = [];
+    const onCreated = (e: EscalationCreatedEvent) => { events.push(e); };
+    eventBus.on("escalation:created", onCreated);
+    try {
+      const { manager, spawnMock } = buildManager(db, { escalationManager });
+      expect(await manager.runIdlePokes()).toBe(1);
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      eventBus.off("escalation:created", onCreated);
+    }
+
+    const rows = db
+      .prepare("SELECT id, agent_id, runtime_agent_id, type, question FROM escalations WHERE task_id = ?")
+      .all(taskId) as Array<{ id: string; agent_id: string; runtime_agent_id: string | null; type: string; question: string }>;
+    expect(rows.length).toBe(1);
+    // Raised on the team's entrypoint template, with no runtime instance.
+    expect(rows[0]!.agent_id).toBe(agentId);
+    expect(rows[0]!.runtime_agent_id).toBeNull();
+    expect(events).toEqual([{
+      escalationId: rows[0]!.id,
+      agentId,
+      taskId,
+      type: "idle_poke_exhausted",
+      question: rows[0]!.question,
+    }]);
+    expect(rows[0]!.question).toContain("pinged twice");
   });
 
   it("skips when there is an open escalation for the task", async () => {

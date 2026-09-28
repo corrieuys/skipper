@@ -433,12 +433,14 @@ export class StateTracker {
     // This covers the entrypoint agent (e.g. skipper) which waits while delegated
     // children work: its stdout won't change but it's not stuck. The task comes
     // from the runtime's instance row, not agents.current_task_id, which is one
-    // slot shared by every task running the template.
+    // slot shared by every task running the template. Roots only: a delegated
+    // child waits on its own delegations through check 1, and letting it take
+    // this check made two silent sibling children shield each other forever.
     const instance = this.db
-      .prepare("SELECT task_id, template_agent_id FROM agent_instances WHERE id = ?")
-      .get(runtimeId) as InstanceRow | null;
+      .prepare("SELECT task_id, template_agent_id, parent_instance_id FROM agent_instances WHERE id = ?")
+      .get(runtimeId) as (InstanceRow & { parent_instance_id: string | null }) | null;
 
-    if (instance) {
+    if (instance && instance.parent_instance_id === null) {
       const activeChild = this.db
         .prepare(
           `SELECT id FROM agent_instances

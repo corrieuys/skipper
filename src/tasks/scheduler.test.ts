@@ -684,6 +684,24 @@ describe("requestWake / getNextStartableTask", () => {
     expect(scheduler.getNextStartableTask()!.id).toBe(id);
   });
 
+  it("skips tasks with an open escalation while the escalating root is stopped", () => {
+    // The root escalated and exited (held as 'stopped'). The operator's answer
+    // resumes that runtime; a wake taken here would start a second root beside it.
+    const id = startedTask();
+    scheduler.requestWake(id);
+    db.prepare(
+      "INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('esc-root', ?, 'default-agent', 'stopped')",
+    ).run(id);
+    db.prepare(
+      `INSERT INTO escalations (id, agent_id, runtime_agent_id, task_id, type, question)
+       VALUES ('esc-1', 'default-agent', 'esc-root', ?, 'agent_request', 'Install on devices?')`,
+    ).run(id);
+    expect(scheduler.getNextStartableTask()).toBeNull();
+
+    db.prepare("UPDATE escalations SET status = 'resolved', resolved_at = datetime('now') WHERE id = 'esc-1'").run();
+    expect(scheduler.getNextStartableTask()!.id).toBe(id);
+  });
+
   it("skips tasks awaiting review", () => {
     const id = startedTask();
     scheduler.requestWake(id);

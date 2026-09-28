@@ -43,6 +43,45 @@ function sameStatusChange(): void {
   eventBus.emit("task:state_changed", { taskId: "task-1", previousStatus: "active", newStatus: "active" });
 }
 
+function instanceChanged(instanceId: string, taskId: string, status: string): void {
+  eventBus.emit("instance:state_changed", { instanceId, templateAgentId: "a-tmpl", taskId, parentInstanceId: null, rootInstanceId: null, status });
+}
+
+function sidebarPushes(client: FakeClient): string[] {
+  return client.sent.filter((m) => m.includes('id="mc-sidebar-list"'));
+}
+
+/**
+ * Runs `fn` with setTimeout / clearTimeout swapped for a recorder, so a test
+ * sees what a debounced push armed and fires it without waiting DEBOUNCE_MS.
+ * Returns a flush that fires the timers still armed.
+ */
+function withArmedTimers(fn: () => void): () => void {
+  const armed = new Map<object, () => void>();
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  globalThis.setTimeout = ((cb: () => void) => {
+    const handle = {};
+    armed.set(handle, cb);
+    return handle;
+  }) as unknown as typeof setTimeout;
+  globalThis.clearTimeout = ((handle: object) => {
+    armed.delete(handle);
+  }) as unknown as typeof clearTimeout;
+  try {
+    fn();
+  } finally {
+    globalThis.setTimeout = realSet;
+    globalThis.clearTimeout = realClear;
+  }
+  return () => {
+    for (const [handle, cb] of [...armed]) {
+      armed.delete(handle);
+      cb();
+    }
+  };
+}
+
 beforeEach(() => {
   db = new Database(":memory:");
   initializeDatabase(db);
@@ -175,6 +214,66 @@ describe("dashboard pushes", () => {
     eventBus.emit("escalation:created", { escalationId: "esc-1", agentId: "a-tmpl", taskId: "task-1", type: "question", question: "q?" });
 
     expect(sqls).toEqual([]);
+  });
+});
+
+describe("command-center sidebar push", () => {
+  it("follows an agent start or stop with one debounced push carrying the derived status", () => {
+    const commandCenter = connect("html", ["dashboard", "task:task-1"]);
+    // The turn ends: task-1 has no live agent left, so it is no longer working.
+    db.prepare("UPDATE agent_instances SET status = 'completed' WHERE id = 'inst-1'").run();
+
+    const fire = withArmedTimers(() => instanceChanged("inst-1", "task-1", "completed"));
+    expect(sidebarPushes(commandCenter)).toHaveLength(0);
+    fire();
+
+    const pushes = sidebarPushes(commandCenter);
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain("Fix auth");
+    expect(pushes[0]).not.toContain("mc-sidebar__item--running");
+  });
+
+  it("coalesces a burst of instance events across tasks into one push", () => {
+    db.prepare("INSERT INTO tasks (id, title, status, started_at) VALUES ('task-2','Ship docs','active',datetime('now'))").run();
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('inst-2','task-2','a-tmpl','running')").run();
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES ('inst-3','task-2','a-tmpl','running')").run();
+    const commandCenter = connect("html", ["dashboard", "task:task-1"]);
+
+    const fire = withArmedTimers(() => {
+      instanceChanged("inst-1", "task-1", "waiting_delegation");
+      instanceChanged("inst-2", "task-2", "running");
+      instanceChanged("inst-3", "task-2", "running");
+      instanceChanged("inst-3", "task-2", "completed");
+    });
+    fire();
+
+    expect(sidebarPushes(commandCenter)).toHaveLength(1);
+  });
+
+  it("shows a newly created task", () => {
+    const commandCenter = connect("html", ["dashboard"]);
+    db.prepare("INSERT INTO tasks (id, title, status) VALUES ('task-new','Draft from the TUI','draft')").run();
+
+    eventBus.emit("task:created", { taskId: "task-new" });
+
+    const pushes = sidebarPushes(commandCenter);
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain("Draft from the TUI");
+  });
+
+  it("does no read or render while no page shows the sidebar", () => {
+    const config = connect("html", ["config"]);
+    connect("json", ["glyph:task-1"]);
+
+    sqls.length = 0;
+    const fire = withArmedTimers(() => {
+      instanceChanged("inst-1", "task-1", "completed");
+      eventBus.emit("task:created", { taskId: "task-1" });
+    });
+    fire();
+
+    expect(sqls).toEqual([]);
+    expect(config.sent).toHaveLength(0);
   });
 });
 

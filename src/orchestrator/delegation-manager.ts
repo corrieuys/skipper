@@ -19,6 +19,10 @@ const DELEGATION_TIMEOUT_SECONDS = Math.floor(DELEGATION_TIMEOUT_MS / 1000);
 const GROUP_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 const GROUP_TIMEOUT_SECONDS = Math.floor(GROUP_TIMEOUT_MS / 1000);
 const CHILD_FAILURE_ESCALATION_THRESHOLD = 2;
+// SQL predicate, correlated on a delegation_groups row: an escalation is open on
+// the group's task. While one is, a group's results are held from its parent.
+const OPEN_ESCALATION_ON_GROUP_TASK =
+  "EXISTS (SELECT 1 FROM escalations e WHERE e.task_id = delegation_groups.task_id AND e.status = 'open')";
 // Sent as the prompt when a timed-out child is retried via session resume
 // (instead of a fresh restart). Pushes it to wrap up rather than start over.
 const RETRY_NUDGE_PROMPT = [
@@ -519,6 +523,35 @@ export class DelegationManager {
     }
   }
 
+  /**
+   * The operator dismissed the escalation of a delegated child that already
+   * exited. handleAgentExit held that exit (instance 'stopped', delegation left
+   * running) for the answer to resume it, and a dismiss resumes nothing, so the
+   * delegation fails here and its group reports to the parent as usual. Without
+   * this it stayed running with no agent, blocking the task queue until the
+   * stale timeout retried the child the operator had just dismissed. A child
+   * that is still running is left alone: its own exit settles the delegation.
+   */
+  failDelegationForDismissedEscalation(childRuntimeId: string): boolean {
+    try {
+      if (this.agentManager.getRunningAgent(childRuntimeId)) return false;
+      const delegation = this.getActiveDelegationForChild(childRuntimeId);
+      if (!delegation) return false;
+
+      this.db
+        .prepare(
+          "UPDATE delegations SET status = 'failed', result = 'Escalation dismissed by operator', completed_at = datetime('now') WHERE id = ?",
+        )
+        .run(delegation.id);
+      this.clearTemplateTaskIfNoActive(delegation.child_agent_id);
+      this.handleGroupProgress(delegation, childRuntimeId, true);
+      return true;
+    } catch (err) {
+      logError(this.db, "delegation_dismissed_escalation", { childRuntimeId, method: "failDelegationForDismissedEscalation" }, err);
+      return false;
+    }
+  }
+
   handleChildExit(delegation: Delegation, event: { agentId: string; code: number | null }): void {
     try {
       if (event.code === 0) {
@@ -599,13 +632,37 @@ export class DelegationManager {
   /**
    * Check delegation_groups in running status that have exceeded the group timeout.
    * Force-settle all unsettled delegations, kill live children, and route failure to parent.
+   *
+   * A group is stale only when it is older than the timeout AND no unsettled
+   * member has an attempt (child instance) younger than it. checkStaleDelegations
+   * times out each attempt from its own instance's created_at and retries it; the
+   * retry's instance row is written synchronously, so this same-tick sweep sees
+   * it as fresh instead of killing it. Retries are capped (CHILD_RETRY_LIMIT), so
+   * a group still expires. A held group (all members settled, see
+   * handleGroupProgress) is never stale, and a task with an open escalation is
+   * skipped: its parent must not be woken until the operator answers.
    */
   checkStaleDelegationGroups(): number {
+    // Held results whose escalations have all closed but that could not reach
+    // their parent then (it was running, or the daemon restarted in between).
+    this.releaseHeldDelegationGroups();
+
     const staleGroups = this.db
       .prepare(
-        "SELECT * FROM delegation_groups WHERE status = 'running' AND unixepoch(created_at) < (unixepoch('now') - ?)",
+        `SELECT * FROM delegation_groups
+         WHERE status = 'running'
+           AND settled_count < expected_count
+           AND unixepoch(created_at) < (unixepoch('now') - ?)
+           AND NOT EXISTS (
+             SELECT 1 FROM delegations d
+             JOIN agent_instances ai ON ai.id = d.child_instance_id
+             WHERE d.delegation_group_id = delegation_groups.id
+               AND d.status IN ('pending', 'running')
+               AND unixepoch(ai.created_at) >= (unixepoch('now') - ?)
+           )
+           AND NOT ${OPEN_ESCALATION_ON_GROUP_TASK}`,
       )
-      .all(GROUP_TIMEOUT_SECONDS) as DelegationGroupRow[];
+      .all(GROUP_TIMEOUT_SECONDS, GROUP_TIMEOUT_SECONDS) as DelegationGroupRow[];
 
     for (const group of staleGroups) {
       try {
@@ -654,6 +711,114 @@ export class DelegationManager {
     }
 
     return staleGroups.length;
+  }
+
+  /**
+   * True when this runtime parents a held group: every member settled while an
+   * escalation was open, and the results have not reached it yet.
+   */
+  hasHeldDelegationGroup(parentRuntimeId: string): boolean {
+    const row = this.db
+      .prepare(
+        "SELECT 1 FROM delegation_groups WHERE parent_instance_id = ? AND status = 'running' AND settled_count >= expected_count LIMIT 1",
+      )
+      .get(parentRuntimeId);
+    return !!row;
+  }
+
+  /**
+   * Deliver held groups (see handleGroupProgress) through the normal completion
+   * path, once each, once no escalation is open on their task. Scoped to one task
+   * (an escalation closed) or one parent (it exited), else every task (the tick
+   * sweep). A group whose parent cannot take the result right now stays held for
+   * a later call (canDeliverHeldGroup). Returns how many were delivered.
+   */
+  releaseHeldDelegationGroups(scope: { taskId?: string; parentInstanceId?: string } = {}): number {
+    const params: string[] = [];
+    let scopeSql = "";
+    if (scope.taskId) {
+      scopeSql += " AND delegation_groups.task_id = ?";
+      params.push(scope.taskId);
+    }
+    if (scope.parentInstanceId) {
+      scopeSql += " AND delegation_groups.parent_instance_id = ?";
+      params.push(scope.parentInstanceId);
+    }
+    const held = this.db
+      .prepare(
+        `SELECT delegation_groups.* FROM delegation_groups
+         JOIN tasks t ON t.id = delegation_groups.task_id
+         WHERE delegation_groups.status = 'running'
+           AND delegation_groups.settled_count >= delegation_groups.expected_count
+           AND t.status = 'active' AND t.paused = 0
+           AND NOT ${OPEN_ESCALATION_ON_GROUP_TASK}${scopeSql}
+         ORDER BY delegation_groups.created_at`,
+      )
+      .all(...params) as DelegationGroupRow[];
+
+    let released = 0;
+    for (const group of held) {
+      try {
+        if (!this.canDeliverHeldGroup(group)) continue;
+        // Completing the row is the claim: one caller gets it back, so the
+        // result is routed once however the escalation-closed, parent-exit and
+        // sweep triggers interleave.
+        const claimed = this.db
+          .prepare(
+            `UPDATE delegation_groups SET status = 'completed', completed_at = datetime('now')
+             WHERE id = ? AND status = 'running' AND settled_count >= expected_count
+               AND NOT ${OPEN_ESCALATION_ON_GROUP_TASK}
+             RETURNING *`,
+          )
+          .get(group.id) as DelegationGroupRow | null;
+        if (!claimed) continue;
+        eventBus.emit("delegation_group:progress", {
+          groupId: claimed.id,
+          taskId: claimed.task_id,
+          parentInstanceId: claimed.parent_instance_id,
+          settledCount: claimed.settled_count,
+          expectedCount: claimed.expected_count,
+          failedCount: claimed.failed_count,
+          status: claimed.status,
+        });
+        this.finishDelegationGroup(claimed);
+        released++;
+      } catch (err) {
+        logError(this.db, "held_delegation_group_release", { groupId: group.id, taskId: group.task_id }, err);
+      }
+    }
+    return released;
+  }
+
+  /**
+   * Whether a held group's result can go to its parent now without resuming that
+   * parent a second time. A live parent that takes stdin gets it on stdin
+   * (routeResultToParent). A live parent that does not (every CLI provider) would
+   * be killed and resumed on top of the turn it is running, such as the one an
+   * escalation answer just resumed, so its own exit delivers instead
+   * (ManagerDaemon.handleAgentExit). A root parent is also not resumed next to
+   * another live root of the same template on its task (an answer to a
+   * template-level escalation spawns a fresh one); the sweep delivers once that
+   * root is gone.
+   */
+  private canDeliverHeldGroup(group: DelegationGroupRow): boolean {
+    const parent = this.agentManager.getRunningAgent(group.parent_instance_id);
+    if (parent) {
+      return !!getAgentTypeDefinition(parent.providerType, this.db)?.supports_stdin;
+    }
+    const parentRow = this.db
+      .prepare("SELECT parent_instance_id, template_agent_id FROM agent_instances WHERE id = ?")
+      .get(group.parent_instance_id) as { parent_instance_id: string | null; template_agent_id: string } | null;
+    if (parentRow && parentRow.parent_instance_id === null) {
+      for (const runtime of this.agentManager.getRunningAgents().values()) {
+        if (
+          runtime.taskId === group.task_id &&
+          runtime.parentInstanceId === null &&
+          runtime.templateAgentId === parentRow.template_agent_id
+        ) return false;
+      }
+    }
+    return true;
   }
 
   getDelegation(id: string): Delegation | null {
@@ -875,13 +1040,19 @@ export class DelegationManager {
       .get(groupId) as DelegationGroupRow | null;
     if (!group || group.status !== "running") return;
 
+    // With an escalation open on the task the group does not complete, even when
+    // this settles its last member: nothing may reach the parent until the
+    // operator answers. The results stay on the delegation rows and the group
+    // stays 'running' with settled_count = expected_count, which marks it held
+    // (a normal settle completes it in this same statement, so the state is
+    // otherwise unreachable). releaseHeldDelegationGroups delivers it later.
     const updated = this.db
       .prepare(
         `UPDATE delegation_groups
          SET settled_count = settled_count + 1,
              failed_count = failed_count + ?,
-             completed_at = CASE WHEN settled_count + 1 >= expected_count THEN datetime('now') ELSE completed_at END,
-             status = CASE WHEN settled_count + 1 >= expected_count THEN 'completed' ELSE status END
+             completed_at = CASE WHEN settled_count + 1 >= expected_count AND NOT ${OPEN_ESCALATION_ON_GROUP_TASK} THEN datetime('now') ELSE completed_at END,
+             status = CASE WHEN settled_count + 1 >= expected_count AND NOT ${OPEN_ESCALATION_ON_GROUP_TASK} THEN 'completed' ELSE status END
          WHERE id = ?
          RETURNING *`,
       )
@@ -928,7 +1099,7 @@ export class DelegationManager {
       }
     }
 
-    if (updated.settled_count >= updated.expected_count) {
+    if (updated.status === "completed") {
       this.finishDelegationGroup(updated);
     } else {
       this.updateOrchestrationState(delegation.task_id, {
@@ -1176,11 +1347,12 @@ export class DelegationManager {
     const childTypeDef = childAgent ? getAgentTypeDefinition(childAgent.type, this.db) : null;
     const canResume = !!row.session_id && !!childTypeDef?.supports_resume;
     const work = canResume ? RETRY_NUDGE_PROMPT : delegation.prompt;
+    const parentRuntimeId = row.parent_instance_id ?? delegation.parent_instance_id ?? delegation.parent_agent_id;
 
     this.spawnChildInstance({
       taskId: row.task_id,
       delegationId: delegation.id,
-      parentRuntimeId: row.parent_instance_id ?? delegation.parent_instance_id ?? delegation.parent_agent_id,
+      parentRuntimeId,
       rootInstanceId: row.root_instance_id ?? delegation.parent_instance_id ?? delegation.parent_agent_id,
       childTemplateId: row.template_agent_id,
       childInstanceId: nextInstanceId,
@@ -1191,16 +1363,28 @@ export class DelegationManager {
       // retry lands in the same directory as the attempt it replaces.
       workingDirectoryOverride: delegation.working_directory ?? undefined,
       resumeSessionId: canResume ? row.session_id! : undefined,
-    }).catch((err) => {
-      logError(this.db, "delegation_retry_spawn", { delegationId: delegation.id, nextInstanceId }, err);
-      this.settleDelegationFailure(
-        delegation.id,
-        row.parent_instance_id ?? delegation.parent_instance_id ?? delegation.parent_agent_id,
-        nextInstanceId,
-        row.task_id,
-        "Retry spawn failed",
-      );
-    });
+    }).then(
+      (spawned) => {
+        if (spawned) return;
+        // spawnChildInstance reports most failures as false rather than a throw
+        // (child template gone, spawn threw). Settle those like a throw, or the
+        // delegation sits pending and its parent waits out the group timeout.
+        // Only while this retry's attempt is still the pending one: a false
+        // after the prompt write failed leaves the delegation running with a
+        // killed child, and that child's exit settles it (handleChildExit).
+        try {
+          const current = this.getDelegation(delegation.id);
+          if (current?.status !== "pending" || current.child_instance_id !== nextInstanceId) return;
+          this.settleDelegationFailure(delegation.id, parentRuntimeId, nextInstanceId, row.task_id, "Retry spawn failed");
+        } catch (err) {
+          logError(this.db, "delegation_retry_spawn_settle", { delegationId: delegation.id, nextInstanceId }, err);
+        }
+      },
+      (err) => {
+        logError(this.db, "delegation_retry_spawn", { delegationId: delegation.id, nextInstanceId }, err);
+        this.settleDelegationFailure(delegation.id, parentRuntimeId, nextInstanceId, row.task_id, "Retry spawn failed");
+      },
+    );
 
     return "pending";
   }

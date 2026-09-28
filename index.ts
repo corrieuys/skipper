@@ -267,11 +267,23 @@ async function startup() {
   }
 }
 
-startup().catch((err) => console.error("Startup failed:", err));
-
 // The config page's Allowed Hosts join the Host gate before the first request.
 loadAllowedHosts(getDb());
-const server = startServer();
+// Bind BEFORE startup(): daemon.start() SIGTERMs the pid recorded as daemon
+// owner and SIGKILLs every recorded agent pid before its first await, so a
+// second daemon on this data dir and port used to take the live one's agents
+// down and only then die on EADDRINUSE. Bun.serve throws synchronously when the
+// port is taken, so exit here, before anything is killed. No request is served
+// before startup()'s synchronous part: it runs in this same module body.
+let server: ReturnType<typeof startServer>;
+try {
+  server = startServer();
+} catch (err) {
+  console.error("[skipper] could not start the HTTP server; exiting before startup so nothing is killed:", err);
+  process.exit(1);
+}
+
+startup().catch((err) => console.error("Startup failed:", err));
 
 function shutdown() {
   stopUpdateRestart?.();

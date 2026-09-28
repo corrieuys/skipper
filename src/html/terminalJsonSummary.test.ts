@@ -109,6 +109,39 @@ describe("activity feed — an OpenCode run is visible", () => {
     expect(parseTerminalActivity([ocLine({ type: "step_start", part: { type: "step-start" } })])).toContain("No activity yet");
   });
 
+  it("renders an OpenCode tool call as a tool row with its input", () => {
+    const html = parseTerminalActivity([ocLine({
+      type: "tool_use",
+      part: { type: "tool", tool: "bash", state: { status: "completed", input: { command: "bun test src/foo.test.ts" }, output: "1 pass" } },
+    })]);
+    expect(html).toContain("bash: bun test src/foo.test.ts");
+    expect(html).toContain('data-activity-kind="tool"');
+  });
+
+  it("summarises OpenCode file tools by their camelCase filePath", () => {
+    expect(terminalJsonSummary({
+      type: "tool_use",
+      part: { type: "tool", tool: "read", state: { status: "completed", input: { filePath: "/repo/App.swift" } } },
+    })).toBe("read: /repo/App.swift");
+  });
+
+  it("shows a failed OpenCode tool call with its error", () => {
+    expect(terminalJsonSummary({
+      type: "tool_use",
+      part: { type: "tool", tool: "read", state: { status: "error", input: { filePath: "/repo/Gone.swift" }, error: "File not found: /repo/Gone.swift" } },
+    })).toBe("read: /repo/Gone.swift | error: File not found: /repo/Gone.swift");
+  });
+
+  it("shows an OpenCode provider error", () => {
+    const html = parseTerminalActivity([ocLine({
+      type: "error",
+      sessionID: "ses_1",
+      error: { name: "APIError", data: { message: "Upstream request failed: rate limited", statusCode: 400 } },
+    })]);
+    expect(html).toContain("Upstream request failed: rate limited");
+    expect(html).not.toContain("No activity yet");
+  });
+
   it("shows OpenCode text in the dashboard feed too", () => {
     const html = recentActivityFragment([
       { agent_id: "a1", agent_name: "Skipper", stream: "stdout", data: JSON.stringify({ type: "text", part: { type: "text", text: "Deploying now" } }), created_at: "2026-08-11 10:00:00" },

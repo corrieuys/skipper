@@ -21,6 +21,15 @@ export interface Escalation {
   resolved_at: string | null;
 }
 
+interface EscalationInput {
+  agentId: string;
+  runtimeAgentId?: string | null;
+  taskId: string;
+  type: string;
+  question: string;
+  severity?: string;
+}
+
 export class EscalationManager {
   private db: Database;
   private agentManager: AgentManager;
@@ -56,7 +65,7 @@ export class EscalationManager {
     if (!task || task.status !== "active") return null;
 
     // Store the template agent ID in the escalation so resolution works correctly
-    const escalation = this.createEscalation({
+    const escalation = this.insertEscalation({
       agentId: templateAgentId,
       runtimeAgentId: agentId,
       taskId,
@@ -64,28 +73,28 @@ export class EscalationManager {
       question,
     });
 
-    // Set agent state to escalated using the template agent ID
+    // Set agent state to escalated using the template agent ID. This runs
+    // between the insert and the announcement (not via createEscalation), so
+    // escalation:created listeners still read the escalated state.
     this.setAgentState(templateAgentId, "escalated");
 
-    eventBus.emit("escalation:created", {
-      escalationId: escalation.id,
-      agentId: templateAgentId,
-      taskId,
-      type: "agent_request",
-      question,
-    });
+    this.announceEscalationCreated(escalation);
 
     return escalation;
   }
 
-  createEscalation(input: {
-    agentId: string;
-    runtimeAgentId?: string | null;
-    taskId: string;
-    type: string;
-    question: string;
-    severity?: string;
-  }): Escalation {
+  /**
+   * Insert an escalation and announce it with `escalation:created`. The write
+   * and the event are one operation, so every surface (web, apps, TUI, Slack,
+   * sounds, hooks, Canvas) hears about it whoever the caller is.
+   */
+  createEscalation(input: EscalationInput): Escalation {
+    const escalation = this.insertEscalation(input);
+    this.announceEscalationCreated(escalation);
+    return escalation;
+  }
+
+  private insertEscalation(input: EscalationInput): Escalation {
     const id = crypto.randomUUID();
     const severity = input.severity ?? "normal";
 
@@ -97,6 +106,17 @@ export class EscalationManager {
       .run(id, input.agentId, input.runtimeAgentId ?? null, input.taskId, input.type, input.question, severity);
 
     return this.getEscalation(id)!;
+  }
+
+  /** The one `escalation:created` emit for a row this manager inserted. */
+  private announceEscalationCreated(escalation: Escalation): void {
+    eventBus.emit("escalation:created", {
+      escalationId: escalation.id,
+      agentId: escalation.agent_id,
+      taskId: escalation.task_id,
+      type: escalation.type,
+      question: escalation.question,
+    });
   }
 
   getEscalation(id: string): Escalation | null {
@@ -144,6 +164,7 @@ export class EscalationManager {
       agentId: escalation.agent_id,
       taskId: escalation.task_id,
       response: "Dismissed by operator.",
+      dismissed: true,
     });
 
     return this.getEscalation(escalationId)!;

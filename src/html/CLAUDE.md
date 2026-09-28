@@ -29,7 +29,10 @@ views share the same shell.
   server always renders Latest active and the client re-applies the persisted
   board (`sidebarBoard`, `tcSetBoard`/`tcRestoreBoard` in `skipper.js`; a stale
   persisted `recurring` value falls back to `latest`) after
-  every WS re-render. Tabs switch via a `[data-tc-board]` click delegate. Each
+  every WS re-render. An OOB swap fires no `htmx:afterSwap`, so `skipper.js` handles
+  `htmx:oobBeforeSwap`/`oobAfterSwap` on `#mc-sidebar-list`: it carries highlighted rows and the
+  active recurring series over from the replaced list (the push renders with no open task),
+  opens their group (a saved collapse wins), then re-applies saved toggles and the board. Tabs switch via a `[data-tc-board]` click delegate. Each
   Teams and Agents row (`renderTeamGroup`) reveals a
   hover **"+"** (`.tc-team__add`) linking to `/tasks/new?team=<id>` — the create
   form pre-selects that team/agent (the `/fragments/task-form/team` picker honours
@@ -183,7 +186,7 @@ Lots of legacy flat `*Fragment.ts` files at this level — pre-reorg into `fragm
 | `layout.ts`, `baseStyles.ts` | Shared shell + base CSS |
 | `forensics*.ts` | Forensics tab on task detail (timeline, instance tree, delegations, escalations, token usage, terminal tails) |
 | `dashboard*Fragment.ts` | Dashboard polling fragments |
-| `terminalJsonSummary.ts` | One JSON stdout frame → one activity-feed line, per provider shape (claude-code `message.content`, codex `item`, grok `{type:"text"\|"thought",data}`, opencode `{type:"text",part:{text}}`, `result`, errors). **A shape it doesn't know summarises to `""`, and the activity feed drops empty rows** — so an unhandled provider looks like it produced no output at all, not like it rendered badly. Add a case here (and to the two `parseTerminalActivity`/`recentActivityFragment` classifiers) when adding a provider |
+| `terminalJsonSummary.ts` | One JSON stdout frame → one activity-feed line, per provider shape (claude-code `message.content`, codex `item`, grok `{type:"text"\|"thought",data}`, opencode `{type:"text",part:{text}}` and `{type:"tool_use",part:{tool,state}}` (tool rows like claude-code, failed calls carry their error), `result`, errors incl. opencode `{error:{data:{message}}}`). **A shape it doesn't know summarises to `""`, and the activity feed drops empty rows** — so an unhandled provider looks like it produced no output at all, not like it rendered badly. Add a case here (and to the two `parseTerminalActivity`/`recentActivityFragment` classifiers) when adding a provider |
 
 ## Agent library (single + custom agents)
 

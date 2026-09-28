@@ -1025,17 +1025,23 @@ export function registerDaemonTools(
         const reject = rejectIfDelegated(identity, "regress_phase");
         if (reject) return reject;
 
-        phaseManager.handlePhaseRegression(identity.runtimeId, target, reason);
+        // Await the outcome, like complete_phase: fire-and-forget always answered
+        // "regressed", so a refused regression (limit reached, invalid target)
+        // read as a success. The bridge entry and the phase_regression signal
+        // (web phase strip refresh, idle-poke clear) only follow a real one.
+        const outcome = await phaseManager.handlePhaseRegression(identity.runtimeId, target, reason);
 
-        signalBridge.registerMcpAction(identity.runtimeId, "phase_regression", `${target}|${reason.slice(0, 100)}`);
+        if (outcome === "regressed") {
+          signalBridge.registerMcpAction(identity.runtimeId, "phase_regression", `${target}|${reason.slice(0, 100)}`);
 
-        eventBus.emit("agent:signal", {
-          agentId: identity.runtimeId,
-          signalType: "phase_regression",
-          taskId: identity.taskId,
-        });
+          eventBus.emit("agent:signal", {
+            agentId: identity.runtimeId,
+            signalType: "phase_regression",
+            taskId: identity.taskId,
+          });
+        }
 
-        return { content: [{ type: "text" as const, text: JSON.stringify({ status: "regressed", target_phase: target }) }] };
+        return { content: [{ type: "text" as const, text: JSON.stringify({ status: outcome, target_phase: target }) }] };
       },
     );
   }

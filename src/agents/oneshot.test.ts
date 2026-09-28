@@ -88,6 +88,14 @@ describe("buildOneShotCommand", () => {
     expect(cmd).not.toContain("{{prompt}}");
   });
 
+  it("opencode: bare model gets the opencode/ prefix (bare ids kill the child)", () => {
+    const { cmd } = buildOneShotCommand(OPENCODE_DEF, {
+      model: "muse-spark-1.3-contributor-free",
+      prompt: "do thing",
+    });
+    expect(cmd[cmd.indexOf("-m") + 1]).toBe("opencode/muse-spark-1.3-contributor-free");
+  });
+
   it("grok: inline {{prompt}}, model flag, resume flag appended", () => {
     const { cmd, stdinPrompt } = buildOneShotCommand(GROK_DEF, {
       model: "grok-4.5",

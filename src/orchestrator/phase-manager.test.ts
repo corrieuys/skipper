@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { getAgentTypeDefinition } from "../agents/types";
+import { clearAgentTypeCache, getAgentTypeDefinition } from "../agents/types";
 import { Database } from "bun:sqlite";
 import { initializeDatabase } from "../db/connection";
 import { PhaseManager } from "./phase-manager";
@@ -28,7 +28,7 @@ function createAgent(database: Database, id = "agent-1"): string {
 function createTeamWithPhases(
   database: Database,
   agentId: string,
-  phases: { name: string; prompt: string }[],
+  phases: { name: string; prompt: string; review?: boolean }[],
   teamId = "team-1",
 ): string {
   database
@@ -84,10 +84,18 @@ function createPhaseManager(
         paused: !!(row.paused ?? 0),
         current_phase: row.current_phase as number,
         regression_count: row.regression_count as number,
+        needs_review: !!(row.needs_review ?? 0),
       };
     },
     completeRun: overrides.completeRun ?? (() => {}),
-    setNeedsReview: () => {},
+    setNeedsReview: (id: string, value: boolean) => {
+      database.prepare("UPDATE tasks SET needs_review = ? WHERE id = ?").run(value ? 1 : 0, id);
+    },
+    regressPhase: (id: string, targetPhase: number) => {
+      database
+        .prepare("UPDATE tasks SET current_phase = ?, regression_count = regression_count + 1 WHERE id = ?")
+        .run(targetPhase, id);
+    },
     failRun: overrides.failTask ?? (() => {}),
     advancePhase:
       overrides.advancePhase ??
@@ -173,6 +181,7 @@ function createPhaseManager(
 }
 
 beforeEach(() => {
+  clearAgentTypeCache();
   db = setupDb();
 });
 
@@ -323,3 +332,37 @@ describe("handlePhaseComplete - dedup retry after failure", () => {
   });
 });
 
+describe("rejectReview - dedup keys of the phases that run again", () => {
+  it("clears every key from the target through the rejected phase, so the redone phase reaches review again", async () => {
+    const agentId = createAgent(db);
+    const teamId = createTeamWithPhases(db, agentId, [
+      { name: "Plan", prompt: "p1" },
+      { name: "Build", prompt: "p2" },
+      { name: "Check", prompt: "p3", review: true },
+      { name: "Ship", prompt: "p4" },
+    ]);
+    createRunningTask(db, teamId, 0);
+    const phaseManager = createPhaseManager(db);
+    const currentPhase = () =>
+      (db.prepare("SELECT current_phase FROM tasks WHERE id = 'task-1'").get() as { current_phase: number }).current_phase;
+
+    expect(await phaseManager.handlePhaseComplete(agentId)).toBe("advanced");
+    expect(await phaseManager.handlePhaseComplete(agentId)).toBe("advanced");
+    expect(await phaseManager.handlePhaseComplete(agentId)).toBe("review_pending");
+    expect(currentPhase()).toBe(2);
+
+    // Rejecting the review of phase 2 sends the task back to phase 1, so
+    // phases 1 and 2 both run again. Phase 0 is not redone and keeps its key.
+    await phaseManager.rejectReview("task-1", "Checks are incomplete");
+    expect(currentPhase()).toBe(1);
+    expect(phaseManager.hasPhaseBeenHandled("task-1", 0)).toBe(true);
+    expect(phaseManager.hasPhaseBeenHandled("task-1", 1)).toBe(false);
+    expect(phaseManager.hasPhaseBeenHandled("task-1", 2)).toBe(false);
+
+    // Redo phase 1, then phase 2: its completion opens the review again
+    // instead of returning noop_dedup and stalling the task.
+    expect(await phaseManager.handlePhaseComplete(agentId)).toBe("advanced");
+    expect(await phaseManager.handlePhaseComplete(agentId)).toBe("review_pending");
+    expect(currentPhase()).toBe(2);
+  });
+});

@@ -77,6 +77,7 @@ export class ManagerDaemon {
   private taskStateHandler: ((event: import("../events/bus").TaskStateChangedEvent) => void) | null = null;
   private wakeRequestedHandler: ((event: import("../events/bus").TaskWakeRequestedEvent) => void) | null = null;
   private runSettledHandler: ((event: { taskId: string }) => void) | null = null;
+  private escalationResolvedHandler: ((event: import("../events/bus").EscalationResolvedEvent) => void) | null = null;
   private pauseInterruptedAgents: Set<string> = new Set();
   private pausedRuntimeSnapshots: PausedRuntimeSnapshot[] = [];
 
@@ -234,6 +235,7 @@ export class ManagerDaemon {
     this.registerExitHandler();
     this.registerSignalHandler();
     this.registerTaskStateHandler();
+    this.registerEscalationResolvedHandler();
   }
 
   // --- Expose for testing ---
@@ -776,6 +778,30 @@ export class ManagerDaemon {
     return !!row;
   }
 
+  /**
+   * The delegation of a sibling child whose exit is recorded while an escalation
+   * is open on its task (handleAgentExit), or null when the exit is halted: the
+   * runtime raised one of the open escalations (its runtime_agent_id, or its
+   * template or runtime id as agent_id on rows without one, the root included),
+   * it waits on held results of its own, or its delegation has no group to hold
+   * the result from the parent.
+   */
+  private getSiblingDelegationToRecord(taskId: string, runtimeId: string): Delegation | null {
+    const delegation = this.delegationManager.getActiveDelegationForChild(runtimeId);
+    if (!delegation?.delegation_group_id) return null;
+    if (this.delegationManager.hasHeldDelegationGroup(runtimeId)) return null;
+    const templateId = this.agentManager.getTemplateAgentId(runtimeId) ?? runtimeId;
+    const escalating = this.db
+      .prepare(
+        `SELECT 1 FROM escalations
+         WHERE task_id = ? AND status = 'open'
+           AND (runtime_agent_id = ? OR (runtime_agent_id IS NULL AND agent_id IN (?, ?)))
+         LIMIT 1`,
+      )
+      .get(taskId, runtimeId, templateId, runtimeId);
+    return escalating ? null : delegation;
+  }
+
   private processScheduledTasks(): void {
     try {
       const dueTasks = this.scheduledTaskScheduler.getDueScheduledTasks();
@@ -932,6 +958,30 @@ export class ManagerDaemon {
     eventBus.on("task:run_failed", this.runSettledHandler);
   }
 
+  private registerEscalationResolvedHandler(): void {
+    this.escalationResolvedHandler = (event: import("../events/bus").EscalationResolvedEvent) => {
+      // Every resolve and dismiss path (web, data API, Connect, Slack, the
+      // auto-close on settle) announces here, after the answer was injected.
+      // Once the task's last escalation is closed, delegation results held for
+      // it (see handleAgentExit) go to their parents. A parent the answer just
+      // resumed keeps them for its own exit (releaseHeldDelegationGroups).
+      // A dismiss resumes nothing, so a delegated child whose exit was held
+      // for the answer has its delegation failed first (see
+      // failDelegationForDismissedEscalation).
+      try {
+        if (event.dismissed) {
+          const runtimeId = this.escalationManager.getEscalation(event.escalationId)?.runtime_agent_id;
+          if (runtimeId) this.delegationManager.failDelegationForDismissedEscalation(runtimeId);
+        }
+        if (this.hasOpenEscalations(event.taskId)) return;
+        this.delegationManager.releaseHeldDelegationGroups({ taskId: event.taskId });
+      } catch (err) {
+        logError(this.db, "held_delegation_release_on_resolve", { taskId: event.taskId, escalationId: event.escalationId }, err);
+      }
+    };
+    eventBus.on("escalation:resolved", this.escalationResolvedHandler);
+  }
+
   destroy(): void {
     this.realtimeSessionManager.dispose();
     if (this.exitHandler) {
@@ -954,6 +1004,10 @@ export class ManagerDaemon {
       eventBus.off("task:run_completed", this.runSettledHandler);
       eventBus.off("task:run_failed", this.runSettledHandler);
       this.runSettledHandler = null;
+    }
+    if (this.escalationResolvedHandler) {
+      eventBus.off("escalation:resolved", this.escalationResolvedHandler);
+      this.escalationResolvedHandler = null;
     }
     this.hookManager.destroy();
     this.exitHandlerRegistered = false;
@@ -987,9 +1041,32 @@ export class ManagerDaemon {
       // routeResultToParent. The task must hang until the operator resolves
       // the escalation, at which point injectResponse resumes the escalating
       // runtime (not Skipper).
+      //
+      // A sibling child is not halted: its result or failure is recorded on its
+      // delegation and group exactly as below, and the group holds it from the
+      // parent until the task's last escalation closes
+      // (DelegationManager.handleGroupProgress). Without this a sibling that
+      // finished during an escalation lost its result and its delegation sat
+      // running with a dead child until the 60 min timeout.
       if (taskId && this.hasOpenEscalations(taskId)) {
+        const siblingDelegation = this.getSiblingDelegationToRecord(taskId, event.agentId);
+        if (siblingDelegation) {
+          this.delegationManager.handleChildExit(siblingDelegation, event);
+          return;
+        }
         updateInstanceStatus(this.db, event.agentId, "stopped", { clearPid: true });
         logError(this.db, "agent_exit_bail", { agentId: event.agentId, taskId, reason: "open_escalation", method: "handleAgentExit" }, new Error("bail"));
+        return;
+      }
+
+      // Results held for an escalation wait on this runtime as their parent: it
+      // was running when the last escalation closed (an answer resumes the
+      // escalating runtime), so they were left for this exit rather than resume
+      // it a second time. Deliver them now through the normal group completion
+      // and stop, like a parent exiting with a delegation still open.
+      if (this.delegationManager.hasHeldDelegationGroup(event.agentId)) {
+        this.delegationManager.releaseHeldDelegationGroups({ parentInstanceId: event.agentId });
+        logError(this.db, "agent_exit_bail", { agentId: event.agentId, taskId, reason: "held_delegation_group", method: "handleAgentExit" }, new Error("bail"));
         return;
       }
 

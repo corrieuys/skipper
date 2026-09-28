@@ -35,6 +35,25 @@ export function providerSupportsUsageTracking(agentType: string | null | undefin
 }
 
 /**
+ * Normalize a configured model id into what the provider CLI actually accepts.
+ *
+ * opencode model ids are `provider/model` (e.g. `opencode/big-pickle`). A bare
+ * name (`big-pickle`) makes `opencode run -m` die instantly with
+ * `UnknownError: Unexpected server error` and exit code 1, so prefix bare
+ * opencode models with `opencode/`. Idempotent — already-qualified ids pass
+ * through untouched, as do other providers and "default".
+ */
+export function normalizeProviderModel(
+  providerType: string | null | undefined,
+  model: string,
+): string {
+  if (providerType === "opencode" && model && model !== "default" && !model.includes("/")) {
+    return `opencode/${model}`;
+  }
+  return model;
+}
+
+/**
  * Agent-type name prefix marking a custom agent — one Skipper executes inside its
  * own process rather than spawning a CLI. Lives here, next to the type lookup,
  * because `custom-agents/store.ts` needs the cache invalidator from this module
