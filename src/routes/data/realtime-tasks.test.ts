@@ -40,6 +40,25 @@ afterAll(() => {
   resetDb();
 });
 
+describe("POST /data/realtime-tasks/:id", () => {
+  it("keeps the stored description when the body omits it", async () => {
+    getDb().prepare(
+      "INSERT INTO tasks (id, title, description, status, mode) VALUES ('task-rt-edit', 'RT edit', 'stored description', 'draft', 'conversational')",
+    ).run();
+
+    const res = await fetch(`${baseUrl}/data/realtime-tasks/task-rt-edit`, {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "RT edited" }),
+    });
+    const body = await res.json() as { ok: boolean; data: { title: string; description: string | null } };
+
+    expect(res.status).toBe(200);
+    expect(body.data.title).toBe("RT edited");
+    expect(body.data.description).toBe("stored description");
+  });
+});
+
 describe("POST /data/realtime-tasks/:id/start", () => {
   it("starts the session through the daemon's realtime session manager", async () => {
     const res = await fetch(`${baseUrl}/data/realtime-tasks/task-rt-data/start`, { method: "POST", headers: authHeaders });

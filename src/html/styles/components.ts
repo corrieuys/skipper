@@ -246,6 +246,33 @@ export function componentStyles(): string {
     .sk-gs-cell-nowrap { white-space: nowrap; }
     .sk-gs-actions { text-align: right; white-space: nowrap; }
 
+    /* ── Improvements page (src/html/pages/improvements.page.ts) ── */
+    .imp-toolbar { display: flex; flex-direction: column; gap: var(--sk-space-2); padding: var(--sk-space-3) var(--sk-space-4); margin-bottom: var(--sk-space-3); }
+    .imp-intro { margin: 0; font-size: var(--sk-text-sm); }
+    .imp-tabs { display: flex; gap: var(--sk-space-4); }
+    .imp-tab { color: var(--sk-text-muted); text-decoration: none; font-weight: 500; }
+    .imp-tab--active { color: var(--sk-text); font-weight: 700; }
+    .imp-list { display: flex; flex-direction: column; gap: var(--sk-space-3); }
+    .imp-list:not(:empty) + .imp-empty { display: none; }
+    .imp-card__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sk-space-2); padding: var(--sk-space-3) var(--sk-space-4); border-bottom: 1px solid var(--sk-border); }
+    .imp-card__target { font-weight: 600; }
+    .imp-card__meta { margin-left: auto; }
+    .imp-card__body { display: flex; flex-direction: column; gap: var(--sk-space-3); padding: var(--sk-space-3) var(--sk-space-4); }
+    .imp-card--decided { opacity: 0.75; }
+    .imp-card__text { white-space: pre-wrap; font-size: var(--sk-text-sm); max-height: 20rem; overflow-y: auto; }
+    .imp-card__notice { color: var(--sk-accent-warning); font-size: var(--sk-text-sm); }
+    .imp-card__error { color: var(--sk-accent-danger); font-size: var(--sk-text-sm); }
+    .imp-card__actions { display: flex; gap: var(--sk-space-2); }
+    .imp-diff { font-family: var(--sk-font-mono); font-size: var(--sk-text-xs); border: 1px solid var(--sk-border-subtle); border-radius: var(--sk-radius-md); max-height: 28rem; overflow: auto; }
+    .imp-diff__line { white-space: pre-wrap; padding: 0 var(--sk-space-2); }
+    .imp-diff__line--add { background: rgba(176, 255, 150, 0.14); }
+    .imp-diff__line--del { background: rgba(255, 107, 107, 0.14); }
+    .imp-diff__sign { display: inline-block; width: 1.2em; color: var(--sk-text-muted); user-select: none; }
+    .imp-edit--split { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sk-space-3); }
+    @media (max-width: 800px) { .imp-edit--split { grid-template-columns: 1fr; } }
+    .imp-edit__live { max-height: 22rem; border: 1px solid var(--sk-border-subtle); border-radius: var(--sk-radius-md); padding: var(--sk-space-2); }
+    .imp-edit__textarea { width: 100%; min-height: 14rem; font-family: var(--sk-font-mono); font-size: var(--sk-text-xs); }
+
     /* ── Utility text ── */
     .sk-muted { color: var(--sk-text-muted); }
     .sk-mono { font-family: var(--sk-font-mono); font-size: var(--sk-text-sm); }

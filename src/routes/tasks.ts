@@ -356,10 +356,13 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
         icon = sanitizeIcon(body.icon);
         iconColor = icon ? sanitizeColor(body.iconColor) : null;
       }
+      // updateTask treats a missing description / team as a clear, so an
+      // omitted field carries the stored value forward ("" still clears).
+      const existing = scheduler.getTask(params.id);
       const updated = scheduler.updateTask(params.id, {
         title: body.title,
-        description: body.description,
-        teamId: body.teamId,
+        description: body.description !== undefined ? body.description : existing?.description ?? undefined,
+        teamId: body.teamId !== undefined ? body.teamId : existing?.team_id ?? undefined,
         workingDirectory: body.workingDirectory,
         mode,
         taskConfig,

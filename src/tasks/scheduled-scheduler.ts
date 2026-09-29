@@ -435,6 +435,22 @@ export class ScheduledTaskScheduler {
     this.changed(id, "updated");
   }
 
+  /**
+   * Replace only the description. Works while approved, like the slash-command
+   * setter: the description does not feed next_run_at, so it needs none of the
+   * full edit's unapprove/re-approve cycle. Used by approved improvements
+   * (src/improvements). Later runs copy the new text; running ones keep theirs.
+   */
+  setDescription(id: string, description: string): ScheduledTask {
+    if (!this.getScheduledTask(id)) throw new Error(`Scheduled task not found: ${id}`);
+    const trimmed = description.trim();
+    this.db
+      .prepare("UPDATE scheduled_tasks SET description = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(trimmed ? trimmed : null, id);
+    this.changed(id, "updated");
+    return this.getScheduledTask(id)!;
+  }
+
   approveScheduledTask(id: string): ScheduledTask {
     const task = this.getScheduledTask(id);
     if (!task) throw new Error(`Scheduled task not found: ${id}`);

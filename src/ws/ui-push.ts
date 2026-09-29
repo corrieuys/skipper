@@ -43,6 +43,11 @@ import { buildDashboardActivity } from "./dashboard-activity";
 
 import { terminalJsonSummary } from "../html/terminalJsonSummary";
 import { omarchyThemeHref } from "../html/styles/omarchy-theme";
+import { countPendingImprovements, getImprovement, improvementState, listImprovements } from "../improvements/manager";
+import { improvementCard } from "../html/fragments/improvement-card.fragment";
+import { improvementsPendingCount } from "../html/pages/improvements.page";
+import { fetchAttentionCounts } from "../data/attention";
+import { attentionIndicator } from "../html/fragments/attention.fragment";
 
 const DEBOUNCE_MS = 1500;
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -356,15 +361,36 @@ export class UIWebSocketManager {
     // --- Instance state changed ---
     // Recurring series and teams live in the sidebar (Latest > Recurring, the
     // Teams board); a change from any other surface re-renders just that list.
-    this.trackOn("recurring:changed", () => this.pushCommandCenterSidebar());
+    this.trackOn("recurring:changed", (event) => {
+      this.pushCommandCenterSidebar();
+      this.pushScopedImprovements({ scheduledTaskId: event.scheduledTaskId });
+    });
     this.trackOn("team:changed", (event) => {
       this.pushCommandCenterSidebar();
+      // A team edit moves live text that pending improvements were written against.
+      this.pushScopedImprovements({ teamId: event.teamId });
       // A remote team's card lives inside its repo block on /teams. A deleted
       // team has no link left to check, so it re-renders the list too.
       if (event.change === "deleted" || getRemoteTeamLink(this.db, event.teamId)) this.pushRemoteTeamRepos();
     });
     // Remote team repos (experimental): link / sync status / unlink.
     this.trackOn("remote_team_repo:changed", () => this.pushRemoteTeamRepos());
+    // Improvements (experimental): staged / edited / approved / rejected.
+    this.trackOn("improvement:changed", (event) => this.pushImprovement(event.improvementId, event.change));
+
+    // Top-bar attention indicator (experimental): pending improvements, review
+    // gates, open escalations. Every page hears topic `attention`.
+    for (const name of [
+      "improvement:changed",
+      "escalation:created",
+      "escalation:resolved",
+      "task:needs_review_changed",
+      "task:state_changed",
+      "task:run_completed",
+      "task:run_failed",
+    ] as const) {
+      this.trackOn(name, () => this.pushAttention());
+    }
 
     this.trackOn("instance:state_changed", (event) => {
       this.pushDashboardInstances();
@@ -788,6 +814,45 @@ export class UIWebSocketManager {
       const html = remoteReposList(listRemoteTeamRepos(this.db), listLocalTeams(this.db).filter((t) => t.remote));
       this.broadcastRaw(html.replace('<div id="tm-remote-repos"', '<div id="tm-remote-repos" hx-swap-oob="outerHTML"'), ["teams"]);
     });
+  }
+
+  /**
+   * Improvements page (topic `improvements`): a new card goes to the top of the
+   * list; a changed card is replaced in place, together with the other pending
+   * cards on the same target (an approval moves their live text, so their
+   * conflict state changes). The pending count follows.
+   */
+  private pushImprovement(id: string, change: "created" | "updated"): void {
+    if (!isExperimental() || !this.hasClients("html", ["improvements"])) return;
+    const imp = getImprovement(this.db, id);
+    if (!imp) return;
+    const parts: string[] = [];
+    if (change === "created") {
+      parts.push(`<div hx-swap-oob="afterbegin:#imp-list">${improvementCard(imp, improvementState(this.db, imp))}</div>`);
+    } else {
+      parts.push(improvementCard(imp, improvementState(this.db, imp), { oob: true }));
+      for (const sibling of listImprovements(this.db, { status: "pending", targetKeys: [imp.target_key] })) {
+        if (sibling.id !== imp.id) parts.push(improvementCard(sibling, improvementState(this.db, sibling), { oob: true }));
+      }
+    }
+    parts.push(improvementsPendingCount(countPendingImprovements(this.db), true));
+    this.broadcastRaw(parts.join(""), ["improvements"]);
+  }
+
+  private pushAttention(): void {
+    if (!isExperimental()) return;
+    this.debounced("attention", () => {
+      if (!this.hasClients("html", ["attention"])) return;
+      this.broadcastRaw(() => attentionIndicator(fetchAttentionCounts(this.db), true), ["attention"]);
+    });
+  }
+
+  /** Re-render the pending cards of one team or recurring task after its live text changed. */
+  private pushScopedImprovements(scope: { teamId?: string; scheduledTaskId?: string }): void {
+    if (!isExperimental() || !this.hasClients("html", ["improvements"])) return;
+    const pending = listImprovements(this.db, { status: "pending", teamId: scope.teamId, scheduledTaskId: scope.scheduledTaskId });
+    if (pending.length === 0) return;
+    this.broadcastRaw(pending.map((imp) => improvementCard(imp, improvementState(this.db, imp), { oob: true })).join(""), ["improvements"]);
   }
 
   private pushCommandCenterSidebar(): void {

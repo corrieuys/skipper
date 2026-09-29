@@ -1394,6 +1394,7 @@ function registerV2PageRoutes(): void {
       taskRetentionDays: getNumberSetting(db, SETTING_TASK_RETENTION_DAYS, 0),
       recurringTaskRetentionDays: getNumberSetting(db, SETTING_RECURRING_TASK_RETENTION_DAYS, 0),
       parallelExecution: getBoolSetting(db, SETTING_PARALLEL_TASKS, true),
+      improvementsAutoApprove: isExperimental() ? require("../improvements/manager").isImprovementsAutoApproveOn(db) : undefined,
       daemonState: isDaemonPaused(db) ? "paused" : "running",
       daemonUptime: process.uptime(),
       escalationCount,

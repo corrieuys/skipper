@@ -402,6 +402,26 @@ describe("POST /api/tasks/:id", () => {
     expect(body.description).toBe("Updated description");
   });
 
+  it("keeps the stored description and team when the body omits them", async () => {
+    const db = getDb();
+    const id = crypto.randomUUID();
+    db.prepare("INSERT INTO teams (id, name) VALUES (?, ?)").run(`team-${id}`, "Keep Team");
+    db.prepare("INSERT INTO tasks (id, title, description, team_id, status) VALUES (?, ?, ?, ?, 'draft')")
+      .run(id, "Keep me", "stored description", `team-${id}`);
+
+    const res = await fetch(`${baseUrl}/api/tasks/${id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Kept" }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.title).toBe("Kept");
+    expect(body.description).toBe("stored description");
+    expect(body.team_id).toBe(`team-${id}`);
+  });
+
   it("returns 400 when trying to edit a non-draft task", async () => {
     const db = getDb();
     const id = crypto.randomUUID();

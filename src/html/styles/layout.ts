@@ -45,6 +45,21 @@ export function layoutStyles(): string {
       align-items: center;
       gap: var(--sk-space-3);
     }
+    /* ── Attention indicator (fragments/attention.fragment.ts) ── */
+    .sk-attention { display: inline-flex; align-items: center; gap: var(--sk-space-2); }
+    .sk-attention:empty { display: none; }
+    .sk-attention__chip {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      padding: 0.15rem 0.5rem; border-radius: 999px;
+      font-size: var(--sk-text-xs); font-weight: 600; line-height: 1.4;
+      text-decoration: none; white-space: nowrap;
+      border: 1px solid var(--sk-border-subtle);
+    }
+    .sk-attention__count { font-variant-numeric: tabular-nums; }
+    .sk-attention__chip--improvements { background: rgba(0, 251, 251, 0.14); color: var(--sk-accent-secondary); }
+    .sk-attention__chip--review { background: rgba(255, 208, 128, 0.16); color: var(--sk-accent-warning); }
+    .sk-attention__chip--escalation { background: rgba(255, 107, 107, 0.18); color: var(--sk-accent-danger); }
+    @media (max-width: 640px) { .sk-attention__label { display: none; } }
     .sk-navbar__game-btn,
     .sk-navbar__monkey-toggle {
       font-size: 1.25rem;

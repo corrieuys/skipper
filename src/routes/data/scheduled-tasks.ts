@@ -76,15 +76,26 @@ export function registerDataScheduledTaskRoutes(
     const { unit, amount, matrix, error } = parseSchedule(body);
     if (error) return err(error);
     try {
-      const task = getScheduler().updateScheduledTask(params.id, {
+      const scheduler = getScheduler();
+      // updateScheduledTask treats a missing description / team / global-store
+      // contract as a clear, so an omitted field carries the stored value
+      // forward. A sent field replaces it ("" clears).
+      const existing = scheduler.getScheduledTask(params.id);
+      const task = scheduler.updateScheduledTask(params.id, {
         title: body.title.trim(),
-        description: body.description?.trim() || undefined,
-        teamId: body.teamId?.trim() || undefined,
+        description: body.description !== undefined
+          ? body.description?.trim() || undefined
+          : existing?.description ?? undefined,
+        teamId: body.teamId !== undefined
+          ? body.teamId?.trim() || undefined
+          : existing?.team_id ?? undefined,
         workingDirectory: body.workingDirectory?.trim() || undefined,
         scheduleUnit: unit,
         scheduleAmount: amount,
         scheduleMatrix: matrix,
-        globalStoreInstructions: body.globalStoreInstructions?.trim() || undefined,
+        globalStoreInstructions: body.globalStoreInstructions !== undefined
+          ? body.globalStoreInstructions?.trim() || undefined
+          : existing?.global_store_instructions ?? undefined,
         taskConfig: body.taskConfig,
       });
       return ok(task);

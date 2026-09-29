@@ -2,6 +2,9 @@
 // import { escapeHtml } from "../atoms/escape-html";
 import { isExperimental } from "../../config/feature-flags";
 import { APP_VERSION_LABEL } from "../../version";
+import { getDb } from "../../db/connection";
+import { fetchAttentionCounts } from "../../data/attention";
+import { attentionIndicator } from "../fragments/attention.fragment";
 
 export interface NavbarData {
   currentPath: string;
@@ -21,6 +24,7 @@ export function navbar(data: NavbarData): string {
     { href: "/tasks", label: "Tasks", match: "/tasks" },
     { href: "/teams", label: "Teams", match: "/teams" },
     ...(isExperimental() ? [{ href: "/agent-library", label: "Agents", match: "/agent-library" }] : []),
+    ...(isExperimental() ? [{ href: "/improvements", label: "Improvements", match: "/improvements" }] : []),
     { href: "/config", label: "Config", match: "/config" },
     { href: "/global-store", label: "Global Store", match: "/global-store" },
     { href: "/logs", label: "Logs", match: "/logs" },
@@ -45,6 +49,7 @@ export function navbar(data: NavbarData): string {
       <a href="/" class="sk-navbar__brand" style="display:flex;align-items:center;"><img src="/icon2.png" alt="Skipper" style="height:24px;vertical-align:middle;margin-right:0.5rem;"><h2 style="display:inline;margin:0;text-transform:lowercase">Skipper</h2><span class="sk-navbar__version" title="Skipper version">${APP_VERSION_LABEL}</span></a>
     </div>
     <div class="sk-navbar__right">
+      ${isExperimental() ? attentionIndicator(fetchAttentionCounts(getDb())) : ""}
       <a href="/games/asteroids" class="sk-navbar__game-btn" title="Asteroids">🎲</a>
       <span class="sk-navbar__monkey-toggle mc-mobile-hide" id="monkey-toggle" title="Toggle Greg" style="opacity:0.5"
         onclick="const on=this.dataset.enabled!=='false';this.dataset.enabled=on?'false':'true';this.style.opacity=on?'0.5':'1';window.dispatchEvent(new CustomEvent('monkey-toggle',{detail:{enabled:!on}}));localStorage.setItem('monkey-enabled',!on)">🐒</span>

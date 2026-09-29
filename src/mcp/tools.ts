@@ -28,6 +28,7 @@ import { SlackClient } from "../slack/client";
 import { ESCALATION_TEXT_LIMIT, SLACK_ESCALATION_SOFT_LIMIT } from "../slack/blocks";
 import { stampTaskSlackOrigin, readTaskSlackOrigin } from "../slack/slash-command";
 import { registerTaskTools } from "./task-tools";
+import { registerImprovementTools } from "./improvement-tools";
 import { MessageManager, MESSAGE_MAX_LENGTH } from "../messages/manager";
 import { DEFAULT_QUERY_LIMIT, type TaskMemoryManager } from "../task-memory/manager";
 
@@ -1070,6 +1071,12 @@ export function registerDaemonTools(
         }
       },
     );
+  }
+
+  // Team housekeeping (experimental): the root Skipper stages improvements to its
+  // team config / recurring description for operator review (src/improvements).
+  if (!options?.isDelegated && !options?.isSolo && isExperimental()) {
+    registerImprovementTools(server, db, getIdentity);
   }
 
   // Audience-tagged task-management tools. Most entries are external-only; the

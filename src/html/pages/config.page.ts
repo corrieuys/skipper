@@ -18,6 +18,8 @@ export interface ConfigPageViewModel {
   taskRetentionDays: number;
   recurringTaskRetentionDays: number;
   parallelExecution: boolean;
+  /** Improvements auto-approve gate (experimental; undefined hides the panel). */
+  improvementsAutoApprove?: boolean;
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
@@ -260,6 +262,8 @@ export function configPage(vm: ConfigPageViewModel): string {
           </p>
         </div>
       </div>
+
+      ${isExperimental() && vm.improvementsAutoApprove !== undefined ? improvementsPanel(vm.improvementsAutoApprove) : ""}
 
       ${modelSettingsPanel(vm.modelSettings)}
 
@@ -678,3 +682,23 @@ export function allowedHostsPanel(view: AllowedHostsView, form: AllowedHostsForm
   </div>`;
 }
 
+/** Improvements (experimental): the auto-approve gate for changes Skipper proposes. */
+function improvementsPanel(autoApprove: boolean): string {
+  return `
+      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
+        <div class="sk-panel__header">
+          <span class="sk-panel__title">Improvements</span>
+        </div>
+        <div class="sk-panel__body">
+          <label class="sk-checkbox" style="margin-top:0;">
+            <input type="checkbox" id="improvements-auto-approve" name="enabled" ${autoApprove ? "checked" : ""}
+              hx-post="/api/settings/improvements-auto-approve" hx-trigger="change" hx-swap="none" hx-include="this">
+            <span class="sk-checkbox__toggle"></span>
+            <span class="sk-checkbox__label">Auto-approve improvements</span>
+          </label>
+          <p class="sk-muted sk-text-xs" style="margin:var(--sk-space-2) 0 0;">
+            When on, a change Skipper proposes to a phase prompt, an agent instruction or a recurring task description is applied at once instead of waiting on the <a href="/improvements">Improvements</a> page. Skill suggestions always wait for you.
+          </p>
+        </div>
+      </div>`;
+}

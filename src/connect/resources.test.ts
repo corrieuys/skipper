@@ -8,6 +8,7 @@ import { getPublicArtifactUrl, getWebhookTriggerUrl, gidFromConnectKey } from ".
 import { TaskScheduler } from "../tasks/scheduler";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { createLocalTeam, getLocalTeam } from "../teams/local-teams";
+import { clearAgentTypeCache } from "../agents/types";
 
 // Unsigned JWT-shaped token; only the payload's gid claim matters client-side.
 function fakeConnectKey(gid: string): string {
@@ -619,6 +620,45 @@ describe("connect tasks read/list projections + v3 actions", () => {
 
     const missing = await handleResourceRequest("recurring", "approve", { id: "nope" }, d);
     expect(missing.ok).toBe(false);
+  });
+});
+
+describe("connect recurring update", () => {
+  beforeEach(() => {
+    clearAgentTypeCache();
+  });
+
+  it("recurring/update keeps global-store instructions the client omits, and replaces them when sent", async () => {
+    const db = getDb();
+    db.prepare("INSERT INTO teams (id, name) VALUES ('team-g', 'Store Team')").run();
+    const scheduledTaskScheduler = new ScheduledTaskScheduler(db);
+    const d = { ...deps, scheduledTaskScheduler } as ResourceDeps;
+    const created = scheduledTaskScheduler.createScheduledTask({
+      title: "Nightly report",
+      teamId: "team-g",
+      workingDirectory: "/tmp/work",
+      scheduleUnit: "hours",
+      scheduleAmount: 6,
+      globalStoreInstructions: "store the last processed timestamp under key 'report-window'",
+    });
+    scheduledTaskScheduler.approveScheduledTask(created.id);
+
+    const edited = await handleResourceRequest("recurring", "update", {
+      id: created.id, title: "Nightly report v2", scheduleUnit: "hours", scheduleAmount: 12,
+    }, d);
+    expect(edited.ok).toBe(true);
+    const after = scheduledTaskScheduler.getScheduledTask(created.id)!;
+    expect(after.title).toBe("Nightly report v2");
+    expect(after.schedule_amount).toBe(12);
+    expect(after.status).toBe("approved");
+    expect(after.global_store_instructions).toBe("store the last processed timestamp under key 'report-window'");
+
+    const replaced = await handleResourceRequest("recurring", "update", {
+      id: created.id, title: "Nightly report v2", scheduleUnit: "hours", scheduleAmount: 12,
+      globalStoreInstructions: "resume from key 'report-window-v2'",
+    }, d);
+    expect(replaced.ok).toBe(true);
+    expect(scheduledTaskScheduler.getScheduledTask(created.id)!.global_store_instructions).toBe("resume from key 'report-window-v2'");
   });
 });
 

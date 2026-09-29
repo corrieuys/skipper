@@ -1011,3 +1011,46 @@ describe("solo resume does not re-send the description", () => {
     expect(prompt).toContain("do the whole thing");
   });
 });
+
+describe("team housekeeping block (experimental)", () => {
+  function setupLocalTeamTask(taskId: string, remote = false): void {
+    db.prepare("INSERT OR IGNORE INTO agents (id, name, type, model) VALUES ('skipper', 'Skipper', 'claude-code', 'default')").run();
+    const teamId = crypto.randomUUID();
+    db.prepare("INSERT INTO local_teams (id, name, skipper_prompt, hooks, phases, agents) VALUES (?, 'Ops', '', '[]', '[]', '[]')").run(teamId);
+    db.prepare("INSERT INTO teams (id, name, entrypoint_agent_id) VALUES (?, 'Ops', 'skipper')").run(teamId);
+    db.prepare("INSERT INTO team_agents (id, team_id, agent_id, role, level) VALUES (?, ?, 'skipper', 'lead', 0)").run(crypto.randomUUID(), teamId);
+    if (remote) {
+      db.prepare("INSERT INTO remote_team_links (team_id, repo_id, source_path) VALUES (?, 'r', 'teams/ops.json')").run(teamId);
+    }
+    db.prepare("INSERT INTO tasks (id, title, description, team_id) VALUES (?, 'ops', 'do it', ?)").run(taskId, teamId);
+  }
+
+  function rootPrompt(taskId: string): string {
+    return builder.buildInitialPrompt({
+      agent: { id: "skipper", name: "Skipper", type: "claude-code" },
+      task: { id: taskId, title: "ops", description: "do it" },
+      isStreaming: true,
+    });
+  }
+
+  afterEach(() => {
+    const i = process.argv.indexOf("--experimental");
+    if (i >= 0) process.argv.splice(i, 1);
+  });
+
+  it("is in the root Skipper prompt of a local team under --experimental", () => {
+    process.argv.push("--experimental");
+    setupLocalTeamTask("hk-1");
+    const prompt = rootPrompt("hk-1");
+    expect(prompt).toContain("TEAM HOUSEKEEPING");
+    expect(prompt).toContain("Never act as if a staged change is live");
+  });
+
+  it("is absent without --experimental and on a remote team", () => {
+    setupLocalTeamTask("hk-2");
+    expect(rootPrompt("hk-2")).not.toContain("TEAM HOUSEKEEPING");
+    process.argv.push("--experimental");
+    setupLocalTeamTask("hk-3", true);
+    expect(rootPrompt("hk-3")).not.toContain("TEAM HOUSEKEEPING");
+  });
+});

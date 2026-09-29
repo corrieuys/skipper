@@ -144,25 +144,39 @@ describe("scheduled tasks data API", () => {
     expect(body.error).toContain("not both");
   });
 
-  it("round-trips globalStoreInstructions and clears it on update", async () => {
+  it("round-trips globalStoreInstructions, keeps omitted fields on update, and clears on an empty value", async () => {
     const contract = "Store the last processed id under key 'sweep-cursor'.";
     const create = await fetch(`${baseUrl}/data/scheduled-tasks`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ title: "Cursor sweep", teamId: "team-sched", globalStoreInstructions: contract }),
+      body: JSON.stringify({ title: "Cursor sweep", description: "sweep it", teamId: "team-sched", globalStoreInstructions: contract }),
     });
     expect(create.status).toBe(201);
     const created = await create.json() as { data: { id: string; global_store_instructions: string | null } };
     expect(created.data.global_store_instructions).toBe(contract);
 
-    const update = await fetch(`${baseUrl}/data/scheduled-tasks/${created.data.id}`, {
+    type Row = { data: { title: string; description: string | null; team_id: string | null; global_store_instructions: string | null } };
+    const kept = await fetch(`${baseUrl}/data/scheduled-tasks/${created.data.id}`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ title: "Cursor sweep" }),
+      body: JSON.stringify({ title: "Cursor sweep v2" }),
     });
-    expect(update.status).toBe(200);
-    const updated = await update.json() as { data: { global_store_instructions: string | null } };
+    expect(kept.status).toBe(200);
+    const keptBody = await kept.json() as Row;
+    expect(keptBody.data.title).toBe("Cursor sweep v2");
+    expect(keptBody.data.description).toBe("sweep it");
+    expect(keptBody.data.team_id).toBe("team-sched");
+    expect(keptBody.data.global_store_instructions).toBe(contract);
+
+    const cleared = await fetch(`${baseUrl}/data/scheduled-tasks/${created.data.id}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ title: "Cursor sweep v2", globalStoreInstructions: "" }),
+    });
+    expect(cleared.status).toBe(200);
+    const updated = await cleared.json() as Row;
     expect(updated.data.global_store_instructions).toBeNull();
+    expect(updated.data.team_id).toBe("team-sched");
 
     await fetch(`${baseUrl}/data/scheduled-tasks/${created.data.id}`, { method: "DELETE", headers });
   });

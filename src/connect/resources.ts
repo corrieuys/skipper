@@ -1048,8 +1048,9 @@ export async function handleResourceRequest(
         if (action === "update") {
           // Edit a recurring series in place, mirroring the create form:
           // title, description, assignee, and exactly one schedule mode
-          // (interval / weekly matrix / manual). Phase overrides, slash command
-          // and global-store config are preserved untouched (not exposed here).
+          // (interval / weekly matrix / manual). Phase overrides and slash command
+          // are preserved untouched (not exposed here); global-store instructions
+          // are carried forward unless the client sends them.
           const id = String(params.id ?? "");
           const existing = scheduledTaskScheduler.getScheduledTask(id);
           if (!existing) return { ok: false, error: "Recurring task not found" };
@@ -1066,6 +1067,13 @@ export async function handleResourceRequest(
           const teamId = params.teamId != null && String(params.teamId) !== ""
             ? String(params.teamId)
             : existing.team_id ?? undefined;
+
+          // updateScheduledTask treats a missing value as a clear, so carry the
+          // stored contract forward when the client omits it. An explicit value
+          // replaces it ("" clears).
+          const globalStoreInstructions = params.globalStoreInstructions != null
+            ? String(params.globalStoreInstructions)
+            : existing.global_store_instructions ?? undefined;
 
           // Schedule mode is authoritative on edit: exactly one of interval,
           // weekly, or manual (both cleared). Same parsing as tasks/create.
@@ -1110,6 +1118,7 @@ export async function handleResourceRequest(
               scheduleUnit: unit ? (unit as "minutes" | "hours" | "days") : null,
               scheduleAmount: unit ? (amount ?? null) : null,
               scheduleMatrix: matrix,
+              globalStoreInstructions,
             });
           } catch (err) {
             if (wasApproved) { try { scheduledTaskScheduler.approveScheduledTask(id); } catch { /* leave as draft */ } }

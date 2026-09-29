@@ -2,6 +2,7 @@ import { startServer, addRoute, setWebSocketUpgradeHandlers, setWebSocketHandler
 import { registerTaskRoutes, killRunningRuntimesForTask } from "./src/routes/tasks";
 import { registerTeamRoutes } from "./src/routes/teams";
 import { registerRemoteTeamRoutes } from "./src/routes/remote-teams";
+import { registerImprovementRoutes } from "./src/routes/improvements";
 import { syncAllRemoteTeamRepos } from "./src/teams/remote-repos";
 import { registerSkipperRoutes } from "./src/routes/skipper";
 import { registerPageRoutes } from "./src/routes/pages";
@@ -121,6 +122,8 @@ registerTaskRoutes(daemon);
 registerTeamRoutes();
 // Remote team repos (experimental): link/refresh/unlink GitHub repos of team configs.
 registerRemoteTeamRoutes();
+// Improvements (experimental): review config changes staged by root Skippers.
+registerImprovementRoutes();
 registerSkipperRoutes();
 registerDaemonRoutes(daemon);
 registerPageRoutes(daemon);

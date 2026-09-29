@@ -146,7 +146,7 @@ steerable. Over a remote the integrator scope map (`skipper-connect/src/protocol
 (off | run | shared), `memoryRetentionDays` and `memorySummary` (shared only);
 `recurring/set-memory { id, mode?, retentionDays? }` sets them (shared backfills
 every run and replies `backfilled`), `recurring/clear-memory { id }` hard-deletes
-the series scope. `recurring/update { id, title, description?, teamId?, scheduleUnit?, scheduleAmount?, scheduleMatrix? }` edits a draft or approved series in place (an approved one is re-approved so `next_run_at` follows the new schedule); `recurring/approve { id }` / `recurring/unapprove { id }` flip it between draft and approved. A run's memory is decided by its series, so `tasks/set-memory`
+the series scope. `recurring/update { id, title, description?, teamId?, scheduleUnit?, scheduleAmount?, scheduleMatrix?, globalStoreInstructions? }` edits a draft or approved series in place (an approved one is re-approved so `next_run_at` follows the new schedule; `globalStoreInstructions` sent = replace, empty clears, absent = the stored contract is kept); `recurring/approve { id }` / `recurring/unapprove { id }` flip it between draft and approved. A run's memory is decided by its series, so `tasks/set-memory`
 on a run returns an error naming `recurring/set-memory`; `tasks/clear-memory
 { id }` clears the task's scope (a run's = its series' shared scope). Both live
 under the same resources as their siblings, so the task wildcard scope still

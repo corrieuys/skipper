@@ -760,3 +760,38 @@ CREATE TABLE IF NOT EXISTS remote_team_links (
   removed_upstream INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_remote_team_links_repo ON remote_team_links(repo_id);
+
+-- Improvements staged by a root Skipper, applied only on operator approval.
+-- Mirrors migrations/0029_improvements.sql; see src/improvements/manager.ts.
+CREATE TABLE IF NOT EXISTS improvements (
+  id TEXT PRIMARY KEY,
+  -- phase_prompt | agent_instruction | lead_instructions | recurring_description | skill_suggestion
+  kind TEXT NOT NULL,
+  -- pending | approved | rejected
+  status TEXT NOT NULL DEFAULT 'pending',
+  -- Groups proposals on the same target (e.g. two runs editing one phase).
+  target_key TEXT NOT NULL,
+  -- Display label captured at staging time.
+  target_label TEXT NOT NULL,
+  team_id TEXT,
+  scheduled_task_id TEXT,
+  phase_index INTEGER,
+  phase_name TEXT,
+  -- Team member id (inline), 'single:<id>' / 'custom:<id>' (library agent), or
+  -- the skill's agent for a skill suggestion.
+  agent_ref TEXT,
+  skill_name TEXT,
+  -- Live text the proposal was written against, and its revision (hash).
+  before_text TEXT NOT NULL DEFAULT '',
+  base_revision TEXT NOT NULL DEFAULT '',
+  proposed_text TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  source_task_id TEXT,
+  source_task_title TEXT,
+  edited_at TEXT,
+  decided_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_improvements_status ON improvements(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_improvements_target ON improvements(target_key, status);

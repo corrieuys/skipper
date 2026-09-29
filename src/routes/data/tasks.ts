@@ -162,10 +162,13 @@ export function registerDataTaskRoutes(
           taskConfig = typeof body.taskConfig === "string" ? JSON.parse(body.taskConfig) : body.taskConfig;
         } catch { /* ignore */ }
       }
+      // updateTask treats a missing description / team as a clear, so an
+      // omitted field carries the stored value forward ("" still clears).
+      const existing = scheduler.getTask(params.id);
       const updated = scheduler.updateTask(params.id, {
         title: body.title.trim(),
-        description: body.description,
-        teamId: body.teamId,
+        description: body.description !== undefined ? body.description : existing?.description ?? undefined,
+        teamId: body.teamId !== undefined ? body.teamId : existing?.team_id ?? undefined,
         mode,
         taskConfig,
       });

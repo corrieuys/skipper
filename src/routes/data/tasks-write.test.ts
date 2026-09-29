@@ -213,3 +213,23 @@ describe("pause / resume-from-pause", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("task update endpoint", () => {
+  it("keeps the stored description and team when the body omits them", async () => {
+    getDb().prepare(
+      "INSERT INTO tasks (id, title, description, status, team_id) VALUES ('task-edit', 'Edit me', 'stored description', 'draft', 'team-note')",
+    ).run();
+
+    const res = await fetch(`${baseUrl}/data/tasks/task-edit`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ title: "Edited" }),
+    });
+    const body = await res.json() as { ok: boolean; data: { title: string; description: string | null; team_id: string | null } };
+
+    expect(res.status).toBe(200);
+    expect(body.data.title).toBe("Edited");
+    expect(body.data.description).toBe("stored description");
+    expect(body.data.team_id).toBe("team-note");
+  });
+});

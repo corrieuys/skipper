@@ -133,10 +133,11 @@ export function registerDataRealtimeTaskRoutes(daemon?: ManagerDaemon): void {
     if (!title) return err("title is required");
 
     try {
-      // Draft-only edit via the unified scheduler; preserve team/config.
+      // Draft-only edit via the unified scheduler; preserve team/config, and the
+      // description when the body omits it ("" still clears).
       const updated = scheduler.updateTask(params.id, {
         title,
-        description: description || undefined,
+        description: description !== null ? description || undefined : task.description ?? undefined,
         teamId: task.team_id ?? undefined,
         workingDirectory: task.working_directory,
         mode: "conversational",

@@ -2,6 +2,7 @@ import { eventBus, type DelegationGroupProgressEvent, type EventName } from "../
 import { getDb } from "../db/connection";
 import { fetchRecurringItem, fetchRemoteTeamRepoItem, fetchTeamItem } from "./resources";
 import { CONNECT_PROTOCOL_VERSION, CONNECT_FEATURES } from "./protocol";
+import { getImprovement } from "../improvements/manager";
 import {
   fetchArtifactItem,
   fetchEscalationItem,
@@ -33,6 +34,8 @@ const FORWARDED_EVENTS: readonly EventName[] = [
   // Remote team repos: fat `repo` row (the `remote-team-repos/list` shape),
   // absent on change === "deleted". A sync also fires team:changed per team.
   "remote_team_repo:changed",
+  // Improvements staged by root Skippers (experimental): fat `improvement` row.
+  "improvement:changed",
   "escalation:created",
   "escalation:resolved",
   "artifact:created",
@@ -105,6 +108,10 @@ function enrichPayload(eventName: EventName, payload: unknown): unknown {
     if (eventName === "team:changed" && typeof p.teamId === "string" && p.change !== "deleted") {
       const team = fetchTeamItem(db, p.teamId);
       return team ? { ...p, team } : p;
+    }
+    if (eventName === "improvement:changed" && typeof p.improvementId === "string") {
+      const improvement = getImprovement(db, p.improvementId);
+      return improvement ? { ...p, improvement } : p;
     }
     if (eventName === "remote_team_repo:changed" && typeof p.repoId === "string" && p.change !== "deleted") {
       const repo = fetchRemoteTeamRepoItem(db, p.repoId);

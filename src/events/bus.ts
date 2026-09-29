@@ -131,6 +131,15 @@ export interface RemoteTeamRepoChangedEvent {
   change: "created" | "updated" | "deleted";
 }
 
+/**
+ * A staged improvement was proposed by a root Skipper, edited, approved or
+ * rejected (src/improvements/manager.ts). Improvements are never deleted.
+ */
+export interface ImprovementChangedEvent {
+  improvementId: string;
+  change: "created" | "updated";
+}
+
 export interface InstanceStateChangedEvent {
   instanceId: string;
   templateAgentId: string;
@@ -237,6 +246,7 @@ export interface EventMap {
   "recurring:changed": [RecurringChangedEvent];
   "team:changed": [TeamChangedEvent];
   "remote_team_repo:changed": [RemoteTeamRepoChangedEvent];
+  "improvement:changed": [ImprovementChangedEvent];
   "delegation_group:progress": [DelegationGroupProgressEvent];
   "escalation:created": [EscalationCreatedEvent];
   "escalation:resolved": [EscalationResolvedEvent];

@@ -11,6 +11,7 @@ import { isExperimental } from "../config/feature-flags";
 import { isSlackConfigured } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
 import { isSoloAgentId } from "./solo";
+import { getImprovementContext, hasImprovementTargets } from "../improvements/manager";
 import { SLACK_NOTE_PREFIX, type SlackOrigin } from "../slack/slash-command";
 import { SLACK_ESCALATION_SOFT_LIMIT } from "../slack/blocks";
 
@@ -45,6 +46,7 @@ const CAVEMAN_STYLE_GUIDANCE = [
 const ARTIFACT_HTML = loadPrompt("artifact-html.md");
 const TASK_MEMORY = loadPrompt("task-memory.md");
 const TASK_MEMORY_SHARED = loadPrompt("task-memory-shared.md");
+const TEAM_HOUSEKEEPING = loadPrompt("team-housekeeping.md");
 // File-based prompts as fallback defaults
 const SKIPPER_PROMPT_DEFAULT = loadPrompt("skipper.md");
 // System prompt for a single agent - a standalone executor that runs a whole
@@ -330,6 +332,19 @@ export class PromptBuilder {
       parts.push("DRIVE MODE: AUTOPILOT OFF (operator-driven). Complete the current instruction or input, report what you did (create_note / post_message as appropriate), then END your turn and wait. Do NOT call `complete_phase` or `complete_task`, and do NOT start next-phase work, unless the operator explicitly asks you to advance or their instruction clearly belongs to the next phase. Resting between inputs is the normal state of this task, not a failure.");
     }
     parts.push("");
+
+    // Team housekeeping (experimental): the root Skipper stages improvements to
+    // its team config / recurring description before complete_task
+    // (src/improvements). Same gate as the tools (mcp/improvement-tools.ts).
+    if (
+      !solo &&
+      isExperimental() &&
+      getEntrypointAgentId(this.db, options.task.id) === options.agent.id &&
+      hasImprovementTargets(getImprovementContext(this.db, options.task.id))
+    ) {
+      parts.push(TEAM_HOUSEKEEPING);
+      parts.push("");
+    }
 
     // Per-task memory (task_config.memory_enabled): tell the agent the store
     // exists and to read it early. Injected only when on, so an agent is never
