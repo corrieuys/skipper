@@ -6,6 +6,7 @@ import { ArtifactManager } from "../orchestrator/artifact-manager";
 import { clearAgentTypeCache } from "./types";
 import { saveSlackConfig } from "../config/slack-settings";
 import { unlinkSync } from "fs";
+import { setImprovementsEnabled } from "../improvements/manager";
 
 const TEST_DB = "test-prompt-builder.db";
 
@@ -781,6 +782,70 @@ describe("note injection cap + soft-delete", () => {
   });
 });
 
+describe("other agents' operator messages for the root", () => {
+  function seed(): { rootId: string; childId: string; taskId: string } {
+    const rootId = createAgent("Skipper", "claude-code");
+    const childId = createAgent("Researcher", "claude-code", "Research");
+    const teamId = createTeamWithAgents([{ id: rootId, role: "lead" }, { id: childId, role: "worker" }], rootId);
+    const taskId = crypto.randomUUID();
+    createTaskForTeam(taskId, teamId);
+    return { rootId, childId, taskId };
+  }
+  function postMessage(taskId: string, agentId: string, content: string, createdAt: string): string {
+    const id = crypto.randomUUID();
+    db.prepare("INSERT INTO task_messages (id, task_id, agent_id, content, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(id, taskId, agentId, content, createdAt);
+    return id;
+  }
+
+  it("injects other agents' messages into the root prompt once, never its own", () => {
+    const { rootId, childId, taskId } = seed();
+    const childMsg = postMessage(taskId, childId, "Found 3 failing tests in auth", "2026-01-01 00:00:01.000");
+    postMessage(taskId, rootId, "Starting the review", "2026-01-01 00:00:02.000");
+    const opts = {
+      agent: { id: rootId, name: "Skipper", type: "claude-code" },
+      task: { id: taskId, title: "Test" },
+      isStreaming: true,
+      isResume: true,
+    };
+
+    const first = builder.buildInitialPromptTracked(opts, rootId);
+    expect(first.prompt).toContain("MESSAGES OTHER AGENTS POSTED TO THE OPERATOR");
+    expect(first.prompt).toContain("[Researcher] Found 3 failing tests in auth");
+    expect(first.prompt).not.toContain("Starting the review");
+    expect(first.messageIds).toEqual([childMsg]);
+
+    builder.recordNoteDelivery(rootId, first.noteIds, first.messageIds);
+    const second = builder.buildInitialPromptTracked(opts, rootId);
+    expect(second.messageIds).toEqual([]);
+    expect(second.prompt).not.toContain("MESSAGES OTHER AGENTS POSTED TO THE OPERATOR");
+  });
+
+  it("enrichment block keys receipts on the root's template id, not the runtime id", () => {
+    const { rootId, childId, taskId } = seed();
+    const runtimeId = crypto.randomUUID();
+    db.prepare("INSERT INTO agent_instances (id, task_id, template_agent_id, status) VALUES (?, ?, ?, 'running')")
+      .run(runtimeId, taskId, rootId);
+    const msg = postMessage(taskId, childId, "Draft is ready", "2026-01-01 00:00:01.000");
+
+    const block = builder.buildNotesEnrichmentBlock(taskId, runtimeId);
+    expect(block.text).toContain("[Researcher] Draft is ready");
+    expect(block.messageIds).toEqual([msg]);
+    builder.recordNoteDelivery(runtimeId, block.noteIds, block.messageIds);
+
+    // A later wake keyed on the template id does not re-deliver it.
+    expect(builder.buildNotesEnrichmentBlock(taskId, rootId).messageIds).toEqual([]);
+  });
+
+  it("delegated children do not get messages", () => {
+    const { rootId, childId, taskId } = seed();
+    postMessage(taskId, rootId, "Root update", "2026-01-01 00:00:01.000");
+    const block = builder.buildNotesEnrichmentBlock(taskId, childId);
+    expect(block.messageIds).toEqual([]);
+    expect(block.text).toBe("");
+  });
+});
+
 describe("Slack-sourced operator notes", () => {
   it("flags [Slack]-prefixed notes as suspect and tells the agent to judge relevance", () => {
     const agentId = createAgent("Worker", "claude-code");
@@ -1044,6 +1109,15 @@ describe("team housekeeping block (experimental)", () => {
     const prompt = rootPrompt("hk-1");
     expect(prompt).toContain("TEAM HOUSEKEEPING");
     expect(prompt).toContain("Never act as if a staged change is live");
+  });
+
+  it("is absent when improvements are switched off on the config page", () => {
+    process.argv.push("--experimental");
+    setupLocalTeamTask("hk-4");
+    setImprovementsEnabled(db, false);
+    expect(rootPrompt("hk-4")).not.toContain("TEAM HOUSEKEEPING");
+    setImprovementsEnabled(db, true);
+    expect(rootPrompt("hk-4")).toContain("TEAM HOUSEKEEPING");
   });
 
   it("is absent without --experimental and on a remote team", () => {

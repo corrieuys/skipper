@@ -1,7 +1,7 @@
 import type { Store } from "../model/store";
-import type { TaskItem, RecurringSeries, ActivityRow } from "../model/types";
+import type { TaskItem, RecurringSeries, ActivityRow, ImprovementSummary } from "../model/types";
 import { SERIES_RUNS_SHOWN, RECENT_SHOWN, type UIState, type Filter } from "./state";
-import { STATUS_ORDER } from "../render/theme";
+import { STATUS_ORDER, improvementKindLabel, improvementLook } from "../render/theme";
 import { toPlainText } from "./plain-text";
 
 /** Pure selectors from store + ui state → what the views draw. No I/O. */
@@ -13,7 +13,8 @@ import { toPlainText } from "./plain-text";
 export type RailRow =
   | { kind: "header"; id: string; label: string; count: number; note?: string }
   | { kind: "task"; task: TaskItem; run?: boolean }
-  | { kind: "series"; series: RecurringSeries; expanded: boolean };
+  | { kind: "series"; series: RecurringSeries; expanded: boolean }
+  | { kind: "improvement"; improvement: ImprovementSummary };
 
 export function isSelectable(row: RailRow): boolean {
   return row.kind !== "header";
@@ -39,6 +40,8 @@ export function applyFilter(tasks: TaskItem[], filter: Filter): TaskItem[] {
       return tasks.filter((t) => t.starred);
     case "all":
       return tasks;
+    case "improvements":
+      return [];
   }
 }
 
@@ -124,7 +127,43 @@ function latestRows(store: Store, ui: UIState): RailRow[] {
   return rows;
 }
 
+function matchesImprovement(imp: ImprovementSummary, q: string): boolean {
+  const hay = `${imp.targetLabel} ${imp.teamName ?? ""} ${improvementKindLabel(imp.kind)} ${improvementLook(imp).label} ${imp.reason} ${imp.id}`.toLowerCase();
+  return q
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((term) => hay.includes(term));
+}
+
+/**
+ * Board 5: staged improvements, newest first. Pending scope lists only pending
+ * rows; All adds a DECIDED section under the PENDING one.
+ */
+export function improvementRows(store: Store, ui: UIState): RailRow[] {
+  const q = ui.search.value.trim();
+  const list = store.allImprovements().filter((i) => matchesImprovement(i, q));
+  const pending = list.filter((i) => i.status === "pending");
+  const row = (improvement: ImprovementSummary): RailRow => ({ kind: "improvement", improvement });
+  if (ui.improvementScope === "pending") return pending.map(row);
+  const decided = list.filter((i) => i.status !== "pending");
+  const rows: RailRow[] = [{ kind: "header", id: "h-imp-pending", label: "PENDING", count: pending.length, note: pending.length ? undefined : "nothing waiting" }];
+  rows.push(...pending.map(row));
+  if (decided.length) {
+    rows.push({ kind: "header", id: "h-imp-decided", label: "DECIDED", count: decided.length });
+    rows.push(...decided.map(row));
+  }
+  return rows;
+}
+
+/** A rail label without the `Team "X" › ` prefix the second line already names. */
+export function improvementRailLabel(imp: ImprovementSummary): string {
+  const prefix = imp.teamName ? `Team "${imp.teamName}" › ` : null;
+  return prefix && imp.targetLabel.startsWith(prefix) ? imp.targetLabel.slice(prefix.length) : imp.targetLabel;
+}
+
 export function railRows(store: Store, ui: UIState): RailRow[] {
+  if (ui.filter === "improvements") return improvementRows(store, ui);
   if (ui.filter === "latest") return latestRows(store, ui);
   const q = ui.search.value.trim();
   const list = applyFilter(store.allTasks(), ui.filter).filter((t) => matchesSearch(t, q));
@@ -135,6 +174,7 @@ export function railRows(store: Store, ui: UIState): RailRow[] {
 }
 
 export function selectedIndex(rows: RailRow[], ui: UIState): number {
+  if (ui.railKind === "improvement") return rows.findIndex((r) => r.kind === "improvement" && r.improvement.id === ui.selectedImprovementId);
   if (ui.railKind === "series") return rows.findIndex((r) => r.kind === "series" && r.series.id === ui.selectedSeriesId);
   return rows.findIndex((r) => r.kind === "task" && r.task.id === ui.selectedTaskId);
 }

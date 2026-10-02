@@ -19,6 +19,7 @@ export const CONNECT_PROTOCOL_VERSION = 3;
  * includes heavy fields (result, orchestration_state, description, task_config).
  */
 import type { TaskMemorySummary } from "../task-memory/summary";
+import { isExperimental } from "../config/feature-flags";
 
 export interface TaskListItem {
   id: string;
@@ -129,8 +130,8 @@ export interface NoteItem {
 
 /**
  * Operator message projection (agent → human progress update). Shares NoteItem's
- * shape but is a distinct register: messages are operator-only and never fed back
- * into any agent prompt. Carried by the `task:message_posted` fat event and the
+ * shape but is a distinct register: messages are written for the operator (only
+ * the task's root Skipper sees other agents' messages, see src/messages). Carried by the `task:message_posted` fat event and the
  * `messages/list` resource.
  */
 export interface MessageItem {
@@ -219,6 +220,14 @@ export interface ArtifactItem {
  */
 export const CONNECT_FEATURES = ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files", "task_memory", "remote_team_repos"] as const;
 
+/**
+ * The features this daemon advertises: CONNECT_FEATURES, plus `improvements`
+ * under --experimental (the `improvements` resource and its fat events).
+ */
+export function connectFeatures(): string[] {
+  return isExperimental() ? [...CONNECT_FEATURES, "improvements"] : [...CONNECT_FEATURES];
+}
+
 export interface StateSnapshot {
   protocolVersion: number;
   /** Same list as `connect:capabilities.features`. */
@@ -227,7 +236,8 @@ export interface StateSnapshot {
   tasks: TaskListItem[];
   escalations: EscalationItem[];
   reviews: TaskListItem[];
-  counts: { openEscalations: number; pendingReviews: number };
+  /** `pendingImprovements`: staged improvements waiting on the operator (0 without --experimental). */
+  counts: { openEscalations: number; pendingReviews: number; pendingImprovements: number };
   /** True when a task-title generator agent is configured, so a remote client
    *  may create a task with a blank title (the daemon fills it in async). */
   titleGeneratorConfigured: boolean;

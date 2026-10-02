@@ -11,6 +11,9 @@ import type {
   AgentInstance,
   ActivityRow,
   Metrics,
+  ImprovementSummary,
+  ImprovementDetail,
+  ImprovementDiffLine,
 } from "../model/types";
 import { summarizeTerminalLine } from "../../html/terminalJsonSummary";
 
@@ -277,6 +280,7 @@ export class LocalTransport implements Transport {
         tasks: toTasks(snap.tasks),
         escalations: toEscalations(snap.escalations),
         titleGeneratorConfigured: snap.titleGeneratorConfigured === true,
+        pendingImprovements: num((snap.counts as Record<string, unknown> | undefined)?.pendingImprovements),
       });
       if (Array.isArray(snap.features)) {
         this.emit({ kind: "capabilities", protocolVersion: num(snap.protocolVersion), features: snap.features.map(String) });
@@ -499,6 +503,7 @@ export function mapConnectEvent(name: string, p: Record<string, unknown>): Trans
         id: String(p.scheduledTaskId ?? ""),
         deleted: p.change === "deleted",
         row: p.recurring && typeof p.recurring === "object" ? (p.recurring as Record<string, unknown>) : null,
+        ...(Array.isArray(p.improvements) ? { improvements: toImprovements(p.improvements) } : {}),
       };
     case "team:changed":
       return {
@@ -506,7 +511,17 @@ export function mapConnectEvent(name: string, p: Record<string, unknown>): Trans
         id: String(p.teamId ?? ""),
         deleted: p.change === "deleted",
         row: p.team && typeof p.team === "object" ? (p.team as Record<string, unknown>) : null,
+        ...(Array.isArray(p.improvements) ? { improvements: toImprovements(p.improvements) } : {}),
       };
+    // Improvements (experimental): the changed row plus the other pending rows
+    // on the same target, whose state the daemon recomputed (approve → conflict).
+    case "improvement:changed":
+      if (!p.improvement || typeof p.improvement !== "object") return null;
+      return { kind: "improvements", improvements: [toImprovementSummary(p.improvement as Record<string, unknown>), ...toImprovements(p.siblings)] };
+    case "library_agent:changed":
+      return Array.isArray(p.improvements) ? { kind: "improvements", improvements: toImprovements(p.improvements) } : null;
+    case "improvements:settings_changed":
+      return { kind: "improvement_settings", autoApprove: p.autoApprove === true };
     case "remote_team_repo:changed":
       return { kind: "remote_repo_changed", id: String(p.repoId ?? ""), deleted: p.change === "deleted" };
     case "task:phase_changed":
@@ -667,6 +682,57 @@ export function toArtifact(o: Record<string, unknown>): Artifact {
     storage: String(o.storage ?? "inline"),
     mime: str(o.mime),
     bytes: o.bytes == null ? null : num(o.bytes),
+  };
+}
+
+export function toImprovementSummary(o: Record<string, unknown>): ImprovementSummary {
+  return {
+    id: String(o.id ?? ""),
+    kind: String(o.kind ?? ""),
+    status: String(o.status ?? "pending"),
+    state: String(o.state ?? "ready"),
+    targetKey: String(o.targetKey ?? ""),
+    targetLabel: String(o.targetLabel ?? ""),
+    teamId: str(o.teamId),
+    teamName: str(o.teamName),
+    scheduledTaskId: str(o.scheduledTaskId),
+    phaseIndex: o.phaseIndex == null ? null : num(o.phaseIndex),
+    phaseName: str(o.phaseName),
+    agentRef: str(o.agentRef),
+    skillName: str(o.skillName),
+    reason: String(o.reason ?? ""),
+    sourceTaskId: str(o.sourceTaskId),
+    sourceTaskTitle: str(o.sourceTaskTitle),
+    usedByTeams: o.usedByTeams == null ? null : num(o.usedByTeams),
+    baseRevision: str(o.baseRevision),
+    liveRevision: str(o.liveRevision),
+    editedAt: str(o.editedAt),
+    decidedAt: str(o.decidedAt),
+    createdAt: String(o.createdAt ?? ""),
+    updatedAt: String(o.updatedAt ?? ""),
+  };
+}
+
+export function toImprovements(v: unknown): ImprovementSummary[] {
+  return Array.isArray(v) ? v.filter((r) => r && typeof r === "object").map((r) => toImprovementSummary(r as Record<string, unknown>)) : [];
+}
+
+const DIFF_OPS = new Set(["same", "add", "del"]);
+
+export function toImprovementDetail(o: Record<string, unknown>): ImprovementDetail {
+  const diff = Array.isArray(o.diff)
+    ? (o.diff as Record<string, unknown>[]).map((d): ImprovementDiffLine => ({
+        op: (DIFF_OPS.has(String(d?.op)) ? String(d.op) : "same") as ImprovementDiffLine["op"],
+        text: String(d?.text ?? ""),
+      }))
+    : null;
+  return {
+    ...toImprovementSummary(o),
+    proposedText: String(o.proposedText ?? ""),
+    beforeText: String(o.beforeText ?? ""),
+    liveText: str(o.liveText),
+    diff,
+    diffBase: o.diffBase === "live" || o.diffBase === "before" ? o.diffBase : null,
   };
 }
 

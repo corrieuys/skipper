@@ -20,6 +20,7 @@ export interface ConfigPageViewModel {
   parallelExecution: boolean;
   /** Improvements auto-approve gate (experimental; undefined hides the panel). */
   improvementsAutoApprove?: boolean;
+  improvementsEnabled?: boolean;
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
@@ -263,7 +264,7 @@ export function configPage(vm: ConfigPageViewModel): string {
         </div>
       </div>
 
-      ${isExperimental() && vm.improvementsAutoApprove !== undefined ? improvementsPanel(vm.improvementsAutoApprove) : ""}
+      ${isExperimental() && vm.improvementsAutoApprove !== undefined ? improvementsPanel(vm.improvementsEnabled ?? true, vm.improvementsAutoApprove) : ""}
 
       ${modelSettingsPanel(vm.modelSettings)}
 
@@ -683,7 +684,19 @@ export function allowedHostsPanel(view: AllowedHostsView, form: AllowedHostsForm
 }
 
 /** Improvements (experimental): the auto-approve gate for changes Skipper proposes. */
-function improvementsPanel(autoApprove: boolean): string {
+/** The on/off checkbox. ui-push re-sends it OOB (topic `config`) on `improvements:settings_changed`. */
+export function improvementsEnabledInput(enabled: boolean, oob = false): string {
+  return `<input type="checkbox" id="improvements-enabled" name="enabled" ${enabled ? "checked" : ""}${oob ? ' hx-swap-oob="outerHTML"' : ""}
+              hx-post="/api/settings/improvements-enabled" hx-trigger="change" hx-swap="none" hx-include="this">`;
+}
+
+/** The auto-approve checkbox. ui-push re-sends it OOB (topic `config`) on `improvements:settings_changed`. */
+export function improvementsAutoApproveInput(autoApprove: boolean, oob = false): string {
+  return `<input type="checkbox" id="improvements-auto-approve" name="enabled" ${autoApprove ? "checked" : ""}${oob ? ' hx-swap-oob="outerHTML"' : ""}
+              hx-post="/api/settings/improvements-auto-approve" hx-trigger="change" hx-swap="none" hx-include="this">`;
+}
+
+function improvementsPanel(enabled: boolean, autoApprove: boolean): string {
   return `
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
         <div class="sk-panel__header">
@@ -691,8 +704,15 @@ function improvementsPanel(autoApprove: boolean): string {
         </div>
         <div class="sk-panel__body">
           <label class="sk-checkbox" style="margin-top:0;">
-            <input type="checkbox" id="improvements-auto-approve" name="enabled" ${autoApprove ? "checked" : ""}
-              hx-post="/api/settings/improvements-auto-approve" hx-trigger="change" hx-swap="none" hx-include="this">
+            ${improvementsEnabledInput(enabled)}
+            <span class="sk-checkbox__toggle"></span>
+            <span class="sk-checkbox__label">Improvements</span>
+          </label>
+          <p class="sk-muted sk-text-xs" style="margin:var(--sk-space-2) 0 var(--sk-space-4);">
+            When on, Skipper reviews each run and proposes changes to phase prompts, agent instructions and recurring task descriptions. When off, Skipper gets no improvement tools or instructions. Proposals already made stay on the <a href="/improvements">Improvements</a> page.
+          </p>
+          <label class="sk-checkbox" style="margin-top:0;">
+            ${improvementsAutoApproveInput(autoApprove)}
             <span class="sk-checkbox__toggle"></span>
             <span class="sk-checkbox__label">Auto-approve improvements</span>
           </label>

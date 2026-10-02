@@ -36,7 +36,7 @@ export function footerHints(store: Store, ui: UIState): Array<[string, string]> 
     base.push(["↑↓", "select"]);
     if (ui.railKind === "series") base.push(["enter", "runs"]);
   }
-  else if (ui.detailTab === "artifacts") base.push(["↑↓", "select"], ["enter", "open artifact"]);
+  else if (ui.detailTab === "artifacts" && ui.railKind !== "improvement") base.push(["↑↓", "select"], ["enter", "open artifact"]);
   else base.push(["↑↓", "scroll"]);
   base.push(...actionHints(store, ui));
   base.push([":", "commands"], ["?", "help"]);

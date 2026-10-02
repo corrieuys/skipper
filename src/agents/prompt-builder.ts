@@ -11,7 +11,7 @@ import { isExperimental } from "../config/feature-flags";
 import { isSlackConfigured } from "../config/slack-settings";
 import { isSlackEnabledForTeam } from "../teams/local-teams";
 import { isSoloAgentId } from "./solo";
-import { getImprovementContext, hasImprovementTargets } from "../improvements/manager";
+import { getImprovementContext, hasImprovementTargets, isImprovementsEnabled } from "../improvements/manager";
 import { SLACK_NOTE_PREFIX, type SlackOrigin } from "../slack/slash-command";
 import { SLACK_ESCALATION_SOFT_LIMIT } from "../slack/blocks";
 
@@ -105,6 +105,17 @@ export interface TaskNote {
 // `delegate` MCP tool's `note_limit` param.
 const DEFAULT_AGENT_NOTE_LIMIT = 20;
 
+// Cap on the number of other agents' operator messages handed to the root in
+// one prompt (newest kept). Messages run up to MESSAGE_MAX_LENGTH each.
+const AGENT_MESSAGE_LIMIT = 20;
+
+interface AgentMessage {
+  id: string;
+  agentName: string;
+  content: string;
+  createdAt: string;
+}
+
 export interface PromptOptions {
   agent: AgentInfo;
   task: TaskInfo;
@@ -116,6 +127,8 @@ export interface PromptOptions {
    *  resumable — surface the PRIOR DELEGATIONS menu so Skipper can choose to
    *  continue a worker vs spawn a fresh one. */
   regressionReason?: string;
+  /** Operator feedback from a rejected review of the CURRENT phase (redo it). */
+  reviewRejection?: string;
   approvalNote?: string;
   /** Optional one-off operator input (e.g. from a recurring task "Run Now"),
    *  injected into the prompt directly below the task description. */
@@ -146,11 +159,11 @@ export class PromptBuilder {
     return this.buildInitialPromptInternal(options).prompt;
   }
 
-  buildInitialPromptTracked(options: PromptOptions, agentInstanceId: string): { prompt: string; noteIds: string[] } {
+  buildInitialPromptTracked(options: PromptOptions, agentInstanceId: string): { prompt: string; noteIds: string[]; messageIds: string[] } {
     return this.buildInitialPromptInternal(options, agentInstanceId);
   }
 
-  private buildInitialPromptInternal(options: PromptOptions, agentInstanceId?: string): { prompt: string; noteIds: string[] } {
+  private buildInitialPromptInternal(options: PromptOptions, agentInstanceId?: string): { prompt: string; noteIds: string[]; messageIds: string[] } {
     const parts: string[] = [];
 
     parts.push(EXECUTION_CONTEXT);
@@ -305,6 +318,15 @@ export class PromptBuilder {
       parts.push("");
     }
 
+    // Operator rejected this phase's review: redo the same phase
+    if (options.reviewRejection) {
+      parts.push("--- OPERATOR REJECTED PHASE REVIEW ---");
+      parts.push("The operator reviewed your work on this phase and rejected it. Redo this phase and address this feedback before completing it:");
+      parts.push(options.reviewRejection);
+      parts.push("--- END OPERATOR REJECTION ---");
+      parts.push("");
+    }
+
     // Operator approval note (carried forward from prior phase review)
     if (options.approvalNote) {
       parts.push("--- OPERATOR NOTE ON PHASE APPROVAL ---");
@@ -340,6 +362,7 @@ export class PromptBuilder {
       !solo &&
       isExperimental() &&
       getEntrypointAgentId(this.db, options.task.id) === options.agent.id &&
+      isImprovementsEnabled(this.db) &&
       hasImprovementTargets(getImprovementContext(this.db, options.task.id))
     ) {
       parts.push(TEAM_HOUSEKEEPING);
@@ -365,12 +388,12 @@ export class PromptBuilder {
     }
 
     // Prompt enrichment (with optional note tracking)
-    const { text: enrichment, noteIds } = this.buildEnrichmentInternal(options.agent.id, options.task.id, agentInstanceId);
+    const { text: enrichment, noteIds, messageIds } = this.buildEnrichmentInternal(options.agent.id, options.task.id, agentInstanceId);
     if (enrichment) {
       parts.push(enrichment);
     }
 
-    return { prompt: parts.join("\n"), noteIds };
+    return { prompt: parts.join("\n"), noteIds, messageIds };
   }
 
   buildPriorDelegationsSection(taskId: string): string {
@@ -403,7 +426,7 @@ export class PromptBuilder {
     return this.buildEnrichmentInternal(agentId, taskId).text;
   }
 
-  private buildEnrichmentInternal(agentId: string, taskId: string, agentInstanceId?: string): { text: string; noteIds: string[] } {
+  private buildEnrichmentInternal(agentId: string, taskId: string, agentInstanceId?: string): { text: string; noteIds: string[]; messageIds: string[] } {
     const parts: string[] = [];
     const solo = isSoloAgentId(agentId);
 
@@ -430,6 +453,11 @@ export class PromptBuilder {
     if (notes.length > 0) {
       this.appendNotesSections(parts, notes, !!agentInstanceId);
     }
+
+    // Other agents' operator messages: root only, unseen only when tracked.
+    const messages = this.getAgentMessagesForRoot(taskId, agentId, !!agentInstanceId);
+    const messageIds = messages.map((m) => m.id);
+    this.appendAgentMessagesSection(parts, messages);
 
     // Shared artifacts (from prior runs/windows/delegations)
     const artifactSection = this.buildArtifactSection(taskId);
@@ -488,7 +516,7 @@ export class PromptBuilder {
       parts.push(MCP_TOOLS_DELEGATE);
     }
 
-    return { text: parts.join("\n"), noteIds };
+    return { text: parts.join("\n"), noteIds, messageIds };
   }
 
   buildDelegationPrompt(options: DelegationPromptOptions): string {
@@ -765,12 +793,62 @@ export class PromptBuilder {
   buildNotesEnrichmentBlock(
     taskId: string,
     agentInstanceId: string,
-  ): { text: string; noteIds: string[] } {
+  ): { text: string; noteIds: string[]; messageIds: string[] } {
     const notes = this.getUnseenTaskNotes(taskId, agentInstanceId);
-    if (notes.length === 0) return { text: "", noteIds: [] };
+    const messages = this.getAgentMessagesForRoot(taskId, agentInstanceId, true);
+    if (notes.length === 0 && messages.length === 0) return { text: "", noteIds: [], messageIds: [] };
     const parts: string[] = [];
-    this.appendNotesSections(parts, notes, true);
-    return { text: parts.join("\n"), noteIds: notes.map((n) => n.id) };
+    if (notes.length > 0) this.appendNotesSections(parts, notes, true);
+    this.appendAgentMessagesSection(parts, messages);
+    return { text: parts.join("\n"), noteIds: notes.map((n) => n.id), messageIds: messages.map((m) => m.id) };
+  }
+
+  /**
+   * Operator messages (post_message) that OTHER agents on the task posted, for
+   * the root Skipper only. The operator has already read them on the timeline;
+   * without them the root re-reports the same findings it got from the notes.
+   * `recipientId` may be a runtime instance id or the template id; receipts and
+   * the own-message filter use the template id. `unseenOnly` drops messages
+   * already handed to this root (agent_message_receipts). Newest
+   * AGENT_MESSAGE_LIMIT kept, returned oldest first.
+   */
+  private getAgentMessagesForRoot(taskId: string, recipientId: string, unseenOnly: boolean): AgentMessage[] {
+    const templateId = this.resolveTemplateAgentId(recipientId);
+    if (getEntrypointAgentId(this.db, taskId) !== templateId) return [];
+    const rows = this.db.prepare(
+      `SELECT * FROM (
+         SELECT m.id, m.content, m.created_at, m.rowid AS seq, COALESCE(a.name, m.agent_id) AS agent_name
+         FROM task_messages m
+         LEFT JOIN agents a ON a.id = m.agent_id
+         WHERE m.task_id = ?
+           AND m.agent_id != ?
+           ${unseenOnly ? "AND NOT EXISTS (SELECT 1 FROM agent_message_receipts r WHERE r.agent_id = ? AND r.message_id = m.id)" : ""}
+         ORDER BY m.created_at DESC, m.rowid DESC
+         LIMIT ?
+       ) ORDER BY created_at, seq`,
+    ).all(...(unseenOnly ? [taskId, templateId, templateId, AGENT_MESSAGE_LIMIT] : [taskId, templateId, AGENT_MESSAGE_LIMIT])) as {
+      id: string;
+      content: string;
+      created_at: string;
+      agent_name: string;
+    }[];
+    return rows.map((r) => ({ id: r.id, agentName: r.agent_name, content: r.content, createdAt: r.created_at }));
+  }
+
+  private appendAgentMessagesSection(parts: string[], messages: AgentMessage[]): void {
+    if (messages.length === 0) return;
+    parts.push("MESSAGES OTHER AGENTS POSTED TO THE OPERATOR (oldest first). These are already on the task timeline and the operator has read them. Do NOT repeat their content in your own messages or replies; refer to them briefly if needed and add only what is new:");
+    for (const m of messages) {
+      parts.push(`- [${m.createdAt}] [${m.agentName}] ${m.content}`);
+    }
+    parts.push("");
+  }
+
+  private resolveTemplateAgentId(id: string): string {
+    const row = this.db
+      .prepare("SELECT template_agent_id FROM agent_instances WHERE id = ?")
+      .get(id) as { template_agent_id: string } | null;
+    return row?.template_agent_id ?? id;
   }
 
   private appendNotesSections(parts: string[], notes: TaskNote[], unseenContext: boolean): void {
@@ -886,17 +964,24 @@ export class PromptBuilder {
     }));
   }
 
-  recordNoteDelivery(agentInstanceId: string, noteIds: string[]): void {
-    if (noteIds.length === 0) return;
-    const stmt = this.db.prepare(
+  recordNoteDelivery(agentInstanceId: string, noteIds: string[], messageIds: string[] = []): void {
+    if (noteIds.length === 0 && messageIds.length === 0) return;
+    const noteStmt = this.db.prepare(
       "INSERT OR IGNORE INTO agent_note_receipts (agent_instance_id, note_id) VALUES (?, ?)",
     );
-    const tx = this.db.transaction((ids: string[]) => {
-      for (const noteId of ids) {
-        stmt.run(agentInstanceId, noteId);
+    const messageStmt = this.db.prepare(
+      "INSERT OR IGNORE INTO agent_message_receipts (agent_id, message_id) VALUES (?, ?)",
+    );
+    const templateId = messageIds.length > 0 ? this.resolveTemplateAgentId(agentInstanceId) : agentInstanceId;
+    const tx = this.db.transaction(() => {
+      for (const noteId of noteIds) {
+        noteStmt.run(agentInstanceId, noteId);
+      }
+      for (const messageId of messageIds) {
+        messageStmt.run(templateId, messageId);
       }
     });
-    tx(noteIds);
+    tx();
   }
 
   private agentSupportsDelegation(agentId: string): boolean {

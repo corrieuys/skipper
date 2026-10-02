@@ -484,6 +484,16 @@ CREATE TABLE IF NOT EXISTS agent_note_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_note_receipts_instance ON agent_note_receipts(agent_instance_id);
 
+-- Operator messages handed to a task's root Skipper (other agents' messages
+-- only). Mirrors migrations/0030_agent_message_receipts.sql.
+CREATE TABLE IF NOT EXISTS agent_message_receipts (
+  agent_id TEXT NOT NULL,
+  message_id TEXT NOT NULL REFERENCES task_messages(id) ON DELETE CASCADE,
+  delivered_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (agent_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_message_receipts_message ON agent_message_receipts(message_id);
+
 -- Scheduled recurring tasks
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
   id TEXT PRIMARY KEY,

@@ -216,6 +216,7 @@ export class PhaseManager {
     phases: Phase[],
     targetPhase: number,
     reason: string,
+    cause: "regression" | "review_rejected" = "regression",
   ): Promise<void> {
     const agent = this.agentManager.getAgent(entrypointAgentId);
     if (!agent) return;
@@ -241,12 +242,12 @@ export class PhaseManager {
       total: phases.length,
     };
 
-    const { prompt, noteIds } = this.promptBuilder.buildInitialPromptTracked({
+    const { prompt, noteIds, messageIds = [] } = this.promptBuilder.buildInitialPromptTracked({
       agent: agentInfo,
       task: { id: task.id, title: task.title, description: task.description ?? undefined, workingDirectory: task.working_directory },
       phase: phaseInfo,
       isStreaming,
-      regressionReason: reason,
+      ...(cause === "review_rejected" ? { reviewRejection: reason } : { regressionReason: reason }),
       injectedInput: task.run_input ?? undefined,
     }, entrypointAgentId);
     const usesInlinePrompt = typeDef ? agentTypeUsesInlinePrompt(typeDef, sessionId) : false;
@@ -294,8 +295,8 @@ export class PhaseManager {
         // sendInput(templateId) misroutes to a sibling same-team task's stdin.
         this.agentManager.sendInput(respawnRuntimeId, prompt, closeStdin);
       }
-      if (noteIds.length > 0) {
-        this.promptBuilder.recordNoteDelivery(entrypointAgentId, noteIds);
+      if (noteIds.length > 0 || messageIds.length > 0) {
+        this.promptBuilder.recordNoteDelivery(entrypointAgentId, noteIds, messageIds);
       }
     } catch (err) {
       logError(this.db, "regression_send_input", { taskId: task.id, agentId: entrypointAgentId, targetPhase, method: "respawnForRegression" }, err);
@@ -342,7 +343,7 @@ export class PhaseManager {
       total: phases.length,
     };
 
-    const { prompt, noteIds } = this.promptBuilder.buildInitialPromptTracked({
+    const { prompt, noteIds, messageIds = [] } = this.promptBuilder.buildInitialPromptTracked({
       agent: agentInfo,
       task: { id: task.id, title: task.title, description: task.description ?? undefined, workingDirectory: task.working_directory },
       phase: phaseInfo,
@@ -394,8 +395,8 @@ export class PhaseManager {
         // sendInput(templateId) misroutes to a sibling same-team task's stdin.
         this.agentManager.sendInput(respawnRuntimeId, prompt, closeStdin);
       }
-      if (noteIds.length > 0) {
-        this.promptBuilder.recordNoteDelivery(entrypointAgentId, noteIds);
+      if (noteIds.length > 0 || messageIds.length > 0) {
+        this.promptBuilder.recordNoteDelivery(entrypointAgentId, noteIds, messageIds);
       }
     } catch (err) {
       logError(this.db, "advance_respawn_send_input", { taskId: task.id, agentId: entrypointAgentId, phase: nextPhase, method: "advanceAndRespawn" }, err);
@@ -463,19 +464,14 @@ export class PhaseManager {
     this.taskScheduler.setNeedsReview(taskId, false);
     this.clearIdleState?.(taskId);
 
-    const targetPhase = task.current_phase > 0 ? task.current_phase - 1 : 0;
-    if (task.current_phase > 0) {
-      this.taskScheduler.regressPhase(taskId, targetPhase);
-    }
+    // A rejected review redoes the reviewed phase itself. A review holds the
+    // phase (it does not advance it), so current_phase is the rejected phase.
+    const targetPhase = task.current_phase;
     this.writeCheckpoint(taskId, "PHASE_REVIEW_REJECTED", { rejected_phase: task.current_phase, target_phase: targetPhase, reason: rejectionReason });
 
-    // Clear the dedup key of every phase that runs again, targetPhase through
-    // the rejected phase (current_phase: a review holds the phase, it does not
-    // advance it). Clearing only targetPhase left the rejected phase's key, so
-    // its redo returned noop_dedup and the task stalled.
-    for (let i = targetPhase; i <= task.current_phase; i++) {
-      this.phaseCompleteHandled.delete(`${taskId}:${i}`);
-    }
+    // Clear the rejected phase's dedup key, or its redo returns noop_dedup and
+    // the task stalls.
+    this.phaseCompleteHandled.delete(`${taskId}:${targetPhase}`);
 
     const teamExec = task.team_id
       ? this.teamManager.getTeamForExecution(task.team_id)
@@ -488,6 +484,7 @@ export class PhaseManager {
         phases,
         targetPhase,
         rejectionReason,
+        "review_rejected",
       );
     } else {
       try {

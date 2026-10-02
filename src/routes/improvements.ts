@@ -13,6 +13,7 @@ import {
   listImprovements,
   rejectImprovement,
   setImprovementsAutoApprove,
+  setImprovementsEnabled,
 } from "../improvements/manager";
 import { improvementCard, improvementEditCard } from "../html/fragments/improvement-card.fragment";
 import { improvementsPage } from "../html/pages/improvements.page";
@@ -47,9 +48,18 @@ export function registerImprovementRoutes(): void {
 
   // Config page toggle (checkbox posts itself; hx-swap none, like parallel-tasks).
   addRoute("POST", "/api/settings/improvements-auto-approve", async (req) => {
-    const body = await parseRequestBody<{ enabled?: string | boolean }>(req);
+    // An unchecked box posts no field; a client may also send no body at all.
+    const body = await parseRequestBody<{ enabled?: string | boolean }>(req).catch(() => ({} as { enabled?: string | boolean }));
     const on = body.enabled === true || body.enabled === "on" || body.enabled === "true";
     setImprovementsAutoApprove(db, on);
+    return Response.json({ enabled: on });
+  });
+
+  // Config page on/off switch: off = no housekeeping tools or prompt block for any root Skipper.
+  addRoute("POST", "/api/settings/improvements-enabled", async (req) => {
+    const body = await parseRequestBody<{ enabled?: string | boolean }>(req).catch(() => ({} as { enabled?: string | boolean }));
+    const on = body.enabled === true || body.enabled === "on" || body.enabled === "true";
+    setImprovementsEnabled(db, on);
     return Response.json({ enabled: on });
   });
 

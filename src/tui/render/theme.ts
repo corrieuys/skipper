@@ -245,6 +245,30 @@ export function statusLabel(status: string): string {
   }
 }
 
+// ── improvements (experimental board 5) ───────────────────────────────────
+
+export const IMPROVEMENT_KIND_LABELS: Record<string, string> = {
+  phase_prompt: "Phase prompt",
+  agent_instruction: "Agent instruction",
+  lead_instructions: "Lead instructions",
+  recurring_description: "Recurring task description",
+  skill_suggestion: "Skill suggestion",
+};
+
+export function improvementKindLabel(kind: string): string {
+  return IMPROVEMENT_KIND_LABELS[kind] ?? kind;
+}
+
+/** Glyph, colour and status label of an improvement, as the web card's badge words it. */
+export function improvementLook(imp: { kind: string; status: string; state: string }): { glyph: string; color: number; label: string } {
+  const skill = imp.kind === "skill_suggestion";
+  if (imp.status === "approved") return { glyph: "✓", color: C.ok, label: skill ? "Acknowledged" : "Approved" };
+  if (imp.status === "rejected") return { glyph: "·", color: C.textMuted, label: skill ? "Dismissed" : "Rejected" };
+  if (imp.state === "conflict") return { glyph: "▲", color: C.danger, label: "Conflict" };
+  if (imp.state === "missing") return { glyph: "✗", color: C.danger, label: "Target gone" };
+  return { glyph: skill ? "◇" : "✦", color: skill ? C.info : C.gold, label: "Pending" };
+}
+
 // ── animation frame sets ──────────────────────────────────────────────────
 export const SPIN_BRAILLE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 export const PULSE = ["●", "◉", "◎", "○", "◎", "◉"];

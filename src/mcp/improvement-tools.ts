@@ -13,6 +13,7 @@ import {
   getImprovementContext,
   hasImprovementTargets,
   improvementState,
+  isImprovementsEnabled,
   libraryTargetKey,
   listImprovements,
   readLiveTarget,
@@ -69,7 +70,7 @@ export function registerImprovementTools(
   const identity = getIdentity();
   const initial = getImprovementContext(db, identity?.type === "internal" ? identity.taskId : null);
   // Same gate as the TEAM HOUSEKEEPING prompt block (prompt-builder.ts).
-  if (!initial || !hasImprovementTargets(initial)) return;
+  if (!isImprovementsEnabled(db) || !initial || !hasImprovementTargets(initial)) return;
   const teamTools = !!initial.team;
   const recurringTool = !!initial.scheduledTaskId;
   const skillTool = !!initial.teamId;
@@ -78,6 +79,8 @@ export function registerImprovementTools(
   function context(): ImprovementContext | ReturnType<typeof errorText> {
     const id = getIdentity();
     if (!id || id.type !== "internal") return errorText("agent not authenticated");
+    // A session that started before the operator switched improvements off.
+    if (!isImprovementsEnabled(db)) return errorText("Improvements are turned off. Do not stage changes.");
     const ctx = getImprovementContext(db, id.taskId);
     return ctx ?? errorText("no active task");
   }

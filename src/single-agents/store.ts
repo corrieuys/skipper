@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import type { Database } from "bun:sqlite";
 import { getAgentType } from "../config/store";
+import { eventBus } from "../events/bus";
 import { isCustomAgentType } from "../agents/types";
 import { normalizeSlashCommand } from "../slack/slash-command";
 import { isCreatureId, sanitizeColor } from "../html/atoms/creature";
@@ -298,6 +299,7 @@ export function createSingleAgent(db: Database, input: SingleAgentInput): Single
     ts,
   );
   refreshSingleAgentInShared(db, id);
+  eventBus.emit("library_agent:changed", { agentType: singleAgentRefType(id), change: "created" });
   return getSingleAgent(db, id)!;
 }
 
@@ -320,6 +322,7 @@ export function updateSingleAgent(db: Database, id: string, input: SingleAgentIn
     id,
   );
   refreshSingleAgentInShared(db, id);
+  eventBus.emit("library_agent:changed", { agentType: singleAgentRefType(id), change: "updated" });
   return getSingleAgent(db, id)!;
 }
 
@@ -327,6 +330,7 @@ export function deleteSingleAgent(db: Database, id: string): boolean {
   if (!getSingleAgent(db, id)) return false;
   db.prepare("DELETE FROM single_agents WHERE id = ?").run(id);
   removeSingleAgentFromShared(db, id);
+  eventBus.emit("library_agent:changed", { agentType: singleAgentRefType(id), change: "deleted" });
   return true;
 }
 

@@ -3,6 +3,8 @@ import { autoResolveEscalations } from "./auto-resolve";
 import { getDb } from "../db/connection";
 import { AgentManager } from "../agents/manager";
 import type { PromptBuilder } from "../agents/prompt-builder";
+import { getEntrypointAgentId } from "../agents/skipper";
+import type { TaskWakeFeeder } from "../orchestrator/task-runner";
 import { agentTypeUsesInlinePrompt, getAgentTypeDefinition } from "../agents/types";
 import { eventBus } from "../events/bus";
 import { logError } from "../logging";
@@ -38,12 +40,36 @@ export class EscalationManager {
   // operator added alongside the escalation response so they land in the same
   // turn instead of being deferred until the next phase/delegation event.
   private promptBuilder: PromptBuilder | undefined;
+  // Operator input sent while the escalation was open waits unfed behind a
+  // wake the queue cannot take (open escalation, then a live resumed root).
+  // The answer to the ROOT's escalation carries it, like a delegation result
+  // does (delegation-manager routeResultToParent).
+  private wakeFeeder: Pick<TaskWakeFeeder, "consumePendingFeed" | "hasPendingFeed"> | null = null;
+  private clearWake: ((taskId: string) => void) | null = null;
 
   constructor(db?: Database, agentManager?: AgentManager, promptBuilder?: PromptBuilder) {
     const resolvedDb = db ?? getDb();
     this.db = resolvedDb;
     this.agentManager = agentManager ?? new AgentManager(resolvedDb);
     this.promptBuilder = promptBuilder;
+  }
+
+  setWakeFeeder(
+    feeder: Pick<TaskWakeFeeder, "consumePendingFeed" | "hasPendingFeed">,
+    clearWake: (taskId: string) => void,
+  ): void {
+    this.wakeFeeder = feeder;
+    this.clearWake = clearWake;
+  }
+
+  /** True when the escalating agent is the task's root (not a delegated child). */
+  private isRootEscalation(agentId: string, runtimeAgentId: string | null, taskId: string): boolean {
+    if (getEntrypointAgentId(this.db, taskId) !== agentId) return false;
+    if (!runtimeAgentId) return true;
+    const row = this.db
+      .prepare("SELECT parent_instance_id FROM agent_instances WHERE id = ?")
+      .get(runtimeAgentId) as { parent_instance_id: string | null } | null;
+    return !row || row.parent_instance_id === null;
   }
 
   /**
@@ -259,12 +285,23 @@ export class EscalationManager {
     // (matching advanceAndRespawn / poke behaviour) — recorded only after a
     // successful inject so failures here don't silently drop notes.
     const notes = this.promptBuilder?.buildNotesEnrichmentBlock?.(taskId, agentId)
-      ?? { text: "", noteIds: [] };
+      ?? { text: "", noteIds: [], messageIds: [] };
     const baseMessage = `[USER_RESPONSE] ${response}`;
-    const message = notes.text ? `${notes.text}\n${baseMessage}` : baseMessage;
+    const pendingFeed = this.wakeFeeder && this.isRootEscalation(agentId, runtimeAgentId, taskId)
+      ? this.wakeFeeder.consumePendingFeed(taskId)
+      : null;
+    let message = notes.text ? `${notes.text}\n${baseMessage}` : baseMessage;
+    if (pendingFeed) message = `${message}\n${pendingFeed.text}`;
     const markNotesDelivered = (): void => {
-      if (notes.noteIds.length > 0) {
-        this.promptBuilder?.recordNoteDelivery?.(agentId, notes.noteIds);
+      const messageIds = notes.messageIds ?? [];
+      if (notes.noteIds.length > 0 || messageIds.length > 0) {
+        this.promptBuilder?.recordNoteDelivery?.(agentId, notes.noteIds, messageIds);
+      }
+      if (pendingFeed) {
+        pendingFeed.commit();
+        // The wake existed only to deliver that input. Left set, the queue
+        // would wake the root again with nothing new once this turn ends.
+        if (!this.wakeFeeder?.hasPendingFeed(taskId)) this.clearWake?.(taskId);
       }
     };
 

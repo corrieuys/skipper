@@ -409,6 +409,80 @@ describe("resolveEscalation", () => {
     expect(resumeSpy).toHaveBeenCalledWith(runtimeId, "[USER_RESPONSE] Runtime answer", false);
   });
 
+  describe("operator input sent while the escalation was open", () => {
+    function fakeFeeder(taskId: string) {
+      let pending = true;
+      const feeder = {
+        consumed: 0,
+        hasPendingFeed: (id: string) => id === taskId && pending,
+        consumePendingFeed: (id: string) => {
+          if (id !== taskId || !pending) return null;
+          feeder.consumed++;
+          return { text: "[INPUT_FEED] end the task [END_INPUT_FEED]", commit: () => { pending = false; } };
+        },
+      };
+      return feeder;
+    }
+
+    function queueWake(taskId: string): void {
+      db.prepare("UPDATE tasks SET started_at = datetime('now'), wake_requested_at = datetime('now') WHERE id = ?").run(taskId);
+    }
+
+    const wakeOf = (taskId: string) =>
+      (db.prepare("SELECT wake_requested_at FROM tasks WHERE id = ?").get(taskId) as { wake_requested_at: string | null }).wake_requested_at;
+
+    it("rides along on the answer to the root's escalation and drops the wake it queued", async () => {
+      setupAgentType("resumable", true, true);
+      db.prepare("UPDATE agent_types SET resume_flag = '--resume' WHERE name = 'resumable'").run();
+      const agentId = createAgent("root", "resumable");
+      const taskId = createRunningTask(agentId);
+      const runtimeId = "root-runtime-1";
+      db.prepare(
+        `INSERT INTO agent_instances (id, task_id, template_agent_id, status, session_id)
+         VALUES (?, ?, ?, 'stopped', 'sess-root')`,
+      ).run(runtimeId, taskId, agentId);
+      queueWake(taskId);
+      const feeder = fakeFeeder(taskId);
+      escalationManager.setWakeFeeder(feeder, (id) => scheduler.clearWake(id));
+
+      const esc = escalationManager.createEscalation({ agentId, runtimeAgentId: runtimeId, taskId, type: "agent_request", question: "Q" });
+      const resumeSpy = spyOn(agentManager, "sendResumeMessage").mockResolvedValue(undefined as never);
+
+      await escalationManager.resolveEscalation(esc.id, "A");
+
+      expect(resumeSpy).toHaveBeenCalledWith(runtimeId, "[USER_RESPONSE] A\n[INPUT_FEED] end the task [END_INPUT_FEED]", false);
+      expect(feeder.hasPendingFeed(taskId)).toBe(false);
+      expect(wakeOf(taskId)).toBeNull();
+    });
+
+    it("stays queued when a delegated child raised the escalation", async () => {
+      setupAgentType("resumable", true, true);
+      db.prepare("UPDATE agent_types SET resume_flag = '--resume' WHERE name = 'resumable'").run();
+      const agentId = createAgent("root", "resumable");
+      const taskId = createRunningTask(agentId);
+      db.prepare(
+        `INSERT INTO agent_instances (id, task_id, template_agent_id, status, session_id)
+         VALUES ('root-rt', ?, ?, 'waiting_delegation', 'sess-root')`,
+      ).run(taskId, agentId);
+      db.prepare(
+        `INSERT INTO agent_instances (id, task_id, template_agent_id, status, session_id, parent_instance_id)
+         VALUES ('child-rt', ?, ?, 'stopped', 'sess-child', 'root-rt')`,
+      ).run(taskId, agentId);
+      queueWake(taskId);
+      const feeder = fakeFeeder(taskId);
+      escalationManager.setWakeFeeder(feeder, (id) => scheduler.clearWake(id));
+
+      const esc = escalationManager.createEscalation({ agentId, runtimeAgentId: "child-rt", taskId, type: "agent_request", question: "Q" });
+      const resumeSpy = spyOn(agentManager, "sendResumeMessage").mockResolvedValue(undefined as never);
+
+      await escalationManager.resolveEscalation(esc.id, "A");
+
+      expect(resumeSpy).toHaveBeenCalledWith("child-rt", "[USER_RESPONSE] A", false);
+      expect(feeder.consumed).toBe(0);
+      expect(wakeOf(taskId)).not.toBeNull();
+    });
+  });
+
   it("throws when escalation not found", async () => {
     expect(escalationManager.resolveEscalation("nonexistent", "resp")).rejects.toThrow(
       "Escalation not found",

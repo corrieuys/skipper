@@ -11,6 +11,7 @@ import { scheduleLabel, shortId } from "./view-model";
 import { toOneLine, toPlainText } from "./plain-text";
 import { allServers, loadServers, saveServers, type ServerConfig } from "../servers";
 import { sortedArtifacts, humanBytes } from "../render/detail";
+import { IMPROVEMENT_ACTIONS } from "./improvement-actions";
 
 /**
  * The controller surface actions need. `run.ts` implements it; actions never
@@ -435,7 +436,7 @@ export const ACTIONS: Action[] = [
   },
   {
     id: "review-reject",
-    label: "Reject review → regress",
+    label: "Reject review → redo phase",
     key: "N",
     keys: [{ ch: "N" }],
     group: "review",
@@ -540,6 +541,8 @@ export const ACTIONS: Action[] = [
     when: (ctx) => onSeries(ctx) && !!ctx.selectedSeries(),
     run: (ctx) => ctx.toast("star a recurring series from the web UI (not exposed over Connect yet)", "warn"),
   },
+  // ── improvements (board 5, experimental) ──
+  ...IMPROVEMENT_ACTIONS,
   // ── view / app ──
   {
     id: "servers",
@@ -1740,8 +1743,14 @@ c   icon + colour   +  add note                    w  open in web UI
 S   settle (done)   x  cancel (failed)             v  revive    D  delete
 
 REVIEW + ESCALATION
-y   approve review → next phase     N  reject review → regress
+y   approve review → next phase     N  reject review → redo phase
 E   answer this task's escalation   ctrl+e  all open escalations
+
+IMPROVEMENTS: BOARD 5
+5   staged team config changes + skill suggestions (daemon --experimental only)
+a/y approve (skill: acknowledge)   e  edit the text (ctrl+l shows the live text)
+x/N reject (skill: dismiss)        f  pending / all
+A   auto-approve on/off            t  open the source task    z  show / fold unchanged lines
 
 TEAMS + RECURRING
 T   browse teams (details, export, delete, new task with team)

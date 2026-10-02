@@ -505,6 +505,26 @@ export class TaskScheduler {
     return this.getTask(id)!;
   }
 
+  /**
+   * Drop a pending wake whose input was delivered another way (the answer to
+   * the root's escalation carried it). A first run that never started stays
+   * startable through `started_at IS NULL`, so it is not touched.
+   */
+  clearWake(id: string): void {
+    const res = this.db
+      .prepare(
+        `UPDATE tasks SET wake_requested_at = NULL, updated_at = datetime('now')
+         WHERE id = ? AND status = 'active' AND started_at IS NOT NULL AND wake_requested_at IS NOT NULL`,
+      )
+      .run(id);
+    if (res.changes === 0) return;
+    eventBus.emit("task:state_changed", {
+      taskId: id,
+      previousStatus: "active",
+      newStatus: "active",
+    });
+  }
+
   /** Unfed input-pipeline entries pending delivery to the root agent. */
   private countUnfedInput(id: string): number {
     return (this.db

@@ -234,7 +234,7 @@ export class IdlePokeManager {
     // entrypoint id, matching how advanceAndRespawn / buildInitialPromptTracked
     // record them — keeps the "delivered" set consistent across paths.
     const notes = this.promptBuilder?.buildNotesEnrichmentBlock?.(taskId, entrypointAgentId)
-      ?? { text: "", noteIds: [] };
+      ?? { text: "", noteIds: [], messageIds: [] };
     const promptWithNotes = notes.text ? `${notes.text}\n${POKE_PROMPT}` : POKE_PROMPT;
 
     // Target THIS task's instance — killAgent(templateId) would murder a sibling
@@ -279,8 +279,9 @@ export class IdlePokeManager {
     // Record delivery only after the prompt has been handed to the agent (via
     // inline initialPrompt or sendInput). If the spawn/send path bailed
     // earlier, notes stay unread and will be re-injected next time.
-    if (notes.noteIds.length > 0) {
-      this.promptBuilder?.recordNoteDelivery?.(entrypointAgentId, notes.noteIds);
+    const messageIds = notes.messageIds ?? [];
+    if (notes.noteIds.length > 0 || messageIds.length > 0) {
+      this.promptBuilder?.recordNoteDelivery?.(entrypointAgentId, notes.noteIds, messageIds);
     }
 
     return true;

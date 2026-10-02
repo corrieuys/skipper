@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "crypto";
 import { clearAgentTypeCache, CUSTOM_TYPE_PREFIX, isCustomAgentType } from "../agents/types";
+import { eventBus } from "../events/bus";
 import { isCreatureId, sanitizeColor } from "../html/atoms/creature";
 import {
   CUSTOM_AGENT_SOLO_PREFIX,
@@ -312,6 +313,7 @@ export function createCustomAgent(db: Database, input: CustomAgentInput): Custom
   );
   registerCustomAgentTypes(db);
   refreshCustomAgentSolo(db, id);
+  eventBus.emit("library_agent:changed", { agentType: customAgentTypeName(id), change: "created" });
   return getCustomAgent(db, id)!;
 }
 
@@ -359,6 +361,7 @@ export function updateCustomAgent(db: Database, id: string, input: CustomAgentIn
   );
   registerCustomAgentTypes(db);
   refreshCustomAgentSolo(db, id);
+  eventBus.emit("library_agent:changed", { agentType: customAgentTypeName(id), change: "updated" });
   return getCustomAgent(db, id)!;
 }
 
@@ -367,6 +370,7 @@ export function deleteCustomAgent(db: Database, id: string): boolean {
   db.prepare("DELETE FROM agent_types WHERE name = ?").run(customAgentTypeName(id));
   removeSoloFromShared(db, CUSTOM_AGENT_SOLO_PREFIX, id);
   clearAgentTypeCache();
+  if (res.changes > 0) eventBus.emit("library_agent:changed", { agentType: customAgentTypeName(id), change: "deleted" });
   return res.changes > 0;
 }
 

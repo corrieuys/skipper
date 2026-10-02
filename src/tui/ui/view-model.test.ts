@@ -36,7 +36,7 @@ function world() {
 }
 
 const labels = (rows: RailRow[]): string[] =>
-  rows.map((r) => (r.kind === "header" ? `# ${r.label} ${r.count}` : r.kind === "series" ? `~ ${r.series.title}${r.expanded ? " (open)" : ""}` : `${r.run ? "  · " : ""}${r.task.id}`));
+  rows.map((r) => (r.kind === "header" ? `# ${r.label} ${r.count}` : r.kind === "series" ? `~ ${r.series.title}${r.expanded ? " (open)" : ""}` : r.kind === "improvement" ? `✦ ${r.improvement.id}` : `${r.run ? "  · " : ""}${r.task.id}`));
 
 describe("Latest board rows", () => {
   test("sections in web order: Needs you, Active (active + drafts), Recurring, Recent (5)", () => {

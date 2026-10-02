@@ -7,13 +7,14 @@ import type { TaskItem, Team, RecurringSeries, TaskDetail, Note, Message, Timeli
 import { Renderer } from "./render/renderer";
 import { TerminalDriver } from "./render/terminal";
 import { KeyDecoder, type KeyEvent } from "./input/keyboard";
-import { initialUIState, topModal, formValues, visibleListItems, FILTERS, DETAIL_TABS, type UIState, type Modal, type FormModal, type ListModal, type Pane } from "./ui/state";
+import { initialUIState, topModal, formValues, visibleListItems, boardFilters, DETAIL_TABS, type UIState, type Modal, type FormModal, type ListModal, type Pane } from "./ui/state";
 import { railRows, selectedIndex, nearestSelectable, type RailRow } from "./ui/view-model";
 import { sortedArtifacts } from "./render/detail";
 import { ACTIONS, actionForKey, availableActions, openArtifact, type Ctx, type Assignee } from "./ui/actions";
 import { setActionHints } from "./ui/hints";
 import { setPalette, resolvePaletteMode } from "./render/theme";
-import { toTask, toNote, toMessage, toTimelineEntry, toArtifact, toEscalation } from "./transport/local";
+import { toTask, toNote, toMessage, toTimelineEntry, toArtifact, toEscalation, toImprovementSummary, toImprovementDetail } from "./transport/local";
+import { IMPROVEMENT_LIST_LIMIT } from "./ui/improvement-actions";
 
 const RENDER_COALESCE_MS = 40;
 const ANIM_INTERVAL_MS = 120;
@@ -82,6 +83,10 @@ class Controller implements Ctx {
   private teamsPromise: Promise<Team[]> | null = null;
   private assignees: Assignee[] = [];
   private assigneesLoadedAt = 0;
+  /** In-flight improvements list + settings load (board 5). */
+  private improvementsLoad: Promise<void> | null = null;
+  /** Improvement id → the summary version last read, so one version is read once. */
+  private improvementReads = new Map<string, string>();
 
   constructor(
     public transport: Transport,
@@ -128,8 +133,14 @@ class Controller implements Ctx {
 
   private onTransportEvent(event: Parameters<Parameters<Transport["start"]>[0]>[0]): void {
     const before = this.store.allTasks().length;
+    // Board 5: where the cursor stood, so a row that leaves the board (decided
+    // while listing Pending) hands the cursor to the row that takes its place.
+    const impIndex = this.ui.filter === "improvements" ? selectedIndex(railRows(this.store, this.ui), this.ui) : -1;
     this.store.apply(event);
     if (event.kind === "snapshot") this.afterSnapshot(before === 0);
+    // Improvements (experimental): load after every snapshot, once the feature is known.
+    if (event.kind === "snapshot" || event.kind === "capabilities") this.syncImprovements(event.kind === "snapshot");
+    if (event.kind === "capabilities" && !this.store.hasImprovements && this.ui.filter === "improvements") this.setFilter("latest");
     if (event.kind === "task_deleted" && this.ui.selectedTaskId === event.taskId) this.selectTask(null);
     if (event.kind === "task" && (event.created || event.started)) this.followNewTask(event.task);
     // An edit moves fields the list row does not carry (description, working
@@ -140,7 +151,8 @@ class Controller implements Ctx {
     // The remote repos browser shows sync status + team counts: both move on these.
     if (event.kind === "remote_repo_changed" || event.kind === "team_changed") this.reloadTaggedList("remote-repos");
     if (event.kind === "auth_failed") this.toast(event.message, "error");
-    this.ensureSelection();
+    this.ensureSelection(impIndex);
+    this.ensureImprovementDetail();
     this.scheduleRender();
   }
 
@@ -182,6 +194,10 @@ class Controller implements Ctx {
     this.store = new Store();
     this.ui.selectedTaskId = null;
     this.ui.selectedSeriesId = null;
+    this.ui.selectedImprovementId = null;
+    if (this.ui.railKind === "improvement") this.ui.railKind = "task";
+    if (this.ui.filter === "improvements") this.ui.filter = "latest";
+    this.improvementReads.clear();
     this.ui.modals = [];
     this.ui.composerActive = false;
     this.ui.composer.clear();
@@ -223,9 +239,90 @@ class Controller implements Ctx {
   }
 
   /** With nothing selected but rows on the board, select the top row. */
-  private ensureSelection(): void {
+  private ensureSelection(impIndex = -1): void {
+    if (this.ui.filter === "improvements") return this.ensureImprovementSelection(impIndex);
     if (this.ui.selectedTaskId || this.ui.railKind === "series" || this.ui.modals.length) return;
     this.selectRow(railRows(this.store, this.ui).find((r) => r.kind === "task"));
+  }
+
+  /**
+   * Board 5 keeps the cursor on a listed improvement. A row that left the board
+   * hands the cursor to the one now at its index. Runs under a modal too: the
+   * modal's closure holds its own improvement.
+   */
+  private ensureImprovementSelection(prevIndex: number): void {
+    const rows = railRows(this.store, this.ui);
+    if (this.ui.railKind === "improvement" && selectedIndex(rows, this.ui) >= 0) return;
+    const at = rows.length ? nearestSelectable(rows, Math.min(Math.max(prevIndex, 0), rows.length - 1)) : -1;
+    this.selectRow(at >= 0 ? rows[at] : undefined);
+  }
+
+  /**
+   * Board 5 data: `improvements/list` (the board's scope) and the auto-approve
+   * gate. Runs after every snapshot (events may have been missed while away);
+   * after that only fat events patch the store.
+   */
+  private syncImprovements(fresh: boolean): void {
+    if (fresh) this.improvementReads.clear();
+    if (!this.store.hasImprovements || this.improvementsLoad) return;
+    const scope = this.ui.improvementScope;
+    const store = this.store;
+    this.improvementsLoad = (async () => {
+      try {
+        const [rows, settings] = await Promise.all([
+          this.transport.request<Record<string, unknown>[]>("improvements", "list", { status: scope, limit: IMPROVEMENT_LIST_LIMIT }),
+          this.transport.request<{ autoApprove?: boolean }>("improvements", "settings", {}),
+        ]);
+        if (store !== this.store) return; // switched server meanwhile
+        store.loadImprovements((Array.isArray(rows) ? rows : []).map(toImprovementSummary), scope, IMPROVEMENT_LIST_LIMIT);
+        store.apply({ kind: "improvement_settings", autoApprove: settings?.autoApprove === true });
+      } catch (err) {
+        if (store === this.store) this.toast(`improvements: ${err instanceof Error ? err.message : String(err)}`, "error");
+      } finally {
+        this.improvementsLoad = null;
+        this.ensureSelection();
+        this.ensureImprovementDetail();
+        this.scheduleRender();
+      }
+    })();
+  }
+
+  /**
+   * Summaries carry no text: read the selected improvement's detail, and read
+   * it again when its summary moves (updatedAt / liveRevision / state). Only
+   * the selected row; each summary version is read once.
+   */
+  private ensureImprovementDetail(): void {
+    if (this.ui.filter !== "improvements" || this.ui.railKind !== "improvement") return;
+    const id = this.ui.selectedImprovementId;
+    const sum = id ? this.store.improvement(id) : undefined;
+    if (!id || !sum || !this.store.improvementDetailStale(id)) return;
+    const version = `${sum.updatedAt}|${sum.liveRevision ?? ""}|${sum.state}`;
+    if (this.improvementReads.get(id) === version) return;
+    this.improvementReads.set(id, version);
+    const store = this.store;
+    this.transport
+      .request<Record<string, unknown> | null>("improvements", "read", { id })
+      .then((raw) => {
+        if (store !== this.store) return;
+        if (raw) store.setImprovementDetail(toImprovementDetail(raw));
+        else store.setImprovementError(id, "Improvement not found");
+      })
+      .catch((err) => {
+        if (store === this.store) store.setImprovementError(id, err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => this.scheduleRender());
+  }
+
+  private selectImprovement(id: string | null): void {
+    if (this.ui.railKind !== "improvement" || this.ui.selectedImprovementId !== id) {
+      this.ui.detailScroll = 0;
+      this.ui.improvementDiffExpanded = false;
+    }
+    this.ui.railKind = "improvement";
+    this.ui.selectedImprovementId = id;
+    this.ensureImprovementDetail();
+    this.scheduleRender();
   }
 
   private afterSnapshot(first: boolean): void {
@@ -441,7 +538,8 @@ class Controller implements Ctx {
   }
 
   openComposer(): void {
-    if (!this.selectedTask()) return;
+    // Board 5 shows an improvement, not the task still selected behind it.
+    if (!this.selectedTask() || this.ui.railKind === "improvement") return;
     this.ui.composerActive = true;
     if (this.ui.focus !== "main") this.ui.focus = "main";
     if (this.ui.singleView !== "main") this.ui.singleView = "main";
@@ -522,6 +620,7 @@ class Controller implements Ctx {
             this.ui.focus = "main";
             this.ui.singleView = "main";
           } else if (this.ui.focus === "main") {
+            if (this.ui.railKind === "improvement") return;
             if (this.ui.detailTab === "artifacts") {
               const t = this.selectedTask();
               const arts = t ? sortedArtifacts(this.store, t.id) : [];
@@ -580,7 +679,7 @@ class Controller implements Ctx {
           if (this.activePane() === "rail" && this.toggleSeries()) return;
           break;
       }
-      const flt = FILTERS.find((f) => f.key === k.ch);
+      const flt = boardFilters(this.store.features).find((f) => f.key === k.ch);
       if (flt) return this.setFilter(flt.id);
     }
     if (k.type === "ctrl" && k.ch === "l") {
@@ -628,12 +727,22 @@ class Controller implements Ctx {
     this.ui.railScroll = 0;
     this.ui.focus = "rail";
     this.ui.singleView = "rail";
+    // Back on board 5: the cursor returns to the improvement it was on, if still listed.
+    if (filter === "improvements" && this.ui.selectedImprovementId && this.ui.railKind !== "improvement") {
+      this.ui.railKind = "improvement";
+      this.ui.detailScroll = 0;
+      this.ensureImprovementDetail();
+    }
     const rows = railRows(this.store, this.ui);
     if (selectedIndex(rows, this.ui) < 0) this.selectRow(rows[nearestSelectable(rows, 0)]);
   }
 
-  /** Put the rail cursor on a row: a task (loads its detail) or a recurring series. Headers are never passed here. */
+  /** Put the rail cursor on a row: a task (loads its detail), a recurring series or an improvement. Headers are never passed here. */
   private selectRow(row: RailRow | undefined): void {
+    if (row?.kind === "improvement") return this.selectImprovement(row.improvement.id);
+    // Board 5 with nothing listed: the main pane says so (no task behind it).
+    if (!row && this.ui.filter === "improvements") return this.selectImprovement(null);
+    if (this.ui.railKind === "improvement") this.ui.detailScroll = 0;
     if (!row || row.kind === "header") {
       this.ui.railKind = "task";
       this.selectTask(null);
@@ -660,6 +769,11 @@ class Controller implements Ctx {
   private move(delta: number): void {
     const pane = this.activePane();
     if (pane === "main") {
+      // An improvement's body is top-anchored.
+      if (this.ui.railKind === "improvement") {
+        this.ui.detailScroll = Math.max(0, this.ui.detailScroll + delta);
+        return;
+      }
       if (this.ui.detailTab === "artifacts") {
         const t = this.selectedTask();
         const n = t ? sortedArtifacts(this.store, t.id).length : 0;

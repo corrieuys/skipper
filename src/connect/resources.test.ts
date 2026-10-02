@@ -836,7 +836,7 @@ describe("state snapshot", () => {
     expect(reviews).toHaveLength(1);
     expect(reviews[0]!.id).toBe("t-1");
 
-    expect(data.counts).toEqual({ openEscalations: 1, pendingReviews: 1 });
+    expect(data.counts).toEqual({ openEscalations: 1, pendingReviews: 1, pendingImprovements: 0 });
   });
 
   it("rejects unknown state actions", async () => {

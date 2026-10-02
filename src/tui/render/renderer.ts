@@ -2,10 +2,10 @@ import { Screen, type Style, clip, textWidth, padEnd, wrap } from "./screen";
 import { computeLayout, centered, type Rect, type Layout } from "./layout";
 import { TerminalDriver } from "./terminal";
 import type { Store } from "../model/store";
-import type { TaskItem, RecurringSeries } from "../model/types";
-import { FILTERS, type UIState, type Modal, type FormModal, type ListModal, type TextModal, type ConfirmModal, topModal, visibleListItems } from "../ui/state";
-import { railRows, selectedIndex, isSelectable, ago, clock, activitySparkline, scheduleLabel, hhmm, type RailRow } from "../ui/view-model";
-import { C, S, BRAND_RAMP, PULSE, statusColor, statusGlyph, agentColor } from "./theme";
+import type { TaskItem, RecurringSeries, ImprovementSummary } from "../model/types";
+import { FILTERS, boardFilters, type UIState, type Modal, type FormModal, type ListModal, type TextModal, type ConfirmModal, topModal, visibleListItems } from "../ui/state";
+import { railRows, selectedIndex, isSelectable, ago, clock, activitySparkline, scheduleLabel, hhmm, improvementRailLabel, type RailRow } from "../ui/view-model";
+import { C, S, BRAND_RAMP, PULSE, statusColor, statusGlyph, agentColor, improvementKindLabel, improvementLook } from "./theme";
 import { panel, phaseStrip, sparkline, lr, keyHints, scrollbar, dimAll, shadow, breathingCursor, orb } from "./widgets";
 import { drawDetail, activityLines } from "./detail";
 import { footerHints } from "../ui/hints";
@@ -146,25 +146,27 @@ function drawHeader(s: Screen, r: Rect, model: RenderModel): void {
 
   // Right side: metric chips + clock.
   const c = store.counts();
-  const chips: Array<[string, number, number]> = [
-    [(c.working ?? 0) > 0 ? statusGlyph("working", f) : "⠿", c.working ?? 0, C.ok],
-    ["◉", c.queued ?? 0, C.warn],
-    ["◆", c.review ?? 0, C.violet],
-    ["▲", Math.max(c.blocked ?? 0, c.escalations ?? 0), C.danger],
-    ["▮▮", c.paused ?? 0, C.orange],
+  // [glyph, count, colour, label, shown at zero]
+  const chips: Array<[string, number, number, string, boolean]> = [
+    [(c.working ?? 0) > 0 ? statusGlyph("working", f) : "⠿", c.working ?? 0, C.ok, "working", true],
+    ["◉", c.queued ?? 0, C.warn, "queued", false],
+    ["◆", c.review ?? 0, C.violet, "review", false],
+    ["▲", Math.max(c.blocked ?? 0, c.escalations ?? 0), C.danger, "blocked", false],
+    // Pending improvements (experimental feature only; 0 hides the chip).
+    ["✦", store.pendingImprovementCount(), C.gold, "improvements", false],
+    ["▮▮", c.paused ?? 0, C.orange, "paused", false],
     // Live roster length, not metrics.activeAgentCount: the roster lane is
     // patched on every instance start/exit (local dashboard lane and remote
     // fat events alike); the metrics lane is a coarser, task-driven push.
-    ["⬢", c.agents ?? 0, C.accent],
+    ["⬢", c.agents ?? 0, C.accent, "agents", true],
   ];
-  const labels = ["working", "queued", "review", "blocked", "paused", "agents"];
   const time = clock(new Date());
   let right = "";
   const parts: Array<{ text: string; st: Style }> = [];
-  chips.forEach(([g, n, color], i) => {
-    if (n === 0 && i !== 0 && i !== 5) return;
+  chips.forEach(([g, n, color, label, always]) => {
+    if (n === 0 && !always) return;
     parts.push({ text: `${g} ${n}`, st: { fg: n > 0 ? color : C.textDim, bg: C.bgRaised, bold: n > 0 } });
-    parts.push({ text: ` ${labels[i]}  `, st: { fg: C.textDim, bg: C.bgRaised } });
+    parts.push({ text: ` ${label}  `, st: { fg: C.textDim, bg: C.bgRaised } });
   });
   parts.push({ text: time, st: { fg: C.textBright, bg: C.bgRaised, bold: true } });
   right = parts.map((p) => p.text).join("");
@@ -181,9 +183,9 @@ function drawHeader(s: Screen, r: Rect, model: RenderModel): void {
   s.fill(r.x, y, r.w, 1, " ", { bg: C.bgPanel });
   cx = r.x + 1;
   const all = store.allTasks();
-  for (const flt of FILTERS) {
+  for (const flt of boardFilters(store.features)) {
     const active = ui.filter === flt.id;
-    const count = countFor(all, flt.id) + (flt.id === "starred" ? ui.recurring.filter((sr) => sr.starred).length : 0);
+    const count = flt.id === "improvements" ? store.pendingImprovementCount() : countFor(all, flt.id) + (flt.id === "starred" ? ui.recurring.filter((sr) => sr.starred).length : 0);
     const label = `${flt.key} ${flt.label}${count > 0 ? ` ${count}` : ""}`;
     const st: Style = active ? { fg: C.textBright, bg: C.bgSelected, bold: true } : { fg: C.textMuted, bg: C.bgPanel };
     if (cx - r.x + textWidth(label) + 3 > r.w - 24) break;
@@ -219,7 +221,8 @@ function countFor(all: TaskItem[], filter: string): number {
 
 function drawRail(s: Screen, r: Rect, rows: RailRow[], model: RenderModel, focused: boolean): number {
   const { ui, store } = model;
-  const title = FILTERS.find((f) => f.id === ui.filter)!.label.toUpperCase();
+  const board = FILTERS.find((f) => f.id === ui.filter)!.label.toUpperCase();
+  const title = ui.filter === "improvements" ? `${board} · ${ui.improvementScope === "pending" ? "PENDING" : "ALL"}` : board;
   const selectable = rows.filter(isSelectable).length;
   const body = panel(s, r, title, { focused, right: selectable ? String(selectable) : undefined });
   if (body.h <= 0) return 0;
@@ -230,7 +233,11 @@ function drawRail(s: Screen, r: Rect, rows: RailRow[], model: RenderModel, focus
           ? "nothing matches"
           : ui.filter === "drafts"
             ? "no drafts. n creates one"
-            : "nothing here";
+            : ui.filter === "improvements"
+              ? ui.improvementScope === "pending"
+                ? "none pending. f shows all"
+                : "no improvements yet"
+              : "nothing here";
     s.text(body.x + 1, body.y, msg, S.dim, body.w - 1);
     return body.h;
   }
@@ -264,7 +271,8 @@ function drawRail(s: Screen, r: Rect, rows: RailRow[], model: RenderModel, focus
       // A series' run sits two columns in, under its series row.
       const at = row.run ? { ...body, x: body.x + 2, w: body.w - 2 } : body;
       drawTaskRow(s, at, y, row.task, selected, ui.frame, now, i, bg, store);
-    } else drawSeriesRow(s, body, y, row.series, selected, ui.frame, now, bg, row.expanded);
+    } else if (row.kind === "improvement") drawImprovementRow(s, body, y, row.improvement, selected, now, bg);
+    else drawSeriesRow(s, body, y, row.series, selected, ui.frame, now, bg, row.expanded);
     y += selected ? 2 : 1;
   }
   scrollbar(s, body, rows.length, top, Math.max(capacity - 1, 1));
@@ -377,6 +385,26 @@ function drawSeriesRow(s: Screen, body: Rect, y: number, sr: RecurringSeries, se
   const gx = body.x + w - glyphs.length - 1;
   if (gx > sx) glyphs.forEach((g, i) => s.put(gx + i, y + 1, g, { fg: g === "✓" ? C.ok : g === "✗" ? C.danger : C.accent, bg }));
   void now;
+}
+
+/** Board 5 row: state glyph, target (team prefix dropped), age; selected adds kind · team and the state. */
+function drawImprovementRow(s: Screen, body: Rect, y: number, imp: ImprovementSummary, selected: boolean, now: number, bg: number | undefined): void {
+  const w = body.w - 1;
+  const look = improvementLook(imp);
+  let cx = body.x;
+  cx += s.text(cx, y, `${look.glyph} `, { fg: look.color, bg, bold: true });
+  const age = ago(imp.decidedAt ?? imp.createdAt, now);
+  const right = `${imp.editedAt ? "✎ " : ""}${age}`;
+  const rw = textWidth(right);
+  const titleW = Math.max(w - (cx - body.x) - rw - 1, 4);
+  const decided = imp.status !== "pending";
+  s.text(cx, y, clip(improvementRailLabel(imp), titleW), { fg: selected ? C.textBright : decided ? C.textMuted : C.text, bg, bold: selected }, titleW);
+  s.text(body.x + w - rw, y, right, { fg: C.textDim, bg });
+  if (!selected || y + 1 >= body.y + body.h) return;
+  const label = look.label.toLowerCase();
+  const meta = [improvementKindLabel(imp.kind), imp.teamName].filter(Boolean).join(" · ");
+  s.text(body.x + 2, y + 1, clip(meta, Math.max(w - 2 - textWidth(label) - 1, 4)), { fg: C.accent, bg });
+  s.text(body.x + w - textWidth(label), y + 1, label, { fg: look.color, bg, bold: true });
 }
 
 // ── feed ──────────────────────────────────────────────────────────────────

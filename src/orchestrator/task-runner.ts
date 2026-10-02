@@ -167,7 +167,7 @@ export class TaskRunner {
       };
     }
 
-    const { prompt: basePrompt, noteIds } = this.promptBuilder.buildInitialPromptTracked({
+    const { prompt: basePrompt, noteIds, messageIds = [] } = this.promptBuilder.buildInitialPromptTracked({
       agent: agentInfo,
       task: { id: startedTask.id, title: startedTask.title, description: startedTask.description ?? undefined },
       phase: phaseInfo,
@@ -222,8 +222,8 @@ export class TaskRunner {
 
     // Notes sit near the end of the base prompt, so a base cut for the feed may
     // have lost some: leave them unrecorded and the next prompt carries them.
-    if (noteIds.length > 0 && !joined?.headCut) {
-      this.promptBuilder.recordNoteDelivery(entrypointAgentId, noteIds);
+    if ((noteIds.length > 0 || messageIds.length > 0) && !joined?.headCut) {
+      this.promptBuilder.recordNoteDelivery(entrypointAgentId, noteIds, messageIds);
     }
 
     const closeStdin = !isStreaming;

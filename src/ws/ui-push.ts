@@ -43,9 +43,10 @@ import { buildDashboardActivity } from "./dashboard-activity";
 
 import { terminalJsonSummary } from "../html/terminalJsonSummary";
 import { omarchyThemeHref } from "../html/styles/omarchy-theme";
-import { countPendingImprovements, getImprovement, improvementState, listImprovements } from "../improvements/manager";
+import { countPendingImprovements, getImprovement, improvementState, libraryTargetKey, listImprovements } from "../improvements/manager";
 import { improvementCard } from "../html/fragments/improvement-card.fragment";
 import { improvementsPendingCount } from "../html/pages/improvements.page";
+import { improvementsAutoApproveInput, improvementsEnabledInput } from "../html/pages/config.page";
 import { fetchAttentionCounts } from "../data/attention";
 import { attentionIndicator } from "../html/fragments/attention.fragment";
 
@@ -377,6 +378,13 @@ export class UIWebSocketManager {
     this.trackOn("remote_team_repo:changed", () => this.pushRemoteTeamRepos());
     // Improvements (experimental): staged / edited / approved / rejected.
     this.trackOn("improvement:changed", (event) => this.pushImprovement(event.improvementId, event.change));
+    // Improvements on/off + auto-approve: keep every open config page's checkboxes in step.
+    this.trackOn("improvements:settings_changed", (event) => {
+      if (!isExperimental() || !this.hasClients("html", ["config"])) return;
+      this.broadcastRaw(improvementsEnabledInput(event.enabled, true) + improvementsAutoApproveInput(event.autoApprove, true), ["config"]);
+    });
+    // A library agent edit moves the text its pending improvements were written against.
+    this.trackOn("library_agent:changed", (event) => this.pushScopedImprovements({ targetKeys: [libraryTargetKey(event.agentType)] }));
 
     // Top-bar attention indicator (experimental): pending improvements, review
     // gates, open escalations. Every page hears topic `attention`.
@@ -848,9 +856,9 @@ export class UIWebSocketManager {
   }
 
   /** Re-render the pending cards of one team or recurring task after its live text changed. */
-  private pushScopedImprovements(scope: { teamId?: string; scheduledTaskId?: string }): void {
+  private pushScopedImprovements(scope: { teamId?: string; scheduledTaskId?: string; targetKeys?: string[] }): void {
     if (!isExperimental() || !this.hasClients("html", ["improvements"])) return;
-    const pending = listImprovements(this.db, { status: "pending", teamId: scope.teamId, scheduledTaskId: scope.scheduledTaskId });
+    const pending = listImprovements(this.db, { status: "pending", ...scope });
     if (pending.length === 0) return;
     this.broadcastRaw(pending.map((imp) => improvementCard(imp, improvementState(this.db, imp), { oob: true })).join(""), ["improvements"]);
   }

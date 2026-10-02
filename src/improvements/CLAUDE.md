@@ -10,6 +10,12 @@ gate below.
 |---|---|
 | `manager.ts` | Store + lifecycle over the runtime `improvements` table (migration `0029_improvements.sql`, no FKs: a proposal outlives the run that staged it). Targets: `phase_prompt` (team phase by index + name), `lead_instructions` (team `skipper_prompt`), `agent_instruction` (inline member, or a library agent `single:<id>` / `custom:<id>`), `recurring_description` (the series the run came from), plus `skill_suggestion` (no target; acknowledge / dismiss only). `readLiveTarget` reads the current text + `textRevision` (sha256, 12 hex); `stageImprovement` refuses a stale caller revision, a missing target, a no-op and a remote team; `editImprovement` replaces the proposed text AND rebases it onto the live text (the operator saw it, so the edit is the merge); `approveImprovement` refuses a conflict, then writes through the normal writer (`updateLocalTeam`, `updateSingleAgent` + `reflattenTeamsReferencingAgentType`, `updateCustomAgent`, `ScheduledTaskScheduler.setDescription`); `rejectImprovement`. `getImprovementContext` / `hasImprovementTargets` decide, per task, which tools a root session gets and whether the prompt block is injected |
 
+**On/off switch.** `SETTING_IMPROVEMENTS_ENABLED` (runtime `app_settings`,
+config page "Improvements" panel, experimental, default on). Off: no root
+Skipper gets the tools (`registerImprovementTools` returns early; a session
+opened before the switch gets a refusal from every tool) or the TEAM
+HOUSEKEEPING prompt block. Existing improvements stay reviewable.
+
 **Auto-approve gate.** `SETTING_IMPROVEMENTS_AUTO_APPROVE` (runtime
 `app_settings`, config page "Improvements" panel, experimental, default off).
 The tools call `submitImprovement`: stage, then, when the gate is on, approve at
@@ -32,9 +38,13 @@ writes the library record; the card shows how many teams use it.
 **Events.** Every write emits `improvement:changed { improvementId, change: created|updated }`
 (never deleted). `ws/ui-push.ts` prepends a created card to `#imp-list`,
 replaces a changed card and its pending siblings on the same target, and
-re-renders the pending cards of a team / series on `team:changed` /
-`recurring:changed` (topic `improvements`). Connect forwards the event fat
-(`improvement` row, `connect/events.ts`); no app screen yet.
+re-renders the pending cards of a team / series / library agent on
+`team:changed` / `recurring:changed` / `library_agent:changed` (topic
+`improvements`). `setImprovementsAutoApprove` emits
+`improvements:settings_changed`. Connect: the `improvements` resource and the
+summary / detail projections are in `connect/improvements.ts` (see
+[../connect/CLAUDE.md](../connect/CLAUDE.md)). The iOS and Android apps show them in
+the Reviews tab ("Phases | Improvements" switch; the tab badge counts both).
 
 **Agent side.** `mcp/improvement-tools.ts` registers, on a root session under
 `--experimental` only: `get_team_config`, `list_improvements`,
@@ -57,4 +67,4 @@ topic `attention`, which `shell/layout.ts:v2layout` adds to every page's topics.
 **Page.** `routes/improvements.ts` (also `POST /api/settings/improvements-auto-approve`) (404 without `--experimental`),
 `html/pages/improvements.page.ts`, `html/fragments/improvement-card.fragment.ts`
 (line diff, card is the htmx swap unit: approve / reject / edit / save / cancel
-all target `closest .imp-card` outerHTML).
+all target `closest .imp-card` outerHTML). The terminal dashboard has the same flow as board 5 over Connect (see [../tui/CLAUDE.md](../tui/CLAUDE.md)).

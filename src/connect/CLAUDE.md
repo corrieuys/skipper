@@ -21,6 +21,7 @@ surface, and the caller's own other views, stale.
 | `events.ts` | Forward domain events as **fat events** (incl. `instance:state_changed`, carrying the task projection, so clients refresh the agent roster without polling): payload keeps the bus shape plus the changed entity's projection (task/escalation/note/message/artifact/timeline entry) so integrators patch a local store without refetching. Coalesces `delegation_group:progress` (500ms/group). Sends `connect:capabilities` on subscribe (the daemon-side subscribe, i.e. once per attach; a consumer that connects later must read the same `features` list from `state/snapshot`) |
 | `serializers.ts` | Entity projections shared by events + snapshot + reads (`projectTask`, `toTaskListItem`, `toTaskDetailItem`, `snapshotTimelineEntries`, `fetchTimelineEntryItem`). Never ship heavy fields (orchestration_state, task_config, artifact bodies); the detail projection does carry description + result |
 | `output-tail.ts` | `OutputTailManager` - live agent output as coalesced `output_batch` frames, only while the server reports a subscribed consumer (`output_subscribe`/`output_unsubscribe`). Detached from bus when idle. **On subscribe it first replays recent `terminal_outputs` for the task as a one-shot `output_batch` with `backfill: true` (oldest-first, `backfillEntries` cap, default 200, AND a `backfillMaxBytes` budget, default 1MB, spent from the newest row so a phone never gets a multi-MB seed frame; backfill entries carry `id` = the `outputs/list` `beforeId` cursor for paging older history), then streams live** — so the integrator seeds a task's timeline (agent prose, tool calls, sys frames) from a single subscribe with no separate `outputs/list` read and no read-then-subscribe gap. Attach-then-backfill runs synchronously, so a line is either in the backfill or a later live frame, never both/neither |
+| `improvements.ts` | `improvements/*` resource (experimental), the summary / detail projections and the fat-event fields for `improvement:changed`, `team:changed`, `recurring:changed`, `library_agent:changed`. See "Improvements" below |
 | `public-links.ts` | Build public artifact URLs (`https://<integrator>/p/<gid>/<artifactId>?key=...`) and webhook trigger URLs (`.../wh/<gid>/<scheduledTaskId>?key=...`); gid decoded from the connect key |
 
 ## Protocol v3: the task contract
@@ -164,6 +165,45 @@ The projection only ever ships the flag, never `task_config`. `tasks/read` adds
 scope_id, runs, entries, vectors, pending, deleted, models, dims,
 content/vector/total bytes, by_kind, by_author, oldest/newest, retention_days);
 null when memory is off and nothing is stored.
+
+## Improvements (experimental)
+
+`improvements.ts`. `connect:capabilities` and `state/snapshot` list the
+`improvements` feature only under `--experimental` (`protocol.ts:connectFeatures`);
+the snapshot's `counts.pendingImprovements` is the pending count (0 without the
+flag). Resource `improvements`:
+
+| action | params | result |
+|---|---|---|
+| `list` | `{ status?: pending (default) \| decided \| all, limit? (default 100, cap 500) }` | `ImprovementSummaryItem[]`, newest first |
+| `read` | `{ id }` | `ImprovementDetailItem` |
+| `edit` | `{ id, text }` | detail; replaces the proposed text and rebases it onto the live text |
+| `approve` | `{ id }` | detail; errors on `conflict` / `missing`. A skill suggestion is acknowledged |
+| `reject` | `{ id }` | detail. A skill suggestion is dismissed |
+| `settings` | `{}` | `{ autoApprove, enabled }` (`enabled`: the config page on/off switch) |
+| `set-auto-approve` | `{ on }` | `{ autoApprove }` |
+
+Two projections, because a proposal holds up to three 50k-character texts and
+the relay caps a frame at 1 MiB. The **summary** (list rows, every event) has
+`id, kind, status, state (ready|conflict|missing|suggestion|decided), targetKey,
+targetLabel, teamId, teamName, scheduledTaskId, phaseIndex, phaseName, agentRef,
+skillName, reason (cut to 280), sourceTaskId, sourceTaskTitle, usedByTeams,
+baseRevision, liveRevision, editedAt, decidedAt, createdAt, updatedAt` and no
+texts. The **detail** adds the full `reason`, `proposedText`, `beforeText`,
+`liveText` and `diff: [{ op: same|add|del, text }]` with `diffBase`: `live`
+(pending ready / conflict: live → proposed), `before` (decided: before →
+proposed) or null (missing, skill suggestion). A client that holds a detail
+reads it again when a summary for that id arrives with a new `updatedAt` or
+`liveRevision`.
+
+Fat events: `improvement:changed` carries `improvement` (summary) and
+`siblings` (the other pending summaries on the same target, state recomputed,
+so they turn `conflict` after an approve). `team:changed`, `recurring:changed`
+(every change, delete included) and `library_agent:changed` carry
+`improvements`: the pending summaries in that scope, so a manual edit flips them
+to `conflict` live. `improvements:settings_changed { autoApprove, enabled }` follows
+both settings. Over a remote the integrator scope map puts `list` / `read` / `settings`
+under `teams:read` and the writes under `teams:write`.
 
 ## Remote team repos (experimental)
 

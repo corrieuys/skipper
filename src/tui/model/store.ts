@@ -11,6 +11,8 @@ import type {
   Metrics,
   TransportEvent,
   ConnStatus,
+  ImprovementSummary,
+  ImprovementDetail,
 } from "./types";
 import { EMPTY_METRICS } from "./types";
 
@@ -56,6 +58,17 @@ export class Store {
   authError: string | null = null;
   protocolVersion = 0;
   features: string[] = [];
+  /** Improvements (experimental): summaries by id, upserted from list loads and fat events. */
+  private improvements = new Map<string, ImprovementSummary>();
+  /** `improvements/read` results by id; stale once the summary's updatedAt / liveRevision / state moves. */
+  private improvementDetails = new Map<string, ImprovementDetail>();
+  private improvementErrors = new Map<string, string>();
+  /** The snapshot's pending count, used until the first list load. */
+  private pendingImprovementsHint = 0;
+  /** True once an `improvements/list` has been folded in. */
+  improvementsLoaded = false;
+  /** The auto-approve gate; null until `improvements/settings` answers. */
+  autoApprove: boolean | null = null;
 
   /** Monotonic change counter; bumps on every applied event. */
   get version(): number {
@@ -84,9 +97,17 @@ export class Store {
         return true;
       case "recurring_changed":
       case "team_changed":
+        // The lists live in the controller's UI cache (run.ts), not the store;
+        // the pending improvements in that scope ride along and are upserted.
+        return event.improvements?.length ? this.upsertImprovements(event.improvements) : false;
       case "remote_repo_changed":
-        // Those lists live in the controller's UI cache (run.ts), not the store.
         return false;
+      case "improvements":
+        return this.upsertImprovements(event.improvements);
+      case "improvement_settings":
+        if (this.autoApprove === event.autoApprove) return false;
+        this.autoApprove = event.autoApprove;
+        return true;
       case "capabilities":
         this.protocolVersion = event.protocolVersion;
         this.features = event.features;
@@ -95,6 +116,7 @@ export class Store {
         this.tasks = new Map(event.tasks.map((t) => [t.id, t]));
         this.escalations = new Map(event.escalations.filter((e) => e.status === "open").map((e) => [e.id, e]));
         this.titleGeneratorConfigured = event.titleGeneratorConfigured;
+        this.pendingImprovementsHint = event.pendingImprovements ?? 0;
         this.hydrated = true;
         // Bundles survive a resync (they re-validate by loadedAt on reselect).
         return true;
@@ -177,6 +199,81 @@ export class Store {
         this.metrics = event.metrics;
         return true;
     }
+  }
+
+  // ── improvements (experimental) ─────────────────────────────────────────
+
+  private upsertImprovements(rows: ImprovementSummary[]): boolean {
+    for (const r of rows) if (r.id) this.improvements.set(r.id, r);
+    return rows.length > 0;
+  }
+
+  /**
+   * Fold an `improvements/list` result. `scope` is what was asked for: rows of
+   * that scope the answer no longer holds (decided or gone while this client
+   * was away) are dropped, unless the answer hit its limit.
+   */
+  loadImprovements(rows: ImprovementSummary[], scope: "pending" | "all", limit: number): void {
+    if (rows.length < limit) {
+      const keep = new Set(rows.map((r) => r.id));
+      for (const [id, r] of this.improvements) {
+        if (keep.has(id)) continue;
+        if (scope === "all" || r.status === "pending") this.improvements.delete(id);
+      }
+    }
+    this.upsertImprovements(rows);
+    this.improvementsLoaded = true;
+    this._version++;
+  }
+
+  /** The daemon advertises the experimental `improvements` feature. */
+  get hasImprovements(): boolean {
+    return this.features.includes("improvements");
+  }
+
+  improvement(id: string): ImprovementSummary | undefined {
+    return this.improvements.get(id);
+  }
+
+  /** Every known improvement, newest first. */
+  allImprovements(): ImprovementSummary[] {
+    return [...this.improvements.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  }
+
+  pendingImprovementCount(): number {
+    if (!this.hasImprovements) return 0;
+    if (!this.improvementsLoaded) return this.pendingImprovementsHint;
+    let n = 0;
+    for (const r of this.improvements.values()) if (r.status === "pending") n++;
+    return n;
+  }
+
+  improvementDetail(id: string): ImprovementDetail | undefined {
+    return this.improvementDetails.get(id);
+  }
+
+  /** No detail yet, or the summary moved since it was read. */
+  improvementDetailStale(id: string): boolean {
+    const d = this.improvementDetails.get(id);
+    const s = this.improvements.get(id);
+    if (!d) return true;
+    if (!s) return false;
+    return d.updatedAt !== s.updatedAt || d.liveRevision !== s.liveRevision || d.state !== s.state;
+  }
+
+  setImprovementDetail(detail: ImprovementDetail): void {
+    this.improvementDetails.set(detail.id, detail);
+    this.improvementErrors.delete(detail.id);
+    this._version++;
+  }
+
+  improvementError(id: string): string | null {
+    return this.improvementErrors.get(id) ?? null;
+  }
+
+  setImprovementError(id: string, error: string): void {
+    this.improvementErrors.set(id, error);
+    this._version++;
   }
 
   // ── per-task bundle lifecycle (driven by the controller's loads) ────────

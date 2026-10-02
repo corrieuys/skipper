@@ -9,15 +9,23 @@ export type Pane = "rail" | "main" | "feed";
  * Rail boards. `latest` mirrors the web sidebar's Latest tab: Needs you, Active,
  * Recurring (expandable series with their last runs) and Recent. Finished tasks
  * live under `all`; recurring series live inside `latest` (and `starred`).
+ * `improvements` lists staged team-config improvements; it exists only when the
+ * daemon advertises the experimental `improvements` feature (`boardFilters`).
  */
-export type Filter = "latest" | "drafts" | "starred" | "all";
+export type Filter = "latest" | "drafts" | "starred" | "all" | "improvements";
 
 export const FILTERS: { id: Filter; label: string; key: string }[] = [
   { id: "latest", label: "Latest", key: "1" },
   { id: "all", label: "All", key: "2" },
   { id: "starred", label: "Starred", key: "3" },
   { id: "drafts", label: "Drafts", key: "4" },
+  { id: "improvements", label: "Improvements", key: "5" },
 ];
+
+/** The boards this daemon offers: Improvements only with the `improvements` feature. */
+export function boardFilters(features: string[]): typeof FILTERS {
+  return features.includes("improvements") ? FILTERS : FILTERS.filter((f) => f.id !== "improvements");
+}
 
 /** How many of a series' newest runs an expanded series row lists. */
 export const SERIES_RUNS_SHOWN = 5;
@@ -146,8 +154,13 @@ export interface UIState {
   searchActive: boolean;
   selectedTaskId: string | null;
   selectedSeriesId: string | null;
-  /** Which of the two the rail cursor is on: a task row or a recurring series row. */
-  railKind: "task" | "series";
+  /** What the rail cursor is on: a task row, a recurring series row, or an improvement (board 5). */
+  railKind: "task" | "series" | "improvement";
+  selectedImprovementId: string | null;
+  /** Board 5 lists pending improvements, or every one (`f`). */
+  improvementScope: "pending" | "all";
+  /** The selected improvement's diff shows every unchanged line (`z`), not 3 lines of context. */
+  improvementDiffExpanded: boolean;
   /** Series whose latest runs are listed under them in the rail. */
   expandedSeries: Set<string>;
   railScroll: number;
@@ -184,6 +197,9 @@ export function initialUIState(transportLabel: string): UIState {
     selectedTaskId: null,
     selectedSeriesId: null,
     railKind: "task",
+    selectedImprovementId: null,
+    improvementScope: "pending",
+    improvementDiffExpanded: false,
     expandedSeries: new Set(),
     railScroll: 0,
     detailTab: "conversation",

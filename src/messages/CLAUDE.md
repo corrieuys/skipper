@@ -13,9 +13,20 @@ Third register alongside notes and artifacts, split by **audience**:
 |---|---|---|
 | notes (`task_notes`) | the next agent on the task | yes |
 | artifacts (`task_artifacts`) | agents + operator, versioned documents | listed, fetched on demand |
-| messages (`task_messages`) | the operator only | **never** |
+| messages (`task_messages`) | the operator only | root Skipper only, other agents' messages, once each |
 
-Because nothing reads messages back, there is no list/get MCP tool — only
+The root Skipper gets the messages OTHER agents on the task posted (never its
+own), under `MESSAGES OTHER AGENTS POSTED TO THE OPERATOR`, so it knows what the
+operator has already read on the timeline and does not repeat a delegate's
+findings. They ride every path that feeds unseen notes to the root (task-runner
+start/wake, phase advance/regression respawn, delegation result, escalation
+answer, idle poke) via `PromptBuilder.buildInitialPromptTracked` /
+`buildNotesEnrichmentBlock`, newest 20, and are marked delivered with the notes
+(`recordNoteDelivery(..., messageIds)`) in `agent_message_receipts`, keyed on the
+root's template agent id (migration `0030_agent_message_receipts.sql`). Delegated
+children never get messages.
+
+Agents cannot read messages on demand, so there is no list/get MCP tool — only
 `post_message` (registered on root AND delegated sessions, `isExperimental()` only,
 see [../mcp/CLAUDE.md](../mcp/CLAUDE.md)). It takes an optional `format`; agents are
 told to strongly prefer `text`. Writing style is instructed in

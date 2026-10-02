@@ -199,6 +199,58 @@ export interface RecurringSeries {
   runs: RecurringRun[];
 }
 
+/**
+ * A staged team-config improvement (experimental `improvements` feature), as
+ * the Connect summary projection carries it: list rows and every fat event.
+ * No texts; `read` brings the detail. Mirrors src/connect/improvements.ts.
+ */
+export interface ImprovementSummary {
+  id: string;
+  /** phase_prompt | agent_instruction | lead_instructions | recurring_description | skill_suggestion */
+  kind: string;
+  /** pending | approved | rejected */
+  status: string;
+  /** ready | conflict | missing | suggestion | decided (derived now on the daemon) */
+  state: string;
+  targetKey: string;
+  targetLabel: string;
+  teamId: string | null;
+  teamName: string | null;
+  scheduledTaskId: string | null;
+  phaseIndex: number | null;
+  phaseName: string | null;
+  agentRef: string | null;
+  skillName: string | null;
+  /** Cut to 280 characters; the detail carries the full reason. */
+  reason: string;
+  sourceTaskId: string | null;
+  sourceTaskTitle: string | null;
+  /** Library agent targets only: how many teams use the agent. */
+  usedByTeams: number | null;
+  baseRevision: string | null;
+  liveRevision: string | null;
+  editedAt: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ImprovementDiffLine {
+  op: "same" | "add" | "del";
+  text: string;
+}
+
+/** `improvements/read`: the summary plus the texts and a line diff. */
+export interface ImprovementDetail extends ImprovementSummary {
+  proposedText: string;
+  beforeText: string;
+  /** The live text now (null when decided, missing or a skill suggestion). */
+  liveText: string | null;
+  diff: ImprovementDiffLine[] | null;
+  /** live: live → proposed · before: before → proposed (decided) · null: no diff. */
+  diffBase: "live" | "before" | null;
+}
+
 export interface Metrics {
   running: number;
   queued: number;
@@ -220,10 +272,17 @@ export type TransportEvent =
   | { kind: "status"; status: ConnStatus }
   | { kind: "capabilities"; protocolVersion: number; features: string[] }
   | { kind: "auth_failed"; message: string }
-  | { kind: "snapshot"; tasks: TaskItem[]; escalations: Escalation[]; titleGeneratorConfigured: boolean }
-  /** A recurring series or team changed on the daemon. `row` is the wire projection (absent when deleted); the controller maps it into its cached list. */
-  | { kind: "recurring_changed"; id: string; deleted: boolean; row: Record<string, unknown> | null }
-  | { kind: "team_changed"; id: string; deleted: boolean; row: Record<string, unknown> | null }
+  | { kind: "snapshot"; tasks: TaskItem[]; escalations: Escalation[]; titleGeneratorConfigured: boolean; pendingImprovements?: number }
+  /**
+   * A recurring series or team changed on the daemon. `row` is the wire projection (absent when deleted); the controller maps it into its cached list.
+   * `improvements` (experimental): the pending improvements in that scope, state recomputed (a manual edit flips them to conflict).
+   */
+  | { kind: "recurring_changed"; id: string; deleted: boolean; row: Record<string, unknown> | null; improvements?: ImprovementSummary[] }
+  | { kind: "team_changed"; id: string; deleted: boolean; row: Record<string, unknown> | null; improvements?: ImprovementSummary[] }
+  /** Improvement summaries to upsert by id (`improvement:changed` row + siblings, `library_agent:changed`). */
+  | { kind: "improvements"; improvements: ImprovementSummary[] }
+  /** The improvements auto-approve gate. */
+  | { kind: "improvement_settings"; autoApprove: boolean }
   /** A remote team repo was linked, moved sync status, or was unlinked. An open repos browser reloads. */
   | { kind: "remote_repo_changed"; id: string; deleted: boolean }
   /** `edited`: a same-status change (edit, rename, star, toggle): fields outside the list row may have moved. */

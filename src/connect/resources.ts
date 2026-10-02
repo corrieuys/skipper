@@ -22,7 +22,9 @@ import { eventBus } from "../events/bus";
 import { looksLikeHtml } from "../html/atoms/sniff-html";
 import { sanitizeIcon } from "../html/atoms/lucide";
 import { sanitizeColor } from "../html/atoms/creature";
-import { CONNECT_PROTOCOL_VERSION, type StateSnapshot, CONNECT_FEATURES } from "./protocol";
+import { CONNECT_PROTOCOL_VERSION, type StateSnapshot, connectFeatures } from "./protocol";
+import { handleImprovementsRequest } from "./improvements";
+import { countPendingImprovements } from "../improvements/manager";
 import { getPublicArtifactUrl } from "./public-links";
 import { fetchArtifactItem, fetchTimelineEntryItem, snapshotOpenEscalations, snapshotTasks, snapshotTimelineEntries, toTaskDetailItem, toTaskListItem } from "./serializers";
 import { fetchTaskOutputPage } from "../data/queries";
@@ -1180,7 +1182,7 @@ export async function handleResourceRequest(
             return { ok: true, data: { taskId, approved: true } };
           }
           case "reject": {
-            // Reject a pending phase review and regress the phase.
+            // Reject a pending phase review; the task redoes the same phase.
             // params: { taskId: string, message?: string }
             const taskId = String(params.taskId ?? params.id ?? "");
             if (!taskId) return { ok: false, error: "taskId is required" };
@@ -1655,12 +1657,16 @@ export async function handleResourceRequest(
         const reviews = tasks.filter((t) => t.needs_review);
         const snapshot: StateSnapshot = {
           protocolVersion: CONNECT_PROTOCOL_VERSION,
-          features: [...CONNECT_FEATURES],
+          features: connectFeatures(),
           ts: new Date().toISOString(),
           tasks,
           escalations,
           reviews,
-          counts: { openEscalations: escalations.length, pendingReviews: reviews.length },
+          counts: {
+            openEscalations: escalations.length,
+            pendingReviews: reviews.length,
+            pendingImprovements: isExperimental() ? countPendingImprovements(db) : 0,
+          },
           titleGeneratorConfigured: isTaskTitleGeneratorConfigured(db),
         };
         return { ok: true, data: snapshot };
@@ -1771,6 +1777,10 @@ export async function handleResourceRequest(
             return { ok: false, error: `Unknown realtime action: ${action}` };
         }
       }
+
+      case "improvements":
+        // Staged team-config improvements (experimental): see ./improvements.ts.
+        return handleImprovementsRequest(db, action, params);
 
       default:
         return { ok: false, error: `Unknown resource: ${resource}` };

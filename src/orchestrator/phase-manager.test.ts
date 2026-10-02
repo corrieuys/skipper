@@ -332,8 +332,8 @@ describe("handlePhaseComplete - dedup retry after failure", () => {
   });
 });
 
-describe("rejectReview - dedup keys of the phases that run again", () => {
-  it("clears every key from the target through the rejected phase, so the redone phase reaches review again", async () => {
+describe("rejectReview - redoes the reviewed phase", () => {
+  it("keeps the task in the rejected phase and clears its dedup key, so the redo reaches review again", async () => {
     const agentId = createAgent(db);
     const teamId = createTeamWithPhases(db, agentId, [
       { name: "Plan", prompt: "p1" },
@@ -351,17 +351,18 @@ describe("rejectReview - dedup keys of the phases that run again", () => {
     expect(await phaseManager.handlePhaseComplete(agentId)).toBe("review_pending");
     expect(currentPhase()).toBe(2);
 
-    // Rejecting the review of phase 2 sends the task back to phase 1, so
-    // phases 1 and 2 both run again. Phase 0 is not redone and keeps its key.
+    // Rejecting the review of phase 2 redoes phase 2. Earlier phases keep
+    // their keys and no regression is counted.
     await phaseManager.rejectReview("task-1", "Checks are incomplete");
-    expect(currentPhase()).toBe(1);
+    expect(currentPhase()).toBe(2);
     expect(phaseManager.hasPhaseBeenHandled("task-1", 0)).toBe(true);
-    expect(phaseManager.hasPhaseBeenHandled("task-1", 1)).toBe(false);
+    expect(phaseManager.hasPhaseBeenHandled("task-1", 1)).toBe(true);
     expect(phaseManager.hasPhaseBeenHandled("task-1", 2)).toBe(false);
+    const regressions = (db.prepare("SELECT regression_count FROM tasks WHERE id = 'task-1'").get() as { regression_count: number }).regression_count;
+    expect(regressions).toBe(0);
 
-    // Redo phase 1, then phase 2: its completion opens the review again
-    // instead of returning noop_dedup and stalling the task.
-    expect(await phaseManager.handlePhaseComplete(agentId)).toBe("advanced");
+    // The redo of phase 2 opens the review again instead of returning
+    // noop_dedup and stalling the task.
     expect(await phaseManager.handlePhaseComplete(agentId)).toBe("review_pending");
     expect(currentPhase()).toBe(2);
   });

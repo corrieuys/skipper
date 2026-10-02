@@ -1192,7 +1192,7 @@ export class DelegationManager {
     // some tests inject minimal mocks for promptBuilder.
     const enrichment = taskId && typeof this.promptBuilder.buildNotesEnrichmentBlock === "function"
       ? this.promptBuilder.buildNotesEnrichmentBlock(taskId, parentRuntimeId)
-      : { text: "", noteIds: [] };
+      : { text: "", noteIds: [], messageIds: [] };
     // Drain any operator input that arrived while this delegation was open.
     // Without this, mid-delegation input stays unfed (`fed_to_skipper=0`,
     // "queued for agent") until the whole run settles and a fresh run starts —
@@ -1206,8 +1206,9 @@ export class DelegationManager {
       enrichedPayload = `${enrichedPayload}\n${pendingFeed.text}`;
     }
     const markDelivered = (): void => {
-      if (enrichment.noteIds.length > 0 && typeof this.promptBuilder.recordNoteDelivery === "function") {
-        this.promptBuilder.recordNoteDelivery(parentRuntimeId, enrichment.noteIds);
+      const messageIds = enrichment.messageIds ?? [];
+      if ((enrichment.noteIds.length > 0 || messageIds.length > 0) && typeof this.promptBuilder.recordNoteDelivery === "function") {
+        this.promptBuilder.recordNoteDelivery(parentRuntimeId, enrichment.noteIds, messageIds);
       }
       pendingFeed?.commit();
     };

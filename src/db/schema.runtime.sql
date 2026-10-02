@@ -412,6 +412,16 @@ CREATE TABLE IF NOT EXISTS agent_note_receipts (
 -- from task_notes.
 CREATE INDEX IF NOT EXISTS idx_agent_note_receipts_note ON agent_note_receipts(note_id);
 
+-- Operator messages handed to a task's root Skipper (other agents' messages
+-- only). Mirrors migrations/0030_agent_message_receipts.sql.
+CREATE TABLE IF NOT EXISTS agent_message_receipts (
+  agent_id TEXT NOT NULL,
+  message_id TEXT NOT NULL REFERENCES task_messages(id) ON DELETE CASCADE,
+  delivered_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (agent_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_message_receipts_message ON agent_message_receipts(message_id);
+
 -- Task Templates (reusable prompt configurations per team)
 CREATE TABLE IF NOT EXISTS task_templates (
   id TEXT PRIMARY KEY,

@@ -1,8 +1,9 @@
 import { eventBus, type DelegationGroupProgressEvent, type EventName } from "../events/bus";
 import { getDb } from "../db/connection";
 import { fetchRecurringItem, fetchRemoteTeamRepoItem, fetchTeamItem } from "./resources";
-import { CONNECT_PROTOCOL_VERSION, CONNECT_FEATURES } from "./protocol";
-import { getImprovement } from "../improvements/manager";
+import { CONNECT_PROTOCOL_VERSION, connectFeatures } from "./protocol";
+import { isExperimental } from "../config/feature-flags";
+import { improvementEventFields, libraryAgentImprovementSummaries, pendingImprovementSummaries } from "./improvements";
 import {
   fetchArtifactItem,
   fetchEscalationItem,
@@ -34,8 +35,13 @@ const FORWARDED_EVENTS: readonly EventName[] = [
   // Remote team repos: fat `repo` row (the `remote-team-repos/list` shape),
   // absent on change === "deleted". A sync also fires team:changed per team.
   "remote_team_repo:changed",
-  // Improvements staged by root Skippers (experimental): fat `improvement` row.
+  // Improvements (experimental): fat `improvement` summary + `siblings` (the
+  // other pending summaries on the same target, state recomputed). The
+  // auto-approve gate ships its whole state; a library agent write carries the
+  // pending summaries on that agent (`improvements`).
   "improvement:changed",
+  "improvements:settings_changed",
+  "library_agent:changed",
   "escalation:created",
   "escalation:resolved",
   "artifact:created",
@@ -101,17 +107,25 @@ function enrichPayload(eventName: EventName, payload: unknown): unknown {
       const escalation = fetchEscalationItem(db, p.escalationId);
       return escalation ? { ...p, escalation } : p;
     }
-    if (eventName === "recurring:changed" && typeof p.scheduledTaskId === "string" && p.change !== "deleted") {
-      const recurring = fetchRecurringItem(db, p.scheduledTaskId);
-      return recurring ? { ...p, recurring } : p;
+    // Team / series edits move the live text pending improvements were
+    // written against: under --experimental both also carry `improvements`,
+    // the pending summaries in that scope (on every change, delete included).
+    if (eventName === "recurring:changed" && typeof p.scheduledTaskId === "string") {
+      const recurring = p.change !== "deleted" ? fetchRecurringItem(db, p.scheduledTaskId) : null;
+      const improvements = isExperimental() ? pendingImprovementSummaries(db, { scheduledTaskId: p.scheduledTaskId }) : null;
+      return { ...p, ...(recurring ? { recurring } : {}), ...(improvements ? { improvements } : {}) };
     }
-    if (eventName === "team:changed" && typeof p.teamId === "string" && p.change !== "deleted") {
-      const team = fetchTeamItem(db, p.teamId);
-      return team ? { ...p, team } : p;
+    if (eventName === "team:changed" && typeof p.teamId === "string") {
+      const team = p.change !== "deleted" ? fetchTeamItem(db, p.teamId) : null;
+      const improvements = isExperimental() ? pendingImprovementSummaries(db, { teamId: p.teamId }) : null;
+      return { ...p, ...(team ? { team } : {}), ...(improvements ? { improvements } : {}) };
+    }
+    if (eventName === "library_agent:changed" && typeof p.agentType === "string") {
+      return isExperimental() ? { ...p, improvements: libraryAgentImprovementSummaries(db, p.agentType) } : p;
     }
     if (eventName === "improvement:changed" && typeof p.improvementId === "string") {
-      const improvement = getImprovement(db, p.improvementId);
-      return improvement ? { ...p, improvement } : p;
+      const fields = improvementEventFields(db, p.improvementId);
+      return fields ? { ...p, ...fields } : p;
     }
     if (eventName === "remote_team_repo:changed" && typeof p.repoId === "string" && p.change !== "deleted") {
       const repo = fetchRemoteTeamRepoItem(db, p.repoId);
@@ -167,7 +181,7 @@ export function subscribeConnectEvents(sender: EventSender, options: SubscribeCo
   // servers fan it out, old consumers ignore the unknown name.
   send("connect:capabilities", {
     protocolVersion: CONNECT_PROTOCOL_VERSION,
-    features: [...CONNECT_FEATURES],
+    features: connectFeatures(),
   });
 
   for (const eventName of FORWARDED_EVENTS) {

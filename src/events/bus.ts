@@ -140,6 +140,23 @@ export interface ImprovementChangedEvent {
   change: "created" | "updated";
 }
 
+/** An improvements setting was switched (src/improvements/manager.ts): the whole settings state. */
+export interface ImprovementSettingsChangedEvent {
+  autoApprove: boolean;
+  /** Off: root Skippers get no housekeeping tools or prompt block. */
+  enabled: boolean;
+}
+
+/**
+ * A library agent was created, edited or deleted (src/single-agents/store.ts,
+ * src/custom-agents/store.ts). `agentType` is the reference type teams use:
+ * `single:<id>` or `custom:<id>`.
+ */
+export interface LibraryAgentChangedEvent {
+  agentType: string;
+  change: "created" | "updated" | "deleted";
+}
+
 export interface InstanceStateChangedEvent {
   instanceId: string;
   templateAgentId: string;
@@ -247,6 +264,8 @@ export interface EventMap {
   "team:changed": [TeamChangedEvent];
   "remote_team_repo:changed": [RemoteTeamRepoChangedEvent];
   "improvement:changed": [ImprovementChangedEvent];
+  "improvements:settings_changed": [ImprovementSettingsChangedEvent];
+  "library_agent:changed": [LibraryAgentChangedEvent];
   "delegation_group:progress": [DelegationGroupProgressEvent];
   "escalation:created": [EscalationCreatedEvent];
   "escalation:resolved": [EscalationResolvedEvent];

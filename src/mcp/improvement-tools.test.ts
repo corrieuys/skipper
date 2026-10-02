@@ -6,7 +6,7 @@ import { resetConfigStore } from "../config/store";
 import { createLocalTeam, getLocalTeam } from "../teams/local-teams";
 import { TaskScheduler } from "../tasks/scheduler";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
-import { listImprovements, setImprovementsAutoApprove } from "../improvements/manager";
+import { listImprovements, setImprovementsAutoApprove, setImprovementsEnabled } from "../improvements/manager";
 import { registerImprovementTools } from "./improvement-tools";
 import type { InternalAgentIdentity } from "./auth";
 
@@ -82,6 +82,18 @@ describe("registration", () => {
     expect(names).toContain("propose_recurring_description");
     expect(names).not.toContain("propose_phase_prompt");
     expect(names).not.toContain("propose_agent_instruction");
+  });
+});
+
+describe("improvements switched off", () => {
+  it("registers no tools, and a session opened before the switch is refused", async () => {
+    const taskId = makeTask("alpha", true);
+    const before = register(taskId);
+    setImprovementsEnabled(db, false);
+    expect([...register(taskId).keys()]).toEqual([]);
+    expect(await call(before, "get_team_config")).toEqual({ error: "Error: Improvements are turned off. Do not stage changes." });
+    setImprovementsEnabled(db, true);
+    expect([...register(taskId).keys()]).toContain("propose_phase_prompt");
   });
 });
 

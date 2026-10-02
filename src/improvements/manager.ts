@@ -464,6 +464,23 @@ export function isImprovementsAutoApproveOn(db: Database): boolean {
 
 export function setImprovementsAutoApprove(db: Database, on: boolean): void {
   setBoolSetting(db, SETTING_IMPROVEMENTS_AUTO_APPROVE, on);
+  eventBus.emit("improvements:settings_changed", { autoApprove: on, enabled: isImprovementsEnabled(db) });
+}
+
+/**
+ * Operator switch (config page, runtime app_settings, default on): when off, no
+ * root Skipper gets the housekeeping tools or the TEAM HOUSEKEEPING prompt block,
+ * so nothing new is staged. Existing improvements stay reviewable.
+ */
+export const SETTING_IMPROVEMENTS_ENABLED = "improvements_enabled";
+
+export function isImprovementsEnabled(db: Database): boolean {
+  return getBoolSetting(db, SETTING_IMPROVEMENTS_ENABLED, true);
+}
+
+export function setImprovementsEnabled(db: Database, on: boolean): void {
+  setBoolSetting(db, SETTING_IMPROVEMENTS_ENABLED, on);
+  eventBus.emit("improvements:settings_changed", { autoApprove: isImprovementsAutoApproveOn(db), enabled: on });
 }
 
 /**

@@ -7,6 +7,7 @@ import { conversation, ago, elapsed, hhmm, shortId, scheduleLabel, seriesRuns, t
 import { toOneLine, toPlainText } from "../ui/plain-text";
 import { C, S, agentColor, statusColor, statusLabel, statusGlyph } from "./theme";
 import { panel, phaseStrip, statusPill, pill, orb, lr, scrollbar, breathingCursor } from "./widgets";
+import { drawImprovementDetail } from "./improvement-detail";
 
 export interface DetailDrawResult {
   cursor: { x: number; y: number } | null;
@@ -20,6 +21,8 @@ export interface DetailDrawResult {
  * live output, notes, artifacts, info) and the input composer.
  */
 export function drawDetail(s: Screen, r: Rect, store: Store, ui: UIState, focused: boolean): DetailDrawResult {
+  // Board 5: the rail cursor is on an improvement.
+  if (ui.railKind === "improvement") return drawImprovementDetail(s, r, store, ui, focused);
   // The rail cursor is on a recurring series: show the series, not the last task.
   const series = ui.railKind === "series" ? ui.recurring.find((sr) => sr.id === ui.selectedSeriesId) : undefined;
   if (series) return drawSeriesDetail(s, r, store, ui, series, focused);

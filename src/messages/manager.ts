@@ -52,9 +52,9 @@ export interface PostMessageResult {
  * watching the task would want to know: work started on a part of the task, a
  * decision was made, something surprising turned up, the task is nearly done.
  *
- * Deliberately one-way. Unlike notes, messages are never read back into an agent
- * prompt, so nothing here feeds agent context — that keeps the register plain and
- * operator-facing instead of drifting into agent-to-agent shorthand.
+ * Written for the operator, not for agents. The only reader besides the operator
+ * is the task's root Skipper, which PromptBuilder hands the messages OTHER agents
+ * posted so it does not repeat what the operator has already read.
  */
 export class MessageManager {
   private db: Database;
