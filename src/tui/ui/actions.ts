@@ -10,6 +10,7 @@ import { type UIState, type Modal, type FormModal, type ListItem, type ListModal
 import { scheduleLabel, shortId } from "./view-model";
 import { toOneLine, toPlainText } from "./plain-text";
 import { allServers, loadServers, saveServers, type ServerConfig } from "../servers";
+import { insecureConnectUrlReason } from "../../connect/connect-url";
 import { sortedArtifacts, humanBytes } from "../render/detail";
 import { IMPROVEMENT_ACTIONS } from "./improvement-actions";
 
@@ -1687,7 +1688,8 @@ function openAddServer(ctx: Ctx, onSaved: () => void): void {
     width: 72,
     onSubmit: async (v) => {
       const baseURL = String(v.url).trim().replace(/\/+$/, "");
-      if (!/^(https?|wss?):\/\//i.test(baseURL)) throw new Error("url must start with https:// (or http:// for a dev worker)");
+      const insecure = insecureConnectUrlReason(baseURL);
+      if (insecure) throw new Error(`url refused: ${insecure} (http:// only for a localhost dev worker)`);
       const server: ServerConfig = { id: crypto.randomUUID(), name: String(v.name).trim(), kind: "remote", baseURL, integratorKey: String(v.key).trim() };
       const file = loadServers();
       saveServers({ servers: [...file.servers, server], activeId: file.activeId });

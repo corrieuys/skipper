@@ -25,8 +25,12 @@ same list: switch live (fresh store + transport, no alt-screen exit), add or
 delete a remote. Saved in `<data dir>/dashboard-servers.json`
 (mode 0600; holds the keys). `servers.ts` owns the store + the pure URL
 builders: local → `ws://127.0.0.1:<port>/connect/local`; remote →
-`wss://<integrator>/connect?token=<key>` plus `Authorization: Bearer` (the same
-recipe as the Apple apps' `ServerConfig.socketURL`). A 4001 close from the
+`wss://<integrator>/connect` with the key only in `Authorization: Bearer`, never the URL
+(the Apple apps' `ServerConfig.socketURL` still also sends `?token=`, which the
+hub accepts as deprecated). A remote URL must be `wss://` / `https://`
+(`connect/connect-url.ts`; `http://` only for a localhost dev worker): adding one
+refuses an insecure URL, and the transport refuses to dial one saved before the
+rule. A 4001 close from the
 worker is a permanent key failure: the transport stops reconnecting and the
 header shows the error.
 
@@ -94,7 +98,7 @@ transport ─► store ─► renderer (Screen cell buffer, diff paint)
 
 ## Keys (summary; `?` in the app has the full list)
 
-`1-4` boards (latest · all · starred · drafts; `5` improvements with the experimental feature) · `↑↓ jk` select/scroll (section headers are skipped) · `enter`/`space` on a recurring series opens its latest runs · `tab` focus · `[ ]` detail tabs · `/` search · `o` hide feed
+`1-4` boards (latest · all · starred · drafts; `5` improvements) · `↑↓ jk` select/scroll (section headers are skipped) · `enter`/`space` on a recurring series opens its latest runs · `tab` focus · `[ ]` detail tabs · `/` search · `o` hide feed
 `n` new · `ctrl+n` new recurring · `e` edit (any status; with the cursor on a recurring series: edit the series) · `a` approve · `u` unapprove (tasks, and the recurring series under the cursor) · `p` pause/resume
 `s` star · `A` autopilot · `m` memory · `c` icon · `+` note · `i` input · `!` interrupt a running agent (pick one live instance, parallel ones numbered, then guidance; `instances/steer`) · `S` settle · `x` cancel · `v` revive · `D` delete
 `y`/`N` review approve/reject · `E` escalation · `T` teams (enter view · `e` edit: name, mode, Skipper instructions, phases, agents; ctrl+s saves via `teams/update`) · `I` import team · `R` run recurring · `M` remote team repos (experimental: `a` link · `r` refresh · `d` unlink; also `M` inside the teams browser, where a remote team shows `remote` / `removed upstream`, refuses `e`/`d`, and `c` duplicates it into a local team) · `@` servers · `:` palette · `?` help · `q` quit
@@ -104,7 +108,7 @@ Board 5: `a`/`y` approve (skill: acknowledge) · `e` edit · `x`/`N` reject (ski
 ## Conventions
 
 - **The rail's Latest board mirrors the web sidebar's Latest tab** (`ui/view-model.ts:latestRows`): `NEEDS YOU` (open review / escalation, not finished) › `ACTIVE` (active + draft) › `RECURRING` (every series; `ui.expandedSeries` lists a series' newest `SERIES_RUNS_SHOWN` runs from the task store, indented) › `RECENT` (`RECENT_SHOWN` newest top-level tasks not shown above). Top-level = one-off tasks plus a recurring run only while active or when it failed (same rule as `fetchCommandCenterTasks`). Rail rows are `header | task | series`; headers are never selectable (`nearestSelectable`). The cursor is a task or a series: `ui.railKind` + `selectedTaskId` / `selectedSeriesId`; task actions need `railKind === "task"`, recurring actions `"series"`, and the main pane draws the series (`drawSeriesDetail`) when the cursor is on one. There is no Done or Recurring board: finished tasks are under All, series under Latest (and starred series under Starred). The series list loads after the first snapshot and stays current through `recurring:changed`.
-- **Board 5: Improvements** (only when snapshot / capabilities list the `improvements` feature, i.e. the daemon runs `--experimental`; `state.ts:boardFilters` hides the tab and the `5` key otherwise). Rows are improvement summaries (`railKind: "improvement"`, `ui.selectedImprovementId`), newest first; Pending lists pending rows, All (`f`, loads `improvements/list status=all`) adds a DECIDED section. After every snapshot the controller loads `improvements/list` + `settings` (`syncImprovements`); after that only fat events patch the store: `improvement:changed` (row + siblings, so an approve flips the others on that target to conflict), the `improvements` carried by `team:changed` / `recurring:changed` / `library_agent:changed`, and `improvements:settings_changed`. Summaries have no text: the controller reads the selected row's detail and reads it again when its summary's `updatedAt` / `liveRevision` / `state` moves (`ensureImprovementDetail`, once per version). A row that leaves the board (decided while on Pending) hands the cursor to the row now at its index. Header: `✦ N improvements` chip and the count on the tab (the snapshot's `counts.pendingImprovements` until the first list lands).
+- **Board 5: Improvements** (only when snapshot / capabilities list the `improvements` feature, which every current daemon does; `state.ts:boardFilters` hides the tab and the `5` key for an older daemon). Rows are improvement summaries (`railKind: "improvement"`, `ui.selectedImprovementId`), newest first; Pending lists pending rows, All (`f`, loads `improvements/list status=all`) adds a DECIDED section. After every snapshot the controller loads `improvements/list` + `settings` (`syncImprovements`); after that only fat events patch the store: `improvement:changed` (row + siblings, so an approve flips the others on that target to conflict), the `improvements` carried by `team:changed` / `recurring:changed` / `library_agent:changed`, and `improvements:settings_changed`. Summaries have no text: the controller reads the selected row's detail and reads it again when its summary's `updatedAt` / `liveRevision` / `state` moves (`ensureImprovementDetail`, once per version). A row that leaves the board (decided while on Pending) hands the cursor to the row now at its index. Header: `✦ N improvements` chip and the count on the tab (the snapshot's `counts.pendingImprovements` until the first list lands).
 - **New tasks are followed.** A `task:created` (or a draft starting) selects the new task and switches the filter to show it, unless a modal, the composer or the search is active. Answered escalations stay in the conversation (`escalations/list status=resolved`, narrowed by task).
 - The task form carries the audio settings (`Transcript summary` global/on/off, `Audio chunk seconds`) which map to Connect `summaryEnabled` / `windowSeconds`; a raw transcript arrives as a `transcript` timeline entry (shown as `you ⟨transcript⟩`).
 - **Edits and list changes arrive as events.** A same-status `task:state_changed` maps to `{kind:"task", edited:true}`; for the open task the controller re-reads only `tasks/read` (`refreshDetail`), since the list row does not carry description / working directory. `recurring:changed` / `team:changed` map to `recurring_changed` / `team_changed`; the controller patches its cached `ui.recurring` / `ui.teams` from the fat row (`patchRecurring` / `patchTeams`), so another client's edit shows without a reload. `remote_team_repo:changed` maps to `remote_repo_changed`: a list modal may carry a `tag` + `reload()`, and the controller (`reloadTaggedList`) re-reads the open remote repos browser (`tag: "remote-repos"`) on that event and on `team_changed`, so sync status and team counts move live.
@@ -120,7 +124,7 @@ Board 5: `a`/`y` approve (skill: acknowledge) · `e` edit · `x`/`N` reject (ski
   `keyboard`, `text-editor`, `servers`, wire mappers) are unit-tested without a
   TTY; the controller is exercised against a live daemon (`tmux` + `capture-pane`
   works). A remote can be exercised with a tiny fake integrator that checks
-  `?token=` and proxies frames to the local `/connect/local`.
+  the `Authorization` header and proxies frames to the local `/connect/local`.
 
 ## Compiled binary
 

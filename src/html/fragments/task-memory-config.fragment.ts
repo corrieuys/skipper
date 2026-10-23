@@ -5,7 +5,7 @@ import type { LocalServerStatus } from "../../task-memory/local-server";
 import type { TaskMemoryConfig } from "../../task-memory/settings";
 
 /**
- * Config page panel for task memory (experimental): which embeddings endpoint
+ * Config page panel for task memory: which embeddings endpoint
  * to use, and for the managed local server its download / run controls. The
  * status block is its own fragment so the page can poll it while a download
  * runs (`GET /api/config/task-memory/status`).

@@ -29,6 +29,7 @@ function makeFakeMcpServer(): { handlers: Map<string, ToolHandler>; server: unkn
       const handler = rest[rest.length - 1];
       if (typeof handler === "function") handlers.set(name, handler as ToolHandler);
     },
+    registerPrompt: (): void => {},
   };
   return { handlers, server };
 }

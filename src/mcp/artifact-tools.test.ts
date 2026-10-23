@@ -29,6 +29,7 @@ function makeFakeServer() {
       const handler = rest[rest.length - 1] as ToolHandler;
       handlers.set(name, handler);
     },
+    registerPrompt: () => {},
   };
 }
 

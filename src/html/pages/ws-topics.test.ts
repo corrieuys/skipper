@@ -30,21 +30,21 @@ afterAll(() => {
 
 describe("page websocket topics", () => {
   it("logs page listens on logs (the live #log-entries-body push)", () => {
-    expect(wsTopics(logsPage({ ...meta, entries: [], filters: {}, agents: [] }))).toEqual(["logs"]);
+    expect(wsTopics(logsPage({ ...meta, entries: [], filters: {}, agents: [] }))).toEqual(["logs", "attention"]);
     // The filtered view keeps the topic, so Clear (an in-page body swap) goes live again.
-    expect(wsTopics(logsPage({ ...meta, entries: [], filters: { stream: "stderr" }, agents: [] }))).toEqual(["logs"]);
+    expect(wsTopics(logsPage({ ...meta, entries: [], filters: { stream: "stderr" }, agents: [] }))).toEqual(["logs", "attention"]);
   });
 
   it("teams page listens on teams (the live #tm-remote-repos push)", () => {
-    expect(wsTopics(teamsPage({ ...meta, teams: [], remoteRepos: null }))).toEqual(["teams"]);
+    expect(wsTopics(teamsPage({ ...meta, teams: [], remoteRepos: null }))).toEqual(["teams", "attention"]);
   });
 
   it("pages with no live element still name their own topic", () => {
-    expect(wsTopics(globalStorePage({ ...meta, rows: [] }))).toEqual(["global-store"]);
-    expect(wsTopics(taskCreatePage({ ...meta, teams: [], titleGeneratorConfigured: false }))).toEqual(["task-create"]);
+    expect(wsTopics(globalStorePage({ ...meta, rows: [] }))).toEqual(["global-store", "attention"]);
+    expect(wsTopics(taskCreatePage({ ...meta, teams: [], titleGeneratorConfigured: false }))).toEqual(["task-create", "attention"]);
     expect(wsTopics(customAgentsPage({
       ...meta, agents: [], singleAgents: [], mcpServers: [], importableServers: [], customTools: [],
-    }))).toEqual(["agent-library"]);
+    }))).toEqual(["agent-library", "attention"]);
     const configVm = {
       ...meta,
       notificationPreferences: [],
@@ -57,9 +57,8 @@ describe("page websocket topics", () => {
       apiKeys: [],
       modelSettings: { skipper: {}, greg: {}, dictation: {}, task_title: {}, glyph: {}, options: [] },
       autoUpdate: { enabled: false, currentVersion: "dev", availableVersion: null },
-      skipperIdentity: { color: "#6ea8fe", character: "captain" },
       realtime: { cadenceSeconds: 60, summaryEnabled: true, cadenceMin: 5, cadenceMax: 600 },
     } as never;
-    expect(wsTopics(configPage(configVm))).toEqual(["config"]);
+    expect(wsTopics(configPage(configVm))).toEqual(["config", "attention"]);
   });
 });

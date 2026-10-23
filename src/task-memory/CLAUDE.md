@@ -1,6 +1,6 @@
 # src/task-memory
 
-Per-task memory (experimental). A task whose memory scope is on keeps a copy of
+Per-task memory. A task whose memory scope is on keeps a copy of
 every operator-facing exchange on it, embedded, so any agent on the task can ask
 "what happened before me" through the `query_task_memory` MCP tool. Written by
 the daemon only; agents read, and may soft-delete a wrong entry

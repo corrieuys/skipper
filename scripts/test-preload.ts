@@ -2,7 +2,7 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 const CLEANUP_PATTERNS = [
-  /^test-.*\.db(?:-(?:shm|wal|journal))?$/,
+  /^test-.*\.db(?:-(?:shm|wal|journal)|\.connect-key)?$/,
 ];
 
 function cleanupTestDatabases(): void {

@@ -587,6 +587,53 @@ export class DelegationManager {
     }
   }
 
+  /**
+   * Settle running delegations whose child was reaped dead by the health
+   * monitor. A child whose process dies without an agent:exit is marked
+   * `failed` by HealthMonitor.checkInstanceProcessHealth, but nothing settled
+   * its delegation when the parent had already exited: checkDelegationOrphans
+   * only scans parents in waiting_delegation, so the row sat `running` (parking
+   * the task: no wake, no recovery) until the 60 min timeout. Same handling as
+   * a non-zero child exit (handleChildExit): retry, else fail the delegation and
+   * run group progress so the parent resumes with [DELEGATION_FAILED]. Paused
+   * tasks are skipped: their rows are restored from the pause snapshot.
+   */
+  checkDeadChildDelegations(): number {
+    const dead = this.db
+      .prepare(
+        `SELECT d.*
+         FROM delegations d
+         JOIN agent_instances ai ON ai.id = d.child_instance_id
+         JOIN tasks t ON t.id = d.task_id
+         WHERE d.status = 'running' AND ai.status = 'failed' AND t.paused = 0`,
+      )
+      .all() as Delegation[];
+
+    for (const delegation of dead) {
+      try {
+        const retryResult = this.tryRetryDelegation(delegation);
+        if (retryResult) continue; // true or "pending" — retry is in progress
+
+        this.db
+          .prepare(
+            "UPDATE delegations SET status = 'failed', result = 'Child process died (reaped by health monitor)', completed_at = datetime('now') WHERE id = ?",
+          )
+          .run(delegation.id);
+        this.clearTemplateTaskIfNoActive(delegation.child_agent_id);
+        this.handleGroupProgress(delegation, delegation.child_instance_id ?? delegation.child_agent_id, true);
+      } catch (err) {
+        logError(
+          this.db,
+          "dead_child_delegation_cleanup",
+          { delegationId: delegation.id, parentRuntimeId: delegation.parent_instance_id, childRuntimeId: delegation.child_instance_id },
+          err,
+        );
+      }
+    }
+
+    return dead.length;
+  }
+
   checkStaleDelegations(): number {
     const stale = this.db
       .prepare(
@@ -884,9 +931,19 @@ export class DelegationManager {
     return rows?.max_depth ?? 0;
   }
 
+  /**
+   * The parent's group with members still in flight, if any (one active group
+   * per parent). A HELD group (every member settled while an escalation was
+   * open, see handleGroupProgress) is not in flight: nothing is running for it
+   * and its result reaches the parent on the next answer, exit or sweep. It
+   * used to count here, so a root that kept escalating could never delegate
+   * again ("Could not create delegation" on every call).
+   */
   private getActiveDelegationGroupForParent(parentRuntimeId: string): DelegationGroupRow | null {
     const row = this.db
-      .prepare("SELECT * FROM delegation_groups WHERE parent_instance_id = ? AND status = 'running' LIMIT 1")
+      .prepare(
+        "SELECT * FROM delegation_groups WHERE parent_instance_id = ? AND status = 'running' AND settled_count < expected_count LIMIT 1",
+      )
       .get(parentRuntimeId) as DelegationGroupRow | null;
     return row ?? null;
   }
@@ -1116,7 +1173,12 @@ export class DelegationManager {
     }
   }
 
-  private finishDelegationGroup(group: DelegationGroupRow): void {
+  /**
+   * The group's result as the parent sees it: a single [DELEGATION_RESULT] for a
+   * one-member group, else a numbered [DELEGATION_BATCH_RESULT]. `sourceId` is
+   * the id the routing is keyed on (the child for one member, the group else).
+   */
+  private groupResultMessage(group: DelegationGroupRow): { message: string; sourceId: string } {
     const delegations = this.db
       .prepare(
         `SELECT id, child_instance_id, child_agent_id, status, result, prompt
@@ -1126,39 +1188,21 @@ export class DelegationManager {
       )
       .all(group.id) as Array<{ id: string; child_instance_id: string | null; child_agent_id: string; status: string; result: string | null; prompt: string }>;
 
+    if (group.expected_count === 1 && delegations.length === 1) {
+      const childId = delegations[0].child_instance_id ?? delegations[0].child_agent_id;
+      const result = delegations[0].result?.trim() || "(no output)";
+      return { message: `[DELEGATION_RESULT from:${childId}]\n${result}\n[END_DELEGATION_RESULT]`, sourceId: childId };
+    }
     const lines = delegations.map((d, index) => {
       const worker = d.child_instance_id ? d.child_instance_id.slice(0, 8) : d.child_agent_id.slice(0, 8);
       const result = d.result?.trim() || "(no output)";
       return `${index + 1}. worker:${worker} status:${d.status}\n${result}`;
     }).join("\n\n");
+    return { message: `[DELEGATION_BATCH_RESULT id:${group.id}]\n${lines}\n[END_DELEGATION_BATCH_RESULT]`, sourceId: group.id };
+  }
 
-    let routed = false;
-    if (group.expected_count === 1 && delegations.length === 1) {
-      const childId = delegations[0].child_instance_id ?? delegations[0].child_agent_id;
-      const result = delegations[0].result?.trim() || "(no output)";
-      const message = `[DELEGATION_RESULT from:${childId}]\n${result}\n[END_DELEGATION_RESULT]`;
-      routed = this.routeResultToParent(group.parent_instance_id, childId, message, group.task_id);
-    } else {
-      const message = `[DELEGATION_BATCH_RESULT id:${group.id}]\n${lines}\n[END_DELEGATION_BATCH_RESULT]`;
-      routed = this.routeResultToParent(group.parent_instance_id, group.id, message, group.task_id);
-    }
-
-    const parentTemplateId = this.agentManager.getTemplateAgentId(group.parent_instance_id) ?? group.parent_instance_id;
-    this.setAgentState(parentTemplateId, "working");
-    if (routed) {
-      this.db
-        .prepare("UPDATE agent_instances SET status = 'running', state_metadata = json_remove(state_metadata, '$.exit_code'), updated_at = datetime('now') WHERE id = ?")
-        .run(group.parent_instance_id);
-      eventBus.emit("instance:state_changed", {
-        instanceId: group.parent_instance_id,
-        templateAgentId: parentTemplateId,
-        taskId: group.task_id,
-        parentInstanceId: null,
-        rootInstanceId: group.parent_instance_id,
-        status: "running",
-      });
-    }
-
+  /** The orchestration step + checkpoint written once a group's result has left for its parent. */
+  private recordGroupDelivered(group: DelegationGroupRow): void {
     this.updateOrchestrationState(group.task_id, {
       step: "AGENT_RUNNING",
       last_checkpoint_ts: new Date().toISOString(),
@@ -1176,6 +1220,80 @@ export class DelegationManager {
       settled_count: group.settled_count,
       failed_count: group.failed_count,
     });
+  }
+
+  /**
+   * Hand this parent's held groups over on an escalation answer: the answer
+   * resumes the escalating runtime anyway, so the results ride along on that
+   * resume instead of waiting for a clean exit that a root which keeps
+   * escalating never has (handleAgentExit bails on the open escalation before
+   * the held-group hand-off). Claims each group (status completed) and returns
+   * the result blocks to append to the answer, or null when nothing is held.
+   * Called by EscalationManager.injectResponse (see ManagerDaemon wiring).
+   */
+  claimHeldGroupsForAnswer(parentInstanceId: string): string | null {
+    const held = this.db
+      .prepare(
+        `SELECT delegation_groups.* FROM delegation_groups
+         JOIN tasks t ON t.id = delegation_groups.task_id
+         WHERE delegation_groups.parent_instance_id = ?
+           AND delegation_groups.status = 'running'
+           AND delegation_groups.settled_count >= delegation_groups.expected_count
+           AND t.status = 'active' AND t.paused = 0
+         ORDER BY delegation_groups.created_at`,
+      )
+      .all(parentInstanceId) as DelegationGroupRow[];
+
+    const blocks: string[] = [];
+    for (const group of held) {
+      try {
+        const claimed = this.db
+          .prepare(
+            `UPDATE delegation_groups SET status = 'completed', completed_at = datetime('now')
+             WHERE id = ? AND status = 'running' AND settled_count >= expected_count
+             RETURNING *`,
+          )
+          .get(group.id) as DelegationGroupRow | null;
+        if (!claimed) continue;
+        eventBus.emit("delegation_group:progress", {
+          groupId: claimed.id,
+          taskId: claimed.task_id,
+          parentInstanceId: claimed.parent_instance_id,
+          settledCount: claimed.settled_count,
+          expectedCount: claimed.expected_count,
+          failedCount: claimed.failed_count,
+          status: claimed.status,
+        });
+        blocks.push(this.groupResultMessage(claimed).message);
+        this.recordGroupDelivered(claimed);
+      } catch (err) {
+        logError(this.db, "held_delegation_group_answer", { groupId: group.id, taskId: group.task_id, parentInstanceId }, err);
+      }
+    }
+    return blocks.length > 0 ? blocks.join("\n") : null;
+  }
+
+  private finishDelegationGroup(group: DelegationGroupRow): void {
+    const { message, sourceId } = this.groupResultMessage(group);
+    const routed = this.routeResultToParent(group.parent_instance_id, sourceId, message, group.task_id);
+
+    const parentTemplateId = this.agentManager.getTemplateAgentId(group.parent_instance_id) ?? group.parent_instance_id;
+    this.setAgentState(parentTemplateId, "working");
+    if (routed) {
+      this.db
+        .prepare("UPDATE agent_instances SET status = 'running', state_metadata = json_remove(state_metadata, '$.exit_code'), updated_at = datetime('now') WHERE id = ?")
+        .run(group.parent_instance_id);
+      eventBus.emit("instance:state_changed", {
+        instanceId: group.parent_instance_id,
+        templateAgentId: parentTemplateId,
+        taskId: group.task_id,
+        parentInstanceId: null,
+        rootInstanceId: group.parent_instance_id,
+        status: "running",
+      });
+    }
+
+    this.recordGroupDelivered(group);
   }
 
   routeResultToParent(

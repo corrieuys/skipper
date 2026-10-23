@@ -70,10 +70,12 @@ import { dashboardSteerListFragment, agentInstancesModalFragment, oneshotResumeC
 import {
   getNumberSetting, setNumberSetting, SETTING_LOG_RETENTION_HOURS,
   SETTING_TASK_RETENTION_DAYS, SETTING_RECURRING_TASK_RETENTION_DAYS,
-  getStringSetting, setStringSetting, getSetting,
+  getStringSetting, setStringSetting,
   getBoolSetting, SETTING_PARALLEL_TASKS,
-  SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_URL,
+  SETTING_SKIPPER_CONNECT_URL,
 } from "../config/app-settings";
+import { hasConnectKey, setConnectKey } from "../connect/connect-key";
+import { insecureConnectUrlReason } from "../connect/connect-url";
 import { APP_VERSION, SERVER_ID } from "../version";
 import {
   isAutoUpdateEnabled, setAutoUpdateEnabled, getUpdateNoticeView,
@@ -759,13 +761,18 @@ export function registerPageRoutes(daemon: ManagerDaemon): void {
       latest_message: fetchLatestAssistantMessage(db, inst.runtime_id),
     }));
 
-    // Settled task (idle active or settled): if no live instance, show the
-    // one-off resume card instead of the empty sentinel (which would close the
-    // modal). If a one-off is already running, the steer cards above render so
-    // it can be steered.
+    // No live instance on a task: a settled task gets the one-off resume card
+    // instead of the empty sentinel (which would close the modal); if a one-off
+    // is already running, the steer cards above render so it can be steered. An
+    // active task gets a note instead: resumeOneshotRun refuses active tasks,
+    // so the card's submit used to fail silently (400, hx-swap none). Input to
+    // an active task goes through the task composer, which wakes it.
     if (taskId && options.length === 0) {
       const taskRow = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string } | null;
-      if (taskRow?.status === "settled" || taskRow?.status === "active") {
+      if (taskRow?.status === "active") {
+        return html(`<div class="sk-muted" style="padding:0.75rem;">No running instance to steer. Send input from the task composer to wake the task.</div>`);
+      }
+      if (taskRow?.status === "settled") {
         const latest = db.prepare(
           `SELECT ai.id, ai.session_id, ai.status,
                   COALESCE(a.name, ai.template_agent_id) AS agent_name,
@@ -863,8 +870,8 @@ function registerV2PageRoutes(): void {
     }
     // Public trigger URL for the webhook panel; null until connect is configured.
     st.webhook_url = getWebhookTriggerUrl(db, { id: st.id, webhook_key: st.webhook_key ?? null });
-    // Series memory summary for the Memory panel (experimental).
-    if (isExperimental()) {
+    // Series memory summary for the Memory panel.
+    {
       const cfg = readSeriesMemoryConfig(st.task_config);
       st.memory_summary = scopeSummary(db, seriesScopeId(st.id), { enabled: cfg.mode === "shared", mode: cfg.mode, retentionDays: cfg.retentionDays });
     }
@@ -1156,9 +1163,9 @@ function registerV2PageRoutes(): void {
 
     const esc = escapeHtml;
 
-    // Per-task memory (experimental): what is stored and how big it is.
+    // Per-task memory: what is stored and how big it is.
     let memoryRow = "";
-    if (isExperimental()) {
+    {
       const mem = taskMemorySummary(db, task.id);
       const kinds = Object.entries(mem.by_kind).map(([k, n]) => `${n} ${k}`).join(", ");
       const authors = Object.entries(mem.by_author).map(([a, n]) => `${n} ${a}`).join(", ");
@@ -1387,30 +1394,28 @@ function registerV2PageRoutes(): void {
     const { getModelSettingsView } = require("../config/model-settings");
     const { isExperimental } = require("../config/feature-flags");
     const { getSlackConfigView } = require("../config/slack-settings");
-    const { getSkipperIdentity } = require("../agents/skipper");
     return html(configPage({
       notificationPreferences: listPreferences(db),
       logRetentionHours: getNumberSetting(db, SETTING_LOG_RETENTION_HOURS, 24),
       taskRetentionDays: getNumberSetting(db, SETTING_TASK_RETENTION_DAYS, 0),
       recurringTaskRetentionDays: getNumberSetting(db, SETTING_RECURRING_TASK_RETENTION_DAYS, 0),
       parallelExecution: getBoolSetting(db, SETTING_PARALLEL_TASKS, true),
-      improvementsAutoApprove: isExperimental() ? require("../improvements/manager").isImprovementsAutoApproveOn(db) : undefined,
-      improvementsEnabled: isExperimental() ? require("../improvements/manager").isImprovementsEnabled(db) : undefined,
+      improvementsAutoApprove: require("../improvements/manager").isImprovementsAutoApproveOn(db),
+      improvementsEnabled: require("../improvements/manager").isImprovementsEnabled(db),
       daemonState: isDaemonPaused(db) ? "paused" : "running",
       daemonUptime: process.uptime(),
       escalationCount,
-      skipperConnectHasKey: !!getSetting(db, SETTING_SKIPPER_CONNECT_KEY),
+      skipperConnectHasKey: hasConnectKey(db),
       skipperConnectUrl: getStringSetting(db, SETTING_SKIPPER_CONNECT_URL, ""),
       apiKeys: listKeys(),
       modelSettings: getModelSettingsView(db),
       slack: isExperimental() ? getSlackConfigView(db) : undefined,
-      taskMemory: isExperimental() ? taskMemoryPanelProvider?.() : undefined,
+      taskMemory: taskMemoryPanelProvider?.(),
       autoUpdate: {
         enabled: isAutoUpdateEnabled(db),
         currentVersion: APP_VERSION,
         availableVersion: getStringSetting(db, SETTING_UPDATE_AVAILABLE_VERSION, "") || null,
       },
-      skipperIdentity: getSkipperIdentity(db),
       realtime: (() => {
         const { getRealtimeConfig, CADENCE_MIN_SECONDS, CADENCE_MAX_SECONDS } = require("../realtime/config");
         const rt = getRealtimeConfig(db);
@@ -1429,16 +1434,6 @@ function registerV2PageRoutes(): void {
       })() : undefined,
       allowedHosts: getAllowedHostsView(db),
     }));
-  });
-
-  // Persist the Skipper's own orb identity (color + creature). Experimental.
-  addRoute("POST", "/api/config/skipper-identity", async (req) => {
-    const { isExperimental } = require("../config/feature-flags");
-    if (!isExperimental()) return new Response("not found", { status: 404 });
-    const { saveSkipperIdentity } = require("../agents/skipper");
-    const body = await req.json() as { color?: string; character?: string };
-    const saved = saveSkipperIdentity(String(body.color ?? ""), String(body.character ?? ""), db);
-    return Response.json({ ok: true, ...saved });
   });
 
   // Persist a subsystem's provider + model (machine-scoped app_settings).
@@ -1602,8 +1597,13 @@ function registerV2PageRoutes(): void {
     const url = (formData.get("url") ?? "").toString().trim();
     const key = (formData.get("key") ?? "").toString().trim();
 
+    if (url) {
+      const reason = insecureConnectUrlReason(url);
+      if (reason) return new Response(`Connect URL refused: ${reason}`, { status: 400 });
+    }
+
     if (url) setStringSetting(db, SETTING_SKIPPER_CONNECT_URL, url);
-    if (key) setStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, key);
+    if (key) setConnectKey(db, key);
 
     return new Response(null, { status: 204 });
   });

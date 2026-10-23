@@ -11,12 +11,13 @@ import { SETTING_SLACK_BOT_TOKEN } from "../config/slack-settings";
 let db: Database;
 const TEST_DB = "test-mcp-tools-registration.db";
 
-function makeFakeMcpServer(): { registeredNames: string[]; server: { tool: (name: string, ...rest: unknown[]) => void } } {
+function makeFakeMcpServer(): { registeredNames: string[]; server: { tool: (name: string, ...rest: unknown[]) => void; registerPrompt: () => void } } {
   const registeredNames: string[] = [];
   const server = {
     tool: (name: string, ..._rest: unknown[]): void => {
       registeredNames.push(name);
     },
+    registerPrompt: (): void => {},
   };
   return { registeredNames, server };
 }

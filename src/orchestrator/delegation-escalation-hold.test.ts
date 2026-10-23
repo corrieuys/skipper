@@ -200,7 +200,7 @@ describe("delegation results while an escalation is open (regression: a sibling'
     expect(groupRow(s.groupId).status).toBe("completed");
   }, 30_000);
 
-  it("holds a group that settles while the root's own escalation is open and hands it over when the answered turn ends, never on top of it", async () => {
+  it("holds a group that settles while the root's own escalation is open and hands it over on the answer itself, never as a second resume", async () => {
     const s = await startRootWithTwoChildren();
     const resumes = trackResumes();
     const escalation = daemon.getEscalationManager().createEscalation({
@@ -222,27 +222,22 @@ describe("delegation results while an escalation is open (regression: a sibling'
     expect(resumes).toHaveLength(0);
     expect(isRunning(s.rootId)).toBe(false);
 
-    // The answer resumes the root; the held results are not pushed onto that turn.
+    // The answer resumes the root once, carrying the held results with it.
     await daemon.resolveEscalation(escalation.id, "Stay under budget");
     expect(resumes).toHaveLength(1);
     expect(resumes[0]!.id).toBe(s.rootId);
     expect(resumes[0]!.message).toContain("[USER_RESPONSE] Stay under budget");
+    expect(resumes[0]!.message).toContain("[DELEGATION_BATCH_RESULT");
+    expect(resumes[0]!.message).toContain("worker-a findings");
+    expect(resumes[0]!.message).toContain("worker-b findings");
+    expect(groupRow(s.groupId).status).toBe("completed");
     expect(isRunning(s.rootId)).toBe(true);
+
+    // The answered turn ends: nothing is left to hand over, no second resume.
+    go("skipper", "answer handled");
+    expect(await waitFor(() => !isRunning(s.rootId))).toBe(true);
     await Bun.sleep(300);
     expect(resumes).toHaveLength(1);
-    expect(groupRow(s.groupId).status).toBe("running");
-
-    // The answered turn ends: now the held results go to the root, once.
-    go("skipper", "answer handled");
-    expect(await waitFor(() => resumes.length >= 2)).toBe(true);
-    await Bun.sleep(300);
-    expect(resumes).toHaveLength(2);
-    expect(resumes[1]!.id).toBe(s.rootId);
-    expect(resumes[1]!.wasRunning).toBe(false);
-    expect(resumes[1]!.message).toContain("[DELEGATION_BATCH_RESULT");
-    expect(resumes[1]!.message).toContain("worker-a findings");
-    expect(resumes[1]!.message).toContain("worker-b findings");
-    expect(groupRow(s.groupId).status).toBe("completed");
   }, 30_000);
 });
 

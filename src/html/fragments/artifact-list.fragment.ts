@@ -10,6 +10,10 @@ import { formatBytes } from "../../orchestrator/artifact-files";
  * every version (each opening that exact version). Used by the fragment route
  * and the WS live-push so the two never drift.
  *
+ * Every row carries `data-artifact-search` (name, kind, description, lower
+ * case) for the rail's client-side search box, which lives OUTSIDE this
+ * fragment (command-center page) so a live re-render cannot wipe the query.
+ *
  * The list is headed by the "Add artifact" upload form (file input, optional
  * description); `skipper.js` posts it as multipart to
  * POST /api/tasks/:id/artifacts/upload and the `artifact:created` push
@@ -104,9 +108,11 @@ export function artifactListFragment(db: Database, taskId: string, variant: Arti
     list.push(r);
     groups.set(r.name, list);
   }
+  // Every name renders (no cap): the rail's search box filters the rows
+  // client-side (skipper.js, `data-sk-artifact-search`), so an old artifact
+  // stays reachable on a task with hundreds of them.
   const ordered = [...groups.values()]
-    .sort((a, b) => (b[0]?.created_at ?? "").localeCompare(a[0]?.created_at ?? ""))
-    .slice(0, 50);
+    .sort((a, b) => (b[0]?.created_at ?? "").localeCompare(a[0]?.created_at ?? ""));
 
   const showPublished = isExperimental();
   const listTarget = `#${escapeHtml(variant.listId(taskId))}`;
@@ -144,7 +150,8 @@ export function artifactListFragment(db: Database, taskId: string, variant: Arti
       : "";
     const caption = isFile && latest.description ? `<div class="tc-art__caption">${escapeHtml(latest.description)}</div>` : "";
 
-    return `<div class="tc-art${isDeleted ? " tc-art--deleted" : ""}${isFile ? " tc-art--file" : ""}" data-artifact-id="${escapeHtml(latest.id)}">
+    const searchText = [latest.name, latest.kind, latest.description ?? ""].join(" ").toLowerCase();
+    return `<div class="tc-art${isDeleted ? " tc-art--deleted" : ""}${isFile ? " tc-art--file" : ""}" data-artifact-id="${escapeHtml(latest.id)}" data-artifact-search="${escapeHtml(searchText)}">
       <div class="tc-art__main">
         ${icon}<a href="#" class="tc-art__name" ${openLink(variant, taskId, latest.name)}>${escapeHtml(latest.name)}</a>
         ${isDeleted ? `<span class="tc-art__badge tc-art__badge--deleted" title="Deleted, excluded from agent context">deleted</span>` : ""}
@@ -160,5 +167,5 @@ export function artifactListFragment(db: Database, taskId: string, variant: Arti
     </div>`;
   }).join("");
 
-  return `${form}<div class="tc-artlist">${items}</div>`;
+  return `${form}<div class="tc-artlist">${items}</div><p class="muted tc-art-search__empty" data-sk-artifact-search-empty hidden>No matching artifacts.</p>`;
 }

@@ -206,6 +206,7 @@ export class ManagerDaemon {
     // The answer to the root's escalation carries operator input sent while
     // it was open, instead of leaving it for the next queue wake.
     this.escalationManager.setWakeFeeder(this.realtimeSessionManager, (taskId) => this.taskScheduler.clearWake(taskId));
+    this.escalationManager.setHeldResultsProvider((parentRuntimeId) => this.delegationManager.claimHeldGroupsForAnswer(parentRuntimeId));
 
     this.idlePokeManager = new IdlePokeManager(
       this.db,

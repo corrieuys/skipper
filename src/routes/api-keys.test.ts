@@ -83,7 +83,6 @@ describe("configPage API keys section", () => {
       parallelExecution: true,
       modelSettings: { skipper: {}, greg: {}, dictation: {}, options: [] },
       autoUpdate: { enabled: false, currentVersion: "dev", availableVersion: null },
-      skipperIdentity: { color: "#6ea8fe", character: "captain" },
       realtime: { cadenceSeconds: 60, summaryEnabled: true, cadenceMin: 5, cadenceMax: 600 },
     } as never;
 

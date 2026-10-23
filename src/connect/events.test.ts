@@ -48,7 +48,7 @@ describe("subscribeConnectEvents", () => {
     expect(frames[0]!.event).toBe("connect:capabilities");
     expect(frames[0]!.payload).toEqual({
       protocolVersion: 3,
-      features: ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files", "task_memory", "remote_team_repos"],
+      features: ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files", "task_memory", "remote_team_repos", "improvements"],
     });
   });
 
@@ -236,7 +236,7 @@ describe("recurring + team change events", () => {
 
     expect(frames.map((f) => f.event)).toEqual(["recurring:changed", "recurring:changed"]);
     expect(frames[0]!.payload.recurring).toMatchObject({ id: "st-1", title: "Nightly", teamId: "team-r", status: "draft" });
-    expect(frames[1]!.payload).toEqual({ scheduledTaskId: "st-1", change: "deleted" });
+    expect(frames[1]!.payload).toEqual({ scheduledTaskId: "st-1", change: "deleted", improvements: [] });
   });
 
   it("forwards team:changed with the team row including skipperPrompt", async () => {

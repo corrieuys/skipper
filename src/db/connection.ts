@@ -1,12 +1,12 @@
 import { Database } from "bun:sqlite";
 import { dirname } from "path";
-import { mkdirSync } from "fs";
+import { chmodSync, existsSync, mkdirSync } from "fs";
 import { loadConfigSnapshotIntoDb, loadRealtimeDefaultsIntoDb, readConfigSnapshot } from "../config/store";
 import { flattenLocalTeamsIntoStore } from "../teams/local-teams";
 import { flattenSingleAgentsIntoStore } from "../single-agents/store";
 import { ensureCustomAgentTypeStubs, registerCustomAgentTypes, flattenCustomAgentsAsSoloTeams } from "../custom-agents/store";
 import { applySkipperIdentity } from "../agents/skipper";
-import { getRuntimeDbPath, migrateLegacyDbIfNeeded } from "../paths";
+import { getDataDir, getRuntimeDbPath, migrateLegacyDbIfNeeded } from "../paths";
 import { migrateLegacySchema, tableExists } from "./legacy-migrations";
 import { assetTextSync, listAssets } from "../assets";
 
@@ -278,8 +278,30 @@ export function getDb(dbPath?: string): Database {
 
   db = new Database(runtimeDbPath);
   configureDatabase(db);
+  restrictToOwner(runtimeDbPath);
 
   return db;
+}
+
+/**
+ * The runtime DB holds operator input, agent output and secrets (Slack tokens,
+ * webhook keys), so only the owner may read it: the data dir 0700, the DB and
+ * its WAL/SHM 0600. SQLite creates later WAL/SHM files with the DB file's mode.
+ */
+function restrictToOwner(dbPath: string): void {
+  const targets: Array<[string, number]> = [
+    [getDataDir(), 0o700],
+    [dbPath, 0o600],
+    [`${dbPath}-wal`, 0o600],
+    [`${dbPath}-shm`, 0o600],
+  ];
+  for (const [path, mode] of targets) {
+    try {
+      if (existsSync(path)) chmodSync(path, mode);
+    } catch {
+      /* windows, or a path we do not own */
+    }
+  }
 }
 
 export function initializeDatabase(database?: Database): void {

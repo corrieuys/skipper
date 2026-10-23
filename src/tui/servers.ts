@@ -80,7 +80,7 @@ export function findServer(nameOrId: string, dir = getDataDir()): ServerConfig |
 
 // ── URL builders (pure) ──────────────────────────────────────────────────────
 
-/** The consumer WebSocket URL. Local: loopback `/connect/local`, no auth. Remote: `/connect?token=<key>`. */
+/** The consumer WebSocket URL. Local: loopback `/connect/local`, no auth. Remote: `/connect`; the key rides only in `authHeaders`, never the URL. */
 export function socketURL(s: ServerConfig): string {
   const u = new URL(s.baseURL.trim());
   if (s.kind === "local") {
@@ -92,7 +92,6 @@ export function socketURL(s: ServerConfig): string {
   u.protocol = u.protocol === "http:" || u.protocol === "ws:" ? "ws:" : "wss:";
   u.pathname = "/connect";
   u.search = "";
-  u.searchParams.set("token", s.integratorKey);
   return u.toString();
 }
 

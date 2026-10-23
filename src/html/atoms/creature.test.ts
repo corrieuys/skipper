@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import {
-  CREATURE_IDS, creatureSvg, creatureShapes, isCreatureId, sanitizeColor, shade, inkFor,
+  CREATURE_IDS, isCreatureId, sanitizeColor, shade, inkFor,
 } from "./creature";
 
 describe("sanitizeColor", () => {
@@ -32,30 +32,5 @@ describe("shade / inkFor", () => {
   });
   it("clamps at 0", () => {
     expect(shade("#000000", -45)).toBe("#000000");
-  });
-});
-
-describe("creatureSvg", () => {
-  it("resolves all six ids to an <svg> with the creature class", () => {
-    for (const id of CREATURE_IDS) {
-      const svg = creatureSvg(id);
-      expect(svg.startsWith("<svg")).toBe(true);
-      expect(svg).toContain("zen-orb__creature");
-      expect(svg).toContain("var(--agent-color)");
-      expect(svg).toContain("var(--agent-ink)");
-    }
-  });
-  it("bakes the color inline when given one", () => {
-    const svg = creatureSvg("blob", "#7bd88f");
-    expect(svg).toContain("--agent-color:#7bd88f");
-    expect(svg).toContain("--agent-ink:" + inkFor("#7bd88f"));
-  });
-  it("omits the inline style when no color is given (inherits from ancestor)", () => {
-    expect(creatureSvg("pod")).not.toContain("--agent-color:#");
-  });
-  it("shapes carry two eyes (white sclera + dark pupil)", () => {
-    const shapes = creatureShapes("mite");
-    expect(shapes).toContain('fill="#fff"');
-    expect(shapes).toContain('fill="#1a2030"');
   });
 });

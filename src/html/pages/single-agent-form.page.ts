@@ -140,12 +140,11 @@ export function singleAgentFormPage(vm: SingleAgentFormViewModel): string {
         </div>
 
         ${identityPanel((() => {
-          // A fresh agent gets a random color + creature by default (experimental).
+          // A fresh agent gets a random color by default (experimental).
           const def = (isNew && experimental) ? randomIdentity() : null;
           return {
             color: agent.config?.color ?? def?.color,
-            character: agent.config?.character ?? def?.character,
-            experimental,
+            character: agent.config?.character,
           };
         })())}
 

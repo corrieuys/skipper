@@ -1,6 +1,5 @@
 import type { Database } from "bun:sqlite";
 import { addRoute } from "../server";
-import { isExperimental } from "../config/feature-flags";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import type { TaskMemoryManager } from "../task-memory/manager";
@@ -12,7 +11,7 @@ import { taskMemoryStatusFragment, type TaskMemoryPanelData } from "../html/frag
 import { htmlResponse, hxRedirect, parseRequestBody } from "./utils";
 
 /**
- * Task memory routes (experimental, 404 without the flag):
+ * Task memory routes:
  *   POST /api/tasks/:id/memory            flip a one-off task's toggle; on = backfill (runs: 400, series-managed)
  *   POST /api/tasks/:id/memory/clear      hard-delete the task's memory scope (a run clears its series' shared scope)
  *   POST /api/scheduled-tasks/:id/memory  series mode (off|run|shared) + retention days; shared backfills every run
@@ -43,11 +42,9 @@ export function buildTaskMemoryPanelData(deps: Pick<TaskMemoryRouteDeps, "db" | 
 
 export function registerTaskMemoryRoutes(deps: TaskMemoryRouteDeps): void {
   const { db, scheduler, scheduledScheduler, taskMemory, embeddingServer } = deps;
-  const notFound = () => new Response("not found", { status: 404 });
   const status = () => htmlResponse(taskMemoryStatusFragment(buildTaskMemoryPanelData(deps)));
 
   addRoute("POST", "/api/tasks/:id/memory", async (req, params) => {
-    if (!isExperimental()) return notFound();
     const id = String(params.id ?? "");
     try {
       const task = scheduler.getTask(id);
@@ -72,7 +69,6 @@ export function registerTaskMemoryRoutes(deps: TaskMemoryRouteDeps): void {
   });
 
   addRoute("POST", "/api/tasks/:id/memory/clear", (req, params) => {
-    if (!isExperimental()) return notFound();
     const id = String(params.id ?? "");
     const task = scheduler.getTask(id);
     if (!task) return Response.json({ error: "Task not found" }, { status: 404 });
@@ -83,7 +79,6 @@ export function registerTaskMemoryRoutes(deps: TaskMemoryRouteDeps): void {
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/memory", async (req, params) => {
-    if (!isExperimental()) return notFound();
     const id = String(params.id ?? "");
     try {
       const body = await parseRequestBody<Record<string, unknown>>(req);
@@ -106,7 +101,6 @@ export function registerTaskMemoryRoutes(deps: TaskMemoryRouteDeps): void {
   });
 
   addRoute("POST", "/api/scheduled-tasks/:id/memory/clear", (req, params) => {
-    if (!isExperimental()) return notFound();
     const id = String(params.id ?? "");
     if (!scheduledScheduler.getScheduledTask(id)) return Response.json({ error: "Recurring task not found" }, { status: 404 });
     const cleared = taskMemory.clearScope(seriesScopeId(id));
@@ -115,7 +109,6 @@ export function registerTaskMemoryRoutes(deps: TaskMemoryRouteDeps): void {
   });
 
   addRoute("POST", "/api/config/task-memory", async (req) => {
-    if (!isExperimental()) return notFound();
     const body = await parseRequestBody<Record<string, string>>(req);
     const previous = getTaskMemoryConfig(db);
     const err = saveTaskMemoryConfig(db, {
@@ -137,12 +130,10 @@ export function registerTaskMemoryRoutes(deps: TaskMemoryRouteDeps): void {
   });
 
   addRoute("GET", "/api/config/task-memory/status", () => {
-    if (!isExperimental()) return notFound();
     return status();
   });
 
   addRoute("POST", "/api/config/task-memory/download", () => {
-    if (!isExperimental()) return notFound();
     const config = getTaskMemoryConfig(db);
     if (!embeddingServer.isDownloading()) {
       // Fire and forget: the status fragment polls progress. Binary first, then
@@ -162,7 +153,6 @@ export function registerTaskMemoryRoutes(deps: TaskMemoryRouteDeps): void {
   });
 
   addRoute("POST", "/api/config/task-memory/start", () => {
-    if (!isExperimental()) return notFound();
     const config = getTaskMemoryConfig(db);
     // Loading a model can take tens of seconds; do not hold the request. The
     // fragment comes back in the "starting" state and polls until healthy
@@ -176,7 +166,6 @@ export function registerTaskMemoryRoutes(deps: TaskMemoryRouteDeps): void {
   });
 
   addRoute("POST", "/api/config/task-memory/stop", () => {
-    if (!isExperimental()) return notFound();
     embeddingServer.stop();
     return status();
   });

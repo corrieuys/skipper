@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline";
 import { allServers, loadServers, saveServers, localServer, type ServerConfig } from "./servers";
+import { insecureConnectUrlReason } from "../connect/connect-url";
 
 const ESC = "\x1b[";
 const bold = (s: string) => `${ESC}1m${s}${ESC}0m`;
@@ -59,8 +60,9 @@ async function addRemote(ask: (q: string) => Promise<string>): Promise<ServerCon
   const name = (await ask("  name: ")).trim();
   if (!name) return null;
   const baseURL = (await ask("  url (https://…): ")).trim();
-  if (!/^(https?|wss?):\/\//i.test(baseURL)) {
-    process.stdout.write(`  ${yellow("url must start with https:// (or http:// for a dev worker)")}\n`);
+  const insecure = insecureConnectUrlReason(baseURL);
+  if (insecure) {
+    process.stdout.write(`  ${yellow(`url refused: ${insecure} (http:// only for a localhost dev worker)`)}\n`);
     return null;
   }
   const integratorKey = (await ask("  integrator key: ")).trim();

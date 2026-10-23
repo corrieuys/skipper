@@ -1,4 +1,3 @@
-import { isExperimental } from "../../config/feature-flags";
 import { escapeHtml } from "../atoms/escape-html";
 import { appearanceBackgroundCss } from "../styles/index";
 import { themeBootScript } from "../styles/themes";
@@ -20,7 +19,7 @@ export function v2layout(
 ): string {
   // Every page with named topics also hears `attention`, the top-bar indicator's
   // push (experimental). A page with none already receives every push.
-  const topics = wsTopics.length > 0 && isExperimental() ? [...wsTopics, "attention"] : wsTopics;
+  const topics = wsTopics.length > 0 ? [...wsTopics, "attention"] : wsTopics;
   const topicsAttr = topics.length > 0 ? ` data-ws-topics="${topics.join(",")}"` : "";
   const appearance = getAppearanceConfig(getDb());
   const appearanceCss = appearanceBackgroundCss(appearance.active);

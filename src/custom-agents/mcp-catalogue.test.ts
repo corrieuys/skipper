@@ -17,7 +17,7 @@ let origArgv: string[];
 /** Records tool names the way `mcp/tools-registration.test.ts` does. */
 function registeredNames(isDelegated: boolean, taskId?: string): string[] {
   const names: string[] = [];
-  const server = { tool: (name: string, ..._rest: unknown[]): void => { names.push(name); } };
+  const server = { tool: (name: string, ..._rest: unknown[]): void => { names.push(name); }, registerPrompt: (): void => {} };
   const deps: DaemonDeps = {
     db,
     agentManager: {} as DaemonDeps["agentManager"],

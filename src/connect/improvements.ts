@@ -1,5 +1,4 @@
 import type { Database } from "bun:sqlite";
-import { isExperimental } from "../config/feature-flags";
 import { getLocalTeam } from "../teams/local-teams";
 import { lineDiff } from "../improvements/diff";
 import {
@@ -196,7 +195,6 @@ function requireId(params: Record<string, unknown>): string {
  * `improvement:changed` fat event (with siblings) reconciles every client.
  */
 export function handleImprovementsRequest(db: Database, action: string, params: Record<string, unknown>): ResourceResult {
-  if (!isExperimental()) return { ok: false, error: "Improvements require the daemon --experimental flag" };
   try {
     return dispatch(db, action, params);
   } catch (err) {

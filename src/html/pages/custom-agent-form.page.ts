@@ -174,14 +174,13 @@ export function customAgentFormPage(vm: CustomAgentFormViewModel): string {
                 <input class="sk-input" id="ca-desc" type="text" placeholder="What this agent is for (optional)"></div>
             </div>
             <div class="ca-field" style="margin-top:var(--sk-space-3);">
-              <label class="sk-label">Color &amp; character</label>
+              <label class="sk-label">Color</label>
               ${agentIdentityPicker((() => {
-                // A fresh agent gets a random color + creature by default (experimental).
+                // A fresh agent gets a random color by default (experimental).
                 const def = (isNew && isExperimental()) ? randomIdentity() : null;
                 return {
                   color: agent.color ?? def?.color,
-                  character: agent.character ?? def?.character,
-                  experimental: isExperimental(),
+                  character: agent.character,
                 };
               })())}
             </div>

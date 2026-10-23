@@ -1,6 +1,5 @@
 import { addRoute } from "../server";
 import { getDb } from "../db/connection";
-import { isExperimental } from "../config/feature-flags";
 import { htmlResponse, parseRequestBody } from "./utils";
 import { getOpenEscalationCount, isDaemonPaused } from "../data/queries";
 import {
@@ -26,7 +25,6 @@ import { improvementsPage } from "../html/pages/improvements.page";
  * approve), so other tabs and clients reconcile from the event.
  */
 export function registerImprovementRoutes(): void {
-  if (!isExperimental()) return;
   const db = getDb();
 
   const card = (imp: Improvement, error?: string) => htmlResponse(improvementCard(imp, improvementState(db, imp), { error }));

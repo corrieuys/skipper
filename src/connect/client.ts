@@ -1,4 +1,4 @@
-import { getStringSetting, SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_URL } from "../config/app-settings";
+import { getStringSetting, SETTING_SKIPPER_CONNECT_URL } from "../config/app-settings";
 import { getDb } from "../db/connection";
 import type { TaskScheduler } from "../tasks/scheduler";
 import type { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
@@ -10,6 +10,8 @@ import type { ClientMessage, ServerMessage, ConnectTool } from "./protocol";
 import { executeCommand } from "./commands";
 import type { ResourceDeps } from "./resources";
 import { ConsumerSession } from "./consumer-session";
+import { getConnectKey } from "./connect-key";
+import { insecureConnectUrlReason } from "./connect-url";
 
 const MAX_BACKOFF_MS = 60_000;
 
@@ -109,7 +111,7 @@ export class ConnectClient {
 
     const db = getDb();
     const baseUrl = getStringSetting(db, SETTING_SKIPPER_CONNECT_URL, "");
-    const connectKey = getStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, "");
+    const connectKey = getConnectKey(db);
 
     if (!connectKey || !baseUrl) {
       console.warn("[connect] Missing connect URL or key, not connecting");
@@ -118,11 +120,21 @@ export class ConnectClient {
       return;
     }
 
-    const wsUrl = `${baseUrl.replace(/\/+$/, "")}/connect?token=${encodeURIComponent(connectKey)}`;
+    const insecure = insecureConnectUrlReason(baseUrl);
+    if (insecure) {
+      console.error(`[connect] Refusing to connect: Connect URL ${insecure}. Fix it on the config page.`);
+      this.running = false;
+      this._connectionStatus = "error";
+      return;
+    }
+
+    // The key rides only in the Authorization header (Bun extension), never in
+    // the URL, so it stays out of edge and proxy request logs.
+    const wsUrl = `${baseUrl.replace(/\/+$/, "")}/connect`;
 
     let ws: WebSocket;
     try {
-      ws = new WebSocket(wsUrl);
+      ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${connectKey}` } } as unknown as string[]);
     } catch (err) {
       console.error("[connect] Failed to create WebSocket:", err);
       this._connectionStatus = "error";

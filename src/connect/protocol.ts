@@ -19,7 +19,6 @@ export const CONNECT_PROTOCOL_VERSION = 3;
  * includes heavy fields (result, orchestration_state, description, task_config).
  */
 import type { TaskMemorySummary } from "../task-memory/summary";
-import { isExperimental } from "../config/feature-flags";
 
 export interface TaskListItem {
   id: string;
@@ -218,14 +217,11 @@ export interface ArtifactItem {
  * `state/snapshot`, because a consumer that connects later never sees the
  * one-shot event.
  */
-export const CONNECT_FEATURES = ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files", "task_memory", "remote_team_repos"] as const;
+export const CONNECT_FEATURES = ["snapshot", "fat_events", "output_tail", "messages", "timeline", "artifact_files", "task_memory", "remote_team_repos", "improvements"] as const;
 
-/**
- * The features this daemon advertises: CONNECT_FEATURES, plus `improvements`
- * under --experimental (the `improvements` resource and its fat events).
- */
+/** The features this daemon advertises (`improvements`: the `improvements` resource and its fat events). */
 export function connectFeatures(): string[] {
-  return isExperimental() ? [...CONNECT_FEATURES, "improvements"] : [...CONNECT_FEATURES];
+  return [...CONNECT_FEATURES];
 }
 
 export interface StateSnapshot {
@@ -236,7 +232,7 @@ export interface StateSnapshot {
   tasks: TaskListItem[];
   escalations: EscalationItem[];
   reviews: TaskListItem[];
-  /** `pendingImprovements`: staged improvements waiting on the operator (0 without --experimental). */
+  /** `pendingImprovements`: staged improvements waiting on the operator. */
   counts: { openEscalations: number; pendingReviews: number; pendingImprovements: number };
   /** True when a task-title generator agent is configured, so a remote client
    *  may create a task with a blank title (the daemon fills it in async). */

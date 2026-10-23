@@ -16,6 +16,7 @@ import type {
   ImprovementDiffLine,
 } from "../model/types";
 import { summarizeTerminalLine } from "../../html/terminalJsonSummary";
+import { insecureConnectUrlReason } from "../../connect/connect-url";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -72,6 +73,13 @@ export class LocalTransport implements Transport {
 
   async start(onEvent: (e: TransportEvent) => void): Promise<void> {
     this.onEvent = onEvent;
+    // A remote saved before the wss:// rule: never send its key in the clear.
+    const insecure = this.remote ? insecureConnectUrlReason(this.server.baseURL) : null;
+    if (insecure) {
+      this.emit({ kind: "status", status: "closed" });
+      this.emit({ kind: "auth_failed", message: `url refused: ${insecure}` });
+      return;
+    }
     this.connect = new Sock(socketURL(this.server), {
       headers: authHeaders(this.server),
       onOpen: () => this.emit({ kind: "status", status: "connected" }),

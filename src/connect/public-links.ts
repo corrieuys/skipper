@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { getStringSetting, SETTING_SKIPPER_CONNECT_KEY, SETTING_SKIPPER_CONNECT_URL } from "../config/app-settings";
+import { getStringSetting, SETTING_SKIPPER_CONNECT_URL } from "../config/app-settings";
+import { getConnectKey } from "./connect-key";
 import type { TaskArtifact } from "../orchestrator/artifact-manager";
 
 /**
@@ -19,7 +20,7 @@ export function gidFromConnectKey(key: string): string | null {
 }
 
 function getConnectHttpBaseAndGid(db: Database): { httpBase: string; gid: string } | null {
-  const key = getStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, "");
+  const key = getConnectKey(db);
   const gid = key ? gidFromConnectKey(key) : null;
   if (!gid) return null;
   // No default remote: public links only exist once the operator configures a

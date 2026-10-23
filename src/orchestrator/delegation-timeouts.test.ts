@@ -215,3 +215,128 @@ describe("delegation retry whose spawn fails (regression: a false spawn left it 
     expect(resumes[0]!.id).toBe(parentId);
   }, 20_000);
 });
+
+describe("dead child under an exited parent (regression: its delegation sat running until the timeout)", () => {
+  /** A fresh one-member group whose child the health monitor already reaped as `failed`. */
+  function seedDeadChild(taskId: string, parentId: string, attempt: number): { groupId: string; delegationId: string; childId: string } {
+    const groupId = crypto.randomUUID();
+    const delegationId = crypto.randomUUID();
+    const childId = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO delegation_groups (id, task_id, parent_instance_id, expected_count, settled_count, failed_count, status)
+       VALUES (?, ?, ?, 1, 0, 0, 'running')`,
+    ).run(groupId, taskId, parentId);
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, attempt)
+       VALUES (?, ?, 'worker', ?, ?, 'failed', ?)`,
+    ).run(childId, taskId, parentId, parentId, attempt);
+    db.prepare(
+      `INSERT INTO delegations (id, parent_agent_id, child_agent_id, parent_instance_id, child_instance_id, delegation_group_id, task_id, prompt, status)
+       VALUES (?, 'skipper', 'worker', ?, ?, ?, ?, 'long job', 'running')`,
+    ).run(delegationId, parentId, childId, groupId, taskId);
+    return { groupId, delegationId, childId };
+  }
+
+  it("fails the delegation of a reaped child past its retries and resumes the parent with the failure", async () => {
+    const { taskId, parentId } = seedTask();
+    const { groupId, delegationId } = seedDeadChild(taskId, parentId, 2);
+    const resumes = recordResumes();
+
+    expect(daemon.getDelegationManager().checkDeadChildDelegations()).toBe(1);
+
+    expect(delegationRow(delegationId)).toMatchObject({ status: "failed", result: "Child process died (reaped by health monitor)" });
+    expect(groupRow(groupId)).toMatchObject({ status: "completed", settled_count: 1, failed_count: 1 });
+    expect(await waitFor(() => resumes.length > 0, 2_000)).toBe(true);
+    expect(resumes[0]!.id).toBe(parentId);
+    expect(resumes[0]!.message).toContain("Child process died (reaped by health monitor)");
+    // Settled: the sweep is idempotent.
+    expect(daemon.getDelegationManager().checkDeadChildDelegations()).toBe(0);
+  });
+
+  it("retries a reaped child that still has an attempt left", async () => {
+    const { taskId, parentId } = seedTask();
+    const { delegationId, childId } = seedDeadChild(taskId, parentId, 1);
+    const resumes = recordResumes();
+
+    expect(daemon.getDelegationManager().checkDeadChildDelegations()).toBe(1);
+
+    const retried = delegationRow(delegationId);
+    expect(["pending", "running"]).toContain(retried.status);
+    expect(retried.child_instance_id).not.toBe(childId);
+    expect(await waitFor(() => delegationRow(delegationId).status === "running")).toBe(true);
+    expect(resumes).toHaveLength(0);
+  });
+
+  it("leaves a paused task alone", () => {
+    const { taskId, parentId } = seedTask();
+    const { delegationId } = seedDeadChild(taskId, parentId, 2);
+    db.prepare("UPDATE tasks SET paused = 1 WHERE id = ?").run(taskId);
+    recordResumes();
+
+    expect(daemon.getDelegationManager().checkDeadChildDelegations()).toBe(0);
+    expect(delegationRow(delegationId).status).toBe("running");
+  });
+});
+
+describe("held delegation group under a root that keeps escalating (regression: it blocked every new delegation)", () => {
+  /** A one-member group whose child finished while an escalation was open: settled, still 'running', nothing delivered. */
+  function seedHeldGroup(taskId: string, parentId: string, result: string): { groupId: string; delegationId: string } {
+    const groupId = crypto.randomUUID();
+    const delegationId = crypto.randomUUID();
+    const childId = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO delegation_groups (id, task_id, parent_instance_id, expected_count, settled_count, failed_count, status)
+       VALUES (?, ?, ?, 1, 1, 0, 'running')`,
+    ).run(groupId, taskId, parentId);
+    db.prepare(
+      `INSERT INTO agent_instances (id, task_id, template_agent_id, parent_instance_id, root_instance_id, status, attempt)
+       VALUES (?, ?, 'worker', ?, ?, 'completed', 1)`,
+    ).run(childId, taskId, parentId, parentId);
+    db.prepare(
+      `INSERT INTO delegations (id, parent_agent_id, child_agent_id, parent_instance_id, child_instance_id, delegation_group_id, task_id, prompt, status, result, completed_at)
+       VALUES (?, 'skipper', 'worker', ?, ?, ?, ?, 'part 2', 'completed', ?, datetime('now'))`,
+    ).run(delegationId, parentId, childId, groupId, taskId, result);
+    return { groupId, delegationId };
+  }
+
+  it("lets the root delegate again while a held group waits for delivery", async () => {
+    const { taskId, parentId } = seedTask();
+    db.prepare("UPDATE agent_instances SET session_id = 'sess-root' WHERE id = ?").run(parentId);
+    const { groupId } = seedHeldGroup(taskId, parentId, "part 2 done");
+    db.prepare(
+      `INSERT INTO escalations (id, agent_id, runtime_agent_id, task_id, type, question)
+       VALUES (?, 'skipper', ?, ?, 'agent_request', 'Next step?')`,
+    ).run(crypto.randomUUID(), parentId, taskId);
+
+    const delegation = await daemon.getDelegationManager().handleDelegation(parentId, "worker", "part 3");
+
+    expect(delegation).not.toBeNull();
+    expect(delegation!.delegation_group_id).not.toBe(groupId);
+    expect(groupRow(groupId).status).toBe("running"); // still held: the escalation is open
+  });
+
+  it("delivers the held result on the escalation answer, once, and the group completes", async () => {
+    const { taskId, parentId } = seedTask();
+    db.prepare("UPDATE agent_instances SET session_id = 'sess-root' WHERE id = ?").run(parentId);
+    const { groupId } = seedHeldGroup(taskId, parentId, "part 2 done");
+    const escalationId = crypto.randomUUID();
+    db.prepare(
+      `INSERT INTO escalations (id, agent_id, runtime_agent_id, task_id, type, question)
+       VALUES (?, 'skipper', ?, ?, 'agent_request', 'Next step?')`,
+    ).run(escalationId, parentId, taskId);
+    const resumes = recordResumes();
+
+    await daemon.resolveEscalation(escalationId, "Carry on");
+
+    expect(resumes).toHaveLength(1);
+    expect(resumes[0]!.id).toBe(parentId);
+    expect(resumes[0]!.message).toContain("[USER_RESPONSE] Carry on");
+    expect(resumes[0]!.message).toContain("[DELEGATION_RESULT");
+    expect(resumes[0]!.message).toContain("part 2 done");
+    expect(groupRow(groupId).status).toBe("completed");
+    // The resolve handler's release and the sweep find nothing left to deliver.
+    expect(daemon.getDelegationManager().checkStaleDelegationGroups()).toBe(0);
+    await Bun.sleep(50);
+    expect(resumes).toHaveLength(1);
+  });
+});

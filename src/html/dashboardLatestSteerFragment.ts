@@ -1,6 +1,6 @@
 import { escapeHtml } from "./atoms/escape-html";
 import { thinkingWaveHtml } from "./atoms/thinking-wave";
-import { creatureSvg, isCreatureId, sanitizeColor } from "./atoms/creature";
+import { sanitizeColor } from "./atoms/creature";
 
 export interface SteeringOption {
   template_agent_id: string;
@@ -95,46 +95,12 @@ export function dashboardSteerListFragment(
 }
 
 /**
- * The orb's inner content + data-attributes for one tile. When the agent picked a
- * creature, the orb shows that creature (tinted by its color) and zen-cube-2d.js
- * skips the cube for it; otherwise the empty orb keeps the cube, tinted by the
- * agent's color when set (`data-zen-color`).
+ * The orb's inner content + data-attributes for one tile: the empty orb that
+ * zen-cube-2d.js fills with the cube, tinted by the agent's color when set
+ * (`data-zen-color`).
  */
-// Overlapping "crowd" of creatures for an agent with several running instances:
-// max 3 on screen, heavily overlapped (a hint of more behind, never a row), the
-// back ones smaller + dimmer, each hopping on its own beat. The count badge still
-// shows the true number.
-function creatureStack(character: string, color: string | null, count: number): string {
-  const n = Math.min(3, count);
-  // Back → front; the front copy is full size/centred. Take the last n so the
-  // front is always present when n < 3.
-  const depths = [
-    { sx: "-28%", sy: "-6%", ss: 0.70, o: 0.5, z: 1 },
-    { sx: "18%", sy: "-3%", ss: 0.84, o: 0.72, z: 2 },
-    { sx: "0%", sy: "0%", ss: 1, o: 1, z: 3 },
-  ].slice(3 - n);
-  const items = depths.map((d) =>
-    `<span class="zen-orb__stack-item" style="--sx:${d.sx};--sy:${d.sy};--ss:${d.ss};--o:${d.o};z-index:${d.z}">${creatureSvg(character as any, color ?? undefined)}</span>`,
-  ).join("");
-  return `<span class="zen-orb__stack">${items}</span>`;
-}
-
 function orbIdentity(t: AgentTile): { inner: string; attrs: string } {
   const color = t.color ? sanitizeColor(t.color) : null;
-  if (isCreatureId(t.character)) {
-    // Several running instances → a small overlapping crowd (max 3), each hopping.
-    if (t.is_active && t.instance_count > 1) {
-      return {
-        inner: creatureStack(t.character, color, t.instance_count),
-        attrs: ` data-zen-character="${escapeHtml(t.character)}"`,
-      };
-    }
-    // Inactive creature sleeps: eyes shut (CSS), no floating Zs.
-    return {
-      inner: creatureSvg(t.character, color ?? undefined),
-      attrs: ` data-zen-character="${escapeHtml(t.character)}"`,
-    };
-  }
   return {
     inner: `<div class="zen-orb__shine"></div>`,
     attrs: color ? ` data-zen-color="${escapeHtml(color)}"` : "",

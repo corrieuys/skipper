@@ -4,7 +4,6 @@ import { escapeHtml } from "../atoms/escape-html";
 import { themePickerFragment } from "../styles/themes";
 import { NOTIFICATION_EVENTS } from "../../notifications/types";
 import { isExperimental } from "../../config/feature-flags";
-import { agentIdentityPicker, agentIdentityPickerScript } from "../atoms/agent-identity-picker";
 import type { NotificationPreference } from "../../notifications/store";
 import type { ModelChoice, AgentTypeOption } from "../../config/model-settings";
 import type { SlackConfigView } from "../../config/slack-settings";
@@ -18,9 +17,9 @@ export interface ConfigPageViewModel {
   taskRetentionDays: number;
   recurringTaskRetentionDays: number;
   parallelExecution: boolean;
-  /** Improvements auto-approve gate (experimental; undefined hides the panel). */
-  improvementsAutoApprove?: boolean;
-  improvementsEnabled?: boolean;
+  /** Improvements on/off + auto-approve gate. */
+  improvementsAutoApprove: boolean;
+  improvementsEnabled: boolean;
   daemonState: string;
   daemonUptime: number;
   escalationCount: number;
@@ -36,15 +35,13 @@ export interface ConfigPageViewModel {
     options: AgentTypeOption[];
   };
   slack?: SlackConfigView;
-  /** Task memory embeddings settings + local server status (experimental). */
+  /** Task memory embeddings settings + local server status. */
   taskMemory?: TaskMemoryPanelData;
   autoUpdate: {
     enabled: boolean;
     currentVersion: string;
     availableVersion: string | null;
   };
-  /** Skipper's own orb identity (experimental config section). */
-  skipperIdentity: { color: string; character: string };
   /** Real-time transcription: audio chunk cadence + summarize-or-raw default. */
   realtime: { cadenceSeconds: number; summaryEnabled: boolean; cadenceMin: number; cadenceMax: number };
   /** Transcription provider + local speech model and its engine status (experimental). */
@@ -114,39 +111,7 @@ function modelSettingsPanel(ms: ConfigPageViewModel["modelSettings"]): string {
 }
 
 
-/** Experimental: pick the Skipper's own color + creature for the active-agent orb. */
-function skipperCharacterPanel(identity: { color: string; character: string } = { color: "", character: "" }): string {
-  return `<div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
-    <div class="sk-panel__header">
-      <span class="sk-panel__title">Skipper Character</span>
-    </div>
-    <div class="sk-panel__body">
-      <p class="sk-muted sk-text-xs" style="margin-bottom:var(--sk-space-3);">
-        The Skipper's color and creature in the active-agent orb. Stored on this machine only.
-      </p>
-      ${agentIdentityPicker({ color: identity.color, character: identity.character, experimental: true })}
-      <div style="margin-top:var(--sk-space-3);display:flex;align-items:center;gap:var(--sk-space-2);">
-        <button type="button" id="sk-skipper-identity-save" class="sk-btn sk-btn--sm sk-btn--primary">Save</button>
-        <span id="sk-skipper-identity-status" class="sk-muted sk-text-xs"></span>
-      </div>
-    </div>
-    <script>(function(){
-      var btn=document.getElementById('sk-skipper-identity-save');
-      if(!btn)return;
-      btn.addEventListener('click',function(){
-        var root=document.querySelector('#sk-skipper-identity-save').closest('.sk-panel__body').querySelector('[data-agent-identity]');
-        var id=(root&&window.SkipperIdentity)?window.SkipperIdentity.read(root):{color:'',character:''};
-        var status=document.getElementById('sk-skipper-identity-status');
-        fetch('/api/config/skipper-identity',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(id)})
-          .then(function(r){return r.json();})
-          .then(function(res){status.textContent=res.ok?'Saved':(res.error||'Failed');setTimeout(function(){status.textContent='';},1500);})
-          .catch(function(e){status.textContent=String(e);});
-      });
-    })();</script>
-  </div>
-  ${agentIdentityPickerScript()}`;
-}
-
+/** Experimental: pick the Skipper's own color for the active-agent orb. */
 function notificationRows(prefs: NotificationPreference[]): string {
   return prefs.map((pref) => {
     const meta = NOTIFICATION_EVENTS.find((e) => e.key === pref.event_key);
@@ -225,52 +190,86 @@ export function configPage(vm: ConfigPageViewModel): string {
       :where(.sk-config) .sk-panel.sk-open > .sk-panel__body--flush {
         display: block;
       }
+      /* The General panel is always open: no caret, no toggle. */
+      :where(.sk-config) .sk-panel.sk-panel--static .sk-panel__header {
+        cursor: default;
+        border-bottom: 1px solid var(--sk-border-subtle);
+      }
+      :where(.sk-config) .sk-panel--static .sk-panel__header::after {
+        display: none;
+      }
+      :where(.sk-config) .sk-panel--static > .sk-panel__body {
+        display: block;
+      }
+      .sk-config-group + .sk-config-group {
+        margin-top: var(--sk-space-4);
+        padding-top: var(--sk-space-4);
+        border-top: 1px solid var(--sk-border-subtle);
+      }
+      .sk-config-group__title {
+        font-size: var(--sk-text-xs);
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: var(--sk-space-2);
+      }
     </style>
     <div class="sk-container sk-config">
       <div class="sk-page-header">
         <h1 class="sk-page-header__title">Configuration</h1>
       </div>
 
-      <!-- Appearance Section (first) -->
-      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
+      <!-- General Section (always open, not collapsible) -->
+      <div class="sk-panel sk-panel--static" style="margin-bottom: var(--sk-space-6);">
         <div class="sk-panel__header">
-          <span class="sk-panel__title">Appearance</span>
+          <span class="sk-panel__title">General</span>
         </div>
         <div class="sk-panel__body">
-          <div class="sk-flex sk-items-center sk-gap-3">
-            <label class="sk-muted sk-text-xs">Theme:</label>
-            ${themePickerFragment()}
-            <span class="sk-text-xs sk-muted">Applies immediately. Stored in this browser.</span>
+          <div class="sk-config-group">
+            <div class="sk-config-group__title">Appearance</div>
+            <div class="sk-flex sk-items-center sk-gap-3">
+              <label class="sk-muted sk-text-xs">Theme:</label>
+              ${themePickerFragment()}
+              <span class="sk-text-xs sk-muted">Applies immediately. Stored in this browser.</span>
+            </div>
+          </div>
+
+          <div class="sk-config-group">
+            <div class="sk-config-group__title">Task Execution</div>
+            <label class="sk-checkbox" style="margin-top:0;">
+              <input type="checkbox" id="parallel-tasks-enabled" name="enabled" ${vm.parallelExecution ? "checked" : ""}
+                hx-post="/api/settings/parallel-tasks" hx-trigger="change" hx-swap="none" hx-include="this">
+              <span class="sk-checkbox__toggle"></span>
+              <span class="sk-checkbox__label">Run tasks in parallel</span>
+            </label>
+            <p class="sk-muted sk-text-xs" style="margin:var(--sk-space-2) 0 0;">
+              When on, the daemon runs multiple approved tasks at once. When off, tasks run one at a time.
+            </p>
+          </div>
+
+          <div class="sk-config-group">
+            <div class="sk-config-group__title">Terminal Output Retention</div>
+            <div class="sk-flex sk-items-center sk-gap-3">
+              <label class="sk-muted sk-text-xs" for="log-retention-hours">Retention (hours):</label>
+              <input type="number" id="log-retention-hours" name="hours" min="1" max="720" value="${vm.logRetentionHours}"
+                class="sk-input sk-input--sm" style="width:80px;"
+                hx-post="/api/config/log-retention" hx-trigger="change" hx-swap="none"
+                hx-include="this">
+              <span class="sk-text-xs sk-muted">Deletes terminal_outputs, agent_sessions, and events older than this. Default: 24h.</span>
+              <button class="sk-btn sk-btn--sm sk-btn--danger" style="margin-left:auto;"
+                hx-post="/api/config/log-purge" hx-swap="none"
+                hx-confirm="Purge all terminal output, sessions, and events older than the retention period now?"
+                hx-on::after-request="if(event.detail.successful){this.textContent='Purged!';setTimeout(()=>this.textContent='Purge Now',1500);}">Purge Now</button>
+            </div>
           </div>
         </div>
       </div>
 
-
-      <!-- Task Execution Section -->
-      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
-        <div class="sk-panel__header">
-          <span class="sk-panel__title">Task Execution</span>
-        </div>
-        <div class="sk-panel__body">
-          <label class="sk-checkbox" style="margin-top:0;">
-            <input type="checkbox" id="parallel-tasks-enabled" name="enabled" ${vm.parallelExecution ? "checked" : ""}
-              hx-post="/api/settings/parallel-tasks" hx-trigger="change" hx-swap="none" hx-include="this">
-            <span class="sk-checkbox__toggle"></span>
-            <span class="sk-checkbox__label">Run tasks in parallel</span>
-          </label>
-          <p class="sk-muted sk-text-xs" style="margin:var(--sk-space-2) 0 0;">
-            When on, the daemon runs multiple approved tasks at once. When off, tasks run one at a time.
-          </p>
-        </div>
-      </div>
-
-      ${isExperimental() && vm.improvementsAutoApprove !== undefined ? improvementsPanel(vm.improvementsEnabled ?? true, vm.improvementsAutoApprove) : ""}
+      ${improvementsPanel(vm.improvementsEnabled, vm.improvementsAutoApprove)}
 
       ${modelSettingsPanel(vm.modelSettings)}
 
-      ${isExperimental() ? skipperCharacterPanel(vm.skipperIdentity) : ""}
-
-      ${isExperimental() && vm.taskMemory ? taskMemoryPanel(vm.taskMemory) : ""}
+      ${vm.taskMemory ? taskMemoryPanel(vm.taskMemory) : ""}
 
       <!-- Sound Notifications Section -->
       <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
@@ -282,27 +281,6 @@ export function configPage(vm: ConfigPageViewModel): string {
             <thead><tr><th>Event</th><th>Description</th><th>Sound</th><th style="text-align:center">Enabled</th></tr></thead>
             <tbody>${notificationRows(vm.notificationPreferences)}</tbody>
           </table>
-        </div>
-      </div>
-
-      <!-- Terminal Output Retention Section -->
-      <div class="sk-panel" style="margin-bottom: var(--sk-space-6);">
-        <div class="sk-panel__header">
-          <span class="sk-panel__title">Terminal Output Retention</span>
-          <button class="sk-btn sk-btn--sm sk-btn--danger" style="margin-left:auto;"
-            hx-post="/api/config/log-purge" hx-swap="none"
-            hx-confirm="Purge all terminal output, sessions, and events older than the retention period now?"
-            hx-on::after-request="if(event.detail.successful){this.textContent='Purged!';setTimeout(()=>this.textContent='Purge Now',1500);}">Purge Now</button>
-        </div>
-        <div class="sk-panel__body">
-          <div class="sk-flex sk-items-center sk-gap-3">
-            <label class="sk-muted sk-text-xs" for="log-retention-hours">Retention (hours):</label>
-            <input type="number" id="log-retention-hours" name="hours" min="1" max="720" value="${vm.logRetentionHours}"
-              class="sk-input sk-input--sm" style="width:80px;"
-              hx-post="/api/config/log-retention" hx-trigger="change" hx-swap="none"
-              hx-include="this">
-            <span class="sk-text-xs sk-muted">Deletes terminal_outputs, agent_sessions, and events older than this. Default: 24h.</span>
-          </div>
         </div>
       </div>
 
@@ -403,7 +381,7 @@ export function configPage(vm: ConfigPageViewModel): string {
             Use the navbar toggle to enable or disable the live connection.
           </p>
           <form hx-post="/api/config/skipper-connect" hx-swap="none"
-            hx-on::after-request="if(event.detail.successful&&event.target===this){window.location.reload();}">
+            hx-on::after-request="if(event.target!==this)return;if(event.detail.successful){window.location.reload();return;}var e=this.querySelector('[data-sc-error]');if(e)e.textContent=event.detail.xhr.responseText||'Save failed';">
             <div style="display:flex;flex-direction:column;gap:var(--sk-space-3);">
               <div style="display:flex;align-items:center;gap:var(--sk-space-3);">
                 <label class="sk-muted sk-text-xs" style="width:130px;" for="sc-url">Connect URL</label>
@@ -424,6 +402,7 @@ export function configPage(vm: ConfigPageViewModel): string {
               </div>
               <div>
                 <button type="submit" class="sk-btn sk-btn--sm sk-btn--primary">Save</button>
+                <span data-sc-error class="sk-text-xs" style="color:var(--sk-accent-danger);margin-left:var(--sk-space-2);"></span>
               </div>
             </div>
           </form>
@@ -456,7 +435,7 @@ export function configPage(vm: ConfigPageViewModel): string {
           // Let buttons/inputs/links in the header do their job without toggling.
           if (e.target.closest('button, a, input, select, textarea, label')) return;
           var p = h.closest('.sk-panel');
-          if (!p) return;
+          if (!p || p.classList.contains('sk-panel--static')) return;
           var t = titleOf(p);
           open[t] = !open[t];
           p.classList.toggle('sk-open', open[t]);
@@ -683,7 +662,7 @@ export function allowedHostsPanel(view: AllowedHostsView, form: AllowedHostsForm
   </div>`;
 }
 
-/** Improvements (experimental): the auto-approve gate for changes Skipper proposes. */
+/** Improvements: the auto-approve gate for changes Skipper proposes. */
 /** The on/off checkbox. ui-push re-sends it OOB (topic `config`) on `improvements:settings_changed`. */
 export function improvementsEnabledInput(enabled: boolean, oob = false): string {
   return `<input type="checkbox" id="improvements-enabled" name="enabled" ${enabled ? "checked" : ""}${oob ? ' hx-swap-oob="outerHTML"' : ""}

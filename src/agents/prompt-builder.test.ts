@@ -1077,7 +1077,7 @@ describe("solo resume does not re-send the description", () => {
   });
 });
 
-describe("team housekeeping block (experimental)", () => {
+describe("team housekeeping block", () => {
   function setupLocalTeamTask(taskId: string, remote = false): void {
     db.prepare("INSERT OR IGNORE INTO agents (id, name, type, model) VALUES ('skipper', 'Skipper', 'claude-code', 'default')").run();
     const teamId = crypto.randomUUID();
@@ -1103,7 +1103,7 @@ describe("team housekeeping block (experimental)", () => {
     if (i >= 0) process.argv.splice(i, 1);
   });
 
-  it("is in the root Skipper prompt of a local team under --experimental", () => {
+  it("is in the root Skipper prompt of a local team", () => {
     process.argv.push("--experimental");
     setupLocalTeamTask("hk-1");
     const prompt = rootPrompt("hk-1");
@@ -1120,10 +1120,9 @@ describe("team housekeeping block (experimental)", () => {
     expect(rootPrompt("hk-4")).toContain("TEAM HOUSEKEEPING");
   });
 
-  it("is absent without --experimental and on a remote team", () => {
+  it("is present without --experimental and absent on a remote team", () => {
     setupLocalTeamTask("hk-2");
-    expect(rootPrompt("hk-2")).not.toContain("TEAM HOUSEKEEPING");
-    process.argv.push("--experimental");
+    expect(rootPrompt("hk-2")).toContain("TEAM HOUSEKEEPING");
     setupLocalTeamTask("hk-3", true);
     expect(rootPrompt("hk-3")).not.toContain("TEAM HOUSEKEEPING");
   });

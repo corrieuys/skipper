@@ -48,9 +48,9 @@ describe("URL builders", () => {
     expect(serverLabel(l)).toBe("local");
   });
 
-  it("builds the integrator consumer socket with the key as token + bearer", () => {
-    expect(socketURL(remote)).toBe("wss://connect.acme.io/connect?token=sk-abc");
-    expect(socketURL({ ...remote, baseURL: "http://localhost:8787/" })).toBe("ws://localhost:8787/connect?token=sk-abc");
+  it("builds the integrator consumer socket with the key only as a bearer header", () => {
+    expect(socketURL(remote)).toBe("wss://connect.acme.io/connect");
+    expect(socketURL({ ...remote, baseURL: "http://localhost:8787/" })).toBe("ws://localhost:8787/connect");
     expect(dashboardURL(remote)).toBeNull();
     expect(httpBase(remote)).toBeNull();
     expect(authHeaders(remote)).toEqual({ Authorization: "Bearer sk-abc" });

@@ -487,6 +487,9 @@ export function teamCenterStyles(): string {
     .tc-upload__dl { flex: none; margin-left: auto; font-size: var(--sk-text-xs); color: var(--sk-accent-primary); text-decoration: none; }
     .tc-upload__dl:hover { text-decoration: underline; }
 
+    /* Search box above the artifacts list: filters rows client-side (skipper.js) */
+    .tc-art-search { display: block; width: 100%; margin-bottom: 0.5rem; font-size: var(--sk-text-xs); }
+
     /* Add artifact (upload) form at the top of the artifacts rail */
     .tc-art-upload {
       display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;

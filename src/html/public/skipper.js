@@ -1357,6 +1357,38 @@
 
   // ── Artifact uploads (pictures + any file) ──
   // The rail's "Add artifact" form, clipboard image paste and drag-drop on the
+  // Artifacts rail search: filters the rendered rows by name / kind /
+  // description (`data-artifact-search`, lower case). The input lives outside
+  // the swapped list container, so the filter is re-applied after every swap
+  // of the list (fragment load, action self-swap, artifact:created OOB push).
+  (function () {
+    function listFor(taskId) { return document.getElementById("mc-artifacts-" + taskId); }
+    function apply(input) {
+      var taskId = input.getAttribute("data-sk-artifact-search");
+      var list = taskId && listFor(taskId);
+      if (!list) return;
+      var q = (input.value || "").trim().toLowerCase();
+      var rows = list.querySelectorAll("[data-artifact-search]");
+      var shown = 0;
+      Array.prototype.forEach.call(rows, function (row) {
+        var hit = !q || (row.getAttribute("data-artifact-search") || "").indexOf(q) !== -1;
+        row.hidden = !hit;
+        if (hit) shown++;
+      });
+      var empty = list.querySelector("[data-sk-artifact-search-empty]");
+      if (empty) empty.hidden = !(q && rows.length > 0 && shown === 0);
+    }
+    function reapplyAll() {
+      Array.prototype.forEach.call(document.querySelectorAll("[data-sk-artifact-search]"), apply);
+    }
+    document.addEventListener("input", function (e) {
+      var input = e.target && e.target.closest && e.target.closest("[data-sk-artifact-search]");
+      if (input) apply(input);
+    });
+    document.addEventListener("htmx:afterSwap", reapplyAll);
+    document.addEventListener("htmx:oobAfterSwap", reapplyAll);
+  })();
+
   // task view all post multipart to POST /api/tasks/:id/artifacts/upload. The
   // rail refreshes via the artifact:created WS push (and the response swap for
   // the form path). Images over 2048px on the long edge are downscaled on a

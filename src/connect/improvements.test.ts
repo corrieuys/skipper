@@ -72,9 +72,9 @@ afterEach(() => {
 });
 
 describe("improvements resource", () => {
-  it("refuses every action without --experimental", () => {
+  it("serves every action without --experimental", () => {
     process.argv = origArgv.filter((a) => a !== "--experimental");
-    expect(req("list")).toEqual({ ok: false, error: "Improvements require the daemon --experimental flag" });
+    expect(req("list").ok).toBe(true);
   });
 
   it("list returns text-free summaries, pending by default, newest first", () => {
@@ -166,14 +166,14 @@ describe("improvement fat events", () => {
     frames.push({ event: f.event, payload: f.payload });
   }
 
-  it("capabilities list improvements under --experimental only", () => {
+  it("capabilities list improvements with or without --experimental", () => {
     cleanup = subscribeConnectEvents(capture);
     expect(frames[0]!.payload.features).toContain("improvements");
     cleanup();
     process.argv = origArgv.filter((a) => a !== "--experimental");
     frames = [];
     cleanup = subscribeConnectEvents(capture);
-    expect(frames[0]!.payload.features).not.toContain("improvements");
+    expect(frames[0]!.payload.features).toContain("improvements");
   });
 
   it("improvement:changed carries the summary and the other pending rows on the target", () => {

@@ -1073,9 +1073,9 @@ export function registerDaemonTools(
     );
   }
 
-  // Team housekeeping (experimental): the root Skipper stages improvements to its
+  // Team housekeeping: the root Skipper stages improvements to its
   // team config / recurring description for operator review (src/improvements).
-  if (!options?.isDelegated && !options?.isSolo && isExperimental()) {
+  if (!options?.isDelegated && !options?.isSolo) {
     registerImprovementTools(server, db, getIdentity);
   }
 

@@ -355,12 +355,11 @@ export class PromptBuilder {
     }
     parts.push("");
 
-    // Team housekeeping (experimental): the root Skipper stages improvements to
+    // Team housekeeping: the root Skipper stages improvements to
     // its team config / recurring description before complete_task
     // (src/improvements). Same gate as the tools (mcp/improvement-tools.ts).
     if (
       !solo &&
-      isExperimental() &&
       getEntrypointAgentId(this.db, options.task.id) === options.agent.id &&
       isImprovementsEnabled(this.db) &&
       hasImprovementTargets(getImprovementContext(this.db, options.task.id))

@@ -65,6 +65,7 @@ export class ReconciliationLoop {
       // Fast: process liveness
       { name: "process-health",     fn: () => this.healthMonitor.checkProcessHealth(),              intervalMs: 10_000 },
       { name: "instance-health",    fn: () => this.healthMonitor.checkInstanceProcessHealth(),      intervalMs: 10_000 },
+      { name: "dead-child-delegations", fn: () => this.delegationManager.checkDeadChildDelegations(), intervalMs: 10_000 },
 
       // Medium: state reconciliation
       { name: "stale-recovery",     fn: () => this.recoveryManager.recoverAllStaleTasks(),          intervalMs: 30_000 },

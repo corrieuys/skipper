@@ -2,8 +2,9 @@ import type { Database } from "bun:sqlite";
 import type { TaskMemorySummary } from "../../task-memory/summary";
 import {
   getBoolSetting,
-  SETTING_SKIPPER_CONNECT_ENABLED, getStringSetting, SETTING_SKIPPER_CONNECT_KEY,
+  SETTING_SKIPPER_CONNECT_ENABLED,
 } from "../../config/app-settings";
+import { hasConnectKey } from "../../connect/connect-key";
 import { getOpenEscalationCount, isDaemonPaused } from "../../data/queries";
 import {
   fetchCommandCenterTasks,
@@ -232,7 +233,7 @@ export function buildCommandCenterViewModel(
     escalationCount,
     daemonState,
     daemonUptime: process.uptime(),
-    skipperConnectEnabled: !!getStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, "") && getBoolSetting(db, SETTING_SKIPPER_CONNECT_ENABLED, false),
+    skipperConnectEnabled: hasConnectKey(db) && getBoolSetting(db, SETTING_SKIPPER_CONNECT_ENABLED, false),
   };
 }
 

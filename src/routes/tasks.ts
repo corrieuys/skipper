@@ -18,7 +18,6 @@ import { parsePhaseOverridesFromForm } from "./phase-overrides";
 import { parseScheduleFields } from "./scheduled-tasks";
 import { ScheduledTaskScheduler } from "../tasks/scheduled-scheduler";
 import { isTaskTitleGeneratorConfigured } from "../config/model-settings";
-import { isExperimental } from "../config/feature-flags";
 import { ensureTaskTitle } from "../tasks/title-generator";
 import { sanitizeIcon } from "../html/atoms/lucide";
 import { sanitizeColor } from "../html/atoms/creature";
@@ -186,9 +185,9 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       if (Object.keys(recurringOverrides).length > 0) recurringConfig.phase_overrides = recurringOverrides;
 
       const globalStoreInstructionsRaw = formData.get("globalStoreInstructions");
-      // Series memory (experimental): off | run | shared, plus a retention window.
+      // Series memory: off | run | shared, plus a retention window.
       const memoryModeRaw = formData.get("memoryMode");
-      if (isExperimental() && (memoryModeRaw === "run" || memoryModeRaw === "shared")) {
+      if ((memoryModeRaw === "run" || memoryModeRaw === "shared")) {
         recurringConfig.memory_mode = memoryModeRaw;
         const days = Number(formData.get("memoryRetentionDays") ?? 0);
         if (Number.isFinite(days) && days > 0) recurringConfig.memory_retention_days = Math.floor(days);
@@ -248,9 +247,9 @@ export function registerTaskRoutes(daemon?: Pick<ManagerDaemon, "getAgentManager
       const n = Number(windowRaw);
       if (Number.isFinite(n)) taskConfig = { ...(taskConfig ?? {}), window_seconds: clampCadenceSeconds(n) };
     }
-    // Per-task memory toggle (experimental checkbox on the create forms).
+    // Per-task memory toggle (checkbox on the create forms).
     const memoryRaw = formData.get("memoryEnabled");
-    if (isExperimental() && (memoryRaw === "1" || memoryRaw === "true" || memoryRaw === "on")) {
+    if ((memoryRaw === "1" || memoryRaw === "true" || memoryRaw === "on")) {
       taskConfig = { ...(taskConfig ?? {}), memory_enabled: true };
     }
 

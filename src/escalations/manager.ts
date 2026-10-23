@@ -46,6 +46,11 @@ export class EscalationManager {
   // does (delegation-manager routeResultToParent).
   private wakeFeeder: Pick<TaskWakeFeeder, "consumePendingFeed" | "hasPendingFeed"> | null = null;
   private clearWake: ((taskId: string) => void) | null = null;
+  /**
+   * Claims the escalating runtime's held delegation results so they ride along
+   * on the answer (DelegationManager.claimHeldGroupsForAnswer); null = none.
+   */
+  private heldResults: ((parentRuntimeId: string) => string | null) | null = null;
 
   constructor(db?: Database, agentManager?: AgentManager, promptBuilder?: PromptBuilder) {
     const resolvedDb = db ?? getDb();
@@ -60,6 +65,10 @@ export class EscalationManager {
   ): void {
     this.wakeFeeder = feeder;
     this.clearWake = clearWake;
+  }
+
+  setHeldResultsProvider(provider: (parentRuntimeId: string) => string | null): void {
+    this.heldResults = provider;
   }
 
   /** True when the escalating agent is the task's root (not a delegated child). */
@@ -292,6 +301,11 @@ export class EscalationManager {
       : null;
     let message = notes.text ? `${notes.text}\n${baseMessage}` : baseMessage;
     if (pendingFeed) message = `${message}\n${pendingFeed.text}`;
+    // Delegation results held for this escalation (every member settled while
+    // it was open) go on the same resume: a root that answers by escalating
+    // again never has the clean exit the hand-off otherwise waits for.
+    const heldResults = runtimeAgentId && this.heldResults ? this.heldResults(runtimeAgentId) : null;
+    if (heldResults) message = `${message}\n${heldResults}`;
     const markNotesDelivered = (): void => {
       const messageIds = notes.messageIds ?? [];
       if (notes.noteIds.length > 0 || messageIds.length > 0) {

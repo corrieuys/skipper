@@ -4,7 +4,7 @@ import { escapeHtml } from "../atoms/escape-html";
 import { isExperimental } from "../../config/feature-flags";
 import { agentIdentityPicker, agentIdentityPickerScript } from "../atoms/agent-identity-picker";
 import { iconIdentityPicker, iconIdentityPickerScript } from "../atoms/icon-identity-picker";
-import { AGENT_COLORS, CREATURE_IDS } from "../atoms/creature";
+import { AGENT_COLORS } from "../atoms/creature";
 import type { LocalTeam } from "../../teams/local-teams";
 
 /**
@@ -205,12 +205,8 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       // injected into the team settings modal and seeded via window.SkipperIcons.
       var ICON_PICKER_HTML = ${JSON.stringify(iconIdentityPicker({}))};
       var AGENT_COLORS = ${JSON.stringify(AGENT_COLORS)};
-      var CREATURE_CHOICES = ${JSON.stringify(CREATURE_IDS.filter((c) => c !== "captain"))};
       function randomIdentity(){
-        return {
-          color: AGENT_COLORS[Math.floor(Math.random()*AGENT_COLORS.length)],
-          character: CREATURE_CHOICES[Math.floor(Math.random()*CREATURE_CHOICES.length)]
-        };
+        return { color: AGENT_COLORS[Math.floor(Math.random()*AGENT_COLORS.length)] };
       }
 
       var flowEl = document.getElementById('tm-flow');
@@ -491,8 +487,8 @@ export function teamMapPage(vm: TeamMapViewModel): string {
         var type = (AGENT_TYPES[0] && AGENT_TYPES[0].name) || 'claude-code';
         var id = uniqueAgentId('agent');
         var agent = { id: id, name: 'New Agent', type: type, model: 'default', instruction: '', customTools: [] };
-        // Experimental: give a fresh agent a random color + creature by default.
-        if (EXPERIMENTAL){ var ri = randomIdentity(); agent.color = ri.color; agent.character = ri.character; }
+        // Experimental: give a fresh agent a random color by default.
+        if (EXPERIMENTAL){ agent.color = randomIdentity().color; }
         TEAM.agents.push(agent);
         markDirty(); render();
         openAgentModal(id);
@@ -704,7 +700,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
           '</div>' +
           '<div class="tm-field"><label class="sk-label">Instruction</label>' +
             '<textarea class="sk-textarea tm-field__prompt" data-f="instruction" placeholder="System instruction for this agent...">' + esc(a.instruction || '') + '</textarea></div>' +
-          '<div class="tm-field"><label class="sk-label">Color &amp; character</label>' +
+          '<div class="tm-field"><label class="sk-label">Color</label>' +
             '<div data-identity-slot></div></div>' +
           customToolsField(a.customTools);
 
@@ -942,7 +938,7 @@ export function teamMapPage(vm: TeamMapViewModel): string {
       if (IS_NEW) openSettingsModal();
     })();
     </script>
-    <template id="tm-identity-tpl">${agentIdentityPicker({ experimental: isExperimental() })}</template>
+    <template id="tm-identity-tpl">${agentIdentityPicker()}</template>
     ${agentIdentityPickerScript()}
     ${iconIdentityPickerScript()}
   `, "/teams", ["team-map"]);

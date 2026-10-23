@@ -1665,7 +1665,7 @@ export async function handleResourceRequest(
           counts: {
             openEscalations: escalations.length,
             pendingReviews: reviews.length,
-            pendingImprovements: isExperimental() ? countPendingImprovements(db) : 0,
+            pendingImprovements: countPendingImprovements(db),
           },
           titleGeneratorConfigured: isTaskTitleGeneratorConfigured(db),
         };

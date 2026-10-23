@@ -376,17 +376,17 @@ export class UIWebSocketManager {
     });
     // Remote team repos (experimental): link / sync status / unlink.
     this.trackOn("remote_team_repo:changed", () => this.pushRemoteTeamRepos());
-    // Improvements (experimental): staged / edited / approved / rejected.
+    // Improvements: staged / edited / approved / rejected.
     this.trackOn("improvement:changed", (event) => this.pushImprovement(event.improvementId, event.change));
     // Improvements on/off + auto-approve: keep every open config page's checkboxes in step.
     this.trackOn("improvements:settings_changed", (event) => {
-      if (!isExperimental() || !this.hasClients("html", ["config"])) return;
+      if (!this.hasClients("html", ["config"])) return;
       this.broadcastRaw(improvementsEnabledInput(event.enabled, true) + improvementsAutoApproveInput(event.autoApprove, true), ["config"]);
     });
     // A library agent edit moves the text its pending improvements were written against.
     this.trackOn("library_agent:changed", (event) => this.pushScopedImprovements({ targetKeys: [libraryTargetKey(event.agentType)] }));
 
-    // Top-bar attention indicator (experimental): pending improvements, review
+    // Top-bar attention indicator: pending improvements, review
     // gates, open escalations. Every page hears topic `attention`.
     for (const name of [
       "improvement:changed",
@@ -831,7 +831,7 @@ export class UIWebSocketManager {
    * conflict state changes). The pending count follows.
    */
   private pushImprovement(id: string, change: "created" | "updated"): void {
-    if (!isExperimental() || !this.hasClients("html", ["improvements"])) return;
+    if (!this.hasClients("html", ["improvements"])) return;
     const imp = getImprovement(this.db, id);
     if (!imp) return;
     const parts: string[] = [];
@@ -848,7 +848,6 @@ export class UIWebSocketManager {
   }
 
   private pushAttention(): void {
-    if (!isExperimental()) return;
     this.debounced("attention", () => {
       if (!this.hasClients("html", ["attention"])) return;
       this.broadcastRaw(() => attentionIndicator(fetchAttentionCounts(this.db), true), ["attention"]);
@@ -857,7 +856,7 @@ export class UIWebSocketManager {
 
   /** Re-render the pending cards of one team or recurring task after its live text changed. */
   private pushScopedImprovements(scope: { teamId?: string; scheduledTaskId?: string; targetKeys?: string[] }): void {
-    if (!isExperimental() || !this.hasClients("html", ["improvements"])) return;
+    if (!this.hasClients("html", ["improvements"])) return;
     const pending = listImprovements(this.db, { status: "pending", ...scope });
     if (pending.length === 0) return;
     this.broadcastRaw(pending.map((imp) => improvementCard(imp, improvementState(this.db, imp), { oob: true })).join(""), ["improvements"]);

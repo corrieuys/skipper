@@ -41,7 +41,8 @@ import { createConnectLocalEndpoint } from "./src/connect/local-endpoint";
 import { initSlackSocket, getSlackSocket } from "./src/slack/socket";
 import { initSlackPush, getSlackPush } from "./src/slack/push";
 import { isSocketModeConfigured, isSlackSocketEnabled, isSlackConfigured } from "./src/config/slack-settings";
-import { getBoolSetting, getStringSetting, SETTING_SKIPPER_CONNECT_ENABLED, SETTING_SKIPPER_CONNECT_KEY } from "./src/config/app-settings";
+import { getBoolSetting, SETTING_SKIPPER_CONNECT_ENABLED } from "./src/config/app-settings";
+import { hasConnectKey } from "./src/connect/connect-key";
 import { recordBootVersion } from "./src/config/auto-update-settings";
 import { loadAllowedHosts } from "./src/config/allowed-hosts";
 import { initUpdateRestartOnIdle } from "./src/updater/restart-scheduler";
@@ -122,7 +123,7 @@ registerTaskRoutes(daemon);
 registerTeamRoutes();
 // Remote team repos (experimental): link/refresh/unlink GitHub repos of team configs.
 registerRemoteTeamRoutes();
-// Improvements (experimental): review config changes staged by root Skippers.
+// Improvements: review config changes staged by root Skippers.
 registerImprovementRoutes();
 registerSkipperRoutes();
 registerDaemonRoutes(daemon);
@@ -144,7 +145,7 @@ registerCustomAgentRoutes();
 registerSingleAgentRoutes();
 // Custom tools (experimental): operator-defined tools executed by the daemon.
 registerCustomToolRoutes();
-// Task memory (experimental): per-task toggle + embeddings settings and the
+// Task memory: per-task toggle + embeddings settings and the
 // managed local server's download/start/stop.
 registerTaskMemoryRoutes({ db: getDb(), scheduler: daemon.getTaskScheduler(), scheduledScheduler: daemon.getScheduledTaskScheduler(), taskMemory, embeddingServer });
 setTaskMemoryPanelProvider(() => buildTaskMemoryPanelData({ db: getDb(), taskMemory, embeddingServer }));
@@ -247,7 +248,7 @@ async function startup() {
   recordBootVersion(db);
   // Apply a downloaded patch promptly once all tasks finish (event-driven restart).
   stopUpdateRestart = initUpdateRestartOnIdle(db, daemon.getAgentManager());
-  const hasCredentials = !!getStringSetting(db, SETTING_SKIPPER_CONNECT_KEY, "");
+  const hasCredentials = hasConnectKey(db);
   if (hasCredentials && getBoolSetting(db, SETTING_SKIPPER_CONNECT_ENABLED, false)) {
     connectClient.start();
   }

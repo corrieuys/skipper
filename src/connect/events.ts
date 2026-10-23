@@ -2,7 +2,6 @@ import { eventBus, type DelegationGroupProgressEvent, type EventName } from "../
 import { getDb } from "../db/connection";
 import { fetchRecurringItem, fetchRemoteTeamRepoItem, fetchTeamItem } from "./resources";
 import { CONNECT_PROTOCOL_VERSION, connectFeatures } from "./protocol";
-import { isExperimental } from "../config/feature-flags";
 import { improvementEventFields, libraryAgentImprovementSummaries, pendingImprovementSummaries } from "./improvements";
 import {
   fetchArtifactItem,
@@ -108,20 +107,20 @@ function enrichPayload(eventName: EventName, payload: unknown): unknown {
       return escalation ? { ...p, escalation } : p;
     }
     // Team / series edits move the live text pending improvements were
-    // written against: under --experimental both also carry `improvements`,
+    // written against: both also carry `improvements`,
     // the pending summaries in that scope (on every change, delete included).
     if (eventName === "recurring:changed" && typeof p.scheduledTaskId === "string") {
       const recurring = p.change !== "deleted" ? fetchRecurringItem(db, p.scheduledTaskId) : null;
-      const improvements = isExperimental() ? pendingImprovementSummaries(db, { scheduledTaskId: p.scheduledTaskId }) : null;
-      return { ...p, ...(recurring ? { recurring } : {}), ...(improvements ? { improvements } : {}) };
+      const improvements = pendingImprovementSummaries(db, { scheduledTaskId: p.scheduledTaskId });
+      return { ...p, ...(recurring ? { recurring } : {}), improvements };
     }
     if (eventName === "team:changed" && typeof p.teamId === "string") {
       const team = p.change !== "deleted" ? fetchTeamItem(db, p.teamId) : null;
-      const improvements = isExperimental() ? pendingImprovementSummaries(db, { teamId: p.teamId }) : null;
-      return { ...p, ...(team ? { team } : {}), ...(improvements ? { improvements } : {}) };
+      const improvements = pendingImprovementSummaries(db, { teamId: p.teamId });
+      return { ...p, ...(team ? { team } : {}), improvements };
     }
     if (eventName === "library_agent:changed" && typeof p.agentType === "string") {
-      return isExperimental() ? { ...p, improvements: libraryAgentImprovementSummaries(db, p.agentType) } : p;
+      return { ...p, improvements: libraryAgentImprovementSummaries(db, p.agentType) };
     }
     if (eventName === "improvement:changed" && typeof p.improvementId === "string") {
       const fields = improvementEventFields(db, p.improvementId);

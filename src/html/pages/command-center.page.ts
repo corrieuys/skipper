@@ -675,6 +675,7 @@ export function taskMainContent(vm: CommandCenterViewModel, task: TaskSummary): 
           <label class="tc-tab--activity" for="tc-rt-activity">Activity</label>
         </div>
         <div class="tc-rail__pane tc-rail__pane--arts">
+          <input type="search" class="sk-input tc-art-search" data-sk-artifact-search="${eid}" placeholder="Search artifacts" aria-label="Search artifacts" autocomplete="off">
           <div id="mc-artifacts-${eid}" hx-get="/fragments/tasks/${eid}/artifacts" hx-trigger="load" hx-swap="innerHTML"><span class="sk-muted">Loading artifacts...</span></div>
         </div>
         <div class="tc-rail__pane tc-rail__pane--notes">
@@ -1134,7 +1135,7 @@ export function renderScheduledTaskDetail(
 
       ${renderWebhookPanel(st)}
 
-      ${isExperimental() ? renderSeriesMemoryPanel(st) : ""}
+      ${renderSeriesMemoryPanel(st)}
 
       ${isExperimental() ? `
       <div class="sk-panel" style="margin-top:var(--sk-space-3);">
@@ -1338,7 +1339,7 @@ function renderScheduledDraftEdit(st: ScheduledTaskSummary, teams: Array<{ id: s
                 Injected into every run's prompt; authorizes Skipper to use the global store for state shared across runs.
               </div>
             </div>
-            ${isExperimental() ? renderSeriesMemoryFields(st) : ""}
+            ${renderSeriesMemoryFields(st)}
             ${isExperimental() ? `
             <div class="sk-form-group">
               <label class="sk-label">Slack Slash Command</label>
